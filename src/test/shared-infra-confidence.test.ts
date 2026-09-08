@@ -169,8 +169,23 @@ describe("shared infrastructure is a lead, not identity corroboration", () => {
 
 describe("genuine identity corroboration still lifts the cap", () => {
   it("an EMAIL selector lifts it", () => {
-    const artifacts = [...handleSpread("nightjar"), artifact("email", "nightjar@example.test")];
+    // The address is deliberately NOT `nightjar@…`. An email whose local-part
+    // spells the cluster's own handle is a different case entirely — it unions
+    // through `emailHandleKey`, and that derived link is non-corroborating by
+    // design (see the derived-link test below, and email-handle-linkage.test.ts).
+    // Before that link existed the two shapes were indistinguishable here, so
+    // this fixture was ambiguous rather than wrong; disambiguating it keeps the
+    // test measuring what its name says.
+    const artifacts = [...handleSpread("nightjar"), artifact("email", "j.vale.1987@example.test")];
     expect(topConfidence(artifacts)).toBeGreaterThan(CAP);
+  });
+
+  it("but an email spelled FROM the handle does NOT lift it", () => {
+    // `nightjar@…` reaches the cluster only because its local-part is the same
+    // string as the handle. One name compared with itself is not a second
+    // source, so the cap stands.
+    const artifacts = [...handleSpread("nightjar"), artifact("email", "nightjar@example.test")];
+    expect(topConfidence(artifacts)).toBe(CAP);
   });
 
   it("a PHONE selector lifts it", () => {
@@ -191,7 +206,7 @@ describe("genuine identity corroboration still lifts the cap", () => {
     const artifacts = [
       ...handleSpread("nightjar"),
       artifact("ip", "203.0.113.42"),
-      artifact("email", "nightjar@example.test"),
+      artifact("email", "j.vale.1987@example.test"),
     ];
     expect(topConfidence(artifacts)).toBeGreaterThan(CAP);
   });

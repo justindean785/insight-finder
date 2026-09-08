@@ -38,7 +38,7 @@ import {
   type ConfLabel,
   type ReviewAdjustment,
 } from "@/lib/intel";
-import { formatArtifactDisplayValue, buildIdentityRows, type IdentityRow } from "@/lib/report-hygiene";
+import { formatArtifactDisplayValue, buildIdentityRows, isClusterIneligible, type IdentityRow } from "@/lib/report-hygiene";
 import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
@@ -92,7 +92,19 @@ function bucket(a: Artifact, review?: ReviewAdjustment): "confirmed" | "probable
   const rawStatus = statusOf(a);
   const kind = a.kind.toLowerCase();
   if (kind === "contradiction" || rawStatus === "contradicted") return "contradiction";
-  if (kind === "excluded_collision" || rawStatus === "excluded") return "excluded";
+  // THE ENGINE'S OWN PREDICATE, not a re-derivation of it — same reasoning as
+  // `authorityFor` (src/lib/authority.ts). `evidenceStatus` below consults none
+  // of the collision flags, so without this gate a `possible_collision` row
+  // that also clears the corroboration bar reads "verified" and lands in this
+  // report's CONFIRMED bucket — while the Evidence board (via `authorityFor`)
+  // already demotes the identical row to quarantined. Same defect shape as
+  // #448, one layer up, at a call site that fix never reached (measured on the
+  // harness fixture: a possible_collision row with a caveat explaining it is a
+  // different, unrelated person rendered in "Confirmed Findings"). `isClusterIneligible`
+  // is a strict superset of the two ad hoc checks this replaced
+  // (`excluded_collision` kind and `status: "excluded"` are both covered by
+  // `isCollisionArtifact`), so this only WIDENS what gets excluded, never narrows it.
+  if (isClusterIneligible(a)) return "excluded";
   const status = evidenceStatus(a, review).status;
   if (status === "contradicted") return "contradiction";
   if (status === "rejected") return "excluded";
@@ -222,6 +234,7 @@ function HunterNote({ children }: { children: React.ReactNode }) {
 
 const CONF_PILL: Record<ConfLabel, string> = {
   CONFIRMED: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40",
+  ATTESTED: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))] border-dashed",
   CORRELATED: "text-[hsl(var(--confidence-high))]/90 border-[hsl(var(--confidence-high))]/30",
   INFERRED: "text-primary border-primary/40",
   VERIFY: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/40",
@@ -233,6 +246,7 @@ const CONF_PILL: Record<ConfLabel, string> = {
 // Map our internal labels to the reference vocabulary
 const CONF_DISPLAY: Record<ConfLabel, string> = {
   CONFIRMED: "CONFIRMED",
+  ATTESTED: "ANALYST-CONFIRMED",
   CORRELATED: "HIGH",
   INFERRED: "MEDIUM",
   VERIFY: "VERIFY",
@@ -312,9 +326,12 @@ function buildRegistrationRows(artifacts: Artifact[], reviews?: Reviews): Regist
 
 type HunterNoteItem = { text: string };
 
-function buildHunterNotes(artifacts: Artifact[], seedValue: string | null): HunterNoteItem[] {
+function buildHunterNotes(artifacts: Artifact[], seedValue: string | null, reviews?: Reviews): HunterNoteItem[] {
   const notes: HunterNoteItem[] = [];
-  const cluster = buildIdentityClusters(artifacts, seedValue);
+  // Cluster WITH the analyst's verdicts: these warnings are shown as analyst
+  // guidance, so deriving them from rows the analyst has dismissed tells them to
+  // chase a lead they already closed.
+  const cluster = buildIdentityClusters(artifacts, seedValue, reviews);
   for (const w of cluster.warnings.slice(0, 3)) notes.push({ text: w });
 
   const breaches = artifacts.filter((a) => isBreachKind(a.kind));
@@ -971,7 +988,7 @@ export function CaseReport({
   const isBrief = reportType === "brief";
   const identity = useMemo(() => buildIdentityRows(artifacts, reviews), [artifacts, reviews]);
   const registrations = useMemo(() => buildRegistrationRows(artifacts, reviews), [artifacts, reviews]);
-  const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue), [artifacts, seedValue]);
+  const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue, reviews), [artifacts, seedValue, reviews]);
   const unknowns = useMemo(() => buildUnknowns(artifacts), [artifacts]);
   const risk = useMemo(() => computeRisk(artifacts), [artifacts]);
   const radar = useMemo(() => buildAnalyticRadar(artifacts, risk.level, reviews), [artifacts, risk.level, reviews]);
@@ -988,7 +1005,7 @@ export function CaseReport({
   // Honest confidence verdict: lint identity clusters for tier-over-statement /
   // unmet "Verified" gate, then roll lint + independence findings into one
   // CLEAN/ADVISORY/BLOCKED verdict. Integrity-critical (changes shown confidence).
-  const clusterAudits = useMemo(() => artifactsToClusterAudit(artifacts, seedValue), [artifacts, seedValue]);
+  const clusterAudits = useMemo(() => artifactsToClusterAudit(artifacts, seedValue, reviews), [artifacts, seedValue, reviews]);
   const confidenceFindings = useMemo(() => lintReport(clusterAudits), [clusterAudits]);
   const verdict = useMemo(() => reportVerdict(confidenceFindings, independenceFindings), [confidenceFindings, independenceFindings]);
   const avgConfidence = useMemo(() => averageConfidence(artifacts, reviews), [artifacts, reviews]);

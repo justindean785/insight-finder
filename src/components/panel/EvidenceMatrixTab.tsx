@@ -9,7 +9,7 @@ import {
 import { displayConfidence, effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import {
   useReviewStates, REVIEW_CLASS, REVIEW_SHORT, REVIEW_STATES, REVIEW_HELP,
-  REVIEW_CONFIDENCE_DELTA, launchRecheckInChat, type ReviewState,
+  startRecheck, type ReviewState,
 } from "@/lib/review";
 import { Copy, CheckCircle2, Star, ShieldQuestion, Ban, RotateCcw, Info, XCircle, MoreHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -66,10 +66,12 @@ export function EvidenceMatrixTab({
         <div className="mx-2.5 mt-2.5 flex items-start gap-2 rounded-lg border border-border bg-secondary/25 px-2.5 py-2 text-data text-muted-foreground sm:mx-3">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
           <div className="leading-snug">
-            <span className="text-foreground font-medium">Review scoring:</span>{" "}
-            <span className="text-[hsl(var(--confidence-high))]">Confirm</span> +20 ·{" "}
+            <span className="text-foreground font-medium">Review decisions:</span>{" "}
+            <span className="text-[hsl(var(--confidence-high))]">Confirm</span> accepts ·{" "}
+            <span className="text-primary">Key</span> prioritises ·{" "}
             <span className="text-[hsl(var(--confidence-mid))]">Recheck</span> re-verifies in chat ·{" "}
-            <span className="text-destructive">False</span> excludes.
+            <span className="text-destructive">Dismiss</span> excludes. Decisions steer the agent's
+            next run; none of them changes a confidence score.
           </div>
         </div>
         <div className="sticky top-0 z-10 border-b border-border bg-card/95 p-2.5 backdrop-blur sm:p-3">
@@ -201,7 +203,7 @@ export function EvidenceMatrixTab({
                           (rState === "dismissed" ? "line-through" : "")
                         }
                       >
-                        <span className="break-all">{sanitizeValueForLabel(a.value, label === "CONFIRMED")}</span>
+                        <span className="break-all">{sanitizeValueForLabel(a.value, label === "CONFIRMED" || label === "ATTESTED")}</span>
                         <Copy className="mt-0.5 h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover/val:opacity-60" aria-hidden />
                       </button>
                       <div className="text-eyebrow tracking-normal text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">
@@ -305,7 +307,7 @@ export function EvidenceMatrixTab({
                     </div>
                   )}
 
-                  {/* One clear verdict each: Confirm true · Recheck in chat · False.
+                  {/* One clear verdict each: Confirm true · Recheck in chat · Dismiss.
                       "Key finding" and "false + teach agent" are deliberate
                       refinements, so they live in the overflow — the main row
                       stays a simple true / recheck / false decision. */}
@@ -322,11 +324,17 @@ export function EvidenceMatrixTab({
                         tip="Sends this exact finding to the chatbot for a fresh, independent re-verification — and flags it as needing another look."
                         active={rState === "recheck"} tone="warn"
                         onClick={() => {
-                          void review.set(a.id, "recheck", { value: a.value, kind: a.kind, confidence: shownConf.effective ?? undefined, source: a.source });
-                          launchRecheckInChat(threadId, { value: a.value, kind: a.kind });
-                          toast.success("Rechecking in chat…");
+                          // Persist FIRST; the chat run launches only after the
+                          // verdict has committed (startRecheck). A failed write
+                          // has already toasted and launches nothing.
+                          void startRecheck({
+                            set: review.set,
+                            threadId,
+                            artifact: { id: a.id, value: a.value, kind: a.kind },
+                            ctx: { value: a.value, kind: a.kind, confidence: shownConf.effective ?? undefined, source: a.source },
+                          }).then((r) => { if (r.ok) toast.success("Rechecking in chat…"); });
                         }} />
-                      <PrimaryAction icon={XCircle} label="False" tip={REVIEW_HELP.dismissed}
+                      <PrimaryAction icon={XCircle} label="Dismiss" tip={REVIEW_HELP.dismissed}
                         active={rState === "dismissed"} tone="danger"
                         onClick={() => review.set(a.id, "dismissed", { value: a.value, kind: a.kind, confidence: shownConf.effective ?? undefined, source: a.source })} />
                       <DropdownMenu>

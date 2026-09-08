@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { detectSeed } from "@/lib/seed";
-import { isActiveThreadStatus } from "@/lib/thread-status";
+import { isRunningThread } from "@/lib/thread-status";
 import { selectStaleActiveIds } from "@/lib/stale-thread";
 import { SUPPORT_MAILTO } from "@/lib/contact";
 import type { Database as SupabaseDatabase } from "@/integrations/supabase/types";
@@ -60,6 +60,10 @@ type Thread = {
   // doesn't enumerate (e.g. "failed_context_limit") and they must still render.
   status: string | null;
   seed_type: string | null;
+  // Run markers: an "active" row with neither of these never started (I-1), so
+  // it is a draft — not a live run, and not a candidate for the stale sweep.
+  run_started_at: string | null;
+  last_heartbeat_at: string | null;
 };
 
 type ThreadMetrics = {
@@ -154,7 +158,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
     const loadThreadsAndBrain = async () => {
       const { data } = await supabase
         .from("threads")
-        .select("id,title,updated_at,credits_used,cost_micro_usd,status,seed_type")
+        .select("id,title,updated_at,credits_used,cost_micro_usd,status,seed_type,run_started_at,last_heartbeat_at")
         .eq("user_id", user.id)
         .order("updated_at", { ascending: false });
       const threadRows = (data as Thread[] | null) ?? [];
@@ -596,7 +600,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
                     t={t}
                     active={t.id === threadId}
                     onDelete={requestDelete}
-                    dim={!isActiveThreadStatus(t.status)}
+                    dim={!isRunningThread(t)}
                     m={metrics[t.id]}
                   />
                 ))}

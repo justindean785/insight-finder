@@ -247,3 +247,36 @@ export function authorityStatement(a: AuthoritativeFindings): string {
   }
   return `The scoring engine adjudicated no findings on this case. ${total} artifact${total === 1 ? " was" : "s were"} collected; everything below is a lead, not an adjudicated finding.${ceiling}`;
 }
+
+/**
+ * How the report's "Key Findings" section introduces itself, decided next to
+ * `authorityStatement` so the two paragraphs cannot contradict each other on
+ * the page. On a production export the authority paragraph said "the scoring
+ * engine adjudicated no findings" while, one heading later, "Key Findings"
+ * listed nine rows — both true (different populations: `record_finding` rows
+ * vs corroborated / analyst-confirmed artifacts), and unreadable together.
+ *
+ * `corroborated` = rows the evidence ladder labels CONFIRMED (2+ independent
+ * source classes); `attested` = rows the analyst confirmed. When the engine
+ * scored nothing the heading says so and the lead explains what the list is.
+ */
+export function keyFindingsFraming(
+  authority: AuthoritativeFindings | null | undefined,
+  counts: { corroborated: number; attested: number },
+): { heading: string; lead: string | null } {
+  const engineScored = (authority?.findings?.length ?? 0) > 0;
+  const total = counts.corroborated + counts.attested;
+  if (engineScored || !authority) {
+    return { heading: "Key Findings", lead: null };
+  }
+  if (total === 0) {
+    return { heading: "Key Findings — leads (not engine-adjudicated)", lead: null };
+  }
+  const bits: string[] = [];
+  if (counts.corroborated) bits.push(`${counts.corroborated} corroborated by 2+ independent source classes`);
+  if (counts.attested) bits.push(`${counts.attested} analyst-confirmed`);
+  return {
+    heading: "Key Findings — leads (not engine-adjudicated)",
+    lead: `_${bits.join(", ")}; none was scored by the engine (\`record_finding\` recorded no findings on this case). Listed as strong leads, not adjudicated findings._`,
+  };
+}

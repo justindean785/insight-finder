@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { z } from "zod";
 import { supabase } from "@/integrations/supabase/client";
+import { toSourceStrings } from "@/lib/source-strings";
 
 export type Artifact = {
   id: string;
@@ -72,7 +73,7 @@ function dedupeArtifacts(rows: Artifact[]): Artifact[] {
     if (!prev) {
       const md = { ...(a.metadata ?? {}) } as Record<string, unknown>;
       const sources = new Set<string>([
-        ...((md.sources as string[] | undefined) ?? []),
+        ...toSourceStrings(md.sources),
         ...(a.source ? [a.source] : []),
       ]);
       md.sources = Array.from(sources);
@@ -81,7 +82,7 @@ function dedupeArtifacts(rows: Artifact[]): Artifact[] {
     }
     const prevMd = (prev.metadata ?? {}) as Record<string, unknown>;
     const sources = new Set<string>([
-      ...((prevMd.sources as string[] | undefined) ?? []),
+      ...toSourceStrings(prevMd.sources),
       ...(prev.source ? [prev.source] : []),
       ...(a.source ? [a.source] : []),
     ]);

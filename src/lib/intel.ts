@@ -1,15 +1,20 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+import { toSourceStrings } from "@/lib/source-strings";
 import {
   AUTHORITY_HEADING,
   authorityStatement,
+  keyFindingsFraming,
   recordedConfidenceCap,
   type AuthoritativeFindings,
 } from "@/lib/authoritative-findings";
 import { detectSeed, extractDisplaySeed } from "@/lib/seed";
 import { toolActionLabel } from "@/lib/tool-display";
-import { humanizeSourceChain, tokenizeSourceChain } from "@/lib/report-source-labels";
+import { humanizeSourceChain, primaryToolSlug, tokenizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
 import { isSubjectUnlinked, isQuarantined } from "@/lib/quarantine";
+// Pure (no Supabase import), so no cycle: the one rejection predicate every
+// frontend consumer shares — analyst verdict OR the legacy `false_positive` flag.
+import { isRejectedArtifact as isRejectedArtifactRow } from "@/lib/analyst-decisions";
 // Derived models built here (timeline entries, pivot candidates) carry a
 // per-artifact confidence that is later RENDERED, so they must carry the
 // effective value — otherwise a surface displays a raw number without ever
@@ -25,6 +30,8 @@ import {
   reportDisplayKind,
   reservedNumberAnnotation,
   dedupeBreachDatasets,
+  foldAliasTwins,
+  isNonEntityArtifact,
 } from "@/lib/report-hygiene";
 
 /** Analyst-grade group buckets for artifact kinds. */
@@ -36,6 +43,8 @@ export type Group =
   | "breach"
   | "web"
   | "crypto"
+  | "affiliation"
+  | "records"
   | "other";
 
 export const GROUP_LABEL: Record<Group, string> = {
@@ -46,6 +55,8 @@ export const GROUP_LABEL: Record<Group, string> = {
   breach: "Breach / Exposure",
   web: "Web / Archive",
   crypto: "Crypto",
+  affiliation: "Organizations / Affiliations",
+  records: "Records / Events",
   other: "Other",
 };
 
@@ -57,6 +68,8 @@ export const GROUP_ORDER: Group[] = [
   "breach",
   "web",
   "crypto",
+  "affiliation",
+  "records",
   "other",
 ];
 
@@ -76,6 +89,17 @@ const KIND_TO_GROUP: Record<string, Group> = {
   handle: "social",
   social: "social",
   account: "social",
+  social_footprint: "social",
+  // The live extractors emit these spellings for the same concept as `social`
+  // / `account`. None was mapped, so on the @hoodken28 export every Instagram,
+  // YouTube, Kick, Linktree and Apple Music profile — the subject's entire
+  // public footprint — was filed under **Other**, below the breach rows.
+  social_profile: "social",
+  social_account: "social",
+  account_id: "social",
+  alias: "social",
+  github_account: "social",
+  github_repo: "social",
   ip: "infrastructure",
   // The extractor emits BOTH `ip` and `ip_address` for the same concept. Only
   // `ip` was mapped, so `ip_address` fell through to "other" — on the
@@ -93,6 +117,7 @@ const KIND_TO_GROUP: Record<string, Group> = {
   // The auto-persist collapse emits breach_exposure instead of many `breach`
   // rows; without this the collapsed row silently fell through to "other".
   breach_exposure: "breach",
+  bulk_corpus_harvest: "breach",
   credential_exposure: "breach",
   password: "breach",
   hash: "breach",
@@ -106,7 +131,19 @@ const KIND_TO_GROUP: Record<string, Group> = {
   document: "web",
   wallet: "crypto",
   crypto: "crypto",
+  crypto_wallet: "crypto",
   tx: "crypto",
+  // Organisations and records are entities in the subject's network, not
+  // "other" — an employer, a registry entry or a court case is exactly what an
+  // analyst scans a network section for. They get their own headings so the
+  // Other bucket stops being where the interesting rows go to hide.
+  organization: "affiliation",
+  employer: "affiliation",
+  legal_record: "records",
+  court_case: "records",
+  criminal_case_event: "records",
+  media_report: "records",
+  event: "records",
 };
 
 export function groupForKind(kind: string): Group {
@@ -116,6 +153,8 @@ export function groupForKind(kind: string): Group {
 /** Confidence label used across the analyst surfaces. */
 export type ConfLabel =
   | "CONFIRMED"
+  /** Analyst Confirm / Key: a decision, not a second source class. */
+  | "ATTESTED"
   | "CORRELATED"
   | "INFERRED"
   | "VERIFY"
@@ -171,19 +210,28 @@ const DIRECT_PROFILE_SOURCES = new Set([
 const SENSITIVE_KINDS = new Set(["dob", "address", "phone", "ssn", "name", "person", "age"]);
 
 export function isBreachSource(src: string | null | undefined, _meta?: Record<string, unknown>): boolean {
-  if (!src) return false;
+  // Not `!src` alone: production carries `metadata.sources` arrays holding
+  // OBJECTS, which are truthy and reach `.toLowerCase()`. A malformed source is
+  // not a matching source — degrade to false, never throw inside a useMemo.
+  if (typeof src !== "string" || !src) return false;
   const s = src.toLowerCase();
   return [...BREACH_ONLY_SOURCES].some((k) => s.includes(k));
 }
 
 export function isUsernameSweepSource(src: string | null | undefined, _meta?: Record<string, unknown>): boolean {
-  if (!src) return false;
+  // Not `!src` alone: production carries `metadata.sources` arrays holding
+  // OBJECTS, which are truthy and reach `.toLowerCase()`. A malformed source is
+  // not a matching source — degrade to false, never throw inside a useMemo.
+  if (typeof src !== "string" || !src) return false;
   const s = src.toLowerCase();
   return [...USERNAME_SWEEP_SOURCES].some((k) => s.includes(k));
 }
 
 export function isDirectProfileSource(src: string | null | undefined, _meta?: Record<string, unknown>): boolean {
-  if (!src) return false;
+  // Not `!src` alone: production carries `metadata.sources` arrays holding
+  // OBJECTS, which are truthy and reach `.toLowerCase()`. A malformed source is
+  // not a matching source — degrade to false, never throw inside a useMemo.
+  if (typeof src !== "string" || !src) return false;
   const s = src.toLowerCase();
   return [...DIRECT_PROFILE_SOURCES].some((k) => s.includes(k));
 }
@@ -280,7 +328,7 @@ export function adjustedConfidence(a: Artifact, review?: ReviewAdjustment): numb
   const base = a.confidence ?? 0;
   const d = review ? REVIEW_DELTA[review] ?? 0 : 0;
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
-  const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
+  const metaSources = toSourceStrings(meta.sources);
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
   // ── THIS IS A CLASSIFICATION SCORE, NOT A DISPLAYED NUMBER ────────────────
   //
@@ -411,7 +459,7 @@ function artifactSourceClasses(a: Artifact): string[] {
   } else if (typeof sc === "string" && sc.trim()) {
     return [sc.trim().toLowerCase()];
   }
-  const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
+  const metaSources = toSourceStrings(meta.sources);
   const all = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
   return Array.from(
     new Set(
@@ -500,9 +548,19 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
   const quarantined = isQuarantined(meta);
 
   const attested = review === "confirmed" || review === "key" || meta.reviewed === true;
-  if (attested && meta.possible_minor !== true && !quarantined) return "CONFIRMED";
+  // An analyst decision gets its OWN rung. It used to return CONFIRMED, so a
+  // row at recorded confidence 40 read "CONFIRMED" beside a legend defining
+  // CONFIRMED as two independent source classes — the number and the label
+  // disagreed in the same table row. ATTESTED renders as ANALYST-CONFIRMED,
+  // still counts as verified on the board, and never touches the figure.
+  if (attested && meta.possible_minor !== true && !quarantined) {
+    // Evidence that already clears the CONFIRMED bar on its own keeps the
+    // stronger, evidence-derived label; the decision never downgrades it.
+    const evidence = labelForArtifact({ ...a, metadata: { ...meta, reviewed: false } }, undefined);
+    return evidence === "CONFIRMED" ? "CONFIRMED" : "ATTESTED";
+  }
 
-  const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
+  const metaSources = toSourceStrings(meta.sources);
   const allSources = [a.source ?? null, ...metaSources].filter(Boolean) as string[];
   // Independent corroboration is counted from the backend's authoritative
   // source_category (which already collapses same-class providers), NOT a naive
@@ -582,7 +640,8 @@ export function labelForArtifact(a: Artifact, review?: ReviewAdjustment): ConfLa
 }
 
 export const CONF_LABEL_HELP: Record<ConfLabel, string> = {
-  CONFIRMED: "Supported by ≥2 independent source classes or reviewed by analyst.",
+  CONFIRMED: "Supported by ≥2 independent source classes.",
+  ATTESTED: "Analyst-confirmed. A decision, not a second source — the evidence figure is unchanged.",
   CORRELATED: "Multiple artifacts point together but no definitive proof.",
   INFERRED: "Source states this but it is not independently corroborated.",
   VERIFY: "Possible match. Needs verification before reporting.",
@@ -593,6 +652,7 @@ export const CONF_LABEL_HELP: Record<ConfLabel, string> = {
 
 export const CONF_LABEL_CLASS: Record<ConfLabel, string> = {
   CONFIRMED: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10",
+  ATTESTED: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))] border-dashed bg-[hsl(var(--confidence-high))]/10",
   CORRELATED: "text-[hsl(var(--confidence-high))]/90 border-[hsl(var(--confidence-high))]/30 bg-[hsl(var(--confidence-high))]/5",
   INFERRED: "text-primary border-primary/40 bg-primary/10",
   VERIFY: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/40 bg-[hsl(var(--confidence-mid))]/10",
@@ -873,7 +933,10 @@ export function buildTimelineItems(
 // ---- Tool audit --------------------------------------------------------
 
 export type ToolAuditEntry = {
+  /** Grouping key: the producing tool's slug (see primaryToolSlug). */
   tool: string;
+  /** The raw `source` spellings folded into this entry, first-seen order. */
+  variants: string[];
   totalResults: number;
   highConf: number;
   lowConf: number;
@@ -889,16 +952,26 @@ export type ToolAudit = {
   kindsCovered: Set<string>;
 };
 
-export function buildToolAudit(artifacts: Artifact[]): ToolAudit {
+export function buildToolAudit(
+  artifacts: Artifact[],
+  reviews?: Record<string, ReviewAdjustment> | null,
+): ToolAudit {
   const map = new Map<string, ToolAuditEntry>();
   let cachedCount = 0;
   let failedCount = 0;
   const kindsCovered = new Set<string>();
 
   for (const a of artifacts) {
-    const tool = (a.source ?? "unknown").trim() || "unknown";
+    // Group by the PRODUCING TOOL, not the raw source string. Sources are
+    // free-form chains ("rapidapi_breach_search (9 variants)", "hunter_email_verifier
+    // + rapidapi_breach_search", "Username_Sweep/Instagram"), and keying on
+    // them printed 34 near-duplicate Tool Coverage lines on one export.
+    const rawSource = (a.source ?? "unknown").trim() || "unknown";
+    const tool = primaryToolSlug(rawSource);
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
-    const label = labelForArtifact(a);
+    // Through the analyst's verdict where one is supplied, so a dismissed row
+    // counts as failed here exactly as it renders everywhere else.
+    const label = labelForArtifact(a, reviews?.[a.id]);
     const cached = meta.cached === true || meta._cached === true;
     const failed = label === "FAILED" || meta.skipped === true || meta.failed === true;
 
@@ -907,10 +980,11 @@ export function buildToolAudit(artifacts: Artifact[]): ToolAudit {
     if (failed) failedCount++;
 
     const entry = map.get(tool) ?? {
-      tool, totalResults: 0, highConf: 0, lowConf: 0, cached: 0, failed: 0, kinds: [],
+      tool, variants: [], totalResults: 0, highConf: 0, lowConf: 0, cached: 0, failed: 0, kinds: [],
     };
+    if (!entry.variants.includes(rawSource)) entry.variants.push(rawSource);
     entry.totalResults++;
-    if (label === "CONFIRMED" || label === "INFERRED") entry.highConf++;
+    if (label === "CONFIRMED" || label === "ATTESTED" || label === "INFERRED") entry.highConf++;
     if (label === "LOW" || label === "VERIFY") entry.lowConf++;
     if (cached) entry.cached++;
     if (failed) entry.failed++;
@@ -941,7 +1015,7 @@ export type ArtifactSourceInfo = {
 
 export function extractSourceInfo(a: Artifact): ArtifactSourceInfo {
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
-  const metaSources = Array.isArray(meta.sources) ? (meta.sources as string[]) : [];
+  const metaSources = toSourceStrings(meta.sources);
   const all = tokenizeSourceChain([...(a.source ? [a.source] : []), ...metaSources]);
   const primary = all[0] ?? "unknown";
   let cacheLayer: CacheLayer = "unknown";
@@ -1092,7 +1166,7 @@ export function extractFailedAndSkipped(messages: RawMessage[]): FailedToolEntry
 export function buildInvestigationSummary(input: ReportInput): string {
   const { seedValue, seedType, artifacts } = input;
   const audit = buildToolAudit(artifacts);
-  const confirmed = artifacts.filter((a) => labelForArtifact(a) === "CONFIRMED").length;
+  const confirmed = artifacts.filter((a) => { const l = labelForArtifact(a); return l === "CONFIRMED" || l === "ATTESTED"; }).length;
   const verify = artifacts.filter((a) => labelForArtifact(a) === "VERIFY").length;
   const low = artifacts.filter((a) => labelForArtifact(a) === "LOW").length;
   const failed = artifacts.filter((a) => labelForArtifact(a) === "FAILED").length;
@@ -1135,13 +1209,19 @@ function mdEscape(v: string): string {
   return v.replace(/\|/g, "\\|").replace(/\n+/g, " ");
 }
 
-export function buildEvidenceMatrixMarkdown(artifacts: Artifact[]): string {
+export function buildEvidenceMatrixMarkdown(
+  artifacts: Artifact[],
+  reviews?: Record<string, ReviewAdjustment>,
+): string {
   if (artifacts.length === 0) return "_No evidence recorded._";
   const rows = artifacts.map((a) => {
-    const label = labelForArtifact(a);
+    // Through the analyst's verdict, like every other label in the report: a
+    // rejected row is listed (forensic history) but reads FAILED, never as an
+    // active CONFIRMED / CORRELATED row in the exported matrix.
+    const label = labelForArtifact(a, reviews?.[a.id]);
     // #3: strip promotional "CONFIRMED" wording from the VALUE when the row is
     // not actually backend-CONFIRMED (render-only; artifact untouched).
-    let value = sanitizeValueForLabel(a.value, label === "CONFIRMED");
+    let value = sanitizeValueForLabel(a.value, label === "CONFIRMED" || label === "ATTESTED");
     // #7: annotate reserved/fictional numbers as non-actionable (never delete).
     const reserved = reservedNumberAnnotation(a);
     if (reserved) value = `${value} — ${reserved}`;
@@ -1230,7 +1310,11 @@ export function buildReportMarkdown(input: ReportInput): string {
   // Collapse breach datasets recorded twice under name variants from the same
   // source pair (conservative — see dedupeBreachDatasets) so the Artifact Table
   // and Network Connections don't double-list one breach.
-  const artifacts = dedupeBreachDatasets(input.artifacts);
+  // …and fold alias twins (`ip_address` / `ip`, `url` / `social_profile` for
+  // the same value) to one row each — see foldAliasTwins. A dismissed twin
+  // represents its pair, so the fold is what lets a Dismiss on either spelling
+  // bind on the report (the network section excludes rejected rows by id).
+  const artifacts = foldAliasTwins(dedupeBreachDatasets(input.artifacts), reviews);
   const total = artifacts.length;
 
   // Analyst review wins over source-derived label/confidence so a marked
@@ -1246,7 +1330,10 @@ export function buildReportMarkdown(input: ReportInput): string {
   // figure is review-independent.
   const conf = (a: Artifact): number | null => effectiveConfidence(a);
 
+  // CONFIRMED is evidence-derived (2+ independent source classes); ATTESTED is
+  // the analyst's decision. They are counted, worded and listed separately.
   const confirmed = artifacts.filter((a) => lbl(a) === "CONFIRMED");
+  const attested = artifacts.filter((a) => lbl(a) === "ATTESTED");
   const inferred = artifacts.filter((a) => lbl(a) === "INFERRED");
   const verify = artifacts.filter((a) => lbl(a) === "VERIFY");
   const low = artifacts.filter((a) => lbl(a) === "LOW");
@@ -1263,7 +1350,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     return { verified, rejected, needs };
   })();
 
-  const audit = buildToolAudit(artifacts);
+  const audit = buildToolAudit(artifacts, reviews);
   const gaps = inferToolGaps(audit);
   const clusterReport = buildIdentityClusters(artifacts, seedValue, reviews);
   const isNameSearch = !!detectNameLocationSeed(seedValue);
@@ -1282,7 +1369,8 @@ export function buildReportMarkdown(input: ReportInput): string {
     }
     const parts: string[] = [];
     parts.push(`Observed ${total} artifact${total === 1 ? "" : "s"} across ${audit.tools.length} tool${audit.tools.length === 1 ? "" : "s"}.`);
-    if (confirmed.length) parts.push(`${confirmed.length} finding${confirmed.length === 1 ? "" : "s"} observed in multiple sources or analyst-reviewed.`);
+    if (confirmed.length) parts.push(`${confirmed.length} finding${confirmed.length === 1 ? "" : "s"} corroborated by 2+ independent source classes.`);
+    if (attested.length) parts.push(`${attested.length} item${attested.length === 1 ? "" : "s"} analyst-confirmed (a decision, not a second source).`);
     if (verify.length + low.length) parts.push(`${verify.length + low.length} item${verify.length + low.length === 1 ? "" : "s"} need verification before reporting.`);
     if (failed.length) parts.push(`${failed.length} item${failed.length === 1 ? "" : "s"} marked as false positive.`);
     if (reviewTally.verified || reviewTally.rejected || reviewTally.needs) {
@@ -1300,11 +1388,24 @@ export function buildReportMarkdown(input: ReportInput): string {
   // fully-CONFIRMED rows we do NOT just print "nothing" while the table shows
   // high-confidence INFERRED/CORRELATED rows — we surface the strongest
   // uncorroborated leads, clearly labelled, without promoting them.
+  // "Key Findings" lists corroborated / analyst-confirmed ARTIFACTS; the
+  // "Engine-adjudicated findings" section above it lists `record_finding` rows.
+  // They are different populations, and the heading + lead say so when the
+  // engine scored nothing — otherwise "adjudicated no findings" sat one heading
+  // above a list of nine "findings" on a production export.
+  const keyFindingsHeading = keyFindingsFraming(authority, {
+    corroborated: confirmed.length,
+    attested: attested.length,
+  });
   const keyFindings = (() => {
-    if (confirmed.length) {
-      return confirmed.slice(0, 10).map((a) =>
-        `- **${a.kind}** — \`${a.value}\` _(source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"})_`,
-      ).join("\n");
+    const strong = [...confirmed, ...attested];
+    if (strong.length) {
+      return [
+        ...(keyFindingsHeading.lead ? [keyFindingsHeading.lead, ""] : []),
+        ...strong.slice(0, 10).map((a) =>
+          `- **${a.kind}** — \`${a.value}\` _(${lbl(a) === "ATTESTED" ? "analyst-confirmed" : "corroborated"}; source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"})_`,
+        ),
+      ].join("\n");
     }
     const leads = artifacts
       .filter((a) => { const l = lbl(a); return l === "CORRELATED" || l === "INFERRED"; })
@@ -1312,7 +1413,7 @@ export function buildReportMarkdown(input: ReportInput): string {
       .slice(0, 10);
     if (!leads.length) return "_No findings recorded yet._";
     return [
-      "_No fully-corroborated findings yet (none reach CONFIRMED — 2+ independent source classes or analyst review). Strongest uncorroborated leads:_",
+      "_No fully-corroborated findings yet (none reach CONFIRMED — 2+ independent source classes — and none is analyst-confirmed). Strongest uncorroborated leads:_",
       "",
       ...leads.map((a) =>
         `- **${a.kind}** — \`${sanitizeValueForLabel(a.value, false)}\` _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${humanizeSourceChain(a.source)})_`,
@@ -1320,7 +1421,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     ].join("\n");
   })();
 
-  const entityTable = buildEvidenceMatrixMarkdown(artifacts);
+  const entityTable = buildEvidenceMatrixMarkdown(artifacts, reviews);
 
   // #6: collision-flagged artifacts (namesakes / unrelated entities) are
   // quarantined into their own section and kept out of the main network.
@@ -1430,7 +1531,7 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const network = (() => {
     const sections: string[] = [];
-    const line = (a: Artifact) => `- \`${sanitizeValueForLabel(a.value, labelForArtifact(a) === "CONFIRMED")}\` _(observed via ${humanizeSourceChain(a.source)})_`;
+    const line = (a: Artifact) => `- \`${sanitizeValueForLabel(a.value, lbl(a) === "CONFIRMED" || lbl(a) === "ATTESTED")}\` _(observed via ${humanizeSourceChain(a.source)})_`;
     // Threat/reputation rows (VirusTotal, IPQS, EmailRep…) are pulled into their
     // own section regardless of which group they land in — they may be
     // mis-kinded as `breach` (→ breach group) OR correctly kinded as
@@ -1446,8 +1547,15 @@ export function buildReportMarkdown(input: ReportInput): string {
     // collision-SECTION membership test; adding quarantine to it would evict these
     // rows from `conflictNoted` (:1138), which is the only branch that quotes
     // their reason verbatim (:1151). See isClusterIneligible in report-hygiene.ts.
+    // An analyst-rejected row (dismissed / wrong / legacy false_positive) is the
+    // same authority claim refused by a human instead of the pipeline: it leaves
+    // the network section too, and stays in the Artifact/Entity Table as FAILED.
+    // A contradiction record, a weak-lead note or an engine finding describes
+    // the case; it is not a node in the subject's network (isNonEntityArtifact).
     const networkExcluded = new Set(
-      artifacts.filter((a) => collisionIds.has(a.id) || isSubjectUnlinked(a.metadata)).map((a) => a.id),
+      artifacts.filter((a) =>
+        collisionIds.has(a.id) || isSubjectUnlinked(a.metadata) || isRejectedArtifactRow(a, rev(a)) || isNonEntityArtifact(a),
+      ).map((a) => a.id),
     );
     const reputation = artifacts.filter((a) => isReputationArtifact(a) && !networkExcluded.has(a.id));
     const repIds = new Set(reputation.map((a) => a.id));
@@ -1557,7 +1665,7 @@ export function buildReportMarkdown(input: ReportInput): string {
       exec,
       "",
       ...authoritySection(authority),
-      `## Key Findings`,
+      `## ${keyFindingsHeading.heading}`,
       keyFindings,
       "",
       `## Recommended Next Steps`,
@@ -1603,7 +1711,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     buildClusterSection(clusterReport, { includeWarnings: false }),
     "",
     ...authoritySection(authority),
-    `## Key Findings`,
+    `## ${keyFindingsHeading.heading}`,
     keyFindings,
     "",
     `## Artifact / Entity Table`,
@@ -1889,6 +1997,69 @@ export function normalizeHandle(raw: string): string {
 }
 
 /**
+ * Generic role addresses that must never link an email to a handle.
+ *
+ * Operator-specified. Exact match on the lowercased local-part; these are
+ * mailbox roles, not people, and linking them would union every organisation in
+ * the corpus into one entity.
+ */
+const GENERIC_EMAIL_LOCAL_PARTS = new Set([
+  "info", "admin", "contact", "hello", "support", "noreply", "no-reply",
+  "postmaster", "webmaster", "mail", "help", "team", "sales", "billing",
+]);
+
+/** Minimum local-part length before an email may imply a handle. */
+const MIN_EMAIL_HANDLE_LOCAL_PART = 8;
+
+/**
+ * The handle an email address implies, or null when the guard refuses it.
+ *
+ * WHY THIS EXISTS. An email emitted `email:<address>` and a profile emitted
+ * `handle:<username>` — different keyspaces, so `vernjjulian@gmail.com` and
+ * `hackerrank.com/vernjjulian` could never union. Measured on production thread
+ * `b4e575a6`: three artifacts carrying the same literal token landed in three
+ * clusters, so no cluster reached the two independent source classes CONFIRMED
+ * requires, and the engine adjudicated zero findings on a case whose answer was
+ * already in the table. Corpus-wide: 17 findings across 10,933 artifacts.
+ *
+ * THE GUARD IS THE WHOLE DESIGN. Emitting a handle for every email would merge
+ * every `info@` in the corpus into one person. Both conditions must pass, and
+ * the length floor is measured on the RAW lowercased local-part, before
+ * `normalizeHandle` strips separators.
+ *
+ * The returned key is normalised, because it has to land in the SAME keyspace
+ * the handle artifacts use or the merge it exists to enable cannot happen.
+ *
+ * Emission only. This adds a merge key; it does not touch confidence, caps or
+ * the scoring chain.
+ */
+export function emailHandleKey(email: string): string | null {
+  const at = email.indexOf("@");
+  if (at <= 0) return null;
+  const local = email.slice(0, at).trim().toLowerCase();
+  if (local.length < MIN_EMAIL_HANDLE_LOCAL_PART) return null;
+  if (GENERIC_EMAIL_LOCAL_PARTS.has(local)) return null;
+  const norm = normalizeHandle(local);
+  // THE FLOOR IS MEASURED TWICE, ON PURPOSE. `normalizeHandle` strips `_ . -`,
+  // so a local-part can clear the raw floor and land far below it: `m.newman`,
+  // `t.sipply`, `dr_orian`, `chad-lfc`, `it.slife` are 8 raw characters and 7
+  // after normalisation (all five are real production rows, measured
+  // 2026-09-07 across the artifact corpus; 7 distinct local-parts, 8 rows).
+  // Since the key that actually unions is the NORMALISED one, checking only
+  // the raw length lets a 7-character initial+surname stub — the shape most
+  // likely to collide across unrelated people — become a merge key.
+  //
+  // This SUBSUMES the raw check above — normalisation only ever shortens, so
+  // `norm >= 8` implies `local >= 8` and no input can reach production through
+  // one and not the other. A mutation run confirms it: deleting the raw check
+  // kills no test. It is kept because the operator's rule is stated over both
+  // forms and a reader should not have to re-derive the implication; do not
+  // "discover" it later as dead code and drop it silently.
+  if (norm.length < MIN_EMAIL_HANDLE_LOCAL_PART) return null;
+  return norm || null;
+}
+
+/**
  * Flatten metadata cross-link values (string or string[]) into trimmed,
  * non-empty strings, for unioning clusters on concrete shared selectors a
  * record carries about its owner (an email row's `metadata.phone`, etc.).
@@ -1947,7 +2118,11 @@ export function buildIdentityClusters(
   // fuzzy/text path — which is what enforces the T1-2 §8 safety rule: clusters
   // only merge on handle / email / phone / shared-infrastructure, never on
   // display names, bios, or other free text.
-  type SignalHit = { key: string; signal: MergeSignal; raw: string; platform: string | null };
+  // `derived` marks a hit the artifact did NOT observe: the handle key an EMAIL
+  // implies from its own local-part (see emailHandleKey). It unions like any
+  // other key, but it is a restatement of the email's own string, not a second
+  // observation — so the cap logic below has to be able to tell the two apart.
+  type SignalHit = { key: string; signal: MergeSignal; raw: string; platform: string | null; derived?: true };
   const signalsFor = (a: Artifact): SignalHit[] => {
     const hits: SignalHit[] = [];
     const kind = a.kind.toLowerCase();
@@ -1957,7 +2132,12 @@ export function buildIdentityClusters(
       ? meta.platform.trim().toLowerCase()
       : (a.source ?? null);
 
-    if (kind === "email" && v) hits.push({ key: `email:${v.toLowerCase()}`, signal: "EMAIL_MATCH", raw: v, platform });
+    if (kind === "email" && v) {
+      hits.push({ key: `email:${v.toLowerCase()}`, signal: "EMAIL_MATCH", raw: v, platform });
+      // The local-part is a handle. See emailHandleKey for the guard.
+      const eh = emailHandleKey(v);
+      if (eh) hits.push({ key: `handle:${eh}`, signal: "HANDLE_MATCH", raw: v, platform, derived: true });
+    }
     if (kind === "phone" && v) hits.push({ key: `phone:${v.toLowerCase()}`, signal: "PHONE_MATCH", raw: v, platform });
 
     // Handle-bearing signals: the value of username/handle artifacts, plus a
@@ -1987,7 +2167,10 @@ export function buildIdentityClusters(
     // `handle:` / `address:` namespace as the value-based keys above so a
     // metadata reference and the standalone artifact converge.
     for (const e of collectStrings(meta.email, meta.emails)) {
-      if (e.includes("@")) hits.push({ key: `email:${e.toLowerCase()}`, signal: "EMAIL_MATCH", raw: e, platform });
+      if (!e.includes("@")) continue;
+      hits.push({ key: `email:${e.toLowerCase()}`, signal: "EMAIL_MATCH", raw: e, platform });
+      const eh = emailHandleKey(e);
+      if (eh) hits.push({ key: `handle:${eh}`, signal: "HANDLE_MATCH", raw: e, platform, derived: true });
     }
     for (const p of collectStrings(meta.phone, meta.phones)) {
       if (p.replace(/\D/g, "").length >= 7) hits.push({ key: `phone:${p.toLowerCase()}`, signal: "PHONE_MATCH", raw: p, platform });
@@ -2103,6 +2286,47 @@ export function buildIdentityClusters(
     }
   }
 
+  /**
+   * How many pieces would this group fall into WITHOUT the derived email→handle
+   * links? Same union-find as the bucket pass above, run over observed keys only.
+   *
+   * `> 1` means the derived key is LOAD-BEARING: the only thing joining those
+   * pieces is that an email's local-part spells the same string as a handle.
+   */
+  const componentsWithoutDerivedKeys = (group: Artifact[]): number => {
+    const comps: { keys: Set<string>; n: number }[] = [];
+    const keyOwner = new Map<string, number>();
+    for (const a of group) {
+      const keys = signalsFor(a)
+        .filter((h) => !h.derived)
+        .map((h) => h.key)
+        .filter((k) => !sharedInfraKeys.has(k));
+      const hits = new Set<number>();
+      for (const k of keys) {
+        const i = keyOwner.get(k);
+        if (i !== undefined) hits.add(i);
+      }
+      if (hits.size === 0) {
+        const idx = comps.push({ keys: new Set(keys), n: 1 }) - 1;
+        for (const k of keys) keyOwner.set(k, idx);
+        continue;
+      }
+      const indices = Array.from(hits).sort((x, y) => x - y);
+      const target = indices[0];
+      comps[target].n += 1;
+      keys.forEach((k) => comps[target].keys.add(k));
+      for (let i = 1; i < indices.length; i++) {
+        const src = comps[indices[i]];
+        comps[target].n += src.n;
+        src.n = 0;
+        src.keys.forEach((k) => comps[target].keys.add(k));
+        src.keys.clear();
+      }
+      for (const k of comps[target].keys) keyOwner.set(k, target);
+    }
+    return comps.filter((c) => c.n > 0).length;
+  };
+
   // Build descriptive clusters and split by geographic conflict.
   const summarize = (group: Artifact[]): Omit<IdentityCluster, "id" | "label" | "matchesSeedLocation"> => {
     const pick = (kind: string) =>
@@ -2122,8 +2346,13 @@ export function buildIdentityClusters(
     ].filter(Boolean))) as string[];
     const areaCodes = Array.from(new Set(phones.map(extractAreaCode).filter(Boolean))) as string[];
     const sources = Array.from(new Set(group.map((a) => a.source ?? "").filter(Boolean)));
-    const confidences = group.map((a) => a.confidence ?? 0).filter((n) => n > 0);
+    // Members enter the mean at their EFFECTIVE confidence (stored value floored
+    // by the server's `confidence_cap_applied`), the same number every other
+    // surface renders. Reading the raw column here let a member the server had
+    // capped at 40 contribute 95 to the headline.
+    const confidences = group.map((a) => effectiveConfidenceOrZero(a)).filter((n) => n > 0);
     const baseConfidence = confidences.length ? Math.round(confidences.reduce((s, n) => s + n, 0) / confidences.length) : 0;
+    const memberMax = confidences.length ? Math.max(...confidences) : null;
 
     // T1-2: explain the merge and reward corroborating signals. Aggregate the
     // keys actually shared by >=2 artifacts in this group, skipping any
@@ -2176,6 +2405,18 @@ export function buildIdentityClusters(
       bonus += Math.min(HANDLE_REINFORCE_CAP, HANDLE_REINFORCE_PER_PLATFORM * Math.max(0, maxHandlePlatforms - 2));
     }
     let confidence = Math.min(100, baseConfidence + bonus);
+    // ⛔ THE HEADLINE NEVER EXCEEDS ITS STRONGEST MEMBER.
+    //
+    // Merge signals explain WHY rows were grouped and rank clusters against each
+    // other; they are not a second source. Adding them on top of the mean,
+    // bounded only by 100, printed cluster headers of 98 / 95 / 90 on a
+    // production export whose members were never recorded above 70 — and the
+    // report's own accuracy guardrails then flagged the case BLOCKED for
+    // "a cluster declares a tier its evidence does not support". The analyst
+    // reads the header as the confidence of the identity, so it is bounded by
+    // the best evidence in it. Bonus still orders clusters below that ceiling.
+    // A group with no usable member number keeps the legacy path (0 + bonus).
+    if (memberMax !== null && confidence > memberMax) confidence = memberMax;
 
     // Corroborating identity evidence — anything beyond a repeated handle that
     // ties the cluster to a real person: an email/phone/address/IP selector in
@@ -2202,9 +2443,36 @@ export function buildIdentityClusters(
     // lead, not deleted. What remains lifts the cap because each names a person
     // or a durable personal selector: an email or phone in the cluster, an
     // EMAIL_MATCH / PHONE_MATCH merge, or a record carrying an identifying field.
+    //
+    // ⛔ AND AN EMAIL IS NOT CORROBORATION OF THE HANDLE IT IS SPELLED FROM.
+    //
+    // `emailHandleKey` lets an email union with a same-named handle. That link
+    // is one string compared with itself: `vernjjulian@gmail.com` reaching
+    // `hackerrank.com/vernjjulian` says the two names match, not that the two
+    // accounts are one person. Measured on production thread `b4e575a6`
+    // (2026-09-07): `oathnet_lookup(5307105091)` -> the email ->
+    // `username_sweep(vernjjulian)` 19 seconds later — the sweep hits EXIST
+    // because the local-part was pivoted, so counting them back as
+    // corroboration of the email is circular. Corpus-wide, 95 (thread,
+    // local-part) pairs union this way, and five of them carry the derivation
+    // in the source string itself (`derived_from_email`, `email_localpart`,
+    // `seed_derivation`, `derived from email … (local-part)`).
+    //
+    // So when the derived key is LOAD-BEARING — remove it and the cluster falls
+    // apart — the email door to `hasIdentityCorroboration` is shut and the
+    // handle-only cap stands. Everything else still lifts it: a phone, a
+    // PHONE_MATCH, an identity-bearing record, and any email whose tie to the
+    // cluster survives without the derived key (a shared `email:` address, a
+    // metadata cross-link, a phone in common).
+    //
+    // NOTE THE BLAST RADIUS: derived keys did not exist before the email→handle
+    // link was added, so a group that was ever connected without them stays at
+    // one component and is untouched. This can only reach clusters that link
+    // itself created.
+    const derivedLinkIsLoadBearing = componentsWithoutDerivedKeys(group) > 1;
     const hasIdentityCorroboration =
-      emails.length > 0 || phones.length > 0 ||
-      signalsPresent.has("EMAIL_MATCH") || signalsPresent.has("PHONE_MATCH") ||
+      (!derivedLinkIsLoadBearing && (emails.length > 0 || signalsPresent.has("EMAIL_MATCH"))) ||
+      phones.length > 0 || signalsPresent.has("PHONE_MATCH") ||
       hasIdentityRecord;
 
     // Handle-only / username-only cluster → cap into the VERIFY band. Platform

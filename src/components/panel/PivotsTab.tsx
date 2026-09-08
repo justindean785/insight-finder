@@ -9,6 +9,7 @@ import { normalizeTarget } from "@/lib/next-step-cards";
 import { computePivots, canonicalKey, type DisplayPivot } from "@/lib/pivot-engine";
 import { pivotSkipStorageKey, type RecommendedPivot } from "@/lib/recommended-pivots";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
+import { useReviewStates } from "@/lib/review";
 import { PivotCard } from "@/components/pivots/PivotCard";
 
 /**
@@ -60,13 +61,17 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
 
   // Targets already hit by a tool → shown here as "searched" rather than "new".
   const queriedTargets = useThreadQueriedTargets(threadId);
+  // Analyst decisions: a rejected selector never appears here, a Key one ranks
+  // first, a Recheck one becomes a verification task. Same engine as the chat
+  // rail, same inputs, so the two surfaces cannot disagree.
+  const review = useReviewStates(threadId);
 
   // Live pivots: recomputed whenever artifacts stream in, a new report turn
-  // lands, or the skip set changes. computePivots already hard-hides skipped
-  // targets, so this list IS the visible list.
+  // lands, the skip set changes, or a verdict changes. computePivots already
+  // hard-hides skipped targets, so this list IS the visible list.
   const visible = useMemo(
-    () => computePivots({ artifacts, seedValue, reportPivots, skipSet: skipped, queriedSet: queriedTargets }),
-    [artifacts, seedValue, reportPivots, skipped, queriedTargets],
+    () => computePivots({ artifacts, seedValue, reportPivots, skipSet: skipped, queriedSet: queriedTargets, reviews: review.map }),
+    [artifacts, seedValue, reportPivots, skipped, queriedTargets, review.map],
   );
 
   const recommendationByKey = useMemo(() => {

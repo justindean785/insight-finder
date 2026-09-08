@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { selectAuthoritativeFindings } from "@/lib/authoritative-findings";
+import { tallyAuthority } from "@/lib/authority";
 import { buildReportMarkdown, buildEvidenceMatrixMarkdown } from "@/lib/intel";
 import { useReviewStates } from "@/lib/review";
 import { useThreadMessages } from "@/hooks/useThreadMessages";
@@ -126,13 +127,25 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
     URL.revokeObjectURL(url);
     toast.success("Report .md downloaded");
   };
+  // The print-only stylesheet keys on `body.printing-report`. It used to be set
+  // for ~50 ms around the button's own `window.print()` call — so Ctrl+P / File
+  // → Print never saw it, the workspace's `h-[100dvh] overflow-hidden` shell
+  // clipped the report to one viewport, and an analyst's browser-printed PDF
+  // came out as two pages with the second one blank. `beforeprint` fires for
+  // every print path (button, shortcut, menu), so the class is set for all of them.
+  useEffect(() => {
+    const on = () => document.body.classList.add("printing-report");
+    const off = () => document.body.classList.remove("printing-report");
+    window.addEventListener("beforeprint", on);
+    window.addEventListener("afterprint", off);
+    return () => {
+      window.removeEventListener("beforeprint", on);
+      window.removeEventListener("afterprint", off);
+      off();
+    };
+  }, []);
   const printPdf = () => {
-    // Print-only stylesheet renders #case-report-print-root as the page
-    document.body.classList.add("printing-report");
-    setTimeout(() => {
-      window.print();
-      document.body.classList.remove("printing-report");
-    }, 50);
+    window.print();
   };
 
   const openJsonGate = () => {
@@ -145,16 +158,28 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
     setJsonGateOpen(false);
   };
 
-  // Analyst review state, summarised for the header context line (same tally
-  // the report body shows — kept read-only, no semantics changed).
+  // Analyst review state, summarised for the header context line.
+  //
+  // "verified" comes from the shared `tallyAuthority` selector
+  // (src/lib/authority.ts) — the same one WorkspaceHeader, OverviewTab and
+  // EvidenceTab use — NOT a local count of explicit confirmed/key reviews.
+  // The comment this replaced claimed this was "the same tally the report
+  // body shows"; it was not; `CaseReport`'s own KPI counts via `bucket()`,
+  // which (like `authorityFor`) gates through `isClusterIneligible` and also
+  // counts corroboration-derived CONFIRMED rows nobody explicitly reviewed.
+  // A hand-rolled review-only count undercounts against both this tab's own
+  // body and every other tab.
+  //
+  // "rejected" has no equivalent in the authority ladder — analyst rejection
+  // is a decision state, not a position on it — so it stays a direct tally.
   const reviewTally = useMemo(() => {
-    let verified = 0, rejected = 0;
+    const authority = tallyAuthority(artifacts, review.get);
+    let rejected = 0;
     for (const s of Object.values(reviews)) {
-      if (s === "confirmed" || s === "key") verified++;
-      else if (s === "wrong" || s === "dismissed") rejected++;
+      if (s === "wrong" || s === "dismissed") rejected++;
     }
-    return { verified, rejected };
-  }, [reviews]);
+    return { verified: authority.verified, rejected };
+  }, [artifacts, review, reviews]);
 
   const subtitle = (
     <span className="inline-flex flex-wrap items-center">

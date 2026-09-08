@@ -1,0 +1,261 @@
+# Insight Finder — Game Plan
+## Accuracy · Efficiency · Clean Workspace & UI
+
+> **Dated 2026-09-07.** Built from a full-repo audit against `origin/main` @ `1c2ceba`
+> (post-#544/#545/#546 merge wave), 9 open PRs, 25 open issues, and the production
+> measurements in the 2026-09-02 audit report and 2026-09-03 session handoffs.
+> Every number below is a dated measurement — re-verify before acting, per repo convention.
+
+---
+
+## 0 · Mission & success metrics
+
+**Mission:** turn Insight Finder from "produces a lot" into "an analyst trusts and enjoys" —
+higher signal per scan, lower cost per run, a workspace whose numbers agree with each other.
+
+| Metric | Measured today | Target | Phase that moves it |
+|---|---|---|---|
+| Actionable artifacts per scan (not quarantined, conf ≥ 65) | **4.8 of 60 (7.9%)** | ≥ 15 of ≤ 40 (**≥ 35%**) | P1 |
+| Redundant artifact copies | **840 across 695 selectors** | 0 on new writes; backfill decision made | P1 |
+| Orchestrator prompt size per step | **225–257K chars** | **≤ 150K (target 100–120K)** | P2 |
+| Expired `tool_call_cache` rows | **11,475 / 11,646 (~43 MB)** | 0, sweep enabled & draining | P2 |
+| Tab-count disagreement (Overview vs Evidence/Report) | carried unmeasured across 3 handoffs | one shared selector, counts agree | P3 |
+| Open PR queue | 9 open / 8 draft | ≤ 2 open, none stale > 7 days | P0 |
+| Open integrity issues | #497, #489, #477, #494 + PRs in flight | all merged or explicitly declined | P0–P1 |
+| Interrupted-run rate (14-day cohort) | 11% | ≤ 5% | P2 |
+
+**Hard rules (from CLAUDE.md / handoffs — do not re-litigate):**
+- No auto-merge, no auto-deploy. Operator authorizes each.
+- A mirror push is not a deploy. Only a moved `/health` build SHA is.
+- Integrity-critical changes (evidence ranking, confidence caps, chain-of-custody, merge semantics) require **explicit written sign-off before code**.
+- Quarantine is disclosure, not deletion. Never make a quarantined row disappear.
+- No real investigated selectors in code, comments, or tests. Thread IDs only.
+- Do not touch `toolChoice`, `stopWhen`, the finalize window, or termination logic — two production outages trace to exactly that.
+- `REVEAL_BREACH_DATA` stays on, `MAX_PAID_CALLS` stays bounded, intent is never inferred from prose.
+
+---
+
+## Phase 0 — Drain the queue, clean the workspace (Days 1–3)
+
+**Goal:** nothing already-fixed sits unshipped; the repo stops fighting its own history.
+
+### 0.1 Merge queue — order, rationale, gates
+
+Re-run CI on each head before undrafting. Merge in this order:
+
+| # | PR | Why this position |
+|---|---|---|
+| 1 | **#550** — unify the "verified" count across Overview / Evidence / Report | Frontend-only, ships on merge to Vercel. Kills the tab-disagreement complaint carried across 3 handoffs. |
+| 2 | **#548** — network-drop suppression survives unmount/remount | Completes #545's run-state truth fix; kills phantom "Load failed" red cards on backgrounded tabs. |
+| 3 | **#549** — recover corroborating classes a compound breach label discards | Closes integrity issue **#497**. Edge change → requires mirror sync + deploy + `/health` SHA move. |
+| 4 | **#547** — enforce finding-synthesis dedup key with a partial unique index | DB migration; apply and verify in staging first. |
+| 5 | **#502 vs #516** — decide once | #516 is #502's account-deletion slice shipped dark. Either merge #502 wholesale or close it and merge #516. Do not keep both. |
+| 6 | **#529 + #519** — quarantine release path + paged dispatch-boundary read | The release hatch has **never been used** (207 flagged, 0 released — issue #489). Give these a yes/no ruling this week; they unblock analyst-operable quarantine release. |
+
+### 0.2 Repo housekeeping (half a day, zero risk)
+
+- Move the ~25 root-level `SESSION_HANDOFF_*` / `HANDOFF_*` / audit docs into `docs/handoffs/`. Keep `CLAUDE.md`, `README.md`, `AGENTS.md`, `NEXT_SESSION_PROMPT.md` at root.
+- Delete merged `chore/stamp-*` and `chore/backport-*` branches (~20 stale branches).
+- Pick one JS lockfile: the repo carries both `bun.lockb` and `package-lock.json`. Keep `package-lock.json` (CI uses `npm ci`), delete `bun.lockb`.
+- Move `insight-finder-beta-demo.mp4` (7.5 MB) and `deploy-log.jsonl` out of git history's hot path (Releases artifact / `docs/` respectively).
+- Refresh `CLAUDE.md` gate baselines to current: **frontend 1904 passed / 1 skipped / 154 files; edge ~1619 / 0 / 5**. (Audit F10 pattern — baselines went stale twice already.)
+
+**Exit criteria:** ≤ 2 open PRs; queue contains nothing older than 7 days; CI green on main; Vercel READY on the merge result; if #549 merged, `/health` build SHA moved.
+
+---
+
+## Phase 1 — Accuracy: make corroboration accumulate (Days 4–14)
+
+**Goal:** attack the 7.9% headline. Three workstreams, ordered by risk.
+
+### 1.1 Verify the report-truth wave on a live run (Day 4 — cheap, do first)
+
+#537's six report fixes are pinned by tests and harness diffs but have **never been verified on a live investigation**. Run the §C checklist:
+
+1. Seed a handle with a leading `@` → expect seed kind `username`, not `other`.
+2. Dismiss two rows, Confirm one, Key one.
+3. Export the report; expect: cluster headline ≤ strongest member's capped confidence; confirmed row rendered **ANALYST-CONFIRMED**; kind-alias twins folded; Evidence Record carries the analyst-decisions line.
+4. On a later run, confirm a Dismissed selector is refused at dispatch → **closes audit F8** (open since 2026-09-02).
+
+**Cost:** one real scan + one export review. **Risk:** none.
+
+### 1.2 Name-pivot guard (Days 4–6 — specced and ready)
+
+Per `NEXT_SESSION_PROMPT.md` §A. Stops paid people-enumerator calls on seed-unlinked names
+(the `c599a5bc` pattern: 55 artifacts / 48 quarantined / ~20 paid calls from two bare names
+scraped off a domain's About page).
+
+- Guard lives in the existing pre-flight block in `cache.ts` (~:880), before budget reservation, circuit, cache lookup, live call.
+- Refuse only when **all** hold: people-search enumerator (start `oathnet_lookup`; audit `indicia_person`, `leakcheck_lookup`) **and** name-only query (reuse `queryIsNameOnly`) **and** `seedLinksQueriedName` false.
+- Thread `subjectSeedName` (computed at `index.ts:341`) into `wrapToolsWithCache`'s `ctx` as an optional field.
+- Refusal uses the `quarantineRefusal` shape — visible in `tool_usage_log` as a refusal, never `ok:true`. Refusal text tells the model what to do instead (corroborate the name against a concrete selector first).
+- Kill switch `NAME_PIVOT_GUARD_DISABLED`, defaulting to **ENABLED** — confirm this default with the operator before merge.
+- Tests drive `wrapToolsWithCache`, ≥ 3 negative controls; web search on a name is never gated.
+
+**Gate:** edge suite green at the new baseline; deploy via mirror; `/health` SHA moves; then re-run one domain seed and count paid calls before/after.
+
+### 1.3 `artifactDedupKey` — the big one (Days 5–14, sign-off gate first)
+
+**Why it's the headline:** `source` inside the dedup key + unnormalized `value` means the same
+selector found by five tools becomes five artifacts at five confidences. Independent
+corroboration — the system's most valuable signal — is thrown away, and
+`countIndependentClasses` reads rows that were split apart. Measured: **840 redundant copies
+across 695 selectors**; one production address persisted twice differing only in letter case,
+one copy quarantined and one not. This is a large part of why 4,288 artifacts sit at 50–64
+and 4,967 below 50.
+
+**Step 1 — written sign-off proposal (Day 5).** One page to the operator covering:
+- **What merges:** same `canonicalKind` + same normalized value. Per-kind normalization table: email → lowercase/trim; phone → E.164; address → case/whitespace collapse (get this wrong and two real-world entities merge — the highest-risk line in the plan).
+- **Provenance:** `source` becomes `sources[]` with per-source first-seen. Chain-of-custody is not lost.
+- **Merged confidence derivation** and interaction with existing caps and `countIndependentClasses`: corroboration raises it; mirrors of one leak must not.
+- **Quarantine conflict:** merged row fails closed (quarantined) — never silently promotes.
+- **Backfill:** existing 10,933 rows merge via a bounded, idempotent pass, or only new writes merge — separate decision, default to new-writes-only first.
+
+**Step 2 — implement behind a flag** (Days 6–10), failure-first tests driving the write path
+(`auto-persist-findings.ts` / `lib/artifact-hygiene.ts`), not a restatement of the predicate.
+
+**Step 3 — staged rollout** (Days 11–14): flag on for new runs → measure duplicate rate and
+confidence distribution on the next 10 scans → backfill decision → close.
+
+**Success metric:** duplicate-selector rate on new scans → 0; actionable-rate trend on the
+next 14-day cohort moves toward the ≥ 35% target.
+
+### 1.4 Remaining integrity items to schedule inside this phase
+
+- **#477** — `record_finding` persists the model's label unchecked against server-computed confidence. Fix shape: server-side label authority check at the write boundary.
+- **#494** — `ransomwarelive_lookup` malformed HTTP-200 JSON collapses into the genuine-negative shape. Fail closed on unparseable payloads (the reverted commit in #493's history was the right instinct — re-land it cleanly).
+
+---
+
+## Phase 2 — Efficiency: cut cost and latency (Days 10–21, overlaps P1)
+
+### 2.1 Orchestrator prompt summarization — issue #238 (the cost lever)
+
+Production prompts run **225–257K chars/step**; at 22 max steps that's the dominant token spend.
+Structure: ~40K fixed system block (**out of scope — integrity-sensitive**) + ~210K message
+history dominated by raw tool results capped at 8K each but kept verbatim.
+
+**Fix (per #238, scoped):** once a tool's artifacts are recorded, replace its raw result in
+message history with a compact structured summary (`tool | status` + `kind | value | source | confidence`
+rows + "full result retrievable via `memory_recall`"). Hook at `wrapToolsWithCache` (`cache.ts:281`)
+so context is lean from step 1. Keep the existing `keepRecent` window mechanics; change *what* is kept.
+
+**Hard constraints:** never touch `record_artifacts`, confidence scoring, chain-of-custody,
+or the artifacts table (byte-identical). Do not loosen `TOTAL_PROMPT_CHAR_BUDGET`.
+**Acceptance:** mature scan logs `approx prompt chars` ≤ 150K (target 100–120K);
+`memory_recall` still returns the full original; artifact count/content unchanged per seed;
+no `MissingToolResults` regression.
+
+### 2.2 Enable the cache sweep — but chunk it first (half a day)
+
+- `CACHE_SWEEP_ENABLED` is off by design; **11,475 expired rows (~43 MB)** sit in `tool_call_cache`.
+- **Measured trap:** the delete sends up to 5,000 UUIDs in one `.in()` (~185 KB URL); the
+  PostgREST gateway rejects anything over ~24 KB (600 IDs = 22.3 KB → 200; 700 = 26 KB → 400).
+  Flipping the flag as-is means every probe errors and nothing drains.
+- **Fix:** chunk at **300** IDs exactly as `lib/rejected-cluster-sweep.ts:89` already does
+  (that sweep converged 216 → 0 in production). Update `cache_sweep_test.ts:114`, which pins
+  the 5,000 constant against a fake DB that can't model the transport limit.
+- Then enable, watch `/health` → `cache_sweep` for one day, confirm drain.
+
+### 2.3 Server-side run cancellation — issue #65
+
+SSE isn't cancelled server-side on browser disconnect; runs drain to completion under
+`EdgeRuntime.waitUntil` burning tool calls nobody watches. #545 fixed the *reporting*; this
+fixes the *spend*. Approach: heartbeat staleness already decides liveness — bind run
+continuation to `last_heartbeat_at` inside the step loop (not the finalize window — that
+boundary is settled). Ship behind a flag; measure paid-call volume per run before/after.
+
+### 2.4 God-file splits (background work, days 15–21+)
+
+Not a rewrite — seam extraction, one file at a time, each behind green gates:
+
+| File | Size | First extraction targets |
+|---|---|---|
+| `supabase/functions/osint-agent/tool-registry.ts` | **394 KB** | Per-domain tool modules (people / infra / breach / geo) behind one registry index. Biggest edge cold-start and review-friction win. |
+| `src/components/ChatWindow.tsx` | 129 KB | Message renderers, run-state hooks, input bar → `src/components/chat/*`. Also clears the react-refresh lint warnings at :623. |
+| `src/lib/intel.ts` | 125 KB | Cluster math (`buildIdentityClusters`, caps) vs display predicates vs report shaping → `src/lib/intel/*`. |
+| edge `index.ts` | 111 KB | Route handlers → `handlers/*`; keep orchestration loop intact. |
+| `src/index.css` | 103 KB | Split workspace/print/board styles; audit for dead rules after the splits. |
+
+Rule: behavior-identical refactors only, one PR per file, full gates each time. No logic edits ride along.
+
+### 2.5 Smaller efficiency items to fold in
+
+- **#66** — `investigation_cache` upserts full assistant message parts (up to 3.5 MB) per investigation. Cap/paginate the payload.
+- **External uptime monitoring** — no production monitoring since #483; health sweeps only run when something curls `/health`. Add an external monitor (per CLAUDE.md recommendation), not a GitHub cron.
+- **`evidence-export` build marker** — the PDF path has none, so a stale deploy can't be ruled out (audit F11). Add the same marker pattern, then audit the PDF export on a machine with poppler.
+
+---
+
+## Phase 3 — Workspace & UI: numbers that agree, motion that feels smooth (Days 15–25)
+
+### 3.1 Truth-in-the-UI sweep (lands via P0 merges, verified here)
+
+After #550 and #548 deploy, do a **signed-in harness pass** (`npx vite --config vite.harness.config.ts` → `/chat/11111111-2222-4333-8444-555555555555`) and confirm on one fixture:
+- Overview / Evidence / Report "verified" counts identical.
+- Backgrounded-tab run → no phantom FailedRunCard, no "Investigation run failed" toast.
+- Blank threads render **Draft**, not Running (the #545 fix).
+- Run-state chips (Running/Finished/Draft) match `thread-status.ts` in every surface.
+
+Before/after screenshots of the **signed-in** workspace accompany every UI PR — a Vercel preview is not the site.
+
+### 3.2 Evidence board signal pass
+
+- With #542's grouping live and P1's dedup landing, re-measure cards-per-scan on the same five seed types the 09-03 handoff measured (breach 160→113, phone 131→85, domain 123→77, address 82→47, username 117→94). Expect further compression from dedup merge.
+- Default filter stays `"all"` (deliberate — `review`/`conflict` rows must stay visible). Revisit only if the operator asks after the noise floor drops.
+- Analyst view is now the board default (#543, merged 2026-09-07) — verify the default sticks across sessions and the per-user preference persists.
+
+### 3.3 Smooth-feel punch list
+
+- **Run completion:** 14-day cohort interrupted rate is 11% (4 of 38) — down from 35–41% in older cohorts, so the termination work landed; do **not** treat the cumulative 34% as current. Remaining lever is 2.3 (server-side cancel + honest liveness).
+- **Cluster confidence display:** confirm live that cluster headlines stay ≤ strongest member's capped confidence (the 98/95/90-over-70 defect, fixed in #537, verified in 1.1).
+- **Command palette & keyboard flows:** quick UX audit pass once counts agree — the palette exists (`CommandPalette.tsx`); make sure every workspace action reachable by mouse is reachable by keyboard.
+- **Print/export:** browser print of a report was 1 KPI page + 1 blank page pre-#537, harness now shows 8 pages on the fixture — verify in a real browser print of a real report.
+
+### 3.4 Housekeeping that stays done
+
+- Every session ends with a dated handoff doc **in `docs/handoffs/`** (not root) and refreshed `CLAUDE.md` baselines — the stale-baseline defect (F10) has recurred twice.
+- Weekly: PR queue ≤ 2; no branch older than its PR; `deno.lock` checked before staging (`deno test` rewrites it even with `--no-lock` siblings).
+
+---
+
+## Timeline at a glance
+
+```
+Days  1–3   P0  Queue drain (550→548→549→547, rule on 502/516, 529/519) + repo housekeeping
+Day   4     P1  Live-verify #537 report truth (§C checklist)  ── sign-off gate: §B proposal ──
+Days  4–6   P1  Name-pivot guard (kill switch, default ON — confirm first)
+Days  5–14  P1  artifactDedupKey: sign-off → flagged impl → staged rollout → backfill decision
+Days 10–21  P2  #238 prompt summarization · cache-sweep chunk+enable · #65 server-side cancel
+Days 15–21+ P2  God-file splits (tool-registry → ChatWindow → intel.ts), one PR per file
+Days 15–25  P3  Truth-in-UI sweep · board signal re-measure · smooth-feel punch list
+Day   25    Re-audit: re-run the 37-thread measurement set; publish the 14-day cohort delta
+```
+
+## Sign-off checklist (operator decisions required, in order needed)
+
+1. **#502 vs #516** — merge which account-deletion path? (Day 1)
+2. **#529 / #519** — quarantine release hatch: merge, redesign, or decline? (Day 2)
+3. **Name-pivot guard default** — `NAME_PIVOT_GUARD_DISABLED` shipping ENABLED-by-default? (Day 4)
+4. **§B merge semantics** — per-kind normalization, `sources[]` provenance, merged-confidence rule, quarantine fail-closed, backfill yes/no. **Integrity-critical; blocks 1.3 code.** (Day 5)
+5. **Backfill of 10,933 existing rows** — after staged rollout data is in. (Day ~14)
+
+## Risks & traps (carried from the handoffs — read before each phase)
+
+- `ok:true` is not "it ran" — always read `detail` on `/health` (`cache_sweep`, `synthesis` both report disabled-but-ok).
+- The local clone is shallow and stale — `git fetch origin main` before trusting any ref.
+- `deno test` rewrites `deno.lock` — check `git status` before staging.
+- SQL three-valued logic drops NULL rows from breakdown queries — wrap in `coalesce(..., false)`.
+- Write the negative control first (the 2-person/7-rows collapse-threshold trap).
+- Edge changes deploy only via the Lovable mirror; the only proof of deploy is a moved `/health` SHA. `deployed_bytes_verified` is false — the marker proves provenance, not byte identity.
+- A second agent writes to the mirror — sync only files that actually changed; never blanket-overwrite.
+
+## Definition of done (Day 25 re-audit)
+
+- [ ] Actionable-rate re-measured on a fresh 14-day cohort and published against the 7.9% baseline
+- [ ] Zero duplicate-selector writes on new scans (dedup flag on)
+- [ ] `approx prompt chars` ≤ 150K on a mature production scan
+- [ ] `tool_call_cache` draining; `cache_sweep.ok` true with `detail` showing real deletions
+- [ ] Overview = Evidence = Report verified counts on the harness fixture and one live case
+- [ ] ≤ 2 open PRs; all open integrity issues merged or explicitly declined
+- [ ] `CLAUDE.md` baselines current; handoffs live in `docs/handoffs/`

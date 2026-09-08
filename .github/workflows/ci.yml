@@ -148,6 +148,15 @@ jobs:
           }
           echo "OK: ${secdef} SECURITY DEFINER functions in public, none executable by anon or PUBLIC."
 
+      # Applying a CREATE INDEX proves the DDL parses. It does not prove the
+      # constraint refuses what it exists to refuse — and finding synthesis
+      # relies on that refusal as the backstop for a read-then-write its own
+      # code structurally cannot serialize. So drive it, against the schema the
+      # migrations just built. The script rolls itself back and carries its own
+      # anti-vacuous guard; see .github/ci/assert-synthesis-dedup.sql.
+      - name: Synthesis dedup index assertion
+        run: psql --set ON_ERROR_STOP=1 -f .github/ci/assert-synthesis-dedup.sql
+
   edge:
     name: Edge functions (deno test)
     runs-on: ubuntu-latest

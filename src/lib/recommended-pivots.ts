@@ -99,7 +99,12 @@ function priorityForRecommendation(label: string, value: string, type: PivotType
 function pivotType(value: string): PivotType {
   const kind = detectSeed(value)?.kind;
   if (kind === "crypto") return "wallet";
-  if (kind === "other" || !kind) return "name";
+  // "address" has no PivotType of its own — isAddressLike() below already
+  // gives an address-shaped value its own action label ("Corroborate
+  // address") and priorityForRecommendation() already favors
+  // property/assessor/parcel language independent of `type`, so folding it
+  // into the generic "name" lead type here doesn't lose that behavior.
+  if (kind === "other" || kind === "address" || !kind) return "name";
   return kind;
 }
 

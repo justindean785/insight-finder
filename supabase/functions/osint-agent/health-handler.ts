@@ -18,6 +18,8 @@ import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchest
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
+import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
+import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -381,6 +383,17 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       r.checks.recovery = recovered.errors
         ? { ok: false, detail: `recovered ${recovered.recovered}; ${recovered.errors} error(s)` }
         : { ok: true, detail: `recovered ${recovered.recovered} stale active run(s)` };
+      // Rejected-cluster sweep: an analyst Dismiss clears the persisted
+      // cluster_id / subject_id within a probe interval instead of waiting for
+      // the thread to be re-run. Bounded, idempotent, converges to one read.
+      // Its presence in the payload is the behavioural proof this build is
+      // deployed (see CLAUDE.md, "checks.synthesis" for the pattern).
+      try {
+        const swept = await sweepRejectedClusterAssignments(admin);
+        r.checks.rejected_cluster_sweep = { ok: swept.ok, detail: describeSweep(swept) };
+      } catch (e) {
+        r.checks.rejected_cluster_sweep = { ok: false, detail: String(e).slice(0, 160) };
+      }
       // Finding synthesis. Deliberately AFTER recovery and inside the same
       // try/catch: a thread must be marked finished before it is a candidate, and
       // a synthesis fault must degrade to a reported check, never to a failed
@@ -406,6 +419,24 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
         const detail = `${scopes.join("+")}: ${mode}; ${proposed} proposed over ${threads} thread(s) ` +
           `(0:${dist.zero} 1:${dist.one} 2+:${dist.twoPlus})`;
         r.checks.synthesis = errs ? { ok: false, detail: `${detail}; ${errs} error(s)` } : { ok: true, detail };
+      }
+
+      // Expired tool-call cache. Same placement and same reasoning as the two
+      // sweeps above: a separate request from any run, bounded per invocation,
+      // and a fault becomes a reported check rather than a failed probe.
+      //
+      // Note WHERE this sits: `r.ok` was already decided at the orchestrator
+      // gate further up. Nothing below can flip it, so a cache-sweep failure
+      // cannot turn /health red or make it answer 503 — that is structural, not
+      // a promise. Ships DARK (CACHE_SWEEP_ENABLED defaults off) because it
+      // deletes production rows; CACHE_SWEEP_DRY_RUN measures the backlog first.
+      if (!cacheSweepEnabled()) {
+        r.checks.cache_sweep = { ok: true, detail: "disabled" };
+      } else {
+        const c = await sweepExpiredCache(admin, { dryRun: cacheSweepDryRun() });
+        r.checks.cache_sweep = c.errors
+          ? { ok: false, detail: `${describeCacheSweep(c)}; ${c.errors} error(s)` }
+          : { ok: true, detail: describeCacheSweep(c) };
       }
     }
   } catch (e) {

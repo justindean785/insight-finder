@@ -20,6 +20,10 @@ import {
   isQueuedPlaceholder,
   stripStatusAssertions,
   nullResultKey,
+  breachExposureCanonicalKey,
+  collapseBreachExposureBatch,
+  collapseStealerHashBatch,
+  collapseRecordArtifactsBatch,
 } from "./lib/artifact-hygiene.ts";
 import { TOOL_CATALOG } from "./catalog.ts";
 
@@ -291,18 +295,17 @@ Deno.test("wiring: no unwired gate ships — G3 is absent from BOTH sides", () =
 
 Deno.test("wiring: the null-result key is what dedup actually uses", () => {
   assert(REGISTRY.includes("nullResultKey({"), "null-result key must be computed");
-  // The fallback key changed shape under #463: it was a template literal over
-  // `effSources` (surface source UNIONED with model-authored metadata labels),
-  // and became JSON.stringify over `authoritativeSource` alone. It is now the
-  // shared `artifactDedupKey` helper — same bytes, but extracted so the
-  // thread-wide lookup builds its key with the SAME function. Two hand-written
-  // copies of one key is how a dedup gate silently stops matching. This
-  // assertion tracks the current shape on purpose — pinning an old string would
-  // pass while the gate sat unused, which is the failure this file exists to
-  // catch.
   assert(
-    REGISTRY.includes("const dedupKey = canonicalNullKey ?? artifactDedupKey({"),
-    "dedupKey must PREFER the canonical null key, falling back to the shared authoritative-surface key",
+    REGISTRY.includes("breachExposureCanonicalKey({"),
+    "G6 breach canonical key must participate in dedup",
+  );
+  assert(
+    REGISTRY.includes("collapseRecordArtifactsBatch(rawArtifacts)"),
+    "G6/G7 batch collapse must run before validation",
+  );
+  assert(
+    REGISTRY.includes("?? breachExposureCanonicalKey({"),
+    "dedupKey must prefer the G6 breach key before the literal value key",
   );
 });
 
@@ -351,4 +354,89 @@ Deno.test("G4 still dedups the SAME null result phrased two ways (the original d
   });
   assert(a !== null, "a plain null result must still canonicalise");
   assertEquals(a, b, "the same null result phrased two ways must share one key");
+});
+
+/* ── G6 — one breach exposure row per (selector, provider) ──────────────── */
+
+Deno.test("G6 collapses duplicate Serus breach prose for the same email", () => {
+  const selector = "satans.owl@gmail.com";
+  const rows = [
+    {
+      kind: "breach_exposure",
+      value: `${selector} — Serus darkweb scan: 10 breaches, 0 pastes. Breaches: NazApi, Telegram Combolists`,
+      source: "dark-web scan",
+      confidence: 60,
+    },
+    {
+      kind: "breach_exposure",
+      value: `${selector} — Serus 10 breaches: NazApi (2023-09-20), Telegram Combolists (2024-05-28)`,
+      source: "dark-web scan",
+      confidence: 60,
+    },
+  ];
+  const out = collapseBreachExposureBatch(rows);
+  assertEquals(out.length, 1);
+  assertEquals(out[0]?.value, `Breach exposure: ${selector} (serus_darkweb)`);
+  const lines = out[0]?.metadata?.breach_detail_lines as string[];
+  assertEquals(lines?.length, 2);
+});
+
+Deno.test("G6 keeps different breach providers distinct for the same selector", () => {
+  const selector = "satans.owl@gmail.com";
+  const keys = [
+    breachExposureCanonicalKey({ kind: "breach_exposure", value: `Breach exposure: ${selector} (hibp_style)`, source: "rapidapi breach search" }),
+    breachExposureCanonicalKey({ kind: "breach_exposure", value: `Breach exposure: ${selector} (breach_check)`, source: "breach check" }),
+    breachExposureCanonicalKey({ kind: "breach_exposure", value: `${selector} — Stealer Logs (leakcheck): 13 records`, source: "breach check" }),
+  ];
+  assertEquals(new Set(keys).size, 3);
+});
+
+Deno.test("G6 merges multiple rapidapi corpus lines into one row", () => {
+  const selector = "satans.owl@gmail.com";
+  const rows = [
+    { kind: "breach_exposure", value: `${selector} — NAZ.api (2023-09-20): exposed Email, nick, Password`, source: "rapidapi breach search", confidence: 60 },
+    { kind: "breach_exposure", value: `${selector} — NotSOCRadar (2024-08-03): exposed Email only`, source: "rapidapi breach search", confidence: 55 },
+  ];
+  const out = collapseBreachExposureBatch(rows);
+  assertEquals(out.length, 1);
+  assertEquals(out[0]?.value, `Breach exposure: ${selector} (rapidapi)`);
+});
+
+/* ── G7 — stealer hash batch collapse ───────────────────────────────────── */
+
+Deno.test("G7 batches oathnet stealer password strings into one hash row", () => {
+  const rows = [
+    { kind: "hash", value: "Houdini0", source: "oathnet stealer search", confidence: 60 },
+    { kind: "hash", value: "Houdini1", source: "oathnet stealer search", confidence: 60 },
+    { kind: "hash", value: "MilkHoudini1", source: "oathnet stealer search", confidence: 60 },
+    { kind: "hash", value: "HoudiniMilk2", source: "oathnet stealer search", confidence: 60 },
+  ];
+  const out = collapseStealerHashBatch(rows);
+  assertEquals(out.length, 1);
+  assert(out[0]?.value.includes("Stealer-log credentials (4)"));
+  assertEquals((out[0]?.metadata?.stealer_credentials as string[])?.length, 4);
+});
+
+Deno.test("G7 leaves non-stealer hash rows untouched", () => {
+  const rows = [
+    { kind: "hash", value: "deadbeef", source: "virustotal", confidence: 70 },
+    { kind: "hash", value: "cafebabe", source: "virustotal", confidence: 70 },
+  ];
+  assertEquals(collapseStealerHashBatch(rows).length, 2);
+});
+
+Deno.test("collapseRecordArtifactsBatch runs G6 then G7", () => {
+  const selector = "satans.owl@gmail.com";
+  const rows = [
+    { kind: "breach_exposure", value: `${selector} — Serus darkweb scan: 10 breaches`, source: "dark-web scan", confidence: 60 },
+    { kind: "breach_exposure", value: `${selector} — Serus 10 breaches: NazApi`, source: "dark-web scan", confidence: 60 },
+    { kind: "hash", value: "Houdini0", source: "oathnet stealer search", confidence: 60 },
+    { kind: "hash", value: "Houdini1", source: "oathnet stealer search", confidence: 60 },
+    { kind: "name", value: "Callum Jones", source: "source page review", confidence: 75 },
+  ];
+  const out = collapseRecordArtifactsBatch(rows);
+  assertEquals(out.length, 3);
+  assert(out.some((r) => r.kind === "name"));
+  assert(out.some((r) => r.kind === "breach_exposure"));
+  assert(out.some((r) => r.kind === "hash" && String(r.value).includes("Stealer-log credentials")));
 });

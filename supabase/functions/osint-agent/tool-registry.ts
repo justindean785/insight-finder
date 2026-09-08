@@ -31,6 +31,8 @@ import {
   stripStatusAssertions,
   nullResultKey,
   artifactDedupKey,
+  breachExposureCanonicalKey,
+  collapseRecordArtifactsBatch,
 } from "./lib/artifact-hygiene.ts";
 import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
@@ -59,6 +61,7 @@ export const TOOL_NAME_ALIASES: Record<string, string> = {
   fetch_url: "jina_reader_scrape",
 };
 import type { QueryType } from "./query-type-router.ts";
+import { buildAddressDorks, canonicalizeDorks, resolveDorkKind, type Dork } from "./dork-queries.ts";
 import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
 import {
@@ -105,7 +108,7 @@ import {
 
 import {
   guard, routingGuard, CONSUMER_DOMAINS, STAGE2_TOOLS,
-  triageState, bumpArtifacts, skipStub, correlateNudge,
+  triageState, bumpArtifacts, skipStub, takeCorrelateHint, resetCorrelateCycle,
 } from "./guard.ts";
 import { reviewMemoryBatch, type MemoryEntry } from "./lib/memory_consolidate.ts";
 import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
@@ -259,6 +262,9 @@ async function loadThreadArtifactIdentities(
         // whose write-time selector came from metadata simply fails to match,
         // which is a miss, never a false collapse.
         index(nullResultKey({ kind, source, value, selector: seed ?? null }));
+
+        const breachCanon = breachExposureCanonicalKey({ kind, value, source });
+        if (breachCanon) index(breachCanon);
       }
       if (data.length < THREAD_ARTIFACT_PAGE_SIZE) break;
       if (to + 1 >= THREAD_ARTIFACT_SCAN_MAX) truncated = true;
@@ -755,7 +761,7 @@ export function buildTools(ctx: ToolContext) {
             signal: (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal,
           });
           const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
-          guard.artifactsSinceCorrelate = 0;
+          resetCorrelateCycle();
           return { ok: r.ok, status: r.status, analysis: parsed };
         } catch (e) { return { error: String(e) }; }
       },
@@ -3220,17 +3226,28 @@ export function buildTools(ctx: ToolContext) {
     }),
     google_dorks: tool({
       description:
-        "Generate copy-paste Google/Bing/DuckDuckGo/Yandex dork queries for a seed identifier. NO external API cost. Use once for the original seed or a corroborated high-value selector when the resulting query set supports a defined verification goal.",
+        "Generate copy-paste Google/Bing/DuckDuckGo/Yandex dork queries for a seed identifier. NO external API cost. Use once for the original seed or a corroborated high-value selector when the resulting query set supports a defined verification goal. " +
+        "PICK THE KIND FROM THE SELECTOR, not from convenience: a street address is kind:\"address\" (exact-address, parcel/assessor/recorder, deed/ownership, address+person, address+business, public records, documents, archives, real estate). " +
+        "kind:\"domain\" is ONLY for a valid hostname such as example.com — it emits site:, wildcard-subdomain, certificate and secret-exposure templates that are meaningless for anything else. A non-hostname seed sent as kind:\"domain\" is refused with error:'kind_mismatch' (or re-routed to the address family when it is recognisably an address); it does NOT silently return domain queries.",
       inputSchema: memoSchema("google_dorks", () => z.object({
         seed: z.string(),
         // Accept legacy/alias "person" → mapped to "name" in execute().
-        kind: z.enum(["email", "username", "phone", "name", "person", "domain", "ip", "hash", "crypto_wallet"]),
+        kind: z.enum(["email", "username", "phone", "name", "person", "address", "domain", "ip", "hash", "crypto_wallet"]),
       })),
       execute: async ({ seed, kind: rawKind }) => {
-        const kind = rawKind === "person" ? "name" : rawKind;
+        const aliasedKind = rawKind === "person" ? "name" : rawKind;
+        // The model-supplied `kind` is UNTRUSTED input, not a routing decision.
+        // The domain family blindly interpolates the seed into host-shaped
+        // operators (site:, site:*., %., certificate/secret/admin templates);
+        // production emitted `site:79 Waverly Ave Cincinnati OH 45215` because
+        // nothing checked that the seed was actually a hostname.
+        const resolvedKind = resolveDorkKind(seed, aliasedKind);
+        if (!resolvedKind.ok) return resolvedKind;
+        const kind = resolvedKind.kind;
         // google_dorks is intentionally ungated — it only emits search URLs.
         const e = encodeURIComponent(seed);
-        const map: Record<string, Array<{ category: string; query: string; url: string }>> = {
+        const map: Record<string, Dork[]> = {
+          address: buildAddressDorks(seed),
           email: [
             { category: "Direct", query: `"${seed}"`, url: `https://www.google.com/search?q=%22${e}%22` },
             { category: "Direct", query: `intext:"${seed}"`, url: `https://www.google.com/search?q=intext:%22${e}%22` },
@@ -3538,7 +3555,16 @@ export function buildTools(ctx: ToolContext) {
             { category: "Alt Search Engines", query: `"${seed}"`, url: `https://yandex.com/search/?text=%22${e}%22` },
           ],
         };
-        return { seed, kind, dorks: map[kind] ?? [] };
+        // Every URL is regenerated from its own displayed query through ONE
+        // encoder, so the link a user clicks executes exactly what is shown.
+        // The hand-written urls above encoded only a prefix of their query.
+        const dorks = canonicalizeDorks(map[kind] ?? []);
+        return {
+          seed,
+          kind,
+          ...(resolvedKind.corrected ? { kind_corrected: resolvedKind.corrected } : {}),
+          dorks,
+        };
       },
     }),
     dork_harvest: tool({
@@ -4713,7 +4739,8 @@ export function buildTools(ctx: ToolContext) {
           .min(1)
           .max(200)),
       })),
-      execute: async ({ artifacts }) => {
+      execute: async ({ artifacts: rawArtifacts }) => {
+        const artifacts = collapseRecordArtifactsBatch(rawArtifacts);
         const accepted: Array<{ index: number; kind: string; value: string }> = [];
         const rejected: Array<{ index: number; reason: string; kind: string; value: string }> = [];
         const rows: Array<Record<string, unknown>> = [];
@@ -4910,7 +4937,9 @@ export function buildTools(ctx: ToolContext) {
               ? a.metadata.username
               : (typeof a.metadata?.email === "string" ? a.metadata.email : (triageState.seed ?? null)),
           });
-          const dedupKey = canonicalNullKey ?? artifactDedupKey({
+          const dedupKey = canonicalNullKey
+            ?? breachExposureCanonicalKey({ kind: finalKind, value: v.value, source: authoritativeSource || (a.source ?? null) })
+            ?? artifactDedupKey({
             kind: finalKind,
             value: v.value,
             source: authoritativeSource,
@@ -5198,7 +5227,13 @@ export function buildTools(ctx: ToolContext) {
           // Audit F1: once enough new artifacts have accrued since the last correlate,
           // surface a hint so the orchestrator actually runs minimax_correlate (it never
           // fired in the audited run). Empty object when not yet due.
-          ...correlateNudge(),
+          //
+          // Takes through the SAME latch as the fan-out delivery path. This used to
+          // call the unlatched `correlateNudge()`, which meant the hint could be
+          // delivered twice in one cycle — once on a live tool result and again
+          // here — because the latch did not govern this surface. One directive per
+          // cycle, whichever surface reaches the model first.
+          ...takeCorrelateHint(),
         };
       },
     }),

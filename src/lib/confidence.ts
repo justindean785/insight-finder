@@ -106,15 +106,18 @@ export function explainConfidence(a: Artifact, review?: ReviewState): Confidence
     }
   }
 
-  // 4) Analyst confirmation
+  // 4) Analyst decision — DISCLOSED, NEVER SCORED. These used to carry +15 /
+  //    +18 / −12 / −40, which told the analyst their click was a source. A
+  //    decision changes authority, priority or workflow state; the number it is
+  //    explaining is the evidence's, and stays exactly what the sources support.
   if (review === "confirmed") {
-    components.push({ label: "Analyst confirmed", delta: 15, why: "Confirm review adds +15." });
+    components.push({ label: "Analyst confirmed", delta: 0, why: "Accepted by the analyst. Authority, not evidence — no score change." });
   } else if (review === "key") {
-    components.push({ label: "Marked key", delta: 18, why: "Promoting an artifact as Key adds +18 and upgrades the label." });
+    components.push({ label: "Marked key", delta: 0, why: "Prioritised by the analyst for the next run. Priority, not confidence — no score change." });
   } else if (review === "recheck") {
-    components.push({ label: "Needs recheck", delta: -12, why: "Recheck flag pulls confidence down until re-verified." });
+    components.push({ label: "Recheck requested", delta: 0, why: "Verification task recorded for the agent's next run. Workflow state, not confidence — no score change." });
   } else if (review === "dismissed" || review === "wrong") {
-    components.push({ label: "Dismissed", delta: -40, why: "Analyst dismissed/marked false — exclude from conclusions." });
+    components.push({ label: "Rejected by analyst", delta: 0, why: "Excluded from pivots, dispatch, clusters and authoritative sections. The score is unchanged because the row is no longer used, not because it is weaker." });
   }
 
   // 5) False-positive flag in metadata

@@ -12,7 +12,11 @@
 // removes authority from evidence the analyst actually needed.
 
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { extractFindings, BULK_HARVEST_IDENTITY_CAP } from "./auto-persist-findings.ts";
+import {
+  extractFindings,
+  BULK_HARVEST_IDENTITY_CAP,
+  isBulkCorpusQuarantine,
+} from "./auto-persist-findings.ts";
 
 const IDENTITY = new Set(["name", "email", "phone", "address", "username"]);
 
@@ -50,20 +54,21 @@ function quarantined(f: { context?: Record<string, unknown> }): boolean {
 Deno.test("⛔ a bulk corpus return does not mint 30+ strangers as subject evidence", () => {
   const out = extractFindings("oathnet_lookup", PSYBER_CORPUS, { domain: "psyber.com" });
   const ident = out.filter((f) => IDENTITY.has(f.kind));
+  const summaries = out.filter((f) => f.kind === "bulk_corpus_harvest");
 
-  assert(ident.length > BULK_HARVEST_IDENTITY_CAP, `fixture must exceed the cap, got ${ident.length}`);
-  const loose = ident.filter((f) => !quarantined(f));
-  assertEquals(
-    loose.map((f) => `${f.kind}:${f.value}`),
-    [],
-    "every person-identity out of a corpus return must lose subject authority",
-  );
+  assert(ident.length <= BULK_HARVEST_IDENTITY_CAP, `individual identities must collapse, got ${ident.length}`);
+  assertEquals(ident.filter((f) => !quarantined(f)).map((f) => `${f.kind}:${f.value}`), []);
+  assertEquals(summaries.length, 1, "bulk corpus must collapse to one summary row");
+  assert(isBulkCorpusQuarantine(summaries[0]?.context as Record<string, unknown>));
+  const harvested = (summaries[0]?.context as { harvested_identities?: unknown[] })?.harvested_identities;
+  assert(Array.isArray(harvested) && harvested.length > BULK_HARVEST_IDENTITY_CAP,
+    "summary metadata must retain the underlying identities");
 });
 
 Deno.test("the reason names the cardinality, so an analyst can audit the call", () => {
   const out = extractFindings("oathnet_lookup", PSYBER_CORPUS, { domain: "psyber.com" });
-  const one = out.find((f) => IDENTITY.has(f.kind) && quarantined(f));
-  assert(one, "expected a quarantined identity row");
+  const one = out.find((f) => f.kind === "bulk_corpus_harvest");
+  assert(one, "expected a collapsed bulk-corpus summary row");
   const reason = String(one!.context?.subject_unlinked_reason ?? "");
   assert(/bulk corpus return/.test(reason), `reason must say what happened: ${reason}`);
   assert(/\d+ person identities/.test(reason), `reason must carry the count: ${reason}`);
@@ -162,11 +167,16 @@ Deno.test("⛔ NEGATIVE CONTROL: exemption is EXACT, never containment", () => {
   // CONTAINS the queried domain `psyber.com`; a containment test would exempt the
   // whole corpus and the gate would silently do nothing at all.
   const out = extractFindings("oathnet_lookup", PSYBER_CORPUS, { domain: "psyber.com" });
-  const coTenant = out.find((f) => f.kind === "email" && f.value.endsWith("@psyber.com"));
-  assert(coTenant, "expected a psyber.com co-tenant mailbox");
+  const summary = out.find((f) => f.kind === "bulk_corpus_harvest");
+  assert(summary, "expected a collapsed bulk-corpus summary");
+  const harvested = (summary!.context as { harvested_identities?: Array<{ kind?: string; value?: string }> })
+    .harvested_identities ?? [];
+  const coTenant = harvested.find((h) => typeof h.value === "string" && h.value.endsWith("@psyber.com"));
+  assert(coTenant, "expected a psyber.com co-tenant mailbox in the collapsed harvest");
   assertEquals(
-    quarantined(coTenant!), true,
-    "a mailbox AT the queried domain is a co-tenant, not the queried selector",
+    quarantined(summary!),
+    true,
+    "a mailbox AT the queried domain is a co-tenant, not the queried selector — the summary stays quarantined",
   );
 });
 

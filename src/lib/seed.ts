@@ -2,7 +2,7 @@
 // (for the investigation cache lookup) and rendered banners.
 // Mirror logic on the edge function so cache keys match.
 
-export type SeedKind = "email" | "username" | "phone" | "ip" | "domain" | "url" | "crypto" | "other";
+export type SeedKind = "email" | "username" | "phone" | "ip" | "domain" | "url" | "crypto" | "address" | "other";
 
 export type DetectedSeed = {
   kind: SeedKind;
@@ -19,6 +19,67 @@ const PHONE_RE = /^\+?[\d\s\-().]{7,}$/;
 const ETH_RE = /^0x[a-f0-9]{40}$/i;
 const BTC_RE = /^(?:bc1|[13])[a-z0-9]{25,62}$/i;
 const USERNAME_RE = /^[a-z0-9_.-]{2,40}$/i;
+
+// --- US postal address ----------------------------------------------------
+// MUST match looksLikePostalAddress / normalizeAddressValue in
+// supabase/functions/osint-agent/address.ts — the client computes the cache
+// key the edge function looks the investigation up by, and there is no shared
+// module between src/ and supabase/functions/.
+//
+// Runs against the WHITESPACE-FLATTENED value, so a pasted two-line address
+// ("79 WAVERLY AVE\nCINCINNATI OH, 45215") is the same input as its one-line
+// form, and `[\s,]+` accepts the comma placements people actually type
+// ("OH, 45215" / "Cincinnati, OH 45215" / "Cincinnati OH 45215").
+//
+// The state position requires a real USPS two-letter code, not `[A-Za-z]{2}` —
+// an unconstrained class let a plain "<house> <street> <suffix> <zip>" with no
+// state at all false-positive ("123 Main St 90210": the street suffix "St" was
+// consumed as the "state"), and let a degenerate two-token value false-positive
+// too ("5 AB CD 12345": neither "AB" nor "CD" is a real state).
+const US_STATE_CODES = new Set([
+  "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN",
+  "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV",
+  "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN",
+  "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC", "AS", "GU", "MP", "PR", "VI",
+  "AA", "AE", "AP",
+]);
+const US_STATE_CODE_RE = "(?:" + [...US_STATE_CODES].join("|") + ")";
+const US_POSTAL_RE = new RegExp(
+  `^\\d{1,6}(?:-\\d{1,6})?[A-Za-z]?\\s+\\S.*?[\\s,]+(${US_STATE_CODE_RE})[\\s,]+\\d{5}(?:-\\d{4})?$`,
+  "i",
+);
+
+/** Collapse newlines/tabs/runs of spaces. Casing and punctuation untouched. */
+export function flattenAddress(raw: string | null | undefined): string {
+  return (raw ?? "").replace(/\s+/g, " ").trim();
+}
+
+/** House number + 2-letter state + ZIP, in any common punctuation/line layout. */
+export function looksLikePostalAddress(raw: string | null | undefined): boolean {
+  const flat = flattenAddress(raw);
+  if (!flat || flat.length > 200) return false;
+  const m = US_POSTAL_RE.exec(flat);
+  if (!m) return false;
+  // The state token must be written in the conventional uppercase form. Real
+  // addresses always capitalize the state abbreviation; two of the 57 codes
+  // (IN, OR) are also ordinary lowercase English words ("called him back in
+  // 12345", "apples or 90210"), so a case-insensitive-only match false-
+  // positived on plain sentences that happen to end in a 5-digit number.
+  return m[1] === m[1].toUpperCase();
+}
+
+/**
+ * Cache key for an address seed: lowercased, "," and "." dropped, whitespace
+ * collapsed — so every formatting of one address maps to one key while `raw`
+ * keeps the analyst's original text for display.
+ */
+export function normalizeAddressValue(raw: string | null | undefined): string {
+  return (raw ?? "")
+    .toLowerCase()
+    .replace(/[,.]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 // --- Display-seed extraction --------------------------------------------
 // A thread's seed_value can be a clean selector ("casey.rivera@example.com") OR a
@@ -40,15 +101,28 @@ export function extractDisplaySeed(
   const raw = (seedValue ?? "").trim();
   if (!raw) return { selector: "—", kind: "other", title: "Investigation" };
 
-  // Already a clean single token → trust detectSeed.
+  // Already a clean single token → trust detectSeed. EXCEPT "address": unlike
+  // email/url/phone/domain/username, detectSeed's address pattern tolerates
+  // arbitrary characters between the house number and the state/ZIP
+  // (`\S.*?`), so a short one-line string can satisfy it end-to-end while
+  // ALSO containing a stronger, more precise selector inside it — e.g.
+  // "123 Main St, contact John Doe at john@example.com, Columbus OH 43215".
+  // Falling through to the blob-extraction chain below re-checks for that
+  // stronger selector first, and still lands on the same address result when
+  // there genuinely isn't one.
   if (raw.length <= 120 && !/\n|={2,}|\s{2,}/.test(raw)) {
     const direct = detectSeed(raw);
-    if (direct && direct.kind !== "other") {
+    if (direct && direct.kind !== "other" && direct.kind !== "address") {
       return { selector: direct.raw, kind: direct.kind, title: direct.raw };
     }
   }
 
-  // Messy blob — extract the strongest selector by priority.
+  // Messy blob — extract the strongest selector by priority. Checked BEFORE the
+  // postal-address shortcut below: a blob can be address-shaped end-to-end
+  // (house number ... real state ... ZIP) while also carrying a stronger,
+  // more precise selector inside it (e.g. "123 Main St, contact John Doe at
+  // john@example.com, Columbus OH 43215") — that selector must still win, the
+  // same priority order this function already used before address existed.
   const email = raw.match(EMAIL_ANYWHERE)?.[0];
   if (email) return { selector: email, kind: "email", title: email };
   const url = raw.match(URL_ANYWHERE)?.[0];
@@ -59,6 +133,14 @@ export function extractDisplaySeed(
   }
   const domain = raw.match(DOMAIN_ANYWHERE)?.[0];
   if (domain) return { selector: domain.toLowerCase(), kind: "domain", title: domain.toLowerCase() };
+
+  // A pasted postal address is a real selector even though it spans two lines
+  // and trips the "messy blob" test above. Without this the fallback below cut
+  // "79 WAVERLY AVE\nCINCINNATI OH, 45215" down to its first line.
+  if (looksLikePostalAddress(raw)) {
+    const flat = flattenAddress(raw);
+    return { selector: flat, kind: "address", title: flat };
+  }
 
   // Fallback: first clean fragment, truncated.
   const frag = raw.split(/\n|·|—|={2,}/).map((s) => s.trim()).find(Boolean) ?? raw;
@@ -119,5 +201,16 @@ export function detectSeed(input: string): DetectedSeed | null {
   }
   if (DOMAIN_RE.test(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
   if (USERNAME_RE.test(raw)) return { kind: "username", raw, normalized: raw.toLowerCase() };
+  // "@handle" is a username seed — the way every platform displays one. It
+  // classified as `other`, so `@hoodken28` lost the username playbook and its
+  // thread read "Type: other". Normalized without the `@`, matching artifact
+  // values and the server (validation.ts detectSeedServer).
+  if (raw.startsWith("@") && USERNAME_RE.test(raw.slice(1))) {
+    return { kind: "username", raw, normalized: raw.slice(1).toLowerCase() };
+  }
+  // MUST match detectSeedServer in supabase/functions/osint-agent/validation.ts.
+  if (looksLikePostalAddress(raw)) {
+    return { kind: "address", raw, normalized: normalizeAddressValue(raw) };
+  }
   return { kind: "other", raw, normalized: raw.toLowerCase() };
 }

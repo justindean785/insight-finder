@@ -36,13 +36,19 @@ import { displayConfidence, effectiveConfidence, effectiveConfidenceOrZero } fro
 import { bandCluster, isProseValue, provenanceOf as provFor } from "@/lib/evidence-bands";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { humanizeArtifactMetadata } from "@/lib/artifact-metadata";
+import {
+  harvestedIdentityPreview,
+  isBulkCorpusHarvestArtifact,
+  partitionBulkCorpusRows,
+  type BulkCorpusDisplayRow,
+} from "@/lib/bulk-corpus-display";
 import { FilterChips } from "@/components/ui/workspace-primitives";
 import {
   AuthorityChip, AuthorityCaveat, AuthorityLegend, AuthoritySpine, RuleLabel, UnderlyingStrength,
 } from "@/components/ui/authority";
 import {
-  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, launchRecheckInChat,
-  type ReviewState,
+  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, startRecheck,
+  type ReviewState, type ReviewWriteResult,
 } from "@/lib/review";
 
 const GROUP_ICON: Record<Group, React.ComponentType<{ className?: string }>> = {
@@ -53,6 +59,8 @@ const GROUP_ICON: Record<Group, React.ComponentType<{ className?: string }>> = {
   breach: ShieldAlert,
   web: Globe,
   crypto: ImgIcon,
+  affiliation: Tag,
+  records: Tag,
   other: Tag,
 };
 
@@ -113,7 +121,7 @@ function writeClusterPrefs(threadId: string, prefs: Record<string, boolean>): vo
   try { localStorage.setItem(CLUSTER_PREFS_KEY(threadId), JSON.stringify(prefs)); } catch { /* preference only */ }
 }
 
-export type EvidenceStatusFilter = "all" | "strong" | "review" | "quarantined" | "weak" | "excluded";
+export type EvidenceStatusFilter = "analyst" | "all" | "strong" | "review" | "quarantined" | "weak" | "excluded";
 export type EvidenceSortMode = "strength" | "confidence" | "newest";
 
 /**
@@ -124,7 +132,28 @@ export type EvidenceSortMode = "strength" | "confidence" | "newest";
  * source, a quarantined row needs a linkage decision. Merging them is how 104
  * quarantined artifacts sat in production looking like ordinary weak evidence.
  */
-const STATUS_FILTER_GROUPS: Record<EvidenceStatusFilter, Set<string> | null> = {
+export const STATUS_FILTER_GROUPS: Record<EvidenceStatusFilter, Set<string> | null> = {
+  /**
+   * ANALYST VIEW — the default. Everything an analyst has to act on, and nothing
+   * that is only there for audit.
+   *
+   * Deliberately a UNION of the two existing groups rather than a new taxonomy.
+   * The board already resolves the noise correctly and it was only ever the
+   * DEFAULT that was wrong:
+   *   - `triage_decision` / `cluster_decision` never reach this list at all —
+   *     `isMetaArtifact` filters them in useThreadArtifacts.
+   *   - `excluded_collision` already resolves to `quarantined`, via
+   *     `isClusterIneligible` in authorityFor.
+   *   - weak leads already resolve to `weak`.
+   * So hiding quarantined + weak + failed is the whole job, and inventing a
+   * kind-based filter beside the authority states would be a second, drifting
+   * source of truth for the same question.
+   *
+   * Measured 2026-09-03: an average scan lands 60 artifacts of which 4.8 are
+   * unquarantined at confidence >= 65. This is what stops the other ~55 being
+   * the first thing an analyst sees.
+   */
+  analyst: new Set(["verified", "infrastructure", "probable", "review", "conflict"]),
   all: null,
   strong: new Set(["verified", "infrastructure", "probable"]),
   review: new Set(["review", "conflict"]),
@@ -134,9 +163,11 @@ const STATUS_FILTER_GROUPS: Record<EvidenceStatusFilter, Set<string> | null> = {
 };
 
 function ArtifactsList({
-  items, onSelect, review, statusFilter, sortMode, loading, error, onRetry, threadId,
+  items, onSelect, review, statusFilter, onShowAll, sortMode, loading, error, onRetry, threadId,
 }: {
   items: Artifact[];
+  /** Escape hatch out of a filter that is hiding everything. */
+  onShowAll?: () => void;
   /** Scopes the remembered fold/unfold choices to this case. */
   threadId: string;
   onSelect: (a: Artifact) => void;
@@ -199,8 +230,44 @@ function ArtifactsList({
       for (const k of Object.keys(byGroup[g])) byGroup[g][k].sort(cmp);
     }
     return byGroup;
+    // `review.revision`: with the "All" filter `filtered === items` (same
+    // reference), so a verdict change never re-ran this memo and the strength
+    // ordering stayed stale until something else re-rendered the list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, sortMode, statusFilter]);
+  }, [filtered, sortMode, statusFilter, review.revision]);
+
+  // A FILTER hiding everything must never look like an empty case.
+  //
+  // Analyst view is the default, and plenty of real cases legitimately have zero
+  // rows in it — measured 2026-09-03, one production scan produced 36 artifacts
+  // and 0 unquarantined at confidence >= 65. Rendering the standard "no evidence
+  // yet" panel there would be a lie about the data, and a silent one. Say what is
+  // hidden and why, and offer one click out.
+  if (!loading && !error && items.length > 0 && filtered.length === 0) {
+    return (
+      <div className="p-3 sm:p-5">
+        <div className="flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.98),hsl(var(--surface-0)/0.98))] px-6 py-10 text-center shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
+          <div className="text-eyebrow font-mono uppercase tracking-[0.22em] text-muted-foreground/70">
+            Nothing in this view
+          </div>
+          <div className="max-w-md text-[13px] leading-relaxed text-muted-foreground">
+            {statusFilter === "analyst"
+              ? `This case has no findings or review items yet. All ${items.length} artifact${items.length === 1 ? "" : "s"} are leads, quarantined or excluded — collected, but not yet corroborated enough to act on.`
+              : `No artifact matches this filter. ${items.length} artifact${items.length === 1 ? "" : "s"} on this case.`}
+          </div>
+          {onShowAll && (
+            <button
+              type="button"
+              onClick={onShowAll}
+              className="mt-1 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-[12.5px] font-medium text-foreground/90 transition-colors hover:bg-white/10"
+            >
+              Show all {items.length}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   // A failed SELECT (transient DB/network) must be visibly distinct from an
   // empty case, with a retry — otherwise a dropped query reads as "nothing found".
@@ -513,28 +580,100 @@ function ArtifactsList({
                             </span>
                           )}
                         </div>
-                        {band.rows.map((a) => (
-                          <ArtifactRow key={a.id} a={a} onSelect={onSelect} review={review} hideProv />
-                        ))}
+                        {renderDisplayRows(partitionBulkCorpusRows(band.rows), onSelect, review, true)}
                       </div>
                     );
                   })}
 
-                  {open && !bands && list.map((a) => (
-                    <ArtifactRow
-                      key={a.id}
-                      a={a}
-                      onSelect={onSelect}
-                      review={review}
-                      hideProv={uniformProv != null}
-                    />
-                  ))}
+                  {open && !bands && renderDisplayRows(partitionBulkCorpusRows(list), onSelect, review, uniformProv != null)}
                 </div>
               );
             })}
           </section>
         );
       })}
+    </div>
+  );
+}
+
+function renderDisplayRows(
+  rows: BulkCorpusDisplayRow[],
+  onSelect: (a: Artifact) => void,
+  review: ReturnType<typeof useReviewStates>,
+  hideProv: boolean,
+) {
+  return rows.map((row) => {
+    if (row.type === "single") {
+      return (
+        <ArtifactRow
+          key={row.artifact.id}
+          a={row.artifact}
+          onSelect={onSelect}
+          review={review}
+          hideProv={hideProv}
+        />
+      );
+    }
+    return (
+      <BulkCorpusGroupRow
+        key={row.key}
+        group={row}
+        onSelect={onSelect}
+        review={review}
+        hideProv={hideProv}
+      />
+    );
+  });
+}
+
+function BulkCorpusGroupRow({
+  group, onSelect, review, hideProv,
+}: {
+  group: Extract<BulkCorpusDisplayRow, { type: "bulk_group" }>;
+  onSelect: (a: Artifact) => void;
+  review: ReturnType<typeof useReviewStates>;
+  hideProv: boolean;
+}) {
+  const lead = group.artifacts[0];
+  const authority = authorityFor(lead, review.get(lead.id));
+  const preview = group.artifacts.slice(0, 4).map((a) => a.value).join(" · ");
+  const more = group.artifacts.length - 4;
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect(lead)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(lead); }
+      }}
+      data-density-row
+      className="group/row ledger-row cursor-pointer text-left"
+      aria-label={`${group.artifacts.length} ${group.label}. ${group.reason}`}
+    >
+      <AuthoritySpine state={authority.state} />
+      <span className="min-w-0" data-ledger-col="value">
+        <span className="flex items-start gap-1.5">
+          <span className="text-[12.5px] leading-[1.45] text-foreground/90">
+            <span className="font-medium">{group.artifacts.length} {group.label}</span>
+            {preview && (
+              <span className="mt-0.5 block truncate font-mono text-data text-muted-foreground/80">
+                {preview}{more > 0 ? ` · +${more} more` : ""}
+              </span>
+            )}
+          </span>
+        </span>
+        <AuthorityCaveat view={authority} className="mt-0.5 line-clamp-2" />
+      </span>
+      <span className="min-w-0" data-ledger-col="status">
+        <AuthorityChip view={authority} />
+        <span className="mt-0.5 truncate text-eyebrow text-muted-foreground/70">{authority.basis}</span>
+      </span>
+      <span className="min-w-0 truncate font-mono text-eyebrow text-muted-foreground/60" data-ledger-col="source" title={group.source ?? undefined}>
+        {!hideProv && group.source ? readableSourceLabel(group.source) : ""}
+      </span>
+      <span className="flex shrink-0 items-center justify-end gap-0.5" data-ledger-col="confidence">
+        <span className="conf-figure text-[hsl(var(--authority-quarantine))]">—</span>
+      </span>
     </div>
   );
 }
@@ -566,7 +705,8 @@ function ArtifactRow({
     ? "hsl(var(--authority-quarantine))"
     : "hsl(var(--foreground) / 0.92)";
   const prov = provFor(a);
-  const prose = isProseValue(a.value);
+  const prose = isProseValue(a.value) || isBulkCorpusHarvestArtifact(a);
+  const bulkPreview = isBulkCorpusHarvestArtifact(a) ? harvestedIdentityPreview(a, 4) : [];
   const authority = authorityFor(a, rState);
   return (
     <HoverCard openDelay={250} closeDelay={80}>
@@ -621,6 +761,11 @@ function ArtifactRow({
               >
                 {a.value}
               </span>
+              {bulkPreview.length > 0 && (
+                <span className="mt-0.5 block truncate font-mono text-data text-muted-foreground/80">
+                  {bulkPreview.join(" · ")}
+                </span>
+              )}
               <button
                 type="button"
                 aria-label={`Copy ${a.value}`}
@@ -698,7 +843,7 @@ function ArtifactDrawer({
   onClose: () => void;
   onChanged: (a: Artifact) => void;
   reviewGet: (id: string) => ReviewState;
-  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => void;
+  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => Promise<ReviewWriteResult>;
   threadId: string;
 }) {
   // (component body unchanged below)
@@ -723,7 +868,7 @@ function ArtifactDrawerInner({
   onClose: () => void;
   onChanged: (a: Artifact) => void;
   reviewGet: (id: string) => ReviewState;
-  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => void;
+  reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => Promise<ReviewWriteResult>;
   threadId: string;
 }) {
   const meta = (artifact.metadata ?? {}) as Record<string, unknown>;
@@ -746,7 +891,10 @@ function ArtifactDrawerInner({
   const drawerAuthority = authorityFor(artifact, rState);
   const review = useReviewStates(threadId);
   const [noteDraft, setNoteDraft] = useState(review.getNote(artifact.id));
-  const [saving, setSaving] = useState(false);
+  // `onChanged` fed the metadata false-positive toggle #534 removed (the review
+  // verdict is the one False contract). It is wired again for exactly one caller:
+  // the linkage release below — the drawer's only remaining metadata write, and
+  // one confined to two keys by `releasePatch`.
 
   const copy = (text: string, label: string) => {
     navigator.clipboard.writeText(text).then(
@@ -755,33 +903,49 @@ function ArtifactDrawerInner({
     );
   };
 
-  const updateMeta = async (patch: Record<string, unknown>) => {
-    if (saving) return;
-    setSaving(true);
+  // THE DRAWER'S ONLY METADATA WRITE, and deliberately not a general one.
+  //
+  // #534 deleted this component's `updateMeta` on a principle worth keeping: it
+  // took an arbitrary patch, and its one caller wrote `metadata.false_positive` —
+  // a SECOND "is this false?" signal that the agent's review reads never saw. The
+  // one visible truth verdict is still the review control below, and nothing here
+  // reopens a general path to metadata.
+  //
+  // This is a different axis, not a second opinion on the same one.
+  // `linkage_confirmed` answers "whose is this?"; the review verdict answers "is
+  // this real?". `intel.ts` is explicit that release must be "explicit and
+  // durable, not a one-click verdict (the review control is known to invert on
+  // quarantined rows, so it must not be able to overrule an evidence ceiling on a
+  // mis-click)" — which is precisely why it cannot BE a review state.
+  //
+  // What bounds it: the patch is not this component's to choose. `releasePatch`
+  // is a pure function that returns either exactly
+  // `{ linkage_confirmed, linkage_confirmed_at }` or `null`, and it returns null
+  // for anything that is not an ACTIVE quarantine — never flagged, already
+  // released, or malformed metadata. So this call site cannot smuggle a scoring
+  // change, and cannot stamp an arbitrary row. Provenance is preserved, not
+  // rewritten: `subject_unlinked`, its recorded reason and the recorded
+  // confidence cap all survive, because the patch is spread over `meta` rather
+  // than replacing it. All of that is pinned by quarantine-linkage-release.test.ts.
+  const [releasing, setReleasing] = useState(false);
+  const releaseLinkage = async () => {
+    if (releasing) return;
+    const patch = releasePatch(meta);
+    if (!patch) return toast.error("Not under linkage quarantine — nothing to release");
+    setReleasing(true);
     try {
-      const next = { ...meta, ...patch };
       const { data, error } = await supabase
         .from("artifacts")
-        .update({ metadata: next as never })
+        .update({ metadata: { ...meta, ...patch } as never })
         .eq("id", artifact.id)
         .select("id,kind,value,confidence,source,created_at,metadata")
         .maybeSingle();
-      if (error || !data) return toast.error(error?.message ?? "Update failed");
+      if (error || !data) return toast.error(error?.message ?? "Release failed");
       onChanged(data as Artifact);
-      toast.success("Updated");
+      toast.success("Linkage confirmed — quarantine released");
     } finally {
-      setSaving(false);
+      setReleasing(false);
     }
-  };
-
-  // Release reuses `updateMeta` — the SAME RLS-gated `artifacts` update the drawer
-  // already uses — rather than opening a second authority path. `releasePatch`
-  // fails closed on anything that is not an active quarantine, so a non-quarantined
-  // or malformed target cannot be stamped through here.
-  const releaseLinkage = async () => {
-    const patch = releasePatch(meta);
-    if (!patch) return toast.error("Not under linkage quarantine — nothing to release");
-    await updateMeta(patch);
   };
 
   const citation = `\`${artifact.value}\` (${artifact.kind}${artifact.source ? `, via ${artifact.source}` : ""}${shownArtifact.effective != null ? `, ${shownArtifact.effective}%` : ""})`;
@@ -848,7 +1012,7 @@ function ArtifactDrawerInner({
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={saving}
+                      disabled={releasing}
                       className="mt-3 h-7 w-full font-mono text-eyebrow uppercase tracking-[0.14em]"
                     >
                       {RELEASE_ACTION_LABEL}
@@ -940,16 +1104,25 @@ function ArtifactDrawerInner({
                 current={rState}
                 target="recheck"
                 onClick={() => {
-                  reviewSet(artifact.id, "recheck", rctx);
-                  launchRecheckInChat(threadId, { value: artifact.value, kind: artifact.kind });
-                  toast.success("Rechecking in chat…");
-                  onClose();
+                  // Persist FIRST; the chat run launches only after the verdict
+                  // has committed. A failed write toasts and launches nothing,
+                  // and the drawer stays open so the analyst can retry.
+                  void startRecheck({
+                    set: reviewSet,
+                    threadId,
+                    artifact: { id: artifact.id, value: artifact.value, kind: artifact.kind },
+                    ctx: rctx,
+                  }).then((r) => {
+                    if (!r.ok) return;
+                    toast.success("Rechecking in chat…");
+                    onClose();
+                  });
                 }}
               >
                 <ShieldQuestion className="w-3 h-3" /> Recheck
               </ReviewBtn>
               <ReviewBtn current={rState} target="dismissed" onClick={() => reviewSet(artifact.id, "dismissed", rctx)}>
-                <XCircle className="w-3 h-3" /> False
+                <XCircle className="w-3 h-3" /> Dismiss
               </ReviewBtn>
               <ReviewBtn current={rState} target="key" onClick={() => reviewSet(artifact.id, "key", rctx)}>
                 <Star className="w-3 h-3" /> Key
@@ -974,8 +1147,11 @@ function ArtifactDrawerInner({
                 variant="secondary"
                 className="h-6 px-2 text-data"
                 onClick={() => {
-                  review.setNote(artifact.id, noteDraft, rctx);
-                  toast.success("Note saved");
+                  // The write result is real: a failed note has already toasted
+                  // and rolled back, so only a committed one reads "saved".
+                  void review.setNote(artifact.id, noteDraft, rctx).then((r) => {
+                    if (r.ok) toast.success("Note saved");
+                  });
                 }}
               >
                 Save note
@@ -1003,12 +1179,16 @@ function ArtifactDrawerInner({
             )}
           </Field>
 
+          {/* The separate "Mark false positive" metadata toggle is gone. It wrote
+              `metadata.false_positive` — a second, unrelated "false" signal that
+              the agent's review reads never saw. The ONE visible False action is
+              the review verdict above (`dismissed`), which reaches every consumer:
+              pivots, dispatch, clustering, synthesis, the report and the agent's
+              next run. Legacy rows that carry the flag still read as rejected
+              (see analyst-decisions.ts isRejectedArtifact) and show the chip. */}
           <div className="grid grid-cols-2 gap-2">
             <Button size="sm" variant="outline" onClick={() => copy(artifact.value, "Value copied")} className="gap-1.5"><Copy className="w-3.5 h-3.5" /> Copy value</Button>
             <Button size="sm" variant="outline" onClick={() => copy(citation, "Citation copied")} className="gap-1.5"><Copy className="w-3.5 h-3.5" /> Copy citation</Button>
-            <Button size="sm" variant={falsePositive ? "destructive" : "secondary"} disabled={saving} onClick={() => updateMeta({ false_positive: !falsePositive })} className="col-span-2 gap-1.5">
-              <XCircle className="w-3.5 h-3.5" /> {falsePositive ? "Unmark FP" : "Mark false positive"}
-            </Button>
           </div>
         </div>
       </SheetContent>
@@ -1120,14 +1300,15 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
   const { items, updateLocal, loading, error, retry } = useThreadArtifacts(threadId);
   const review = useReviewStates(threadId);
   const [selected, setSelected] = useState<Artifact | null>(null);
-  const [statusFilter, setStatusFilter] = useState<EvidenceStatusFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<EvidenceStatusFilter>("analyst");
   const [sortMode, setSortMode] = useState<EvidenceSortMode>("strength");
 
   // Live counts per quick-filter so the analyst sees how much sits in each bucket.
   const counts = useMemo(() => {
-    const c = { all: items.length, strong: 0, review: 0, quarantined: 0, weak: 0, excluded: 0 };
+    const c = { analyst: 0, all: items.length, strong: 0, review: 0, quarantined: 0, weak: 0, excluded: 0 };
     for (const a of items) {
       const s = authorityFor(a, review.get(a.id)).state;
+      if (STATUS_FILTER_GROUPS.analyst!.has(s)) c.analyst++;
       if (STATUS_FILTER_GROUPS.strong!.has(s)) c.strong++;
       else if (STATUS_FILTER_GROUPS.review!.has(s)) c.review++;
       else if (STATUS_FILTER_GROUPS.quarantined!.has(s)) c.quarantined++;
@@ -1135,8 +1316,11 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
       else if (STATUS_FILTER_GROUPS.excluded!.has(s)) c.excluded++;
     }
     return c;
+    // `review.revision` bumps on every verdict change (including rollbacks), so
+    // the counts move the instant an analyst decides — memoising on `items`
+    // alone left the chips stale until an unrelated artifact arrived.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items]);
+  }, [items, review.revision]);
 
   return (
     <>
@@ -1147,6 +1331,7 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
             active={statusFilter}
             onChange={setStatusFilter}
             options={[
+              { key: "analyst", label: "Analyst view", count: counts.analyst, tone: "ok" },
               { key: "all", label: "All", count: counts.all },
               { key: "strong", label: "Findings", count: counts.strong, tone: "ok" },
               { key: "review", label: "Needs review", count: counts.review, tone: "warn" },
@@ -1185,6 +1370,7 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
         onSelect={setSelected}
         review={review}
         statusFilter={statusFilter}
+        onShowAll={() => setStatusFilter("all")}
         sortMode={sortMode}
         loading={loading}
         error={error}
