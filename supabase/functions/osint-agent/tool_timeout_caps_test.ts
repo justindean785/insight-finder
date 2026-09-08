@@ -7,6 +7,10 @@ import {
   DEFAULT_TOOL_TIMEOUT_MS,
   runWithToolTimeout,
 } from "./cache.ts";
+import {
+  SOCIALFETCH_DEFAULT_TIMEOUT_MS,
+  SOCIALFETCH_YOUTUBE_FAST_TIMEOUT_MS,
+} from "./tool-registry.ts";
 
 Deno.test("B3 caps: gemini_deep_dork=20s, jina_reader_scrape=18s; deepfind_reverse_email on the 12s default (F2)", () => {
   // 2026-07-25 audit: gemini_deep_dork hit its 12s cap mid-response too often
@@ -166,19 +170,28 @@ Deno.test("socialfetch_web_read keeps the wrapper-above-own-budget invariant", (
   // structural scanner in tool_timeout_contract_test.ts does NOT see (it reads
   // `fetchT(…, N)` positional args only). So the invariant that file exists to
   // enforce rests, for this tool, on this test alone.
-  const src = Deno.readTextFileSync(new URL("./tool-registry.ts", import.meta.url));
-  const body = src.slice(src.indexOf("socialfetch_web_read: tool({"));
-  const m = body.slice(0, body.indexOf("socialfetch_whoami")).match(/timeoutMs:\s*([\d_]+)/);
-  assert(m, "socialfetch_web_read must still declare an explicit per-attempt timeout");
-  const own = Number(m![1].replace(/_/g, ""));
-  assertEquals(own, 18_000, "the tool's own fetch budget");
+  //
+  // 2026-09-08 performance audit: the tool's per-attempt timeout is no longer a
+  // single literal — socialfetchHostPolicy() (tool-registry.ts) picks between
+  // SOCIALFETCH_DEFAULT_TIMEOUT_MS (ordinary hosts) and the much shorter
+  // SOCIALFETCH_YOUTUBE_FAST_TIMEOUT_MS (youtube.com/youtu.be, which measured a
+  // 100% abort rate in production — see socialfetch_host_policy_test.ts). Import
+  // the named constants directly rather than scraping a number out of source
+  // text, and check the invariant against BOTH.
+  assertEquals(SOCIALFETCH_DEFAULT_TIMEOUT_MS, 18_000, "the tool's own default fetch budget");
   assert(
-    own > 15_908,
-    `the budget must clear the maximum observed SUCCESSFUL duration (15,908ms), saw ${own}`,
+    SOCIALFETCH_DEFAULT_TIMEOUT_MS > 15_908,
+    `the default budget must clear the maximum observed SUCCESSFUL duration (15,908ms), saw ${SOCIALFETCH_DEFAULT_TIMEOUT_MS}`,
   );
+  for (const own of [SOCIALFETCH_DEFAULT_TIMEOUT_MS, SOCIALFETCH_YOUTUBE_FAST_TIMEOUT_MS]) {
+    assert(
+      toolTimeoutMs("socialfetch_web_read") > own,
+      `wrapper cap (${toolTimeoutMs("socialfetch_web_read")}ms) must exceed the tool's own ` +
+        `fetch budget (${own}ms), or the wrapper guillotines the call before it can fail cleanly`,
+    );
+  }
   assert(
-    toolTimeoutMs("socialfetch_web_read") > own,
-    `wrapper cap (${toolTimeoutMs("socialfetch_web_read")}ms) must exceed the tool's own ` +
-      `fetch budget (${own}ms), or the wrapper guillotines the call before it can fail cleanly`,
+    SOCIALFETCH_YOUTUBE_FAST_TIMEOUT_MS < SOCIALFETCH_DEFAULT_TIMEOUT_MS,
+    "the youtube fast-fail path must actually be faster than the default, or the policy does nothing",
   );
 });
