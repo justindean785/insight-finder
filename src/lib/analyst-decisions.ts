@@ -89,6 +89,39 @@ export function isRejectedArtifact(
 }
 
 /**
+ * The cross-investigation carrier of a `wrong` verdict: the memory lesson that
+ * teaches every future run to skip the selector. ONE builder, because the edge
+ * function's memory reader (supabase/functions/osint-agent/lib/memory-supersession.ts,
+ * `ANALYST_FALSE_LESSON_RE`) recognises THIS wording to tell a human ruling apart
+ * from the agent's own identity theories — and to let the ruling supersede them at
+ * recall time. Production rows already carry this text; change the wording only
+ * together with that regex and the test that pins both.
+ */
+export const ANALYST_FALSE_POSITIVE_MARKER = "as FALSE / incorrect data";
+
+export function buildFalsePositiveLesson(value: string, kind?: string | null): {
+  kind: "lesson";
+  subject: string;
+  subject_kind: string | null;
+  related_values: string[];
+  content: string;
+  confidence: number;
+} {
+  const kindHint = kind ? ` (${kind})` : "";
+  return {
+    kind: "lesson",
+    subject: String(value).trim().toLowerCase(),
+    subject_kind: kind ?? null,
+    related_values: [],
+    content:
+      `Analyst marked "${value}"${kindHint} ${ANALYST_FALSE_POSITIVE_MARKER}. ` +
+      `Do NOT re-propose this artifact in future investigations for the same user. ` +
+      `Treat as a confirmed false positive even if a tool surfaces it again.`,
+    confidence: 95,
+  };
+}
+
+/**
  * Scoped re-investigation prompt for a single artifact an analyst flagged
  * "recheck". Phrased so the agent runs *fresh, independent* corroboration on
  * exactly this value rather than restating what it already found.

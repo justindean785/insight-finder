@@ -38,7 +38,8 @@ import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
-import { loadReviewsForThread, dropRejectedAndDerived, normalizeArtifactKey } from "./reviews.ts";
+import { loadReviewsForThread, dropRejectedAndDerived, normalizeArtifactKey, type ReviewDb } from "./reviews.ts";
+import { applyMemorySupersession, refuseConflictingMemoryWrites, rejectedSelectorsFromRows, type MemoryRow } from "./lib/memory-supersession.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
 
 /**
@@ -932,11 +933,7 @@ export function buildTools(ctx: ToolContext) {
           // an unreadable verdict the graph/pivot evidence is omitted rather than
           // published unfiltered. Same posture `dropRejectedArtifacts` already
           // takes, for the same reason.
-          const reviewLoad = await loadReviewsForThread(
-            supabase as unknown as Parameters<typeof loadReviewsForThread>[0],
-            threadId,
-            userId,
-          );
+          const reviewLoad = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
           const rejectedInputKeys = new Set(reviewLoad.rejectedKeys);
           // The thin {kind,value} list is supplied by the MODEL, so it can name a
           // rejected selector even when the table read is clean. Keyed on
@@ -984,12 +981,34 @@ export function buildTools(ctx: ToolContext) {
             if (seedNorm) {
               const { data: mem } = await supabase
                 .from("agent_memory")
-                .select("kind,content,confidence")
+                // subject + related_values are what supersession keys on.
+                .select("kind,subject,related_values,content,confidence")
                 .eq("user_id", userId)
                 .or(agentMemoryOrFilter(seedNorm))
                 .order("confidence", { ascending: false })
-                .limit(8);
-              const rows = (mem ?? []) as Array<{ kind?: string; content?: string; confidence?: number }>;
+                .limit(12);
+              // A human ruling outranks a model memory. Before this, the agent's own
+              // pre-review theory ("belonged to X, handle transferred", 74) and the
+              // analyst's later FALSE lesson about the same selector (95) both reached
+              // the planner, ordered by confidence — contradictory instructions in
+              // one prompt (live: thread b74049ad). Superseded rows are withheld
+              // here, not deleted; they remain in agent_memory for audit.
+              const { active, superseded } = applyMemorySupersession(
+                (mem ?? []) as MemoryRow[],
+                reviewLoad.ok ? reviewLoad.rejectedRows : [],
+              );
+              if (superseded.length) {
+                console.log(JSON.stringify({
+                  event: "memory_superseded",
+                  thread_id: threadId,
+                  surface: "planner",
+                  active: active.length,
+                  superseded: superseded.length,
+                  by_thread_review: superseded.filter((x) => x.source === "thread_review").length,
+                  by_analyst_lesson: superseded.filter((x) => x.source === "analyst_lesson").length,
+                }));
+              }
+              const rows = active.slice(0, 8);
               if (rows.length) {
                 memoryHint =
                   `\n\nPRIOR MEMORY for this subject (weight these — lessons / known false-positives / confirmed links from earlier investigations):\n` +
@@ -5160,6 +5179,13 @@ export function buildTools(ctx: ToolContext) {
         let memory_hits: Array<{ subject: string; count: number; memories: unknown[] }> = [];
         if (recallSubjects.length > 0) {
           try {
+            // One review read for the whole fan-out; superseded memories are dropped
+            // from the auto-recall the same way memory_recall drops them.
+            let autoRecallRejected: Array<{ value?: unknown }> = [];
+            try {
+              const rl = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
+              if (rl.ok) autoRecallRejected = rl.rejectedRows;
+            } catch { /* analyst lessons among the rows still supersede */ }
             const recalled = await Promise.all(
               recallSubjects.map(async (subj) => {
                 const { data } = await supabase
@@ -5169,7 +5195,8 @@ export function buildTools(ctx: ToolContext) {
                   .or(agentMemoryOrFilter(subj))
                   .order("confidence", { ascending: false })
                   .limit(5);
-                return { subject: subj, count: data?.length ?? 0, memories: data ?? [] };
+                const { active } = applyMemorySupersession((data ?? []) as MemoryRow[], autoRecallRejected);
+                return { subject: subj, count: active.length, memories: active };
               }),
             );
             memory_hits = recalled.filter((r) => r.count > 0);
@@ -5591,15 +5618,42 @@ export function buildTools(ctx: ToolContext) {
         .limit(limit ?? 20);
       const { data, error } = await q;
       if (error) return { ok: false, error: error.message };
-      const memories = data ?? [];
-      // Best-effort: mark surfaced memories as recently used so they
-      // bubble up next time and so stale unused ones can be pruned.
-      if (memories.length > 0) {
-        const ids = memories.map((m: { id: unknown }) => m.id);
+      // Supersession: a positive memory the analyst has since overruled (a FALSE
+      // lesson in memory, or a Wrong/Dismiss in THIS thread) is returned tagged
+      // as superseded rather than as a live memory. Review state is best-effort
+      // here — the analyst lessons among the rows still supersede on their own.
+      let threadRejected: Array<{ value?: unknown }> = [];
+      try {
+        const rl = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
+        if (rl.ok) threadRejected = rl.rejectedRows;
+        else console.warn("[memory_recall] review state unavailable; superseding by analyst lessons only:", rl.error);
+      } catch (e) {
+        console.warn("[memory_recall] review load threw; superseding by analyst lessons only:", String(e));
+      }
+      const { active, superseded } = applyMemorySupersession((data ?? []) as MemoryRow[], threadRejected);
+      // Best-effort: mark surfaced memories as recently used so they bubble up
+      // next time and so stale unused ones can be pruned. ACTIVE rows only — a
+      // superseded theory must not keep earning recency.
+      if (active.length > 0) {
+        const ids = active.map((m) => m.id);
         // Atomic hit_count + last_used_at bump (no read-modify-write race).
         supabase.rpc("bump_memory_hits", { _ids: ids }).then(() => {}, () => {});
       }
-      return { ok: true, count: memories.length, memories };
+      return {
+        ok: true,
+        count: active.length,
+        memories: active,
+        ...(superseded.length
+          ? {
+            superseded_count: superseded.length,
+            superseded: superseded.map((x) => ({
+              id: x.row.id, kind: x.row.kind, subject: x.row.subject,
+              superseded_by: x.selector, source: x.source,
+              note: "Overruled by analyst review. Retained for audit; carries no authority — do not act on it.",
+            })),
+          }
+          : {}),
+      };
     },
   });
 
@@ -5652,7 +5706,36 @@ export function buildTools(ctx: ToolContext) {
       // this cycle) is never written as a confident merge; it's logged to
       // memory_merge_candidates for review instead (never silently dropped).
       let toPersist: MemoryEntry[] = entries as unknown as MemoryEntry[];
-      let candidates: Array<{ entry: MemoryEntry; reason: string; subjectIds: string[] }> = [];
+      let candidates: Array<{ entry: MemoryEntry; reason: string; subjectIds: string[]; verdict?: "blocked" | "unresolved" }> = [];
+      // ANALYST GATE — runs FIRST. agent_memory's upsert ratchets confidence with
+      // GREATEST(old,new), so a positive identity theory that contradicts a Wrong /
+      // Dismiss the analyst has already entered in this thread can never be walked
+      // back once written. Refuse it here; log it as `blocked` so nothing is
+      // silently dropped. Fails OPEN on an unreadable review state (the C-2 gate
+      // below still runs), loudly.
+      try {
+        const rl = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
+        if (rl.ok) {
+          const gate = refuseConflictingMemoryWrites(toPersist, rejectedSelectorsFromRows(rl.rejectedRows));
+          toPersist = gate.toPersist;
+          for (const r of gate.refused) {
+            candidates.push({ entry: r.entry, reason: r.reason, subjectIds: [], verdict: "blocked" });
+          }
+          console.log(JSON.stringify({
+            event: "analyst_decisions_applied",
+            thread_id: threadId,
+            surface: "memory_save",
+            decisions: rl.byId.size,
+            rejected_rows: rl.rejectedRows.length,
+            entries_in: (entries as unknown[]).length,
+            entries_refused: gate.refused.length,
+          }));
+        } else {
+          console.warn("[memory_save] review state unavailable; analyst gate skipped this write:", rl.error);
+        }
+      } catch (e) {
+        console.warn("[memory_save] analyst gate threw (continuing to C-2 review):", String(e));
+      }
       try {
         const { data: artRows } = await supabase
           .from("artifacts")
@@ -5668,9 +5751,9 @@ export function buildTools(ctx: ToolContext) {
             };
           });
           const correlateFailed = guard.lastCorrelateOutcome === "failed";
-          const reviewed = reviewMemoryBatch(entries as unknown as MemoryEntry[], clusterArts, correlateFailed);
+          const reviewed = reviewMemoryBatch(toPersist, clusterArts, correlateFailed);
           toPersist = reviewed.toPersist;
-          candidates = reviewed.candidates;
+          candidates = [...candidates, ...reviewed.candidates];
         }
       } catch (e) {
         // Fail OPEN on the review step itself (never let a bug here block the
@@ -5682,7 +5765,7 @@ export function buildTools(ctx: ToolContext) {
         const rows = candidates.map((c) => ({
           user_id: userId, thread_id: threadId, subject: c.entry.subject, kind: c.entry.kind,
           content: c.entry.content, proposed_confidence: c.entry.confidence,
-          verdict: c.subjectIds.length >= 2 ? "blocked" : "unresolved",
+          verdict: c.verdict ?? (c.subjectIds.length >= 2 ? "blocked" : "unresolved"),
           reason: c.reason, subject_ids: c.subjectIds, related_values: c.entry.related_values ?? [],
         }));
         const { error: candErr } = await supabaseAdmin.from("memory_merge_candidates").insert(rows);

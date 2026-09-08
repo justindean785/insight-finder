@@ -166,3 +166,98 @@ Deno.test("an unreadable review set leaves the boundary OPEN for this run, loudl
   assertEquals(calls.n, 1);
   assert(warned.some((w) => w.includes("[rejected-dispatch]")), "the open boundary must be observable");
 });
+
+// ── mid-run binding ───────────────────────────────────────────────────────────
+import { REJECTED_KEYS_TTL_MS } from "./cache.ts";
+
+/**
+ * Like fakeSupabase, but `artifact_reviews` reads a LIVE array (so a verdict can
+ * be added between dispatches) and counts every read, so the test can prove the
+ * TTL bounds the re-reads rather than issuing one per call.
+ */
+function mutableFake(reviewRows: Array<Record<string, unknown>>, reads: { n: number }): SupabaseClient {
+  const artifactRows = [
+    { id: "a1", kind: "email", value: REJECTED_EMAIL, confidence: 70, source: "hibp", metadata: {} },
+    { id: "a2", kind: "email", value: CLEAN_EMAIL, confidence: 90, source: "hibp", metadata: {} },
+  ];
+  const inert = makeChain({ data: [], error: null });
+  inert.insert = () => Promise.resolve({ error: null });
+  inert.upsert = () => Promise.resolve({ error: null });
+  const artifacts = makeChain({ data: artifactRows, error: null });
+  artifacts.insert = () => Promise.resolve({ error: null });
+  const reviews: Record<string, unknown> = {};
+  for (const m of ["eq", "in", "order", "update", "limit"]) reviews[m] = () => reviews;
+  reviews.select = () => { reads.n += 1; return reviews; };
+  reviews.maybeSingle = () => Promise.resolve({ data: reviewRows, error: null });
+  reviews.then = (r: (v: { data: unknown; error: unknown }) => void) => r({ data: reviewRows, error: null });
+  return {
+    from: (t: string) => (t === "artifacts" ? artifacts : t === "artifact_reviews" ? reviews : inert),
+    rpc: () => Promise.resolve({ data: null, error: null }),
+  } as unknown as SupabaseClient;
+}
+
+Deno.test("⛔ a Wrong entered MID-RUN binds before the next dispatch after the TTL", async () => {
+  // The memo used to be once-per-run: a verdict the analyst entered while the
+  // agent was still working did not reach this guard until the NEXT invocation,
+  // so the next paid call could still go out on the selector they had just
+  // ruled out (live: thread b74049ad, 2026-09-08).
+  const reviewRows: Array<Record<string, unknown>> = [];
+  const reads = { n: 0 };
+  let t = 1_000_000;
+  const calls = { n: 0 };
+  const investigationId = freshThread();
+  clearRuntime(investigationId);
+  circuit.clearThread(investigationId);
+  const tools = wrapToolsWithCache(
+    { breach_check: countingTool(calls), gravatar_profile: countingTool(calls) },
+    { investigationId, userId: "u1", supabase: mutableFake(reviewRows, reads), now: () => t },
+  );
+  const bc = tools.breach_check as Exec;
+  const gp = tools.gravatar_profile as Exec;
+
+  // 1. No verdict yet → the selector dispatches, and the review set is read once.
+  await bc.execute({ type: "email", value: REJECTED_EMAIL }, {});
+  assertEquals(calls.n, 1, "clean selector must dispatch");
+  assertEquals(reads.n, 1, "first dispatch loads the review set");
+
+  // 2. The analyst marks it Wrong while the run is live.
+  reviewRows.push({ artifact_id: "a1", state: "wrong", note: null });
+
+  // 3. Inside the TTL the snapshot is still authoritative and there is NO extra
+  //    read — the bound the guard promises. (A different tool so per-call dedup
+  //    cannot be what stops the dispatch.)
+  t += 1_000;
+  await gp.execute({ type: "email", value: REJECTED_EMAIL }, {});
+  assertEquals(reads.n, 1, "no re-read inside the TTL");
+
+  // 4. Past the TTL the next dispatch re-reads and REFUSES — the tool body never
+  //    runs and the refusal is legible as an analyst rejection.
+  const before = calls.n;
+  t += REJECTED_KEYS_TTL_MS;
+  const out = await bc.execute({ email: REJECTED_EMAIL.toUpperCase() }, {});
+  assertEquals(reads.n, 2, "one re-read after the TTL expired");
+  assertEquals(calls.n, before, "the tool body must not run on a rejected selector");
+  assertEquals((out as Record<string, unknown>).refused_by, REJECTED_DISPATCH_REFUSAL_MARKER);
+});
+
+Deno.test("`force` does not outlive the TTL either — a mid-run rejection refuses a forced re-run", async () => {
+  const reviewRows: Array<Record<string, unknown>> = [];
+  const reads = { n: 0 };
+  let t = 5_000_000;
+  const calls = { n: 0 };
+  const investigationId = freshThread();
+  clearRuntime(investigationId);
+  circuit.clearThread(investigationId);
+  const tools = wrapToolsWithCache(
+    { breach_check: countingTool(calls) },
+    { investigationId, userId: "u1", supabase: mutableFake(reviewRows, reads), now: () => t },
+  );
+  const bc = tools.breach_check as Exec;
+  await bc.execute({ type: "email", value: REJECTED_EMAIL }, {});
+  assertEquals(calls.n, 1);
+  reviewRows.push({ artifact_id: "a1", state: "dismissed", note: null });
+  t += REJECTED_KEYS_TTL_MS + 1;
+  const out = await bc.execute({ type: "email", value: REJECTED_EMAIL, force: true }, {});
+  assertEquals(calls.n, 1, "force must not override the analyst");
+  assertEquals((out as Record<string, unknown>).refused_by, REJECTED_DISPATCH_REFUSAL_MARKER);
+});

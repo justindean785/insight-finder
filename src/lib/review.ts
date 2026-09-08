@@ -10,6 +10,7 @@ import {
   type ReviewState,
   type ReviewWriteResult,
 } from "@/lib/analyst-decisions";
+import { buildFalsePositiveLesson } from "@/lib/analyst-decisions";
 import { toast } from "sonner";
 
 /**
@@ -579,18 +580,9 @@ export function useReviewStates(threadId: string) {
       if (state === "wrong" && ctx?.value) {
         const subject = String(ctx.value).trim().toLowerCase();
         if (subject) {
-          const kindHint = ctx.kind ? ` (${ctx.kind})` : "";
-          const entry = {
-            kind: "lesson",
-            subject,
-            subject_kind: ctx.kind ?? null,
-            related_values: [],
-            content:
-              `Analyst marked "${ctx.value}"${kindHint} as FALSE / incorrect data. ` +
-              `Do NOT re-propose this artifact in future investigations for the same user. ` +
-              `Treat as a confirmed false positive even if a tool surfaces it again.`,
-            confidence: 95,
-          };
+          // Wording is owned by buildFalsePositiveLesson: the edge function's memory
+          // reader recognises it to let this ruling supersede the agent's own theories.
+          const entry = buildFalsePositiveLesson(String(ctx.value), ctx.kind ?? null);
           try {
             const { error: memErr } = await supabase.rpc("save_agent_memories", {
               _user_id: user.id,

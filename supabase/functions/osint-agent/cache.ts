@@ -549,6 +549,10 @@ async function loadSelectorEvidence(
  * partial answer. Bounds the retry that an incomplete read triggers, so a database
  * that is genuinely down costs a few queries per run rather than one per tool call.
  */
+/** How long a loaded analyst-rejection set stays authoritative before the next
+ *  dispatch re-reads it. Short enough that a mid-run Wrong binds before the
+ *  next paid call; long enough that a burst of parallel dispatches shares one read. */
+export const REJECTED_KEYS_TTL_MS = 5_000;
 const REFUSED_KEYS_MAX_LOAD_ATTEMPTS = 3;
 
 export function wrapToolsWithCache(
@@ -568,6 +572,8 @@ export function wrapToolsWithCache(
     toolCallBudget?: { genuine: number; reserved: number; capped: boolean };
     shouldStopLiveLookups?: () => boolean;
     onHeartbeat?: () => void;
+    /** Clock for the rejected-key TTL below. Tests inject; production uses Date.now. */
+    now?: () => number;
   },
 ) {
   const wrapped: Record<string, Tool> = {};
@@ -703,9 +709,24 @@ export function wrapToolsWithCache(
   // review read would kill the run outright. The authoritative consumers
   // (prompt block, salvage, cache, clustering, synthesis, recovery) all fail
   // closed on the same load. The warning makes the open boundary observable.
+  //
+  // NOT once per run any more. "Loaded ONCE per run" meant a verdict the analyst
+  // entered mid-run — the Wrong click in the Evidence drawer while the agent was
+  // still working — did not reach this guard until the NEXT invocation, so the
+  // very next paid call could go out on a selector the analyst had just ruled
+  // out (live: thread b74049ad, 2026-09-08). The memo now expires on a short TTL
+  // and is re-read on the next dispatch after expiry. This path runs only when a
+  // live tool call is about to be made, so the bound is one artifact_reviews read
+  // per REJECTED_KEYS_TTL_MS of dispatching — never a read per formatting or
+  // recording operation. `ctx.now` is injectable so the expiry is testable.
+  const nowMs = ctx.now ?? Date.now;
   let rejectedKeysPromise: Promise<Set<string>> | null = null;
+  let rejectedKeysLoadedAt = 0;
   const loadRejectedKeys = () => {
-    if (!rejectedKeysPromise) {
+    const expired = rejectedKeysPromise !== null && nowMs() - rejectedKeysLoadedAt >= REJECTED_KEYS_TTL_MS;
+    if (!rejectedKeysPromise || expired) {
+      const refreshReason = rejectedKeysPromise ? "ttl_expired" : "initial";
+      rejectedKeysLoadedAt = nowMs();
       rejectedKeysPromise = (async () => {
         try {
           const reviews = await loadReviewsForThread(
@@ -715,7 +736,18 @@ export function wrapToolsWithCache(
             console.warn("[rejected-dispatch] review load failed (boundary open this run):", reviews.error);
             return new Set<string>();
           }
-          return buildRejectedDispatchKeys(reviews.rejectedRows, circuit.normalizeSelector);
+          const keys = buildRejectedDispatchKeys(reviews.rejectedRows, circuit.normalizeSelector);
+          // Counts only — never a selector value.
+          console.log(JSON.stringify({
+            event: "analyst_decisions_applied",
+            thread_id: ctx.investigationId,
+            surface: "dispatch",
+            refresh_reason: refreshReason,
+            decisions: reviews.byId.size,
+            rejected_rows: reviews.rejectedRows.length,
+            rejected_dispatch_keys: keys.size,
+          }));
+          return keys;
         } catch (e) {
           console.warn("[rejected-dispatch] review load threw (boundary open this run):", e);
           return new Set<string>();
