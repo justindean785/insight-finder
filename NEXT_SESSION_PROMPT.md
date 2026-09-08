@@ -1,49 +1,56 @@
 # Next-session prompt — Insight Finder
 
 > Paste this whole file as the opening message of a fresh session. It is self-contained.
-> **Written 2026-09-07T13:30Z; revised 2026-09-08T07:10Z after the `e50db9e` deploy drained the
-> whole queue. Every number is a dated measurement, not a state — re-verify.**
+> **Written 2026-09-07T13:30Z; revised 2026-09-08T17:15Z after #560/#561/#562/#563 merged
+> with review defects still open. Every number is a dated measurement, not a state — re-verify.**
 
 ---
 
 ## Start here — 5 minutes, before anything else
 
 ```bash
-git fetch origin main && git log --oneline -5 origin/main
+git fetch origin main && git log --oneline -6 origin/main
 curl -s "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1"
 ```
 
-**Expect `main` = `4a5eb1c` or later and live edge build = `e50db9e`.** If either moved, another session has
-worked this repo — read the newest `SESSION_HANDOFF_*.md` first. That has now happened FOUR times.
-Most recently 2026-09-07/08: one session opened this very file, found its own expectation line
-already stale, and drained the ENTIRE queue — #550, #547, #549 merged and deployed as `4e6888a`,
-then #529 and #519 merged and deployed as `e50db9e`. On an earlier occasion the same failure
-produced **two conflicting PRs for one task** (#548 and #551).
+**Expect `origin/main` = `0a08d4b` or later and live edge build = `173a95e`.** If either
+moved, another session has worked this repo — read the newest `SESSION_HANDOFF_*.md` first.
+That has now happened five times. Most recently 2026-09-08T17:07Z: the operator squash-merged
+all four performance-audit PRs (#560 → #561 → #563 → #562) in 22 seconds. None of them are
+deployed. Three landed with blocking review defects. **Do not open a fifth copy of those
+PRs. Do not deploy current `main`.**
 
-**Then, before you write any code: `list_pull_requests`.** THREE PRs are open as of
-2026-09-08T07:05Z (#541, #516, #502) — down from nine. The 2026-09-07 duplicate-PR incident
-happened because a session started work without checking.
+**Then, before you write any code: `list_pull_requests`.** The audit PRs are **closed-merged**.
+The remaining open set as of 2026-09-08T17:15Z is #541 (draft, superseded), #516 (draft),
+#502 (conflicts). Follow-up work is **new branches off current `main`**.
 
 Read, in order:
-1. `SESSION_HANDOFF_2026-09-07_drop-suppression-and-the-duplicate-pr.md` — newest; §5 records the `artifactDedupKey` ruling.
-2. `CLAUDE.md` — authoritative on deploy topology and on decisions that must not be re-litigated. Its test baselines and dated-state block were **refreshed 2026-09-07T13:55Z** and are current (see §6); re-measure anyway if `main` has moved since.
-3. `gameplan9/7/2026` — the operator's Game Plan. Its structure is sound; several numbers have drifted, corrected in §3–§5 below.
+1. `SESSION_HANDOFF_2026-09-08_perf-audit-review-fixes.md` — newest. §3 is the trap list
+   (especially: do not clear `lastCorrelateOutcome` inside `resetCorrelateCycle`). §4 is
+   the follow-up work (A isolate-reuse, B telemetry persist, C paid-budget predicate).
+2. `CLAUDE.md` — authoritative on deploy topology and on decisions that must not be re-litigated.
+3. This file §2 — the `artifactDedupKey` ruling, still settled. Do not start that work
+   until the §4 follow-ups are on `main`.
 
 ---
 
-## 1 · Verified state (2026-09-08T07:05Z)
+## 1 · Verified state (2026-09-08T17:15Z)
 
 | Axis | Value |
 |---|---|
-| `origin/main` | `4a5eb1c` (#529 `42d8609` → #519 `e50db9e` → stamp `4a5eb1c`), plus the ledger/docs commits shipped with the 09-08 handoff |
-| Live `osint-agent` build | **`e50db9e`** — deployed 2026-09-08, VERIFIED against `/health`. `main` and the live edge build are IN SYNC; nothing is undeployed |
-| `deploy/live` | `e50db9e`, local and remote |
-| Vercel production | READY on `main`, alias `insight-finder-sandy.vercel.app` (re-check the SHA) |
-| Frontend suite | **1957 passed / 1 skipped / 159 files**, 0 failures |
-| Edge suite | **1634 passed / 0 failed / 5 ignored** |
-| Lint | 0 errors, 11 pre-existing `react-refresh` warnings |
-| Open PRs | **3** — #541, #516 (draft) and #502 (non-draft) |
-| Mirror `HEAD` | `571cb9e` — synced. `diff -rq` over `osint-agent` is EMPTY and the gate reports `mirror tree -> equal` (`e854a98f4110`) |
+| `origin/main` | **`0a08d4b`** (#560 `1da64ce` → #561 `19cdf35` → #563 `34012f3` → #562 `0a08d4b`) |
+| Live `osint-agent` build | **`173a95e`** (#558) — measured against `/health`. `main` and live are **NOT in sync** |
+| `deploy/live` | `173a95e` |
+| Vercel production | will have moved with `main`; that is frontend only. Edge code does not ship on Vercel merge |
+| Open PRs | **#541** (draft), **#516** (draft), **#502** (conflicts). The four audit PRs are merged |
+| Immediate work | Follow-up PRs A/B/C in `SESSION_HANDOFF_2026-09-08_perf-audit-review-fixes.md` §4. **No deploy** |
+
+**⛔ Do not deploy `0a08d4b`.** #561 will skip the first correlate of a second request on a
+warm isolate. #560 will FK-fail most step rows. #563 will mark memory tools `"free"` in EV
+scoring, not just at the paid-call gate. #562 is the clean one of the four.
+
+The leftover commit `42c1051` on `cursor/correlate-freshness-gate-b16f` is a partial #561
+fix that is **not on `main`**. Re-apply it; do not merge that branch.
 
 **Deployed 2026-09-08** (build `e50db9e`): **#519** — the `subject_unlinked` dispatch boundary
 no longer reopens silently. The refused-key read paged only as far as PostgREST chose to answer
@@ -223,7 +230,8 @@ Ordered work:
 |---|---|
 | `CLAUDE.md` | ✅ **RE-FIXED 2026-09-08.** Frontend baseline now `1957 / 1 / 159` and edge `1634 / 0 / 5`, re-measured on `4a5eb1c`. Each earlier figure was correct when written; the suite grows with every merged PR that adds tests (#550 added 9 across 3 files, #529 added 30 in 1, #519 added 10). Treat a disagreement between two documents as a sequence, not a contradiction — but always re-measure |
 | `CLAUDE.md` | ✅ **FIXED.** Handoff index now ends at the 09-07 handoff and points at this file as the companion entry point |
-| `CLAUDE.md` | ✅ **RE-FIXED 2026-09-08.** Dated-state block now reads `main = 4a5eb1c` / live `e50db9e`, records that the `mirror_tree_digest` gap stays CLOSED, and adds two instrument traps: `ledger_ref_divergence` in a fresh clone (fetch the `deploy/live` ref) and `marker_offset_mismatch` between stamping and deploying (expected — read `mirror tree -> equal` instead) |
+| `CLAUDE.md` | ⚠️ **RE-FIXED 2026-09-08T17:15Z.** Dated-state block now reads `main = 0a08d4b` / live `173a95e` and says they are **not** in sync. The 07:05Z `4a5eb1c` / `e50db9e` line is stale. Newest handoff is the perf-audit review-fixes file |
+| `CLAUDE.md` | ✅ **RE-FIXED 2026-09-08 morning.** Records that the `mirror_tree_digest` gap stays CLOSED, and adds two instrument traps: `ledger_ref_divergence` in a fresh clone (fetch the `deploy/live` ref) and `marker_offset_mismatch` between stamping and deploying (expected — read `mirror tree -> equal` instead) |
 | `CLAUDE.md` | ⚠️ **A claim it carried was WRONG and is now corrected.** It said #519 "stamps that into `tool_usage_log.input_json.runtime`". #519 is merged and deployed and does **not** do that — it added a structured `console.warn` (`quarantine_dispatch_read_incomplete`). Durable runtime stamping is unbuilt |
 | Old `NEXT_SESSION_PROMPT` §A | Name-pivot guard — **DECLINED.** Do not implement or propose |
 | Old `NEXT_SESSION_PROMPT` §B | **Ruled 2026-09-07** — open in narrowed form; see §2 |
@@ -261,15 +269,19 @@ Ordered work:
 ## 9 · Definition of done for this next block
 
 - [x] §2 ruling written into this file (operator, 2026-09-07)
-- [x] #550 merged and live on Vercel (`893d56c`; production `dpl_GSrfCz7…` on `4e6888a`)
-- [x] #549 merged, mirror-synced, deployed, `/health` build SHA **moved** off `eab3668` → `4e6888a`
-- [x] #547 migration validated in CI — **but NOT applied** to the Lovable-owned database; the index
-      still does not exist in production. Safe to defer while both synthesis flags are OFF
-- [x] #529 and #519 conflict-resolved, merged, and #519 deployed as `e50db9e`
+- [x] #550 merged and live on Vercel
+- [x] #549 merged, mirror-synced, deployed (`4e6888a`)
+- [x] #547 migration validated in CI — **but NOT applied** to the Lovable-owned database
+- [x] #529 and #519 merged; #519 deployed as `e50db9e`; later #558 deployed as `173a95e`
+- [x] #560 / #561 / #562 / #563 merged to `main` (2026-09-08T17:07Z) — **NOT deployed**
+- [ ] Follow-up A: `resetCorrelateRun` on `main` + sequential-two-runs test
+- [ ] Follow-up B: telemetry parent-first persist + `step_wall_ms` + authoritative stop reason
+- [ ] Follow-up C: `countsTowardPaidCallBudget` split off `costTierForTool`
+- [ ] Do **not** deploy the audit merges until A/B/C are on `main`
+- [ ] #560 telemetry migration applied to the Lovable-owned DB (after Follow-up B)
 - [ ] #502 vs #516 ruled on (**operator decision**); #502 still conflicts — merge `main` in, do not rebase
 - [ ] #541 (superseded 09-03 handoff) closed or merged
-- [ ] Durable dispatch-boundary telemetry — #519 did NOT add it (structured `console.warn` only)
-- [ ] `artifacts_synthesis_cluster_uniq` applied to the Lovable-owned DB — merging #547 did not apply it
-- [x] `CLAUDE.md` baselines and handoff index refreshed (2026-09-07T13:55Z)
+- [ ] Durable dispatch-boundary telemetry — #519 did NOT add it
+- [ ] `artifacts_synthesis_cluster_uniq` applied — merging #547 did not apply it
 - [ ] 79 merged branches deleted; handoff docs moved to `docs/handoffs/`; `bun.lockb` removed
 - [ ] Actionable-rate re-measured on a fresh 14-day cohort against the 8.6 % baseline

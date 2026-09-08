@@ -13,11 +13,13 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-09-08T07:05Z.** `main` = `4a5eb1c` (#529 merged as `42d8609`,
-> #519 as `e50db9e`, stamp `4a5eb1c`; ledger commit lands via the PR carrying this
-> edit). Live `osint-agent` build = **`e50db9e`**, `deploy/live` → `e50db9e`, ledger
-> recorded (VERIFIED, marker provenance; bytes unverified as always). Mirror `main` =
-> `571cb9e`, tree `e854a98f4110` — equal to canonical.
+> **Dated state — 2026-09-08T17:15Z.** `origin/main` = **`0a08d4b`** (#560 / #561 /
+> #563 / #562 squash-merged 17:07Z). Live `osint-agent` build = **`173a95e`** (#558),
+> `deploy/live` → `173a95e`. **`main` and live are NOT in sync.** Do not deploy
+> current `main`: three of those four merges still carry the review defects recorded
+> in `SESSION_HANDOFF_2026-09-08_perf-audit-review-fixes.md`. Previous dated state
+> 07:05Z had `main` = `4a5eb1c` / live `e50db9e` — superseded by the #558 deploy
+> (`173a95e`) and then by the four undeployed audit merges.
 >
 > **Both `subject_unlinked` dispatch-boundary reopenings are now CLOSED IN THE
 > DEPLOYED BUILD** (#519, live at `e50db9e`). The refused-key read paged only as far
@@ -407,11 +409,13 @@ production corpus numbers that govern #477/#479/#482) →
 list, §7 the ordered plan) →
 `…_2026-09-03_evidence-board-and-pivot-quality` →
 `…_2026-09-07_drop-suppression-and-the-duplicate-pr` →
-**`SESSION_HANDOFF_2026-09-08_queue-drain-and-dispatch-deploy.md` (newest — read this one
-first)**. Its §3 is the trap list (three instruments that reported something other than what
-they named), §4 is the honest not-done list, and §5 says which open items are the operator's
-call rather than yours.
-`NEXT_SESSION_PROMPT.md` is the companion entry point and is the more current of the two.
+**`SESSION_HANDOFF_2026-09-08_perf-audit-review-fixes.md` (newest — read this one
+first)**. Its §3 is the trap list (do not clear `lastCorrelateOutcome` inside
+`resetCorrelateCycle`; #560 inserts children before the parent; #563 changed the
+wrong function), §4 is the follow-up work, and §5 says do not deploy.
+The 09-08 morning file (`…_queue-drain-and-dispatch-deploy.md`) is the previous
+measurement; its "in sync / nothing undeployed" line is stale.
+`NEXT_SESSION_PROMPT.md` is the companion entry point.
 Take the dated state from the top of THIS file rather than from any handoff's own §1 state
 table — every one of them has been overtaken by a later session, including the 09-07 pair,
 whose §1 predates the `4e6888a` deploy. Each corrects the
