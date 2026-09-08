@@ -20,6 +20,15 @@ import {
 import { evidenceStatus } from "@/lib/evidence-status";
 import { authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
 import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
+import {
+  canReleaseLinkage, releasePatch,
+  RELEASE_ACTION_LABEL, RELEASE_CONFIRM_BODY, RELEASE_CONFIRM_TITLE,
+} from "@/lib/quarantine-release";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 // THE one number this surface renders. Every figure, meter, range, aria-label
 // and citation below reads `effective` — never `a.confidence`. See
 // src/lib/display-confidence.ts for why five pipelines became one.
@@ -882,16 +891,61 @@ function ArtifactDrawerInner({
   const drawerAuthority = authorityFor(artifact, rState);
   const review = useReviewStates(threadId);
   const [noteDraft, setNoteDraft] = useState(review.getNote(artifact.id));
-  // `onChanged` used to feed the metadata false-positive toggle, which is gone
-  // (the review verdict is the one False contract). The prop stays on the
-  // drawer's public shape for the local-update path callers already wire.
-  void onChanged;
+  // `onChanged` fed the metadata false-positive toggle #534 removed (the review
+  // verdict is the one False contract). It is wired again for exactly one caller:
+  // the linkage release below — the drawer's only remaining metadata write, and
+  // one confined to two keys by `releasePatch`.
 
   const copy = (text: string, label: string) => {
     navigator.clipboard.writeText(text).then(
       () => toast.success(label),
       () => toast.error("Copy failed"),
     );
+  };
+
+  // THE DRAWER'S ONLY METADATA WRITE, and deliberately not a general one.
+  //
+  // #534 deleted this component's `updateMeta` on a principle worth keeping: it
+  // took an arbitrary patch, and its one caller wrote `metadata.false_positive` —
+  // a SECOND "is this false?" signal that the agent's review reads never saw. The
+  // one visible truth verdict is still the review control below, and nothing here
+  // reopens a general path to metadata.
+  //
+  // This is a different axis, not a second opinion on the same one.
+  // `linkage_confirmed` answers "whose is this?"; the review verdict answers "is
+  // this real?". `intel.ts` is explicit that release must be "explicit and
+  // durable, not a one-click verdict (the review control is known to invert on
+  // quarantined rows, so it must not be able to overrule an evidence ceiling on a
+  // mis-click)" — which is precisely why it cannot BE a review state.
+  //
+  // What bounds it: the patch is not this component's to choose. `releasePatch`
+  // is a pure function that returns either exactly
+  // `{ linkage_confirmed, linkage_confirmed_at }` or `null`, and it returns null
+  // for anything that is not an ACTIVE quarantine — never flagged, already
+  // released, or malformed metadata. So this call site cannot smuggle a scoring
+  // change, and cannot stamp an arbitrary row. Provenance is preserved, not
+  // rewritten: `subject_unlinked`, its recorded reason and the recorded
+  // confidence cap all survive, because the patch is spread over `meta` rather
+  // than replacing it. All of that is pinned by quarantine-linkage-release.test.ts.
+  const [releasing, setReleasing] = useState(false);
+  const releaseLinkage = async () => {
+    if (releasing) return;
+    const patch = releasePatch(meta);
+    if (!patch) return toast.error("Not under linkage quarantine — nothing to release");
+    setReleasing(true);
+    try {
+      const { data, error } = await supabase
+        .from("artifacts")
+        .update({ metadata: { ...meta, ...patch } as never })
+        .eq("id", artifact.id)
+        .select("id,kind,value,confidence,source,created_at,metadata")
+        .maybeSingle();
+      if (error || !data) return toast.error(error?.message ?? "Release failed");
+      onChanged(data as Artifact);
+      toast.success("Linkage confirmed — quarantine released");
+    } finally {
+      setReleasing(false);
+    }
   };
 
   const citation = `\`${artifact.value}\` (${artifact.kind}${artifact.source ? `, via ${artifact.source}` : ""}${shownArtifact.effective != null ? `, ${shownArtifact.effective}%` : ""})`;
@@ -944,6 +998,41 @@ function ArtifactDrawerInner({
                   identity edges, confidence, or the report until the linkage is
                   confirmed.
                 </p>
+              )}
+              {/* The WRITER for `linkage_confirmed`. Every boundary in the product
+                  reads that flag and nothing could set it, so a row auto-quarantined
+                  in error was stranded permanently once #518 made quarantine
+                  dispatch-blocking. Deliberately NOT one of the review controls
+                  below: those answer "is this value real?", this answers "is it this
+                  subject's?" — see quarantine-release.ts. Gated on the same
+                  `isQuarantined` every other boundary uses, via canReleaseLinkage. */}
+              {canReleaseLinkage(meta) && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={releasing}
+                      className="mt-3 h-7 w-full font-mono text-eyebrow uppercase tracking-[0.14em]"
+                    >
+                      {RELEASE_ACTION_LABEL}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>{RELEASE_CONFIRM_TITLE}</AlertDialogTitle>
+                      <AlertDialogDescription className="whitespace-pre-line text-left">
+                        {RELEASE_CONFIRM_BODY}
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => void releaseLinkage()}>
+                        {RELEASE_ACTION_LABEL}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               )}
             </div>
           )}
