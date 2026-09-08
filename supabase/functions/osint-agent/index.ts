@@ -58,6 +58,7 @@ import {
   shouldNudgePersistence, buildPersistenceNudgeDirective,
   hasNoFindingsDecision, resolveTerminalState,
 } from "./orchestrator-finalize.ts";
+import { contextCharsFromMessages, createInvocationTelemetry } from "./telemetry.ts";
 import {
   loadReviewsForThread, applyReviewsToArtifacts, dropRejectedArtifacts,
   renderAnalystDecisionsBlock, REVIEW_STATE_UNAVAILABLE_NOTE,
@@ -799,6 +800,17 @@ Deno.serve(async (req) => {
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
     heartbeat = startRunHeartbeat(supabaseAdmin, threadId, { startedAt: new Date(runStartedAt) });
+    // Invocation-level performance telemetry (2026-09-08 audit PR 1). Non-blocking,
+    // best-effort — see telemetry.ts. One recorder per streamText call below.
+    const invocationTelemetry = createInvocationTelemetry({
+      db: supabaseAdmin,
+      threadId,
+      userId,
+      provider: useFallback ? fallbackTarget!.provider : orchChoice.provider,
+      modelId: useFallback ? fallbackTarget!.modelId : primaryLabel,
+      startedAt: runStartedAt,
+      initialContextChars: approxPromptChars,
+    });
     // P0-B opening gate. Did the analyst's LATEST turn ask for an investigation?
     // `detectedSeedType`/`seedValueRaw` both read the FIRST user message, which on a
     // long-lived thread is not what this turn is about (production thread 40f8a6eb
@@ -1065,6 +1077,13 @@ Deno.serve(async (req) => {
         ),
       ],
       prepareStep,
+      // Fires before the provider is called for each step — the earliest point at
+      // which this step's outbound message array is known, so telemetry can size
+      // the SAME prompt the model is about to see and start this step's clock
+      // before any tool time is incurred. See telemetry.ts.
+      experimental_onStepStart: ({ stepNumber, messages: stepMessages }) => {
+        invocationTelemetry.onStepStart({ stepNumber, messages: stepMessages });
+      },
       // Meter orchestrator LLM token spend per step so threads.cost_micro_usd
       // reflects the actual model cost, not just tool fan-out cost.
       // Rates (micro-USD per token):
@@ -1074,7 +1093,8 @@ Deno.serve(async (req) => {
       // the old Gemini 2.5 Pro rate ($1.25/$10) over-debited the ledger ~4x on the
       // fallback path. An operator LOVABLE_FALLBACK_MODEL_ID override is best-effort
       // metered at the Flash rate.
-      onStepFinish: ({ usage, finishReason, toolCalls, toolResults }) => {
+      onStepFinish: ({ stepNumber, usage, finishReason, toolCalls, toolResults }) => {
+        invocationTelemetry.recordStepFinish({ stepNumber, usage, finishReason, toolCalls });
         if (finalizeStarted) {
           const names = (toolCalls ?? []).map((call: { toolName: string }) => call.toolName);
           const stepProgress = countFinalizeProgress([{ content: toolResults }]);
@@ -1323,6 +1343,14 @@ Deno.serve(async (req) => {
             message: msg.slice(0, 600),
           }),
         );
+        invocationTelemetry.finish({
+          finishedAt: Date.now(),
+          finalContextChars: null,
+          finalizeStarted,
+          hadStreamError: true,
+          creditsMicroUsd: runCostMicroUsd,
+          errorMessage: msg,
+        });
         // A terminal stream error means onFinish never fires, so without this the
         // thread row stays "active" forever (UI stuck on "running"). Write the
         // ALLOWED terminal value "finished" — threads_status_check rejects
@@ -1809,6 +1837,14 @@ Deno.serve(async (req) => {
         // run's suppressions mid-flight. The LRU cap in circuit.ts is the
         // backstop for the paths where this never runs (isolate death,
         // unhandled rejection).
+        invocationTelemetry.finish({
+          finishedAt: Date.now(),
+          finalContextChars: contextCharsFromMessages(finalMessages),
+          finalizeStarted,
+          hadStreamError: false,
+          creditsMicroUsd: runCostMicroUsd,
+          errorMessage: null,
+        });
         heartbeat?.stop();
         releaseRunState();
     };
