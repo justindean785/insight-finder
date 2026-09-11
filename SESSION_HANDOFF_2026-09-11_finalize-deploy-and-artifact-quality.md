@@ -9,7 +9,7 @@
 
 | Axis | Value | How measured |
 |---|---|---|
-| canonical `main` | `fceba9d` | `git rev-parse` |
+| canonical `main` | `82ae57b` (#569 merged 07:15Z; was `fceba9d`) | `git rev-parse` |
 | live `osint-agent` build | `235f540` | `/health` |
 | mirror `main` | `1a5663b` | mirror clone |
 | Deploy state | **FROZEN — deliberately** | see §3 |
@@ -28,8 +28,8 @@
 | Lint | 0 errors, 11 warnings (pre-existing, `src/components/`) |
 | Build | exit 0 |
 
-⚠️ `CLAUDE.md` still cites **1634** (edge) and **1957 / 159 files** (frontend). Both are
-stale; the figures above are the current baselines.
+`CLAUDE.md` previously cited **1634** (edge) and **1957 / 159 files** (frontend). Both
+were stale and are corrected to the figures above in the same PR that carries this file.
 
 ---
 
@@ -48,8 +48,10 @@ step ends the run with no report.
 `DESIGN_2026-09-11_selector-identity-projection.md`. Its selector-identity design pass
 is **complete**; do not re-run that workflow.
 
-**PR #569 — OPEN, ready, CI fully green, NOT merged.** Canonicalizes the mirror-only
-`tools/gemini_vision.ts` patch. Blocked on one unresolved Codex **P2** (§4.2).
+**PR #569 — MERGED (`82ae57b`), 07:15Z.** Canonicalizes the mirror-only
+`tools/gemini_vision.ts` patch **and closes the Codex P2 in the same PR** (§4.2). The
+merged `sniffKind` carries `decode(probe, { stream: true })` plus 90 lines of new
+boundary tests in `gemini_vision_test.ts`. Verified on `main`: **12 passed / 0 failed**.
 
 ---
 
@@ -59,9 +61,9 @@ Not an accident and not a gate failure. Two reasons, in order:
 
 1. **The #568 P1 is confirmed** (§4.1). Deploying the finalize fix without the
    corrective would ship a known-unsafe deferral window.
-2. The mirror carried a live-runtime file canonical lacked (`gemini_vision.ts`), so
-   `verify:deploy` would have reported `mirror_tree_differs`. #569 closes that, but is
-   itself blocked.
+2. ~~The mirror carried a live-runtime file canonical lacked.~~ **CLOSED by #569.**
+
+**§4.1 is now the only thing holding the freeze.**
 
 **Do not deploy until the operator lifts the freeze.** Nothing is stamped, nothing is
 synced, no Lovable message was sent.
@@ -72,8 +74,14 @@ synced, no Lovable message was sent.
 Direction was established for each: `index.ts`, `orchestrator-finalize.ts` and
 `correlate_finalize_window_test.ts` are **byte-identical in the mirror to canonical
 pre-#568** (mirror merely lacks the merge — no independent mirror edit), and
-`correlate_finalize_deferral_bound_test.ts` is new in #568. Only `gemini_vision.ts` is
+`correlate_finalize_deferral_bound_test.ts` is new in #568. Only `gemini_vision.ts` was
 mirror-ahead. `evidence-export`, `security-test-lab`, `_shared` are clean.
+
+**Re-measured after #569 merged (07:16Z): there is NO mirror-ahead file any more.** All
+six differing paths are canonical-ahead — #568's four, plus `tools/gemini_vision.ts` and
+`gemini_vision_test.ts` from #569. Mirror HEAD is still `1a5663b`, unchanged, so no
+second-agent drift has landed. Parity is restorable by an ordinary canonical → mirror
+sync whenever the freeze lifts; nothing needs backporting in the other direction.
 
 > **Correction to `CLAUDE.md`:** `tools/gemini_vision.ts` is **NOT** auto-extracted dead
 > code. It is imported at `tool-registry.ts:95` and `attachment-intake.ts:19` and
@@ -135,7 +143,7 @@ if the ceiling or tail moves.
 > need them. The deferral was the wrong lever — correlation needs to run *earlier*, not
 > by pushing finalize later. That is separate, larger work.
 
-### 4.2 — `sniffKind` UTF-8 probe boundary · **CONFIRMED** · P2 · blocks #569
+### 4.2 — `sniffKind` UTF-8 probe boundary · ✅ **CLOSED in #569 (`82ae57b`)**
 
 `gemini_vision.ts:73`. `new TextDecoder("utf-8",{fatal:true}).decode(bytes.subarray(0,4096))`
 throws when a multibyte character straddles byte 4096 → `sniffKind` returns `"binary"` →
@@ -148,13 +156,21 @@ Reachable whenever the mime is non-text and non-image (e.g. `application/octet-s
 Fix is one argument — `decode(probe, { stream: true })` — verified to correct every
 false-binary case while still rejecting random binary, embedded NUL and UTF-16.
 
-**Why it is not merged:** the operator's merge condition was "byte-equivalent to the
-mirror patch AND CI green", and those are mutually exclusive here — the mirror's NUL
-probe is a regex literal that trips `no-control-regex`, an ESLint **error**, and
-`npm run lint` is the first step of CI's Frontend job (`ci.yml:24`). #569 already carries
-**one** lint-equivalence deviation (regex → `String.includes`, identical predicate).
-Fixing the P2 would be a second, behavioural deviation, which conflicts with the standing
-"do NOT modify the Gemini patch's behavior" constraint. **Operator decision required.**
+**How it closed.** The operator's merge condition was "byte-equivalent to the mirror
+patch AND CI green", and those were mutually exclusive — the mirror's NUL probe is a
+regex literal that trips `no-control-regex`, an ESLint **error**, and `npm run lint` is
+the first step of CI's Frontend job (`ci.yml:24`). The operator waived byte-equivalence
+and the fix landed inside #569 rather than as a follow-up. Merged `main` carries both
+deviations from the mirror bytes: `decoded.includes("U+0000")` (lint equivalence) and
+`decode(probe, { stream: true })` (the P2 fix).
+
+**Test coverage that shipped with it** — `gemini_vision_test.ts` grew 116 → 206 lines,
+and `sniffKind` is now exported so the tests drive the real predicate: 3-byte and 4-byte
+straddles, CJK across every alignment near the boundary, random binary, embedded NUL,
+UTF-16LE, and — the case this handoff did **not** specify and should have — *genuinely
+malformed UTF-8 away from the boundary still fails closed*, which pins that `stream:true`
+forgives only a truncated **trailing** sequence and never an invalid one mid-probe.
+Measured on `main`: **12 passed / 0 failed**.
 
 ### 4.3 — Source class derives from the TOOL, not the ORIGIN · **CONFIRMED** · high leverage
 
@@ -295,7 +311,8 @@ enumerable*, not nonexistent).
 
 1. **§4.3 source classification by origin** — smallest, unblocks adjudication everywhere.
 2. **§4.1 finalize corrective PR** — the 31.8% bucket. Then the deploy freeze can lift.
-3. **§4.2** — operator decides; then #569 merges and parity is restorable.
+3. ~~**§4.2**~~ — ✅ done, merged in #569. Parity is now restorable by a plain
+   canonical → mirror sync.
 4. **§4.5 Gemini fallback** — reproduce the 400 before proposing a fix.
 5. **§4.4 natural_stop** — design proposal only.
 6. **§4.6 artifact contract** — design proposal only.
