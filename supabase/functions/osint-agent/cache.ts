@@ -624,6 +624,18 @@ export function wrapToolsWithCache(
     // that don't set it (tests, other entrypoints) are unaffected.
     toolCallBudget?: { genuine: number; reserved: number; capped: boolean };
     shouldStopLiveLookups?: () => boolean;
+    // TRUE only while enough wall-clock remains for a dispatched
+    // minimax_correlate call to actually finish (its own enforced cap + the
+    // planning turn after it + closing synthesis + margin -- requiredCompletionMs()
+    // in orchestrator-finalize.ts). Without this, isFinalizeWindowLiveLookupExempt
+    // let the ADMISSION guard below wave correlate through at any elapsed time,
+    // including right up against the platform's hard deadline -- the same
+    // no-report overrun the prepareStep-boundary deferral fix closes, reachable
+    // through this second, unrelated gate (Codex P1, review thread on #571).
+    // Optional and fails CLOSED: callers that don't wire it (tests, other
+    // entrypoints) get no exemption once the window is open, i.e. the tool is
+    // skipped like any other live lookup -- the safe default.
+    hasCorrelateDispatchBudget?: () => boolean;
     onHeartbeat?: () => void;
   },
 ) {
@@ -1293,10 +1305,17 @@ export function wrapToolsWithCache(
         // only called between model steps. A long/parallel step can still attempt new
         // lookups after the window opens; skip them here so CPU is reserved for the
         // record/report closeout. Recording tools are exempt.
+        //
+        // minimax_correlate's exemption is CONDITIONAL, not unconditional: it only
+        // holds while ctx.hasCorrelateDispatchBudget?.() confirms enough wall-clock
+        // remains for the call to actually finish. Past that point it is skipped
+        // exactly like any other live lookup -- see the field comment above.
+        const correlateExempt =
+          isFinalizeWindowLiveLookupExempt(name) && (ctx.hasCorrelateDispatchBudget?.() ?? false);
         if (
           ctx.shouldStopLiveLookups?.() &&
           !ALWAYS_ALLOW_TOOLS.has(name) &&
-          !isFinalizeWindowLiveLookupExempt(name)
+          !correlateExempt
         ) {
           await logUsage(false, false, Date.now() - t0, "finalize window open; live lookup skipped", null, true, {
             input: inputJson,

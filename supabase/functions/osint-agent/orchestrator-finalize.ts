@@ -295,51 +295,108 @@ export function shouldSkipForFinalizeWindow(
 /**
  * The number of correlation deferrals a single run may take. ONE.
  *
- * THE DEFECT THIS CLOSES. The predicate below used to be
+ * THE ORIGINAL DEFECT THIS CLOSED. The predicate below used to be
  * `correlateDue && lastCorrelateOutcome === null`, and its doc comment claimed
  * finalize "may defer once". THERE WAS NO ONCE. `lastCorrelateOutcome` only
  * becomes non-null when a correlate call actually dispatches, and `correlateDue()`
  * is `artifactsSinceCorrelate >= CORRELATE_ARTIFACT_THRESHOLD`, a counter that
  * `bumpAutoPersistedArtifacts` advances from auto-persist alone. So on a run where
  * the model never issues a correlate call, both stayed true for the WHOLE run and
- * the wall-clock forced finalize was negated on EVERY step — leaving the hard
+ * the wall-clock forced finalize was negated on EVERY step, leaving the hard
  * tool-call cap as the only surviving route to a report. A run that instead ran out
  * of wall clock died with no report at all.
- *
- * Two INDEPENDENT bounds now hold, and both must pass for a deferral to be taken:
- * this count, and the wall-clock floor below. Either alone is insufficient — a
- * count-only bound still lets the single deferral land at 179s with no time left to
- * synthesise, and a floor-only bound still allows unbounded deferrals before it.
  */
 export const MAX_CORRELATE_FINALIZE_DEFERRALS = 1;
 
 /**
- * How far PAST the reserve opening a correlation deferral may still be taken.
+ * REQUIRED-COMPLETION BUDGET. Replaces the fixed 30s grace window this constant
+ * used to be (CORRELATE_DEFERRAL_GRACE_MS / correlateDeferralFloorMs, removed).
  *
- * The reserve window opens at `budgetMs - reserveMs` (90s of the 180s budget). A
- * deferral pushes the closing synthesis later than that by design, so it needs its
- * own ceiling: past this point finalize fires regardless of correlation state.
- * 30s leaves 60s for the closing step, which covers the 43-51s synthesis tail
- * measured in production on 2026-09-11 (thread d4873abc) with headroom.
+ * THE DEFECT THIS CLOSES (Codex P1, confirmed on review thread
+ * PRRT_kwDOSxbowM6hW_4I at orchestrator-finalize.ts:325): a flat 30s grace after
+ * the 90s reserve opens permits a deferral at, say, 94s elapsed. minimax_correlate
+ * is allowed up to its own enforced 60s cap (cache.ts
+ * TOOL_TIMEOUT_OVERRIDE_MS.minimax_correlate), after which there is still a real
+ * model-planning turn (~13.3s measured) and the closing synthesis tail (measured
+ * max 51,359ms) before a report is written. 94s + 60s + 13.3s + 51.4s is about
+ * 218.7s -- past the 180s wall-clock budget, and past the platform's ~180s hard
+ * lifetime the P1 named directly. Production run 050526ff hit this exact shape:
+ * deferral at 94,243ms, correlate 29,226ms, planning ~13,300ms, synthesis
+ * 41,792ms, total 181,133ms -- already over budget on a call nowhere near its own
+ * worst case.
+ *
+ * A flat grace constant cannot fix this: it bounds WHEN a deferral may start, not
+ * whether enough time remains to finish what the deferral commits to. This
+ * replaces it with an explicit budget: a deferral is legal only when the
+ * WALL-CLOCK REMAINING covers the correlate call, the planning turn after it, the
+ * closing synthesis, and a safety margin -- in sequence, added not maxed, because
+ * that is the real order of events on the deferred path.
+ *
+ * Two INDEPENDENT bounds still hold, and both must pass for a deferral to be
+ * taken: the per-run counter above, and the required-completion budget below. The
+ * counter alone is insufficient -- it does not say WHEN the one deferral is safe
+ * to spend.
  */
-export const CORRELATE_DEFERRAL_GRACE_MS = 30_000;
 
-/** Elapsed time at or past which NO correlation deferral may be taken, ever. */
-export function correlateDeferralFloorMs(
-  opts?: { budgetMs?: number; reserveMs?: number; graceMs?: number },
+// Mirrors cache.ts's TOOL_TIMEOUT_OVERRIDE_MS.minimax_correlate -- the ENFORCED
+// wrapper cap on the deferred call itself. Not imported: cache.ts already imports
+// isFinalizeWindowLiveLookupExempt from this module, and importing back would
+// create a cycle. Keep the two numbers in sync by hand if the cap changes.
+export const CORRELATE_COMPLETION_BUDGET_MS = 60_000;
+
+// The model turn(s) between a completed correlate result and the closing
+// finalize step actually starting. MEASURED, not enforced by any wrapper --
+// production run 050526ff observed ~13,300ms. Padded above the observed value
+// since nothing caps this turn's length.
+export const POST_CORRELATE_PLANNING_BUDGET_MS = 15_000;
+
+// The closing synthesis + record_artifacts tail. MEASURED max 51,359ms in
+// production (thread d4873abc -- the same corpus the sibling constants above
+// cite), padded above the observed max, not the p50/p90.
+export const FINALIZE_SYNTHESIS_BUDGET_MS = 55_000;
+
+// Scheduling/network jitter the three measured/enforced bounds above don't
+// already absorb.
+export const COMPLETION_SAFETY_MARGIN_MS = 10_000;
+
+/**
+ * Total wall-clock a deferred correlation pass needs to reach a written report:
+ * the correlate call itself (bounded by its own enforced cap) + the planning
+ * turn that follows it + the closing synthesis + a safety margin. ADDED, not
+ * maxed -- all four happen in sequence on the deferred path, not as
+ * alternatives.
+ *
+ * Under CURRENT runtime constants (60s + 15s + 55s + 10s = 140s) this exceeds
+ * the entire reserve window (90s, from the 90s opening to the 180s budget), so
+ * no wall-clock-bound deferral is reachable today. That is the intended safety
+ * result, not a bug: it says plainly that the current budgets don't leave room
+ * for ANY deferred correlation pass to safely finish, rather than silently
+ * permitting one that then can't. Making room for one is separate scheduling
+ * work, not this fix.
+ */
+export function requiredCompletionMs(
+  opts?: {
+    correlateBudgetMs?: number;
+    planningBudgetMs?: number;
+    synthesisBudgetMs?: number;
+    safetyMarginMs?: number;
+  },
 ): number {
-  const budgetMs = opts?.budgetMs ?? ORCHESTRATOR_WALL_CLOCK_MS;
-  const reserveMs = opts?.reserveMs ?? FINALIZE_RESERVE_MS;
-  const graceMs = opts?.graceMs ?? CORRELATE_DEFERRAL_GRACE_MS;
-  return budgetMs - reserveMs + graceMs;
+  return (
+    (opts?.correlateBudgetMs ?? CORRELATE_COMPLETION_BUDGET_MS) +
+    (opts?.planningBudgetMs ?? POST_CORRELATE_PLANNING_BUDGET_MS) +
+    (opts?.synthesisBudgetMs ?? FINALIZE_SYNTHESIS_BUDGET_MS) +
+    (opts?.safetyMarginMs ?? COMPLETION_SAFETY_MARGIN_MS)
+  );
 }
 
 /**
  * True when a forced finalize may be deferred ONE more time so a due correlation
- * pass can run first. Pure — the caller owns the per-run counter.
+ * pass can run first. Pure -- the caller owns the per-run counter.
  *
- * FAILS CLOSED on a non-finite counter or elapsed reading: an unreadable bound is
- * treated as exhausted, so the run finalizes rather than deferring on bad input.
+ * FAILS CLOSED on a non-finite counter, elapsed, or derived remaining-time
+ * reading: an unreadable bound is treated as exhausted, so the run finalizes
+ * rather than deferring on bad input.
  */
 export function shouldDeferFinalizeForCorrelate(
   correlateDue: boolean,
@@ -352,7 +409,15 @@ export function shouldDeferFinalizeForCorrelate(
    * re-open the strand-with-no-report case. See `stepCapFinalizeDue`.
    */
   stepCapDue: boolean,
-  opts?: { budgetMs?: number; reserveMs?: number; graceMs?: number; maxDeferrals?: number },
+  opts?: {
+    budgetMs?: number;
+    reserveMs?: number;
+    maxDeferrals?: number;
+    correlateBudgetMs?: number;
+    planningBudgetMs?: number;
+    synthesisBudgetMs?: number;
+    safetyMarginMs?: number;
+  },
 ): boolean {
   // THE NON-DEFERRABLE TRIGGER, CHECKED FIRST. There is no later prepareStep to
   // finalize in, so a deferral here ends the run with no report.
@@ -361,7 +426,11 @@ export function shouldDeferFinalizeForCorrelate(
   if (lastCorrelateOutcome !== null) return false;
   const maxDeferrals = opts?.maxDeferrals ?? MAX_CORRELATE_FINALIZE_DEFERRALS;
   if (!Number.isFinite(deferralsUsed) || deferralsUsed >= maxDeferrals) return false;
-  if (!Number.isFinite(elapsedMs) || elapsedMs >= correlateDeferralFloorMs(opts)) return false;
+  if (!Number.isFinite(elapsedMs)) return false;
+  const budgetMs = opts?.budgetMs ?? ORCHESTRATOR_WALL_CLOCK_MS;
+  const remainingMs = budgetMs - elapsedMs;
+  if (!Number.isFinite(remainingMs)) return false;
+  if (remainingMs < requiredCompletionMs(opts)) return false;
   return true;
 }
 
