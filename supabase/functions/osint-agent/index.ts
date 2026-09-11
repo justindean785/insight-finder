@@ -52,7 +52,7 @@ import {
 } from "./orchestrator-budget.ts";
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective, shouldDeferFinalizeForCorrelate,
-  MAX_CORRELATE_FINALIZE_DEFERRALS, correlateDeferralFloorMs,
+  MAX_CORRELATE_FINALIZE_DEFERRALS, requiredCompletionMs,
   wallClockFinalizeDue, stepCapFinalizeDue,
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
@@ -950,7 +950,9 @@ Deno.serve(async (req) => {
             event: "finalize_deferred_for_correlate", thread_id: threadId,
             deferrals_used: correlateDeferralsUsed,
             max_deferrals: MAX_CORRELATE_FINALIZE_DEFERRALS,
-            elapsed_ms: elapsedMsNow, floor_ms: correlateDeferralFloorMs(),
+            elapsed_ms: elapsedMsNow,
+            remaining_ms: ORCHESTRATOR_WALL_CLOCK_MS - elapsedMsNow,
+            required_completion_ms: requiredCompletionMs(),
             step_number: stepNumber ?? 0,
           }));
         }
@@ -1080,6 +1082,13 @@ Deno.serve(async (req) => {
         toolCallBudget,
         shouldStopLiveLookups: () =>
           shouldForceFinalize(Date.now() - runStartedAt, 0),
+        // See cache.ts's ctx field comment: the correlate exemption in the
+        // finalize-window live-call guard is conditional on this, not automatic.
+        // Recomputed live (not the stale elapsed captured at the last prepareStep)
+        // because a long step can cross from "budget available" to "budget gone"
+        // while it is still running.
+        hasCorrelateDispatchBudget: () =>
+          ORCHESTRATOR_WALL_CLOCK_MS - (Date.now() - runStartedAt) >= requiredCompletionMs(),
         onHeartbeat: () => heartbeat?.pulse(),
       }),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call
