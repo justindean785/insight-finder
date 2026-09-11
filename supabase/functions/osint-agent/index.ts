@@ -1082,6 +1082,13 @@ Deno.serve(async (req) => {
         toolCallBudget,
         shouldStopLiveLookups: () =>
           shouldForceFinalize(Date.now() - runStartedAt, 0),
+        // See cache.ts's ctx field comment: the correlate exemption in the
+        // finalize-window live-call guard is conditional on this, not automatic.
+        // Recomputed live (not the stale elapsed captured at the last prepareStep)
+        // because a long step can cross from "budget available" to "budget gone"
+        // while it is still running.
+        hasCorrelateDispatchBudget: () =>
+          ORCHESTRATOR_WALL_CLOCK_MS - (Date.now() - runStartedAt) >= requiredCompletionMs(),
         onHeartbeat: () => heartbeat?.pulse(),
       }),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call
