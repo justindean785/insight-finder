@@ -13,7 +13,7 @@
 
 import { tierOf, TIER_SOURCE_RELIABILITY, TIER_C_ONLY_CONFIDENCE_CAP } from "./tiers.ts";
 import type { ContradictionFinding } from "./contradictions.ts";
-import { canonicalSourceToolIdentity, classifySource, splitSourceLabels, countIndependentClasses, type SourceClass } from "./source-classification.ts";
+import { canonicalSourceToolIdentity, classifySource, splitSourceLabels, countIndependentClasses, type IndependentSourceEntry, type SourceClass } from "./source-classification.ts";
 
 // Back-compat re-export: historically these lived in confidence.ts / artifact_types.ts.
 export { classifySource, type SourceClass };
@@ -647,7 +647,11 @@ export interface DeriveStatusInput {
   requested?: string | null;
   /** the RESOLVED reason_not_confirmed (model-supplied ?? cap). null ⇒ confidence ≥ 90. */
   reasonNotConfirmed: string | null;
-  sourceClasses: SourceClass[];
+  /** Bare classes, or classes carrying the origin that produced them
+   *  (`attributeClassesToOrigins`). Origin-carrying entries dedup by origin, so
+   *  one hostname read through two tools is one independent source. Only
+   *  `countIndependentClasses` reads this field. */
+  sourceClasses: readonly IndependentSourceEntry[];
   contradictions?: unknown[];
   unrelated?: boolean;
   deadEnd?: boolean;
