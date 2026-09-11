@@ -54,6 +54,36 @@ const MAX_RETURN_TEXT = 8_000;
 
 const IMAGE_MIME = /^image\/(png|jpe?g|gif|webp|bmp|heic|heif|avif)$/i;
 const DOC_MIME = /^application\/pdf$/i;
+// Text-ish payloads (markdown/txt/csv/json/html/xml exports) are NOT binary
+// documents: Gemini rejects them as inline_data PDFs with 400 "The document has
+// no pages." Send their decoded text as a text part instead.
+const TEXT_MIME =
+  /^(text\/|application\/(json|xml|x-ndjson|javascript|csv|markdown)|application\/x-yaml)/i;
+const MAX_TEXT_CHARS = 200_000;
+
+/** Sniff real content from bytes when the host lies (application/octet-stream). */
+export function sniffKind(bytes: Uint8Array, mime: string): "pdf" | "image" | "text" | "binary" {
+  if (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) return "pdf";
+  if (IMAGE_MIME.test(mime)) return "image";
+  if (bytes[0] === 0x89 && bytes[1] === 0x50) return "image"; // PNG
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return "image"; // JPEG
+  if (TEXT_MIME.test(mime)) return "text";
+  try {
+    const probe = bytes.subarray(0, 4096);
+    // stream:true tells the decoder this probe may be a truncated chunk, so a
+    // multibyte UTF-8 character whose bytes straddle the 4096 cut point is
+    // buffered rather than rejected as invalid -- a genuinely malformed
+    // sequence anywhere else in the probe still throws. Without this, a
+    // valid-UTF-8 file was misclassified "binary" whenever a multibyte char
+    // happened to fall across the boundary, and later got base64'd and sent
+    // to Gemini as an inline PDF.
+    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(probe, { stream: true });
+    // Reject payloads with NUL / heavy control bytes — those are real binaries.
+    if (!decoded.includes("\u0000")) return "text";
+  } catch { /* not utf-8 */ }
+  return "binary";
+}
+
 
 /** Chunked base64 — avoids a call-stack overflow that a single spread over a
  *  multi-MB Uint8Array would hit. */
@@ -189,9 +219,16 @@ export async function runGeminiVision(
   }
 
   let mime: string;
-  let data: string;
+  let bytes: Uint8Array;
   if (base64) {
-    data = base64.replace(/^data:[^;]+;base64,/, "");
+    const clean = base64.replace(/^data:[^;]+;base64,/, "");
+    try {
+      const bin = atob(clean);
+      bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    } catch {
+      return { ok: false, source: "gemini_vision", mode, error: "gemini_vision: base64 input could not be decoded" };
+    }
     mime = mime_type || (mode === "document" ? "application/pdf" : "image/jpeg");
   } else {
     const fetched = await fetchBytes(url!, mode, signal);
@@ -199,22 +236,41 @@ export async function runGeminiVision(
       return { ok: false, status: fetched.status, source: "gemini_vision", mode, url, error: `gemini_vision ${fetched.error}` };
     }
     mime = mime_type || fetched.mime;
-    data = toBase64(fetched.bytes);
+    bytes = fetched.bytes;
   }
 
-  // Sanity-gate the mime so we don't ship a text/html error page to Gemini as an
-  // "image". Fall back to the mode default when a signed-URL host omits it.
-  if (mode === "image" && !IMAGE_MIME.test(mime)) mime = "image/jpeg";
-  if (mode === "document" && !DOC_MIME.test(mime) && !IMAGE_MIME.test(mime)) mime = "application/pdf";
+  const kind = sniffKind(bytes, mime);
 
   const instruction = mode === "image"
     ? `Read this image.${question ? ` Focus: ${question}.` : ""}${reverse_search ? " Also use search to report where this exact image appears online, if anywhere, and cite the URLs." : ""}`
     : `Read this document and extract its content.${question ? ` Focus: ${question}.` : ""}`;
 
-  const parts: GeminiPart[] = [
-    { text: instruction },
-    { inline_data: { mime_type: mime, data } },
-  ];
+  let parts: GeminiPart[];
+  if (kind === "text" && mode !== "image") {
+    // Markdown/CSV/JSON/HTML/TXT uploads and exports: inline_data as a PDF is
+    // what produced the live 400 "The document has no pages." Pass the decoded
+    // text straight through instead.
+    let text = new TextDecoder("utf-8").decode(bytes);
+    let truncated = false;
+    if (text.length > MAX_TEXT_CHARS) { text = text.slice(0, MAX_TEXT_CHARS); truncated = true; }
+    if (!text.trim()) {
+      return { ok: false, source: "gemini_vision", mode, url, error: "gemini_vision: file is empty" };
+    }
+    parts = [
+      { text: `${instruction}${truncated ? " (content truncated)" : ""}\n\n--- FILE CONTENT ---\n${text}` },
+    ];
+  } else {
+    // Binary path. Sanity-gate the mime so we don't ship a text/html error page
+    // to Gemini as an "image", and trust the sniff over a lying content-type.
+    if (kind === "pdf") mime = "application/pdf";
+    if (mode === "image" && !IMAGE_MIME.test(mime)) mime = "image/jpeg";
+    if (mode === "document" && !DOC_MIME.test(mime) && !IMAGE_MIME.test(mime)) mime = "application/pdf";
+    parts = [
+      { text: instruction },
+      { inline_data: { mime_type: mime, data: toBase64(bytes) } },
+    ];
+  }
+
 
   const res = await geminiVision({
     parts,

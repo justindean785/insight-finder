@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { gemini_vision, runGeminiVision } from "./tools/gemini_vision.ts";
+import { gemini_vision, runGeminiVision, sniffKind } from "./tools/gemini_vision.ts";
 import { classifyToolOutcome } from "./tool-outcome.ts";
 
 // gemini_vision wiring + outcome contract. The tool reads GEMINI_API_KEY at CALL
@@ -114,3 +114,93 @@ Deno.test("gemini_vision: unparseable model reply → failed with raw_text", asy
 function TINY_b64Safe(): string {
   return "data:image/jpeg;base64," + TINY_B64;
 }
+
+// --- sniffKind: the 4096-byte probe boundary must not misclassify valid UTF-8 ---
+//
+// Regression for the live defect: TextDecoder("utf-8", {fatal:true}).decode(probe)
+// threw whenever a multibyte character's bytes straddled the 4096-byte cut point,
+// so a perfectly valid text file was sniffed "binary" and later shipped to Gemini
+// as an inline_data PDF. The fix passes {stream:true} so a truncated trailing
+// sequence is buffered instead of rejected; a genuinely invalid sequence must
+// still fail closed.
+
+const GENERIC_MIME = "application/octet-stream"; // bypasses IMAGE_MIME/DOC_MIME/TEXT_MIME so sniffKind actually probes bytes
+
+/** ASCII 'A' prefix + a multibyte char at `prefixLen` + ASCII 'B' suffix. */
+function buildStraddling(prefixLen: number, charBytes: number[]): Uint8Array {
+  const char = new Uint8Array(charBytes);
+  const out = new Uint8Array(prefixLen + char.length + 256);
+  out.fill(0x41, 0, prefixLen); // 'A'
+  out.set(char, prefixLen);
+  out.fill(0x42, prefixLen + char.length); // 'B'
+  return out;
+}
+
+const EURO_3BYTE = [0xe2, 0x82, 0xac]; // U+20AC, 3-byte UTF-8
+const EMOJI_4BYTE = [0xf0, 0x9f, 0x98, 0x80]; // U+1F600, 4-byte UTF-8
+const CJK_3BYTE = [0xe4, 0xb8, 0xad]; // U+4E2D "中", 3-byte UTF-8
+
+Deno.test("sniffKind: 3-byte UTF-8 char straddling the 4096 probe boundary -> text", () => {
+  // prefixLen 4094/4095 previously truncated the euro sign mid-sequence and threw.
+  for (let prefixLen = 4090; prefixLen <= 4098; prefixLen++) {
+    const bytes = buildStraddling(prefixLen, EURO_3BYTE);
+    assertEquals(sniffKind(bytes, GENERIC_MIME), "text", `prefixLen=${prefixLen}`);
+  }
+});
+
+Deno.test("sniffKind: 4-byte UTF-8 char straddling the 4096 probe boundary -> text", () => {
+  // prefixLen 4093-4095 previously truncated the emoji mid-sequence and threw.
+  for (let prefixLen = 4089; prefixLen <= 4098; prefixLen++) {
+    const bytes = buildStraddling(prefixLen, EMOJI_4BYTE);
+    assertEquals(sniffKind(bytes, GENERIC_MIME), "text", `prefixLen=${prefixLen}`);
+  }
+});
+
+Deno.test("sniffKind: CJK text across every byte alignment near the boundary -> text", () => {
+  // A run of CJK characters guarantees SOME character's bytes straddle byte 4096
+  // for most alignments; sweep the alignment by varying an ASCII pad so the
+  // boundary falls at every possible offset within a 3-byte character.
+  for (let pad = 0; pad < 9; pad++) {
+    const cjkRun: number[] = [];
+    for (let i = 0; i < 200; i++) cjkRun.push(...CJK_3BYTE);
+    const prefix = new Uint8Array(4096 - 300 + pad).fill(0x41);
+    const bytes = new Uint8Array(prefix.length + cjkRun.length);
+    bytes.set(prefix, 0);
+    bytes.set(cjkRun, prefix.length);
+    assertEquals(sniffKind(bytes, GENERIC_MIME), "text", `pad=${pad}`);
+  }
+});
+
+Deno.test("sniffKind: random binary bytes -> binary", () => {
+  const bytes = new Uint8Array(6000);
+  crypto.getRandomValues(bytes);
+  // Force an invalid UTF-8 lead byte so the case can't flake true by chance.
+  bytes[0] = 0xff;
+  bytes[1] = 0xfe;
+  assertEquals(sniffKind(bytes, GENERIC_MIME), "binary");
+});
+
+Deno.test("sniffKind: embedded NUL byte (not at the probe boundary) -> binary", () => {
+  const bytes = new Uint8Array(5000).fill(0x41);
+  bytes[500] = 0x00;
+  assertEquals(sniffKind(bytes, GENERIC_MIME), "binary");
+});
+
+Deno.test("sniffKind: UTF-16LE encoded text -> binary (existing intended classification)", () => {
+  const s = "Hello world, this is plain ASCII text. ".repeat(150);
+  const bytes = new Uint8Array(s.length * 2);
+  for (let i = 0; i < s.length; i++) {
+    bytes[i * 2] = s.charCodeAt(i);
+    bytes[i * 2 + 1] = 0x00; // UTF-16LE's dense NUL bytes trip the NUL rejection
+  }
+  assertEquals(sniffKind(bytes, GENERIC_MIME), "binary");
+});
+
+Deno.test("sniffKind: genuinely malformed UTF-8 away from the boundary still fails closed -> binary", () => {
+  // stream:true must only forgive a truncated TRAILING sequence, never an
+  // actually-invalid sequence sitting in the middle of the probe.
+  const bytes = new Uint8Array(5000).fill(0x41);
+  bytes[500] = 0xc0; // overlong-encoding lead byte, invalid UTF-8
+  bytes[501] = 0x80;
+  assertEquals(sniffKind(bytes, GENERIC_MIME), "binary");
+});
