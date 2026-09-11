@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { ToolbarSlotContext } from "@/hooks/useToolbarSlot";
+import { MenuSelect } from "@/components/ui/compact-controls";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useReviewStates } from "@/lib/review";
 import { tallyAuthority } from "@/lib/authority";
@@ -7,9 +9,7 @@ import { EvidenceMatrixTab } from "@/components/panel/EvidenceMatrixTab";
 import { ClustersTab } from "@/components/panel/ClustersTab";
 import { TimelineTab } from "@/components/panel/TimelineTab";
 import { PivotsTab } from "@/components/panel/PivotsTab";
-import { TabHeader } from "@/components/ui/workspace-primitives";
-import { LayoutGrid, Table2, Network, Clock, GitBranch, Database, type LucideIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { LayoutGrid, Table2, Network, Clock, GitBranch, type LucideIcon } from "lucide-react";
 
 type View = "board" | "table" | "clusters" | "timeline" | "pivots";
 
@@ -103,42 +103,32 @@ export function EvidenceTab({
     </span>
   );
 
+  // The toolbar slot the active lens renders its own controls into, so the tab
+  // has ONE toolbar row instead of a heading row plus a filter row plus a sort
+  // row (131px before the first finding at a 600px panel).
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+
   return (
     <div className="h-full flex flex-col min-h-0">
-      <TabHeader icon={Database} title="Evidence" subtitle={subtitle}>
-        <div className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.035] p-1">
-          {VIEWS.map((v) => {
-            const Icon = v.icon;
-            const active = view === v.key;
-            return (
-              <button
-                key={v.key}
-                type="button"
-                onClick={() => setView(v.key)}
-                title={v.label}
-                aria-label={`Show ${v.label.toLowerCase()} evidence view`}
-                aria-pressed={active}
-                className={cn(
-                  "inline-flex h-7 items-center justify-center gap-1.5 rounded-lg transition-colors",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  // The active lens names itself. Five identical icon-only
-                  // squares meant the analyst had to hover each one to learn
-                  // what it was AND had no way to read which one they were
-                  // looking at — the selected background says "this one" but
-                  // never says what "this" is. Labelling only the active button
-                  // costs ~60px and removes both problems at once.
-                  active ? "px-2.5 bg-white text-black" : "w-8",
-                  !active && "text-muted-foreground hover:text-foreground hover:bg-white/[0.05]",
-                )}
-              >
-                <Icon className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
-                {active && <span className="text-data font-medium">{v.label}</span>}
-              </button>
-            );
-          })}
+      {/* The tab strip already names this section; the heading is kept for
+          screen-reader navigation only. */}
+      <h2 className="sr-only">Evidence</h2>
+      <div className="shrink-0 border-b border-white/[0.07] bg-surface-0 px-3 py-2 sm:px-4">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-3 gap-y-2">
+          <MenuSelect<View>
+            label="View"
+            showLabel={false}
+            align="start"
+            active={view}
+            onChange={(k) => setView(k)}
+            options={VIEWS.map((v) => ({ key: v.key, label: v.label, icon: v.icon }))}
+          />
+          <span className="min-w-0 text-data text-muted-foreground">{subtitle}</span>
+          <div ref={setSlot} className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2" />
         </div>
-      </TabHeader>
+      </div>
 
+      <ToolbarSlotContext.Provider value={slot}>
       <div className="flex-1 min-h-0 overflow-y-auto">
         {/* The board reads its own data so it can own the detail drawer; the
             other lenses share the already-loaded artifact set. */}
@@ -168,6 +158,7 @@ export function EvidenceTab({
           </div>
         )}
       </div>
+      </ToolbarSlotContext.Provider>
     </div>
   );
 }

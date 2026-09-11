@@ -963,6 +963,7 @@ export function CaseReport({
   messages,
   reportType = "full",
   authority,
+  draftMark = null,
 }: {
   seedValue: string | null;
   seedType: string | null;
@@ -974,6 +975,9 @@ export function CaseReport({
    *  the dev harness keep working; when absent the panel is omitted rather than
    *  guessed at. */
   authority?: AuthoritativeFindings;
+  /** Set when the report is NOT report-safe. Marks the document top and bottom,
+   *  inside the print root, so every printed copy carries it. */
+  draftMark?: { readinessPct: number; reasons: string[] } | null;
 }) {
   const display = useMemo(() => extractDisplaySeed(seedValue, seedType), [seedValue, seedType]);
   const subjectProfile = useMemo(() => buildSubjectProfile(artifacts, reviews), [artifacts, reviews]);
@@ -1039,6 +1043,7 @@ export function CaseReport({
 
   return (
     <article id="case-report-print-root" className="case-report-doc text-data leading-relaxed text-foreground/95">
+      {draftMark && <DraftMarking readinessPct={draftMark.readinessPct} reasons={draftMark.reasons} position="top" />}
       <VerdictBanner verdict={verdict} confCount={confidenceFindings.length} indepCount={independenceFindings.length} />
       {/* Header */}
       <header className="report-cover relative overflow-hidden rounded-2xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.72] p-4 sm:p-5">
@@ -1580,6 +1585,7 @@ export function CaseReport({
           </div>
         </>
       )}
+      {draftMark && <DraftMarking readinessPct={draftMark.readinessPct} reasons={draftMark.reasons} position="bottom" />}
     </article>
   );
 }
@@ -1673,6 +1679,34 @@ function MethodCard({ title, body }: { title: string; body: string }) {
     <div className="rounded-xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.58] p-3">
       <div className="text-data font-semibold text-foreground">{title}</div>
       <p className="mt-1 text-data leading-relaxed text-muted-foreground">{body}</p>
+    </div>
+  );
+}
+
+/**
+ * The document marking for a report that is not report-safe — the case-file
+ * equivalent of a classification line, set at the top and the bottom of the
+ * document the way a marked page carries it on both ends. It is a statement
+ * about the DOCUMENT, not a warning about a row, so it lives inside the print
+ * root: Ctrl+P, the PDF button and a screenshot all carry it.
+ */
+function DraftMarking({ readinessPct, reasons, position }: { readinessPct: number; reasons: string[]; position: "top" | "bottom" }) {
+  return (
+    <div
+      role={position === "top" ? "note" : undefined}
+      aria-label={position === "top" ? `Unverified draft. Report readiness ${readinessPct} percent. Not report-safe.` : undefined}
+      aria-hidden={position === "bottom" ? true : undefined}
+      className={cn(
+        "draft-mark flex flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-md border border-[hsl(var(--warning)/0.5)] bg-[hsl(var(--warning)/0.07)] px-3 py-1.5 text-center font-mono text-data font-semibold uppercase tracking-[0.12em] text-[hsl(var(--warning))]",
+        position === "top" ? "mb-3" : "mt-4",
+      )}
+      title={position === "top" ? reasons.join(" ") : undefined}
+    >
+      <span>Unverified draft</span>
+      <span aria-hidden className="opacity-50">·</span>
+      <span className="tabular-nums normal-case tracking-normal">Report readiness {readinessPct}%</span>
+      <span aria-hidden className="opacity-50">·</span>
+      <span>Not report-safe</span>
     </div>
   );
 }

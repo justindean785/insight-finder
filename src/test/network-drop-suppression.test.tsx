@@ -219,10 +219,10 @@ function retryVisible(): boolean {
 async function awaitComposer(): Promise<HTMLTextAreaElement> {
   await waitFor(() =>
     expect(
-      screen.getByLabelText(/investigation query/i),
+      screen.getByLabelText(/investigation request/i),
     ).toBeTruthy(),
   );
-  return screen.getByLabelText(/investigation query/i) as HTMLTextAreaElement;
+  return screen.getByLabelText(/investigation request/i) as HTMLTextAreaElement;
 }
 
 /** Drive a real run to its transport failure through the real send path. */

@@ -1404,6 +1404,13 @@ All colors MUST be HSL.
     color: black !important;
   }
   body.printing-report #case-report-print-root .text-muted-foreground { color: #555 !important; }
+  /* The draft marking prints as a heavy black rule on white — legible on any
+     printer and unmistakable on the page. */
+  body.printing-report #case-report-print-root .draft-mark {
+    background: #fff !important;
+    color: #000 !important;
+    border: 2px solid #000 !important;
+  }
   .no-print { display: none !important; }
 }
 
@@ -2503,4 +2510,33 @@ All colors MUST be HSL.
   .dsr-dot { animation: none; }
   .dsr-caret { animation: none; opacity: 1; }
   .dsr-seal { animation: none; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   WORKSPACE MOTION & SHELL — the calm pass (2026-09-11)
+
+   Motion tokens mirror tailwind.config.ts (`duration-fast|standard|slow`,
+   `ease-standard`). Only opacity and transform animate. Nothing loops at rest:
+   the one looping element below is the live-run dot, and it runs only while a
+   run is live and never under reduced motion.
+   ══════════════════════════════════════════════════════════════════════════ */
+:root {
+  --motion-fast: 120ms;
+  --motion-standard: 180ms;
+  --motion-slow: 240ms;
+  --ease-standard: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+@keyframes ws-fade-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@keyframes ws-live    { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* Tab content crossfade — short enough that it never delays a click. */
+.ws-panel-enter { animation: ws-fade-in var(--motion-standard) var(--ease-standard) both; }
+
+/* Live-run dot. State, not decoration: rendered only for a running case. */
+.case-live-dot { animation: ws-live 1.6s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-panel-enter { animation: none; }
+  .case-live-dot { animation: none; }
 }

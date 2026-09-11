@@ -1,18 +1,18 @@
 import { useMemo } from "react";
 // One number, everywhere. See src/lib/display-confidence.ts.
 import { effectiveConfidence, effectiveConfidenceOrZero } from "@/lib/display-confidence";
-import { useThreadArtifacts, type Artifact } from "@/hooks/useThreadArtifacts";
-import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
+import type { Artifact } from "@/hooks/useThreadArtifacts";
+import type { ToolEvent } from "@/hooks/useThreadToolActivity";
+import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { useReviewStates } from "@/lib/review";
-import { authorityFor, tallyAuthority, LEDGER_SORT_RANK, AUTHORITY_LEGEND, type AuthorityState } from "@/lib/authority";
+import { authorityFor, LEDGER_SORT_RANK, AUTHORITY_LEGEND, type AuthorityState } from "@/lib/authority";
 import { AuthorityChip, AuthoritySpine, AuthorityCaveat, RuleLabel } from "@/components/ui/authority";
-import { TabHeader } from "@/components/ui/workspace-primitives";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { timeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { fmtWallClock } from "@/lib/duration";
 import {
-  LayoutDashboard, Unlink, AlertTriangle, XCircle, ShieldCheck, Timer,
+  Unlink, AlertTriangle, XCircle, ShieldCheck, Timer,
   DatabaseZap, Activity, ArrowRight, type LucideIcon,
 } from "lucide-react";
 
@@ -82,12 +82,30 @@ function Stat({
   );
 }
 
+const NO_ITEMS: Artifact[] = [];
+const NO_EVENTS: ToolEvent[] = [];
+const NO_TALLY: Record<AuthorityState, number> = {
+  verified: 0, infrastructure: 0, probable: 0, review: 0, weak: 0, quarantined: 0, conflict: 0, failed: 0,
+};
+
 export function OverviewTab({ threadId }: { threadId: string }) {
-  const { items } = useThreadArtifacts(threadId);
-  const activity = useThreadToolActivity(threadId);
+  // Every figure on this tab comes from the case snapshot — the same published
+  // version the case bar and the tab badges print. The Overview used to open its
+  // own tool-activity read on every visit, which is why it said 48 while the
+  // long-lived header still said 46.
+  const { snapshot } = useCaseSnapshot();
+  const items = snapshot?.items ?? NO_ITEMS;
+  const tools = snapshot?.tools;
+  const activity = useMemo(() => ({
+    events: tools?.events ?? NO_EVENTS,
+    persistedTotal: tools?.total ?? 0,
+    failed: tools?.failed ?? 0,
+    degraded: tools?.degraded ?? 0,
+  }), [tools]);
   const review = useReviewStates(threadId);
 
-  const tally = useMemo(() => tallyAuthority(items, review.get), [items, review]);
+  // `tallyAuthority` over the snapshot's own rows, computed once by the provider.
+  const tally = snapshot?.authority ?? NO_TALLY;
   const total = items.length;
 
   /** Strongest supported findings — the top of the same ladder the ledger sorts by. */
@@ -156,13 +174,36 @@ export function OverviewTab({ threadId }: { threadId: string }) {
 
   const maxDist = Math.max(1, ...DIST.map((d) => tally[d.state]));
 
+  // Until every source has answered, no tile may print a number: a "0 verified"
+  // that is really "not read yet" is exactly the false reading this tab exists
+  // to prevent.
+  if (!snapshot?.hydrated) {
+    return (
+      <div className="h-full min-h-0 overflow-y-auto" aria-busy="true">
+        <h2 className="sr-only">Overview — syncing case</h2>
+        <div className="mx-auto max-w-6xl space-y-4 p-3 sm:p-4">
+          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5" aria-hidden>
+            {Array.from({ length: 5 }, (_, i) => (
+              <div key={i} className="panel h-[74px] animate-pulse motion-reduce:animate-none" />
+            ))}
+          </div>
+          <div className="panel h-40 animate-pulse motion-reduce:animate-none" aria-hidden />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-full min-h-0 overflow-y-auto">
-      <TabHeader icon={LayoutDashboard} title="Overview" subtitle={`${total} artifact${total === 1 ? "" : "s"} · ${activity.persistedTotal} tool call${activity.persistedTotal === 1 ? "" : "s"}`} />
+      {/* The case bar and tab strip already carry these counts; the heading
+          stays for screen-reader navigation only. */}
+      <h2 className="sr-only">Overview — {total} artifact{total === 1 ? "" : "s"}, {activity.persistedTotal} tool call{activity.persistedTotal === 1 ? "" : "s"}</h2>
 
       <div className="mx-auto max-w-6xl space-y-4 p-3 sm:p-4">
         {/* ── Instrument row ───────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
+        {/* One aligned row on desktop; two balanced columns below it, with the
+            odd last tile spanning both instead of leaving an empty cell. */}
+        <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-5 [&>*:last-child:nth-child(odd)]:col-span-2 lg:[&>*:last-child:nth-child(odd)]:col-span-1">
           <Stat
             icon={ShieldCheck} label="Verified" value={tally.verified}
             tone="text-[hsl(var(--authority-verified))]"

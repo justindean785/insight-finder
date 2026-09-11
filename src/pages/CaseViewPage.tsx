@@ -2,7 +2,8 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
-import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
+import { CaseSnapshotProvider } from "@/components/workspace/CaseSnapshotProvider";
+import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { AppNav } from "@/components/AppNav";
 import { ViewWorkspaceTabs, type ViewCaseTab } from "@/components/workspace/ViewWorkspaceTabs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -47,7 +48,6 @@ export default function CaseViewPage() {
   const [metaError, setMetaError] = useState(false);
 
   const { items } = useThreadArtifacts(threadId ?? "");
-  const activity = useThreadToolActivity(threadId ?? "", user?.id ?? "");
 
   useEffect(() => {
     setTab("report");
@@ -107,7 +107,6 @@ export default function CaseViewPage() {
     );
   }
 
-  const tabCounts = buildWorkspaceTabCounts(items, activity.persistedTotal);
 
   // A thread that never started is not running, however "active" its status
   // column looks — see isRunningThread / CLAUDE.md invariant I-1.
@@ -120,6 +119,7 @@ export default function CaseViewPage() {
   const caseSubtitle = meta?.seed_value?.trim() || meta?.title?.trim() || "";
 
   return (
+    <CaseSnapshotProvider threadId={threadId}>
     <div className="min-h-screen bg-background flex flex-col">
       <AppNav />
       <div className="border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.6),hsl(var(--surface-0)/0.46))] px-4 sm:px-8 py-4">
@@ -154,7 +154,7 @@ export default function CaseViewPage() {
         </div>
       </div>
 
-      <ViewWorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} />
+      <CaseViewTabs active={tab} onChange={setTab} />
 
       <main className="flex-1 min-h-0 relative mx-auto w-full max-w-6xl">
         <div className={cn("absolute inset-0", tab === "report" ? "overflow-y-auto" : "")}>
@@ -185,5 +185,13 @@ export default function CaseViewPage() {
         </div>
       </main>
     </div>
+    </CaseSnapshotProvider>
   );
+}
+
+/** Tab badges from the case snapshot — the same version the Tools and Report tabs read. */
+function CaseViewTabs({ active, onChange }: { active: ViewCaseTab; onChange: (t: ViewCaseTab) => void }) {
+  const { snapshot } = useCaseSnapshot();
+  const tabCounts = buildWorkspaceTabCounts(snapshot?.items ?? [], snapshot?.tools.total ?? 0);
+  return <ViewWorkspaceTabs active={active} onChange={onChange} counts={tabCounts} />;
 }

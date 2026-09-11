@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { deriveToolReason, type ToolTone, type ToolStatus } from "@/lib/tool-run";
 import { toolDisplayName, toolActionLabel } from "@/lib/tool-display";
@@ -24,12 +24,6 @@ export function toolActivityReason(
   const clean = reason.replace(/\s+/g, " ").trim();
   return clean.length > 160 ? `${clean.slice(0, 159)}…` : clean;
 }
-
-// Per-instance channel id. Several components subscribe to the same thread at
-// once (header, tab badges, Tools view); Supabase rejects a second
-// postgres_changes binding on a channel of the same topic, so each hook
-// instance needs its own uniquely-named channel.
-let channelSeq = 0;
 
 export interface ToolEvent {
   id: string;
@@ -74,6 +68,13 @@ export interface ToolEvent {
    * paid call as free and under-reported the run. (Codex review, PR #462.)
    */
   effectiveChargedMicroUsd: number;
+  /**
+   * The investigation stage the runtime stamped on the call
+   * (`input_json.runtime.stage`: TRIAGE, REVIEW, TARGETED_PIVOT, VERIFY,
+   * REPORT). It is the stage the call was DISPATCHED in — the closest persisted
+   * record of how far a run got, which is what an interrupted-run banner needs.
+   */
+  stage: string | null;
 }
 
 export interface ThreadToolActivity {
@@ -88,7 +89,18 @@ export interface ThreadToolActivity {
   skipped: number;
   gated: number;
   degraded: number;
+  /** True until the FIRST load for this scope settles. Never true again after. */
   loading: boolean;
+  /**
+   * The most recent load failed. Whatever was already loaded is KEPT — a
+   * transient failure must not repaint a real count as 0 — and consumers that
+   * have nothing yet must render "unavailable", not "0 tools".
+   */
+  error: boolean;
+  /** Epoch ms of the last SUCCESSFUL load, or null if none has completed. */
+  loadedAt: number | null;
+  /** Force a fresh read from persistence. Resolves once that read has settled. */
+  reload: () => Promise<void>;
 }
 
 /** One persisted tool_usage_log row (the authoritative per-call record). */
@@ -107,13 +119,8 @@ interface ActivityRow {
   charged_micro_usd: number | null;
   /** Attributed list price. The fallback when `charged_micro_usd` is legacy-null. */
   cost_micro_usd: number | null;
-}
-
-interface ActivityState {
-  scopeKey: string;
-  events: ToolEvent[];
-  persistedTotal: number;
-  loading: boolean;
+  /** `input_json->runtime->>stage`, projected server-side so the whole input is not shipped. */
+  stage?: string | null;
 }
 
 const GATED_RE = /gated|missing.?key|not configured|disabled|unavailable|provider disabled/i;
@@ -170,169 +177,345 @@ function cleanReason(errorMsg: string | null): string | undefined {
   return clean.length > 160 ? `${clean.slice(0, 159)}…` : clean;
 }
 
+function toEvent(r: ActivityRow): ToolEvent {
+  const { tone, status } = classifyActivityRow(r.outcome, r.ok, r.error_msg);
+  const rawCharged = typeof r.charged_micro_usd === "number" ? r.charged_micro_usd : null;
+  return {
+    id: r.id,
+    toolName: r.tool_name,
+    displayName: toolDisplayName(r.tool_name),
+    actionLabel: toolActionLabel(r.tool_name),
+    tone,
+    status,
+    at: r.created_at,
+    reason: tone === "ok" ? undefined : cleanReason(r.error_msg),
+    durationMs: typeof r.duration_ms === "number" ? r.duration_ms : null,
+    cached: r.cached === true,
+    chargedMicroUsd: rawCharged,
+    // `ok: r.ok` — the same input summarizeRunCosts uses, deliberately.
+    // Reconstructing from the derived tone instead would be a SECOND
+    // definition of "was this call billable", which is the class of
+    // divergence this extraction exists to end.
+    effectiveChargedMicroUsd: effectiveCharge({
+      ok: r.ok,
+      cached: r.cached,
+      cost_micro_usd: r.cost_micro_usd,
+      charged_micro_usd: rawCharged,
+    }),
+    stage: typeof r.stage === "string" && r.stage.trim() ? r.stage.trim() : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// ONE store per (account, thread) — shared by every consumer.
+//
+// WHY. Until this change every call site (workspace header, tab badges,
+// Overview, Tools, Report) ran its own instance: its own SELECT, its own
+// realtime channel, its own refresh triggers. They could only agree by luck.
+// Production showed the header at 46 tools, the Tools tab badge at 46 and the
+// Tools panel at 48 on the same screen.
+//
+// The deeper cause is that `tool_usage_log` is NOT in the `supabase_realtime`
+// publication (only `artifacts` and `threads` are — migration 20260526140844),
+// so the tool-row subscription every instance relied on never fires. The
+// long-lived header/badge instances therefore froze at their mount count, while
+// the Overview and Tools panels — re-created on every tab open — re-queried and
+// read the true figure. A shared store fixes the first half (every surface reads
+// the SAME rows); the reconcile triggers below fix the second (the rows converge
+// without a tool-row event):
+//
+//   - a `threads` UPDATE (published): the backend pulses `last_heartbeat_at`
+//     roughly every 15s for the life of a run and writes a terminal status at
+//     the end, so a live run reconciles on its own heartbeat;
+//   - this tab's stream ending (`proximity:run-state`);
+//   - the realtime socket re-subscribing after a drop;
+//   - the browser tab regaining visibility (the only signal that survives a
+//     dead socket);
+//   - an explicit `reload()` (the case header's Refresh control).
+//
+// The tool_usage_log binding is kept — should the table ever be published it
+// becomes the fastest path — but on a channel of its OWN, so a server-side
+// rejection of an unpublished table cannot take the `threads` binding down with
+// it.
+// ---------------------------------------------------------------------------
+
+type StoreSnapshot = {
+  events: ToolEvent[];
+  persistedTotal: number;
+  loaded: boolean;
+  error: boolean;
+  loadedAt: number | null;
+};
+
+type Store = StoreSnapshot & {
+  key: string;
+  threadId: string;
+  subscribers: Set<(snap: StoreSnapshot) => void>;
+  channels: ReturnType<typeof supabase.channel>[];
+  refCount: number;
+  inflight: Promise<void> | null;
+  queued: Promise<void> | null;
+  runWasActive: boolean;
+  onRunState: ((event: Event) => void) | null;
+  onVisible: (() => void) | null;
+};
+
+const stores = new Map<string, Store>();
+// Monotonic suffix for channel topics. realtime-js hands back an EXISTING
+// channel for a topic that is still disconnecting, and `subscribe()` is a no-op
+// on it — so a store torn down and re-created within that window (a remount)
+// would inherit a dead subscription if topics were reused.
+let channelSeq = 0;
+
+function snapshotOf(store: Store): StoreSnapshot {
+  return {
+    events: store.events,
+    persistedTotal: store.persistedTotal,
+    loaded: store.loaded,
+    error: store.error,
+    loadedAt: store.loadedAt,
+  };
+}
+
+function publish(store: Store) {
+  const snap = snapshotOf(store);
+  for (const fn of store.subscribers) fn(snap);
+}
+
+async function runLoad(store: Store): Promise<void> {
+  const { data, error, count } = await supabase
+    .from("tool_usage_log")
+    // `outcome` is not in the generated types yet (added by migration) —
+    // cast via unknown below to keep typecheck green.
+    .select("id,tool_name,outcome,ok,error_msg,created_at,duration_ms,cached,charged_micro_usd,cost_micro_usd,stage:input_json->runtime->>stage", { count: "exact" })
+    .eq("thread_id", store.threadId)
+    .order("created_at", { ascending: true });
+  // A store released while its read was in flight must not be written to —
+  // and neither may one that has since been replaced under the same key.
+  if (stores.get(store.key) !== store) return;
+  if (error) {
+    store.loaded = true;
+    store.error = true;
+    publish(store);
+    return;
+  }
+  const rows = (data ?? []) as unknown as ActivityRow[];
+  // Failed calls are part of the record, not noise to be hidden.
+  //
+  // They used to be filtered out of this feed with only a count carried
+  // alongside, which meant an analyst could not see WHICH tool failed or
+  // why. Across this account that suppressed 2,142 of 18,393 calls, and it
+  // put the tab badge (every persisted call) permanently at odds with the
+  // panel (survivors only) — 9 vs 7 on a sample case. A tool that failed is
+  // a coverage gap in the investigation: the thing the analyst most needs
+  // to know before trusting the result.
+  store.events = rows.map(toEvent);
+  store.persistedTotal = count ?? rows.length;
+  store.loaded = true;
+  store.error = false;
+  store.loadedAt = Date.now();
+  publish(store);
+}
+
+/**
+ * Coalesced load. At most one read is in flight per store; a request that
+ * arrives mid-read queues exactly ONE follow-up, so a burst of triggers costs
+ * two reads, never N, and no trigger is lost (the follow-up starts after the
+ * current read and therefore sees everything that caused it).
+ */
+function requestLoad(store: Store): Promise<void> {
+  if (!store.inflight) {
+    store.inflight = runLoad(store).finally(() => {
+      store.inflight = null;
+    });
+    return store.inflight;
+  }
+  if (!store.queued) {
+    store.queued = store.inflight.then(() => {
+      store.queued = null;
+      return requestLoad(store);
+    });
+  }
+  return store.queued;
+}
+
+function acquire(key: string, threadId: string, listener: (snap: StoreSnapshot) => void): Store {
+  let store = stores.get(key);
+  if (!store) {
+    const created: Store = {
+      key,
+      threadId,
+      events: [],
+      persistedTotal: 0,
+      loaded: false,
+      error: false,
+      loadedAt: null,
+      subscribers: new Set(),
+      channels: [],
+      refCount: 0,
+      inflight: null,
+      queued: null,
+      runWasActive: false,
+      onRunState: null,
+      onVisible: null,
+    };
+    store = created;
+    stores.set(key, created);
+    void requestLoad(created);
+
+    const seq = ++channelSeq;
+    const resubscribeReconciler = () => {
+      let subscribed = false;
+      return (status: string) => {
+        if (status !== "SUBSCRIBED") return;
+        // A second SUBSCRIBED means the channel recovered after disconnecting.
+        // Reconcile from persistence in case events were missed while down.
+        if (subscribed) void requestLoad(created);
+        subscribed = true;
+      };
+    };
+
+    const logChannel = supabase
+      .channel(`tool-activity-log-${threadId}-${seq}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "tool_usage_log", filter: `thread_id=eq.${threadId}` },
+        (payload: unknown) => {
+          const change = payload as { new?: { thread_id?: string }; old?: { thread_id?: string } };
+          const changedThreadId = change.new?.thread_id ?? change.old?.thread_id;
+          if (changedThreadId && changedThreadId !== threadId) return;
+          void requestLoad(created);
+        },
+      )
+      .subscribe(resubscribeReconciler());
+
+    const runChannel = supabase
+      .channel(`tool-activity-run-${threadId}-${seq}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "threads", filter: `id=eq.${threadId}` },
+        (payload: unknown) => {
+          const change = payload as { new?: { id?: string } };
+          if (change.new?.id && change.new.id !== threadId) return;
+          // Heartbeat, cost checkpoint or terminal status — every one of them
+          // means the run moved, and this is the only published signal that
+          // does. Coalescing in requestLoad keeps a 15s heartbeat to one read.
+          void requestLoad(created);
+        },
+      )
+      .subscribe(resubscribeReconciler());
+
+    created.channels = [logChannel, runChannel];
+
+    created.onRunState = (event: Event) => {
+      const detail = (event as CustomEvent<{ threadId?: string; running?: boolean }>).detail;
+      if (!detail || detail.threadId !== threadId) return;
+      if (detail.running) {
+        created.runWasActive = true;
+      } else if (created.runWasActive) {
+        created.runWasActive = false;
+        void requestLoad(created);
+      }
+    };
+    window.addEventListener("proximity:run-state", created.onRunState);
+
+    if (typeof document !== "undefined") {
+      created.onVisible = () => {
+        if (document.visibilityState !== "visible") return;
+        void requestLoad(created);
+      };
+      document.addEventListener("visibilitychange", created.onVisible);
+    }
+  }
+  store.subscribers.add(listener);
+  store.refCount += 1;
+  return store;
+}
+
+function release(key: string, listener: (snap: StoreSnapshot) => void) {
+  const store = stores.get(key);
+  if (!store) return;
+  store.subscribers.delete(listener);
+  store.refCount -= 1;
+  if (store.refCount > 0) return;
+  for (const ch of store.channels) supabase.removeChannel(ch);
+  if (store.onRunState) window.removeEventListener("proximity:run-state", store.onRunState);
+  if (store.onVisible && typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", store.onVisible);
+  }
+  stores.delete(key);
+}
+
+/** Test/diagnostic hook: how many live stores (and so channel pairs) exist. */
+export function toolActivityStoreCount(): number {
+  return stores.size;
+}
+
+const EMPTY_EVENTS: ToolEvent[] = [];
+
 /**
  * Authoritative per-thread tool activity, read from `tool_usage_log` (the same
  * source the Tool-Health panel uses) — NOT the chat message parts, which the
  * osint-agent orchestrator does not populate, so the old message-derived feed
- * always read empty. Stays fresh via a realtime subscription on the log.
+ * always read empty.
+ *
+ * `accountId` scopes the store. Pass the signed-in user's id at every call
+ * site: two different scopes are two different stores, and the whole point of
+ * the store is that every surface on the page reads the same one. `undefined`
+ * is kept for legacy callers (it is its own "unscoped" store); an explicit empty
+ * string means auth is unresolved or signed out and nothing is loaded.
  */
 export function useThreadToolActivity(threadId: string, accountId?: string): ThreadToolActivity {
   const scopeKey = `${accountId === undefined ? "unscoped" : accountId}:${threadId}`;
-  const [state, setState] = useState<ActivityState>({
-    scopeKey: "",
-    events: [],
-    persistedTotal: 0,
-    loading: true,
-  });
-  const channelIdRef = useRef<number>();
-  if (channelIdRef.current == null) channelIdRef.current = ++channelSeq;
+  const enabled = Boolean(threadId) && !(accountId !== undefined && !accountId);
+  const [state, setState] = useState<{ scopeKey: string; snap: StoreSnapshot } | null>(null);
 
   useEffect(() => {
-    let alive = true;
-    let loadSeq = 0;
-    let subscribed = false;
-    let runWasActive = false;
-
-    const emptyState = (): ActivityState => ({
-      scopeKey,
-      events: [],
-      persistedTotal: 0,
-      loading: true,
-    });
-    setState(emptyState());
-
-    // An explicitly supplied empty account means auth is unresolved/signed out.
-    // Do not let an old account's count survive while the session changes.
-    if (!threadId || (accountId !== undefined && !accountId)) {
-      setState((current) => ({ ...current, loading: false }));
-      return () => { alive = false; };
+    if (!enabled) {
+      setState({ scopeKey, snap: { events: EMPTY_EVENTS, persistedTotal: 0, loaded: true, error: false, loadedAt: null } });
+      return;
     }
+    const listener = (snap: StoreSnapshot) => setState({ scopeKey, snap });
+    const store = acquire(scopeKey, threadId, listener);
+    // Seed with whatever the shared store already holds, so a panel opened
+    // after the header does not flash "loading" over a count that is known.
+    setState({ scopeKey, snap: snapshotOf(store) });
+    return () => release(scopeKey, listener);
+  }, [enabled, scopeKey, threadId]);
 
-    const load = async () => {
-      const requestSeq = ++loadSeq;
-      const { data, error, count } = await supabase
-        .from("tool_usage_log")
-        // `outcome` is not in the generated types yet (added by migration) —
-        // cast via unknown below to keep typecheck green.
-        .select("id,tool_name,outcome,ok,error_msg,created_at,duration_ms,cached,charged_micro_usd,cost_micro_usd", { count: "exact" })
-        .eq("thread_id", threadId)
-        .order("created_at", { ascending: true });
-      if (!alive || requestSeq !== loadSeq) return;
-      if (error) {
-        setState({ ...emptyState(), loading: false });
-        return;
-      }
-      const rows = (data ?? []) as unknown as ActivityRow[];
-      const out: ToolEvent[] = rows.map((r) => {
-        const { tone, status } = classifyActivityRow(r.outcome, r.ok, r.error_msg);
-        const rawCharged = typeof r.charged_micro_usd === "number" ? r.charged_micro_usd : null;
-        return {
-          id: r.id,
-          toolName: r.tool_name,
-          displayName: toolDisplayName(r.tool_name),
-          actionLabel: toolActionLabel(r.tool_name),
-          tone,
-          status,
-          at: r.created_at,
-          reason: tone === "ok" ? undefined : cleanReason(r.error_msg),
-          durationMs: typeof r.duration_ms === "number" ? r.duration_ms : null,
-          cached: r.cached === true,
-          chargedMicroUsd: rawCharged,
-          // `ok: r.ok` — the same input summarizeRunCosts uses, deliberately.
-          // Reconstructing from the derived tone instead would be a SECOND
-          // definition of "was this call billable", which is the class of
-          // divergence this extraction exists to end.
-          effectiveChargedMicroUsd: effectiveCharge({
-            ok: r.ok,
-            cached: r.cached,
-            cost_micro_usd: r.cost_micro_usd,
-            charged_micro_usd: rawCharged,
-          }),
-        };
-      });
-      // Failed calls are part of the record, not noise to be hidden.
-      //
-      // They used to be filtered out of this feed with only a count carried
-      // alongside, which meant an analyst could not see WHICH tool failed or
-      // why. Across this account that suppressed 2,142 of 18,393 calls, and it
-      // put the tab badge (every persisted call) permanently at odds with the
-      // panel (survivors only) — 9 vs 7 on a sample case. A tool that failed is
-      // a coverage gap in the investigation: the thing the analyst most needs
-      // to know before trusting the result.
-      setState({
-        scopeKey,
-        events: out,
-        persistedTotal: count ?? rows.length,
-        loading: false,
-      });
-    };
-    void load();
+  const reload = useCallback(() => {
+    const store = stores.get(scopeKey);
+    return store ? requestLoad(store) : Promise.resolve();
+  }, [scopeKey]);
 
-    const reloadForThread = (payload: unknown) => {
-      const change = payload as {
-        new?: { thread_id?: string };
-        old?: { thread_id?: string };
-      };
-      const changedThreadId = change.new?.thread_id ?? change.old?.thread_id;
-      if (changedThreadId && changedThreadId !== threadId) return;
-      void load();
-    };
+  // Effects run after render. Keying the snapshot by scope prevents one frame of
+  // the previous thread/account count from leaking during that transition.
+  const snap: StoreSnapshot = state && state.scopeKey === scopeKey
+    ? state.snap
+    : { events: EMPTY_EVENTS, persistedTotal: 0, loaded: false, error: false, loadedAt: null };
+  const { events } = snap;
 
-    const reloadOnCompletion = (payload: unknown) => {
-      const change = payload as { new?: { id?: string; status?: string | null } };
-      if (change.new?.id && change.new.id !== threadId) return;
-      if (change.new?.status === "finished" || change.new?.status === "stopped") {
-        void load();
-      }
-    };
-
-    const ch = supabase
-      .channel(`tool-activity-${threadId}-${channelIdRef.current}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "tool_usage_log", filter: `thread_id=eq.${threadId}` }, reloadForThread)
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "threads", filter: `id=eq.${threadId}` }, reloadOnCompletion)
-      .subscribe((status) => {
-        if (status !== "SUBSCRIBED") return;
-        // A second SUBSCRIBED means the channel recovered after disconnecting.
-        // Reconcile from persistence in case tool-row events were missed.
-        if (subscribed) void load();
-        subscribed = true;
-      });
-
-    const onRunState = (event: Event) => {
-      const detail = (event as CustomEvent<{ threadId?: string; running?: boolean }>).detail;
-      if (!detail || detail.threadId !== threadId) return;
-      if (detail.running) {
-        runWasActive = true;
-      } else if (runWasActive) {
-        runWasActive = false;
-        void load();
-      }
-    };
-    window.addEventListener("proximity:run-state", onRunState);
-
-    return () => {
-      alive = false;
-      window.removeEventListener("proximity:run-state", onRunState);
-      supabase.removeChannel(ch);
-    };
-  }, [accountId, scopeKey, threadId]);
-
-  // Effects reset after render. Keying the returned snapshot prevents one frame
-  // of the previous thread/account count from leaking during that transition.
-  const current = state.scopeKey === scopeKey
-    ? state
-    : { scopeKey, events: [], persistedTotal: 0, loading: true };
-  const { events, persistedTotal, loading } = current;
+  let failed = 0, ok = 0, skipped = 0, gated = 0, degraded = 0;
+  for (const e of events) {
+    if (e.status === "failed") failed++;
+    else if (e.status === "succeeded") ok++;
+    else if (e.status === "skipped") skipped++;
+    else if (e.status === "gated") gated++;
+    else if (e.status === "degraded") degraded++;
+  }
 
   return {
     events,
-    persistedTotal,
+    persistedTotal: snap.persistedTotal,
     total: events.length,
-    failed: events.filter((e) => e.status === "failed").length,
-    ok: events.filter((e) => e.status === "succeeded").length,
-    skipped: events.filter((e) => e.status === "skipped").length,
-    gated: events.filter((e) => e.status === "gated").length,
-    degraded: events.filter((e) => e.status === "degraded").length,
-    loading,
+    failed,
+    ok,
+    skipped,
+    gated,
+    degraded,
+    loading: !snap.loaded,
+    error: snap.error,
+    loadedAt: snap.loadedAt,
+    reload,
   };
 }

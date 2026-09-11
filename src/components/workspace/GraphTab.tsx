@@ -17,7 +17,7 @@ import "reactflow/dist/style.css";
 import { supabase } from "@/integrations/supabase/client";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { GROUP_LABEL, type Group, type ReviewAdjustment } from "@/lib/intel";
-import { useReviewStates } from "@/lib/review";
+import { useReviewStates, type ReviewState } from "@/lib/review";
 import {
   buildEntityGraph,
   type EdgeType,
@@ -26,9 +26,12 @@ import {
 } from "@/lib/entity-graph";
 import { ConfidenceMeter } from "@/components/investigation/primitives";
 import { CopyButton } from "@/components/ui/workspace-primitives";
-import { AuthorityLegend } from "@/components/ui/authority";
+import { AuthorityLegend, AuthorityChip } from "@/components/ui/authority";
+import { authorityFor } from "@/lib/authority";
+import { SubTabs } from "@/components/ui/compact-controls";
+import { timeAgo } from "@/lib/time";
 import { EmptyState } from "@/components/panel/EmptyState";
-import { Activity, AlertTriangle, ChevronDown, Share2, Sparkles, X } from "lucide-react";
+import { Activity, AlertTriangle, List, Share2, Sparkles, Waypoints, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { captureError } from "@/lib/telemetry";
 
@@ -65,7 +68,7 @@ const EDGE_STYLE: Record<EdgeType, { stroke: string; dashed: boolean; baseOpacit
 const EDGE_LABEL: Record<EdgeType, string> = {
   identity: "Identity link",
   "shared-infra": "Shared infrastructure",
-  "seed-discovery": "Discovered in run",
+  "seed-discovery": "Discovered in run (provenance only)",
 };
 /** What each line CLAIMS — the distinction between a finding and a coincidence. */
 const EDGE_HINT: Record<EdgeType, string> = {
@@ -186,8 +189,20 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
 
 const nodeTypes = { entity: EntityNode };
 
-function toRfNodes(graph: EntityGraph, hidden: Set<Group>): Node<EntityNodeData>[] {
-  const visible = graph.nodes.filter((n) => n.isSeed || !hidden.has(n.group));
+/** Nodes with at least one REAL relationship (identity or shared infrastructure). */
+function linkedNodeIds(graph: EntityGraph): Set<string> {
+  const ids = new Set<string>();
+  for (const e of graph.edges) {
+    if (e.type === "seed-discovery") continue;
+    ids.add(e.source);
+    ids.add(e.target);
+  }
+  return ids;
+}
+
+function toRfNodes(graph: EntityGraph, hidden: Set<Group>, showIsolated = true): Node<EntityNodeData>[] {
+  const linked = linkedNodeIds(graph);
+  const visible = graph.nodes.filter((n) => (n.isSeed || !hidden.has(n.group)) && (showIsolated || n.isSeed || linked.has(n.id)));
   const parts = splitSharedSuffixes(visible.map((n) => n.label));
   return visible
     .map((n) => ({
@@ -211,8 +226,13 @@ function toRfNodes(graph: EntityGraph, hidden: Set<Group>): Node<EntityNodeData>
     }));
 }
 
-function toRfEdges(graph: EntityGraph, hidden: Set<Group>, selected: string | null, showDiscovery: boolean): Edge[] {
-  const visible = new Set(graph.nodes.filter((n) => n.isSeed || !hidden.has(n.group)).map((n) => n.id));
+function toRfEdges(graph: EntityGraph, hidden: Set<Group>, selected: string | null, showDiscovery: boolean, showIsolated = true): Edge[] {
+  const linked = linkedNodeIds(graph);
+  const visible = new Set(
+    graph.nodes
+      .filter((n) => (n.isSeed || !hidden.has(n.group)) && (showIsolated || n.isSeed || linked.has(n.id)))
+      .map((n) => n.id),
+  );
   return graph.edges
     .filter((e) => visible.has(e.source) && visible.has(e.target))
     // "seed-discovery" is PROVENANCE, not a relationship claim (see EDGE_HINT):
@@ -253,6 +273,16 @@ export function GraphTab({ threadId }: { threadId: string }) {
   const [hidden, setHidden] = useState<Set<Group>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
   const [showDiscovery, setShowDiscovery] = useState(false);
+  // Proven links first. Entities tied to nothing but "found in this run" are an
+  // optional layer, not the default picture: 44 entities with ONE real link
+  // drew as a field of equal-weight chips that implied relationships nobody
+  // had shown.
+  const [showIsolated, setShowIsolated] = useState(false);
+  // A readable list is the default on a phone; the canvas scaled to 390px was
+  // not inspectable. Desktop defaults to the canvas.
+  const [mode, setMode] = useState<"graph" | "list">(() =>
+    typeof window !== "undefined" && window.innerWidth < 768 ? "list" : "graph",
+  );
 
   useEffect(() => {
     let alive = true;
@@ -352,13 +382,13 @@ export function GraphTab({ threadId }: { threadId: string }) {
   useEffect(() => {
     setRfNodes((prev) => {
       const measured = new Map(prev.map((p) => [p.id, { width: p.width, height: p.height }]));
-      return toRfNodes(graph, hidden).map((n) => {
+      return toRfNodes(graph, hidden, showIsolated).map((n) => {
         const m = measured.get(n.id);
         return m?.width != null && m?.height != null ? { ...n, width: m.width, height: m.height } : n;
       });
     });
-  }, [graph, hidden, setRfNodes]);
-  useEffect(() => { setRfEdges(toRfEdges(graph, hidden, selected, showDiscovery)); }, [graph, hidden, selected, showDiscovery, setRfEdges]);
+  }, [graph, hidden, showIsolated, setRfNodes]);
+  useEffect(() => { setRfEdges(toRfEdges(graph, hidden, selected, showDiscovery, showIsolated)); }, [graph, hidden, selected, showDiscovery, showIsolated, setRfEdges]);
 
   // Fit once the (async) nodes for a case are present; re-fits when the case
   // changes. Group-filter toggles keep the same threadId so they don't re-fit.
@@ -378,6 +408,12 @@ export function GraphTab({ threadId }: { threadId: string }) {
     });
 
   const selectedNode = selected ? nodeById.get(selected) ?? null : null;
+  const selectedAuthority = selectedNode?.art ? authorityFor(selectedNode.art, review.get(selectedNode.art.id)) : null;
+  const linkedIds = useMemo(() => linkedNodeIds(graph), [graph]);
+  const isolatedCount = useMemo(
+    () => graph.nodes.filter((n) => !n.isSeed && !linkedIds.has(n.id)).length,
+    [graph, linkedIds],
+  );
   const connections = useMemo(() => {
     if (!selected) return [];
     return graph.edges
@@ -400,70 +436,104 @@ export function GraphTab({ threadId }: { threadId: string }) {
   }
 
   return (
-    <div className="h-full flex flex-col min-h-0 rounded-2xl border border-white/8 bg-[linear-gradient(180deg,hsl(var(--film)/0.04),hsl(var(--film)/0.015))] shadow-[0_24px_90px_-50px_rgba(0,0,0,0.98)]">
-      {/* Group filters + run-level warnings */}
-      <div className="shrink-0 border-b border-white/[0.08] px-2.5 py-2 sm:px-4 bg-[linear-gradient(180deg,hsl(var(--film)/0.03),transparent)]">
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 sm:flex-wrap sm:overflow-visible">
+    <div className="h-full flex flex-col min-h-0 bg-surface-0">
+      {/* One toolbar: view mode, layers, category filters — then the run's
+          warnings, in full. */}
+      <div className="shrink-0 border-b border-white/[0.08] px-2.5 py-2 sm:px-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <SubTabs<"graph" | "list">
+            label="Graph view"
+            options={[{ key: "graph", label: "Graph", icon: Waypoints }, { key: "list", label: "List", icon: List }]}
+            active={mode}
+            onChange={setMode}
+          />
+          <span aria-hidden className="hidden h-5 w-px bg-white/[0.08] sm:block" />
+          {isolatedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowIsolated((v) => !v)}
+              aria-pressed={showIsolated}
+              title="Entities found in this run that share no selector with anything else. Found together is not related."
+              className={cn(
+                "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-data font-medium transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11",
+                showIsolated ? "bg-surface-3 text-foreground shadow-e1" : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
+              )}
+            >
+              Isolated leads <span className="font-mono tabular-nums text-muted-foreground">{isolatedCount}</span>
+            </button>
+          )}
+          {graph.stats.nodeCount > 1 && mode === "graph" && (
+            <button
+              type="button"
+              onClick={() => setShowDiscovery((v) => !v)}
+              aria-pressed={showDiscovery}
+              title="Draw every 'discovered in run' line. Provenance only — not a relationship."
+              className={cn(
+                "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-data font-medium transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11",
+                showDiscovery ? "bg-surface-3 text-foreground shadow-e1" : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
+              )}
+            >
+              Discovery lines
+            </button>
+          )}
+          <div className="ml-auto flex items-center gap-1">
+            <AuthorityLegend />
+          </div>
+        </div>
+        {/* One scrollable row on a phone (the right edge fades to say "more"),
+            wrapping rows from `sm` up. Five wrapped rows of chips at 390px
+            pushed the relationship list off the screen. */}
+        <div
+          className="mt-2 flex items-center gap-1.5 overflow-x-auto pb-0.5 [mask-image:linear-gradient(90deg,#000_calc(100%-24px),transparent)] [scrollbar-width:none] sm:flex-wrap sm:overflow-visible sm:[mask-image:none] [&::-webkit-scrollbar]:hidden"
+          role="group"
+          aria-label="Entity categories"
+        >
           {presentGroups.map((g) => {
             const off = hidden.has(g);
             return (
               <button
                 key={g}
+                type="button"
                 onClick={() => toggleGroup(g)}
                 aria-pressed={!off}
                 className={cn(
-                  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-data font-medium transition-colors",
+                  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-data font-medium transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-10",
                   off
-                    ? "border-transparent text-muted-foreground/45 line-through hover:text-muted-foreground"
+                    ? "border-transparent text-muted-foreground/55 line-through hover:text-muted-foreground"
                     : "border-white/10 bg-surface-1/80 text-foreground",
                 )}
                 title={off ? `Show ${GROUP_LABEL[g]}` : `Hide ${GROUP_LABEL[g]}`}
               >
                 <span className="h-2 w-2 rounded-[2px]" style={{ backgroundColor: GROUP_COLOR[g], opacity: off ? 0.4 : 1 }} />
                 {GROUP_LABEL[g]}
-                <span className="font-mono text-eyebrow tabular-nums text-muted-foreground">{groupCounts.get(g)}</span>
+                <span className="font-mono tabular-nums text-muted-foreground">{groupCounts.get(g)}</span>
               </button>
             );
           })}
-          {/* Provenance edges are noise at rest and signal on demand — one
-              toggle, sitting with the other visibility controls. */}
-          {graph.stats.nodeCount > 1 && (
-            <button
-              onClick={() => setShowDiscovery((v) => !v)}
-              aria-pressed={showDiscovery}
-              title={
-                showDiscovery
-                  ? "Hide discovery links — they record that an entity was found in this run, not that it is related to anything"
-                  : "Show every discovery link (provenance, not relationships)"
-              }
-              className={cn(
-                "ml-auto inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border px-2 text-data font-medium transition-colors",
-                showDiscovery
-                  ? "border-white/10 bg-surface-1/80 text-foreground"
-                  : "border-transparent text-muted-foreground/55 hover:text-muted-foreground",
-              )}
-            >
-              <svg width="16" height="6" viewBox="0 0 16 6" aria-hidden className="shrink-0">
-                <line x1="0" y1="3" x2="16" y2="3" stroke="currentColor" strokeWidth="1.5" opacity="0.8" />
-              </svg>
-              Discovery links
-            </button>
-          )}
         </div>
         {graph.warnings.length > 0 && (
-          <details className="group mt-2">
-            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-data text-[hsl(var(--warning))] [&::-webkit-details-marker]:hidden">
-              <AlertTriangle className="h-3 w-3 shrink-0" />
-              <span className="min-w-0 flex-1 truncate">{graph.warnings[0]}</span>
-              <ChevronDown className="h-3 w-3 shrink-0 opacity-60 transition-transform group-open:rotate-180" />
-            </summary>
-            <p className="mt-1 pl-[18px] text-data leading-relaxed text-muted-foreground">{graph.warnings[0]}</p>
-          </details>
+          <ul className="mt-2 space-y-1">
+            {graph.warnings.map((w) => (
+              <li key={w} className="flex items-start gap-1.5 text-[13px] leading-snug text-[hsl(var(--warning))]">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+                <span className="min-w-0">{w}</span>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
 
-      <div className="relative flex-1 min-h-0">
-        <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_18%_14%,hsl(var(--brand)/0.12),transparent_42%),radial-gradient(circle_at_82%_78%,hsl(var(--intel-violet)/0.07),transparent_40%)]" />
+      {mode === "list" && (
+        <GraphList
+          graph={graph}
+          hidden={hidden}
+          showIsolated={showIsolated}
+          linkedIds={linkedIds}
+          review={review.get}
+        />
+      )}
+
+      <div className={cn("relative flex-1 min-h-0", mode === "list" && "hidden")}>
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}
@@ -536,31 +606,42 @@ export function GraphTab({ threadId }: { threadId: string }) {
             </div>
             {!selectedNode.isSeed && (
               <dl className="mt-3 space-y-2 text-data">
+                {selectedAuthority && (
+                  <DetailRow label="Authority"><AuthorityChip view={selectedAuthority} /></DetailRow>
+                )}
                 <DetailRow label="Confidence"><ConfidenceMeter value={selectedNode.confidence} width={82} /></DetailRow>
-                <DetailRow label="Connections"><span className="font-mono text-foreground/90">{connections.length}</span></DetailRow>
+                {selectedNode.art?.source && <DetailRow label="Source"><span className="font-mono text-foreground/90">{selectedNode.art.source}</span></DetailRow>}
+                {selectedNode.art?.created_at && <DetailRow label="Captured"><span className="text-foreground/90">{timeAgo(selectedNode.art.created_at)}</span></DetailRow>}
+                {selectedAuthority && (
+                  <DetailRow label="May link identity">
+                    <span className={selectedAuthority.inert ? "text-[hsl(var(--warning))]" : "text-foreground/90"}>
+                      {selectedAuthority.inert ? "No — withheld" : "Yes"}
+                    </span>
+                  </DetailRow>
+                )}
               </dl>
             )}
-            {/* The auditable WHY behind every link — straight from shared-selector analysis. */}
+            {/* Typed relationships — the auditable WHY behind every line, and an
+                explicit statement when a line is provenance, not a relationship. */}
             <div className="mt-3">
-              <div className="text-micro font-semibold tracking-normal text-muted-foreground/80">Connections</div>
-              {connections.length === 0 ? (
-                <p className="mt-1 text-data text-muted-foreground">No links beyond the seed.</p>
+              <div className="text-micro font-semibold tracking-normal text-muted-foreground/80">Relationships</div>
+              {connections.filter((c) => c.type !== "seed-discovery").length === 0 ? (
+                <p className="mt-1 text-data text-muted-foreground">
+                  None proven. {connections.some((c) => c.type === "seed-discovery") ? "It was found during this run, which is provenance, not a relationship." : ""}
+                </p>
               ) : (
                 <ul className="mt-1.5 space-y-1.5">
-                  {connections.slice(0, 8).map((c) => (
+                  {connections.filter((c) => c.type !== "seed-discovery").slice(0, 8).map((c) => (
                     <li key={c.id} className="rounded-lg border border-white/8 bg-white/[0.03] p-2">
                       <div className="flex items-center gap-1.5">
-                        {c.bridge && <Sparkles className="h-3 w-3 shrink-0 text-[hsl(var(--warning))]" />}
+                        {c.bridge && <Sparkles className="h-3 w-3 shrink-0 text-[hsl(var(--warning))]" aria-hidden />}
                         <span className="truncate font-mono text-data text-foreground/90">{shorten(c.otherLabel, 28)}</span>
                       </div>
                       <div className="mt-0.5 text-micro leading-snug text-muted-foreground">
-                        <span className="text-foreground/70">{EDGE_LABEL[c.type]}{c.bridge ? " · bridge" : ""}</span> — {c.reason}
+                        <span className="text-foreground/75">{EDGE_LABEL[c.type]}{c.bridge ? " · bridge" : ""}</span> — {c.reason}
                       </div>
                     </li>
                   ))}
-                  {connections.length > 8 && (
-                    <li className="text-micro text-muted-foreground">+{connections.length - 8} more…</li>
-                  )}
                 </ul>
               )}
             </div>
@@ -577,8 +658,8 @@ export function GraphTab({ threadId }: { threadId: string }) {
           claim — a solid line asserting shared identity and a dashed one meaning
           "these merely sit on the same host" is the difference between a finding
           and a coincidence. */}
-      <div className="shrink-0 border-t border-white/[0.08] px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 bg-[linear-gradient(0deg,hsl(var(--film)/0.03),transparent)]">
-        {(Object.keys(EDGE_STYLE) as EdgeType[]).map((t) => (
+      <div className="shrink-0 border-t border-white/[0.08] px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+        {mode === "graph" && (Object.keys(EDGE_STYLE) as EdgeType[]).map((t) => (
           <span key={t} className="inline-flex items-center gap-1.5 text-data text-muted-foreground" title={EDGE_HINT[t]}>
             <svg width="18" height="6" viewBox="0 0 18 6" aria-hidden className="shrink-0">
               <line
@@ -598,7 +679,6 @@ export function GraphTab({ threadId }: { threadId: string }) {
             {graph.stats.nodeCount} entit{graph.stats.nodeCount === 1 ? "y" : "ies"} · {graph.stats.realEdgeCount} real link{graph.stats.realEdgeCount === 1 ? "" : "s"} · {graph.stats.clusterCount} cluster{graph.stats.clusterCount === 1 ? "" : "s"}
             {graph.stats.bridgeCount > 0 && <> · {graph.stats.bridgeCount} bridge{graph.stats.bridgeCount > 1 ? "s" : ""}</>}
           </span>
-          <AuthorityLegend />
         </div>
       </div>
     </div>
@@ -610,6 +690,89 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
     <div className="flex items-center justify-between gap-3">
       <dt className="shrink-0 text-muted-foreground">{label}</dt>
       <dd className="min-w-0 text-right">{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * The relationship LIST — the default on a phone, and a readable alternative
+ * to the canvas anywhere. Linked entities come first with every typed
+ * relationship spelled out; entities tied to nothing but the run sit in their
+ * own section, labelled as what they are: found together, not related.
+ */
+function GraphList({
+  graph,
+  hidden,
+  showIsolated,
+  linkedIds,
+  review,
+}: {
+  graph: EntityGraph;
+  hidden: Set<Group>;
+  showIsolated: boolean;
+  linkedIds: Set<string>;
+  review: (id: string) => ReviewState;
+}) {
+  const byId = new Map(graph.nodes.map((n) => [n.id, n] as const));
+  const visible = graph.nodes.filter((n) => !n.isSeed && !hidden.has(n.group));
+  const linked = visible.filter((n) => linkedIds.has(n.id));
+  const isolated = visible.filter((n) => !linkedIds.has(n.id));
+
+  const row = (n: EntityNodeModel) => {
+    const view = n.art ? authorityFor(n.art, review(n.art.id)) : null;
+    const rels = graph.edges.filter((e) => e.type !== "seed-discovery" && (e.source === n.id || e.target === n.id));
+    return (
+      <li key={n.id} className="px-4 py-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="h-2 w-2 shrink-0 rounded-[2px]" style={{ backgroundColor: n.conflict ? "hsl(var(--danger))" : GROUP_COLOR[n.group] }} aria-hidden />
+          <span className="min-w-0 break-all font-mono text-[13px] text-foreground">{n.art?.value ?? n.label}</span>
+          <span className="text-micro text-muted-foreground">{n.kind}</span>
+          {view && <AuthorityChip view={view} className="ml-auto" />}
+        </div>
+        {rels.length > 0 ? (
+          <ul className="mt-1.5 space-y-1 pl-4">
+            {rels.map((e) => {
+              const other = byId.get(e.source === n.id ? e.target : e.source);
+              return (
+                <li key={e.id} className="text-[13px] leading-snug text-muted-foreground">
+                  <span className="text-foreground/80">{EDGE_LABEL[e.type]}</span>
+                  {" "}with <span className="font-mono text-foreground/85">{other?.art?.value ?? other?.label ?? "the seed"}</span> — {e.reason}
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="mt-1 pl-4 text-[13px] text-muted-foreground">Found in this run. No relationship shown.</p>
+        )}
+      </li>
+    );
+  };
+
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <section aria-labelledby="graph-list-linked">
+        <h3 id="graph-list-linked" className="sticky top-0 z-[1] border-b border-white/[0.06] bg-surface-0 px-4 py-2 text-data font-medium text-muted-foreground">
+          Linked entities <span className="font-mono tabular-nums">{linked.length}</span>
+        </h3>
+        {linked.length === 0 ? (
+          <p className="px-4 py-3 text-[13px] text-muted-foreground">No entity shares a selector with another yet. Corroborating pivots form links.</p>
+        ) : (
+          <ul className="divide-y divide-white/[0.06]">{linked.map(row)}</ul>
+        )}
+      </section>
+      {isolated.length > 0 && (
+        <section aria-labelledby="graph-list-isolated" className="border-t border-white/[0.06]">
+          <h3 id="graph-list-isolated" className="px-4 py-2 text-data font-medium text-muted-foreground">
+            Isolated leads <span className="font-mono tabular-nums">{isolated.length}</span>
+            <span className="ml-2 font-normal">— found together in this run, not related</span>
+          </h3>
+          {showIsolated ? (
+            <ul className="divide-y divide-white/[0.06]">{isolated.map(row)}</ul>
+          ) : (
+            <p className="px-4 pb-3 text-[13px] text-muted-foreground">Hidden. Turn on “Isolated leads” above to list them.</p>
+          )}
+        </section>
+      )}
     </div>
   );
 }

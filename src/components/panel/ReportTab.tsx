@@ -1,13 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
+import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { selectAuthoritativeFindings } from "@/lib/authoritative-findings";
 import { tallyAuthority } from "@/lib/authority";
 import { buildReportMarkdown, buildEvidenceMatrixMarkdown } from "@/lib/intel";
 import { useReviewStates } from "@/lib/review";
 import { useThreadMessages } from "@/hooks/useThreadMessages";
 import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
+import { buildConfidenceProfile, REPORT_READY_MIN_READINESS } from "@/lib/confidence-dimensions";
+import {
+  evaluateExportGate,
+  exportFilename,
+  markMarkdown,
+  wrapJsonExport,
+  DRAFT_MARK,
+  type ExportGate,
+} from "@/lib/report-export-gate";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -18,34 +28,58 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Copy, FileText, Table, Braces, ScrollText, Download, Printer, ShieldAlert } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Copy, FileText, Table, Braces, ScrollText, Download, Printer, ShieldAlert, ShieldCheck, ChevronDown, Info, Lock } from "lucide-react";
 import { toast } from "sonner";
-import { TabHeader } from "@/components/ui/workspace-primitives";
+import { SubTabs } from "@/components/ui/compact-controls";
 import { ConfidenceRadar } from "@/components/workspace/ConfidenceRadar";
 import { EmptyState } from "./EmptyState";
 import { CaseReport, type ReportType } from "./CaseReport";
 import { extractDisplaySeed } from "@/lib/seed";
 import { cn } from "@/lib/utils";
 
-const REPORT_TYPES: { id: ReportType; label: string; soon?: boolean }[] = [
-  { id: "full", label: "Full Dossier" },
-  { id: "brief", label: "Executive Brief" },
+const REPORT_TYPES: { key: ReportType; label: string }[] = [
+  { key: "full", label: "Full Dossier" },
+  { key: "brief", label: "Executive Brief" },
 ];
-const REPORT_TYPES_SOON: { label: string }[] = [
-  { label: "LE / Court" },
-  { label: "OSINT Technical" },
-  { label: "Lead Brief" },
-];
+/** Formats that are planned but not built. Named in one quiet note, not as three dead buttons. */
+const REPORT_TYPES_SOON = ["LE / Court", "OSINT Technical", "Lead Brief"];
+
+type ExportFormat = "copy-md" | "md" | "pdf" | "matrix" | "json";
+
+const FORMAT_LABEL: Record<ExportFormat, string> = {
+  "copy-md": "Copy markdown",
+  md: "Markdown (.md)",
+  pdf: "PDF (print)",
+  matrix: "Evidence matrix",
+  json: "Raw JSON",
+};
 
 export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts: Artifact[] }) {
-  const [seed, setSeed] = useState<{ value: string | null; type: string | null }>({ value: null, type: null });
-  const [jsonGateOpen, setJsonGateOpen] = useState(false);
-  const [jsonGateAck, setJsonGateAck] = useState(false);
   const [reportType, setReportType] = useState<ReportType>("full");
+  const [pending, setPending] = useState<ExportFormat | null>(null);
+  const [ack, setAck] = useState(false);
+  // A draft acknowledged for THIS version of the case is not re-asked for every
+  // export of that same version; any change to the case asks again.
+  const ackedVersion = useRef<number | null>(null);
 
+  const caseApi = useOptionalCaseSnapshot();
+  const snapshot = caseApi?.snapshot ?? null;
+
+  const [seedFallback, setSeedFallback] = useState<{ value: string | null; type: string | null }>({ value: null, type: null });
+  const seed = snapshot ? snapshot.seed : seedFallback;
   useEffect(() => {
-    // Guard against a late response from a previous thread overwriting the
-    // current thread's seed when the user switches threads quickly.
+    if (snapshot) return;
+    // Standalone (no provider): read the seed directly. Guard against a late
+    // response from a previous thread overwriting the current thread's seed.
     let alive = true;
     supabase
       .from("threads")
@@ -54,23 +88,18 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
       .maybeSingle()
       .then(({ data }) => {
         if (!alive) return;
-        const d = data as { seed_value: string | null; seed_type: string | null } | null;
-        setSeed({ value: d?.seed_value ?? null, type: d?.seed_type ?? null });
+        setSeedFallback({ value: data?.seed_value ?? null, type: data?.seed_type ?? null });
       });
     return () => { alive = false; };
-  }, [threadId]);
+  }, [threadId, snapshot]);
 
   const messages = useThreadMessages(threadId);
 
-  // Analyst review verdicts (Verified/Rejected/Key/Recheck) — these previously
-  // never reached the report; load them and thread them into both the rendered
-  // CaseReport and the markdown export so a marked artifact reads the same in
-  // Evidence and Report.
+  // Analyst review verdicts (Verified/Rejected/Key/Recheck) — threaded into both
+  // the rendered CaseReport and every export so a marked artifact reads the same
+  // in Evidence and Report.
   const review = useReviewStates(threadId);
-  // #499 — the retrieval signals for the authority panel. `useThreadArtifacts` is a
-  // module-level store keyed by threadId, so this subscribes to the SAME snapshot
-  // the parent already loaded: no second fetch, and no prop change for callers.
-  // Both signals already existed and were already correct; nothing consumed them.
+  // #499 — the retrieval signals for the authority panel, from the shared store.
   const { hasMore, error: artifactsFailed } = useThreadArtifacts(threadId);
   const reviews = useMemo(() => {
     const m: Record<string, ReturnType<typeof review.get>> = {};
@@ -83,7 +112,6 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
 
   // #499 — computed ONCE and handed to both producers, so the rendered Report and
   // the markdown export cannot disagree about what the engine adjudicated.
-  // Verdicts fail closed: anything other than a confirmed-good read withholds.
   const authority = useMemo(
     () => selectAuthoritativeFindings(artifacts, reviews, {
       ceilingHit: !!hasMore,
@@ -93,46 +121,56 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
     [artifacts, reviews, hasMore, artifactsFailed, review.availability],
   );
 
-  // Authoritative tool activity from tool_usage_log (the message stream doesn't
-  // carry tool parts, so the report's "Tool invocations" read 0 without this).
-  const toolActivity = useThreadToolActivity(threadId);
-  const toolActivityList = useMemo(
-    () => toolActivity.events.map((e) => ({ toolName: e.toolName })),
-    [toolActivity.events],
-  );
-  const toolInvocations = toolActivity.persistedTotal;
+  // Tool activity from the case snapshot when mounted in the workspace, so the
+  // report's "Tool invocations" is the same number the case bar prints.
+  const standaloneTools = useThreadToolActivity(snapshot ? "" : threadId);
+  const toolEvents = snapshot ? snapshot.tools.events : standaloneTools.events;
+  const toolInvocations = snapshot ? snapshot.tools.total : standaloneTools.persistedTotal;
+  const toolActivityList = useMemo(() => toolEvents.map((e) => ({ toolName: e.toolName })), [toolEvents]);
 
   const markdown = useMemo(
     () => buildReportMarkdown({
       seedValue: seed.value, seedType: seed.type, artifacts, messages, reviews, reportType,
       toolActivity: toolActivityList, toolInvocations, authority,
     }),
-    [seed, artifacts, messages, reviews, reportType, toolActivityList, toolInvocations, authority],
+    [seed.value, seed.type, artifacts, messages, reviews, reportType, toolActivityList, toolInvocations, authority],
   );
-  const matrixMd = useMemo(() => buildEvidenceMatrixMarkdown(artifacts), [artifacts]);
+  // Through the analyst's verdicts, like the full report: a dismissed row reads
+  // FAILED in the exported matrix instead of keeping its source-derived label.
+  const matrixMd = useMemo(() => buildEvidenceMatrixMarkdown(artifacts, reviews), [artifacts, reviews]);
+
+  // Readiness: the snapshot's profile (same version as every other figure), or
+  // computed here when rendered standalone.
+  const localProfile = useMemo(
+    () => (snapshot?.readiness ? null : buildConfidenceProfile({ artifacts, seedValue: seed.value, reviews })),
+    [snapshot?.readiness, artifacts, seed.value, reviews],
+  );
+  const profile = snapshot?.readiness?.profile ?? localProfile;
+  const gate: ExportGate = useMemo(() => evaluateExportGate(profile), [profile]);
+  const isDraft = gate.mode === "draft";
+
+  // Analyst review state for the toolbar summary. "verified" comes from the
+  // shared `tallyAuthority` selector (src/lib/authority.ts) — the same one the
+  // case bar, Overview and Evidence use; "rejected" has no equivalent in the
+  // authority ladder, so it stays a direct tally.
+  const reviewTally = useMemo(() => {
+    const authority = tallyAuthority(artifacts, review.get);
+    let rejected = 0;
+    for (const s of Object.values(reviews)) {
+      if (s === "wrong" || s === "dismissed") rejected++;
+    }
+    return { verified: authority.verified, review: authority.review, conflict: authority.conflict, quarantined: authority.quarantined, rejected };
+  }, [artifacts, review, reviews]);
 
   const copy = (text: string, label: string) =>
     navigator.clipboard.writeText(text).then(() => toast.success(label), () => toast.error("Copy failed"));
 
   const slug = (extractDisplaySeed(seed.value, seed.type).selector || threadId).replace(/[^a-z0-9._-]+/gi, "_").slice(0, 60);
-  const downloadMd = () => {
-    const blob = new Blob([markdown], { type: "text/markdown" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `osint-report-${slug}.md`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-    toast.success("Report .md downloaded");
-  };
-  // The print-only stylesheet keys on `body.printing-report`. It used to be set
-  // for ~50 ms around the button's own `window.print()` call — so Ctrl+P / File
-  // → Print never saw it, the workspace's `h-[100dvh] overflow-hidden` shell
-  // clipped the report to one viewport, and an analyst's browser-printed PDF
-  // came out as two pages with the second one blank. `beforeprint` fires for
-  // every print path (button, shortcut, menu), so the class is set for all of them.
+
+  // The print-only stylesheet keys on `body.printing-report`. `beforeprint`
+  // fires for every print path (button, shortcut, menu), so the class is set for
+  // all of them — a class toggled only around this tab's own `window.print()`
+  // left Ctrl+P printing one clipped viewport.
   useEffect(() => {
     const on = () => document.body.classList.add("printing-report");
     const off = () => document.body.classList.remove("printing-report");
@@ -144,95 +182,164 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
       off();
     };
   }, []);
-  const printPdf = () => {
-    window.print();
-  };
 
-  const openJsonGate = () => {
-    setJsonGateAck(false);
-    setJsonGateOpen(true);
-  };
-  const confirmJsonExport = () => {
-    if (!jsonGateAck) return;
-    copy(JSON.stringify(artifacts, null, 2), "Artifact JSON copied");
-    setJsonGateOpen(false);
-  };
-
-  // Analyst review state, summarised for the header context line.
-  //
-  // "verified" comes from the shared `tallyAuthority` selector
-  // (src/lib/authority.ts) — the same one WorkspaceHeader, OverviewTab and
-  // EvidenceTab use — NOT a local count of explicit confirmed/key reviews.
-  // The comment this replaced claimed this was "the same tally the report
-  // body shows"; it was not; `CaseReport`'s own KPI counts via `bucket()`,
-  // which (like `authorityFor`) gates through `isClusterIneligible` and also
-  // counts corroboration-derived CONFIRMED rows nobody explicitly reviewed.
-  // A hand-rolled review-only count undercounts against both this tab's own
-  // body and every other tab.
-  //
-  // "rejected" has no equivalent in the authority ladder — analyst rejection
-  // is a decision state, not a position on it — so it stays a direct tally.
-  const reviewTally = useMemo(() => {
-    const authority = tallyAuthority(artifacts, review.get);
-    let rejected = 0;
-    for (const s of Object.values(reviews)) {
-      if (s === "wrong" || s === "dismissed") rejected++;
+  const perform = (format: ExportFormat) => {
+    const now = new Date().toISOString();
+    if (format === "copy-md") {
+      void copy(markMarkdown(markdown, gate, now), isDraft ? "Draft report copied — marked UNVERIFIED DRAFT" : "Report copied");
+    } else if (format === "md") {
+      const blob = new Blob([markMarkdown(markdown, gate, now)], { type: "text/markdown" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = exportFilename("osint-report", slug, "md", gate);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success(isDraft ? "Draft .md downloaded — marked UNVERIFIED DRAFT" : "Report .md downloaded");
+    } else if (format === "pdf") {
+      // The draft marking is rendered inside the print root, so the printed copy
+      // carries it whether it is printed from here or from Ctrl+P.
+      window.print();
+    } else if (format === "matrix") {
+      void copy(markMarkdown(matrixMd, gate, now), isDraft ? "Draft evidence matrix copied" : "Evidence matrix copied");
+    } else if (format === "json") {
+      void copy(wrapJsonExport(artifacts, gate, now), isDraft ? "Draft artifact JSON copied" : "Artifact JSON copied");
     }
-    return { verified: authority.verified, rejected };
-  }, [artifacts, review, reviews]);
+  };
 
-  const subtitle = (
-    <span className="inline-flex flex-wrap items-center">
-      <span>Case report &amp; exports</span>
-      {reviewTally.verified > 0 && (
-        <>
-          <span className="mx-1.5 text-muted-foreground/40" aria-hidden>·</span>
-          <span className="text-[hsl(var(--confidence-high))]">{reviewTally.verified} verified</span>
-        </>
-      )}
-      {reviewTally.rejected > 0 && (
-        <>
-          <span className="mx-1.5 text-muted-foreground/40" aria-hidden>·</span>
-          <span className="text-destructive">{reviewTally.rejected} rejected</span>
-        </>
-      )}
-    </span>
+  /** Every export goes through here. JSON always asks (it carries raw PII);
+   *  a draft asks once per case version. */
+  const request = (format: ExportFormat) => {
+    const needsDraftAck = isDraft && ackedVersion.current !== (snapshot?.version ?? -1);
+    if (format === "json" || needsDraftAck) {
+      setAck(false);
+      setPending(format);
+      return;
+    }
+    perform(format);
+  };
+
+  const confirmPending = () => {
+    if (!pending || !ack) return;
+    if (isDraft) ackedVersion.current = snapshot?.version ?? -1;
+    const f = pending;
+    setPending(null);
+    perform(f);
+  };
+
+  const statusChip = (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          tabIndex={0}
+          className={cn(
+            "inline-flex h-8 cursor-help items-center gap-1.5 rounded-md border px-2.5 text-data font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            isDraft
+              ? "border-[hsl(var(--warning)/0.4)] bg-[hsl(var(--warning)/0.08)] text-[hsl(var(--warning))]"
+              : "border-[hsl(var(--success)/0.4)] bg-[hsl(var(--success)/0.08)] text-[hsl(var(--success))]",
+          )}
+        >
+          {isDraft ? <ShieldAlert className="h-3.5 w-3.5" aria-hidden /> : <ShieldCheck className="h-3.5 w-3.5" aria-hidden />}
+          {isDraft ? `Unverified draft · ${gate.readinessPct}% ready` : "Report-safe"}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-[300px] text-xs leading-relaxed">
+        {isDraft ? gate.reasons.join(" ") : `Report readiness ${gate.readinessPct}% with conflicts under control.`}
+      </TooltipContent>
+    </Tooltip>
   );
 
-  const exportActions = (
-    // Primary downloads grouped together; secondary/raw exports (Matrix / JSON)
-    // are quieter and split off by a divider that collapses cleanly on mobile.
-    <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Report exports">
-      <Button size="sm" variant="outline" className="h-7 gap-1 text-data"
-        onClick={() => copy(markdown, "Report copied")}>
-        <Copy className="w-3 h-3" /> Copy markdown
-      </Button>
-      <Button size="sm" variant="outline" className="h-7 gap-1 text-data"
-        onClick={downloadMd}>
-        <Download className="w-3 h-3" /> Download .md
-      </Button>
-      <Button size="sm" variant="outline" className="h-7 gap-1 text-data"
-        onClick={printPdf} title="Opens the print dialog — choose 'Save as PDF'">
-        <Printer className="w-3 h-3" /> Download PDF
-      </Button>
-      <span aria-hidden className="hidden sm:block h-5 w-px bg-border-subtle mx-0.5" />
-      <Button size="sm" variant="ghost" className="h-7 gap-1 text-data text-muted-foreground"
-        onClick={() => copy(matrixMd, "Evidence matrix copied")}
-        title="Copy the evidence matrix as markdown">
-        <Table className="w-3 h-3" /> Matrix
-      </Button>
-      <Button size="sm" variant="ghost" className="h-7 gap-1 text-data text-muted-foreground"
-        onClick={openJsonGate}
-        title="Raw JSON export — requires confirmation">
-        <Braces className="w-3 h-3" /> JSON
-      </Button>
+  const toolbar = (
+    <div className="no-print flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-white/[0.07] pb-3">
+      <SubTabs<ReportType>
+        label="Report type"
+        options={REPORT_TYPES}
+        active={reportType}
+        onChange={setReportType}
+      />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={`More report formats coming soon: ${REPORT_TYPES_SOON.join(", ")}`}
+            className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition-colors duration-fast hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+          >
+            <Info className="h-3.5 w-3.5" aria-hidden />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="text-xs">Coming soon: {REPORT_TYPES_SOON.join(" · ")}</TooltipContent>
+      </Tooltip>
+      <span className="hidden text-data text-muted-foreground md:inline">
+        {reviewTally.verified > 0 && <span className="text-[hsl(var(--authority-verified))]">{reviewTally.verified} verified</span>}
+        {reviewTally.verified > 0 && reviewTally.rejected > 0 && <span className="mx-1.5 text-muted-foreground/40" aria-hidden>·</span>}
+        {reviewTally.rejected > 0 && <span className="text-[hsl(var(--danger))]">{reviewTally.rejected} rejected</span>}
+      </span>
+
+      <div className="ml-auto flex flex-wrap items-center gap-2" role="group" aria-label="Report exports">
+        {statusChip}
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-8 gap-1.5 text-data text-muted-foreground hover:text-foreground [@media(pointer:coarse)]:h-11"
+          onClick={() => request("copy-md")}
+        >
+          <Copy className="h-3.5 w-3.5" aria-hidden /> Copy markdown
+        </Button>
+        <DropdownMenu modal={false}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 text-data [@media(pointer:coarse)]:h-11"
+              aria-label={isDraft ? "Export draft — not report-safe" : "Export report"}
+            >
+              <Download className="h-3.5 w-3.5" aria-hidden />
+              {isDraft ? "Export draft" : "Export"}
+              <ChevronDown className="h-3 w-3 text-muted-foreground" aria-hidden />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" sideOffset={6} className="w-64 rounded-xl border-white/10 bg-[hsl(var(--popover))] p-1 shadow-overlay">
+            <DropdownMenuLabel className="px-2.5 pb-1 pt-1.5 text-micro font-medium text-muted-foreground">
+              {isDraft ? `Draft — every file is marked ${DRAFT_MARK}` : "Report-safe export"}
+            </DropdownMenuLabel>
+            {([
+              ["md", Download],
+              ["pdf", Printer],
+              ["matrix", Table],
+              ["json", Braces],
+            ] as const).map(([f, Icon]) => (
+              <DropdownMenuItem key={f} onSelect={() => request(f)} className="min-h-9 gap-2 rounded-lg px-2.5 text-meta">
+                <Icon className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+                {FORMAT_LABEL[f]}
+                {f === "json" && <span className="ml-auto text-micro text-muted-foreground">sensitive</span>}
+              </DropdownMenuItem>
+            ))}
+            {isDraft && (
+              <>
+                <DropdownMenuSeparator className="bg-white/[0.07]" />
+                <DropdownMenuItem disabled className="min-h-9 items-start gap-2 rounded-lg px-2.5 text-meta">
+                  <Lock className="mt-0.5 h-3.5 w-3.5" aria-hidden />
+                  <span>
+                    Report-safe export
+                    <span className="block text-micro leading-snug">
+                      Needs {REPORT_READY_MIN_READINESS}% readiness (now {gate.readinessPct}%)
+                    </span>
+                  </span>
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </div>
   );
 
   if (artifacts.length === 0) {
     return (
       <div className="text-xs">
-        <TabHeader icon={FileText} title="Report" subtitle="Case report & exports" className="no-print" />
+        <h2 className="sr-only">Report</h2>
         <EmptyState icon={ScrollText} title="No report yet" hint="Run the agent on a seed and the case report will populate here." />
       </div>
     );
@@ -240,97 +347,93 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
 
   return (
     <div className="text-xs">
-      <TabHeader icon={FileText} title="Report" subtitle={subtitle} className="no-print sticky top-0 z-10">
-        {exportActions}
-      </TabHeader>
+      <h2 className="sr-only">Report</h2>
+      {toolbar}
 
-      <div className="p-3 space-y-3">
-      {/* Report-type selector — changes the rendered dossier AND every export. */}
-      <div className="no-print flex flex-wrap items-center gap-1.5" role="group" aria-label="Report type">
-        <span className="text-micro font-mono tracking-normal text-muted-foreground mr-1">Report</span>
-        {REPORT_TYPES.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setReportType(t.id)}
-            aria-pressed={reportType === t.id}
-            className={cn(
-              "h-7 rounded-lg border px-2.5 text-data transition-colors",
-              reportType === t.id
-                ? "border-[hsl(var(--info)/0.5)] bg-[hsl(var(--info)/0.12)] text-foreground"
-                : "border-border-subtle bg-surface-1 text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
-        {REPORT_TYPES_SOON.map((t) => (
-          <button
-            key={t.label}
-            disabled
-            title="Coming soon"
-            className="h-7 rounded-lg border border-border-subtle bg-surface-1/50 px-2.5 text-data text-muted-foreground/50 cursor-not-allowed"
-          >
-            {t.label} · soon
-          </button>
-        ))}
-      </div>
-      {/* Evidence-signal summary — UI-only, kept out of the printed report. */}
-      <div className="no-print">
-        <ConfidenceRadar artifacts={artifacts} seedValue={seed.value} reviews={reviews} />
-      </div>
-      {/* No inner scroll: the report flows in the page's single scroll container
-          (CaseViewPage's overflow-y-auto). A nested max-h/overflow box here made
-          a scroll-within-scroll that let the report cover slide under — and bleed
-          past — the sticky Report header at certain offsets. */}
-      <div className="rounded-lg border border-border-subtle bg-surface-1 px-4 py-5">
-        <CaseReport seedValue={seed.value} seedType={seed.type} artifacts={artifacts} reviews={reviews} messages={messages} reportType={reportType} authority={authority} />
+      <div className="space-y-3 pt-3">
+        {/* Evidence-signal summary — UI-only, kept out of the printed report. */}
+        <div className="no-print">
+          <ConfidenceRadar artifacts={artifacts} seedValue={seed.value} reviews={reviews} profile={profile ?? undefined} />
+        </div>
+        {/* No inner scroll: the report flows in the page's single scroll container. */}
+        <div className="rounded-lg border border-border-subtle bg-surface-1 px-4 py-5">
+          <CaseReport
+            seedValue={seed.value}
+            seedType={seed.type}
+            artifacts={artifacts}
+            reviews={reviews}
+            messages={messages}
+            reportType={reportType}
+            authority={authority}
+            draftMark={isDraft ? { readinessPct: gate.readinessPct, reasons: gate.reasons } : null}
+          />
+        </div>
+
+        <details className="rounded-lg border border-border-subtle bg-surface-2 no-print">
+          <summary className="cursor-pointer px-3 py-2 text-micro font-medium tracking-normal text-muted-foreground flex items-center gap-1.5">
+            <FileText className="w-3 h-3" aria-hidden /> Raw markdown
+          </summary>
+          <pre className="p-3 text-data font-mono leading-relaxed text-foreground/80 whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto [scrollbar-width:thin] border-t border-border-subtle">
+            {markdown}
+          </pre>
+        </details>
       </div>
 
-      <details className="rounded-lg border border-border-subtle bg-surface-2 no-print">
-        <summary className="cursor-pointer px-3 py-2 text-micro font-medium tracking-normal text-muted-foreground flex items-center gap-1.5">
-          <FileText className="w-3 h-3" /> Raw markdown
-        </summary>
-        <pre className="p-3 text-data font-mono leading-relaxed text-foreground/80 whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto [scrollbar-width:thin] border-t border-border-subtle">
-          {markdown}
-        </pre>
-      </details>
-      </div>
-
-      <Dialog open={jsonGateOpen} onOpenChange={setJsonGateOpen}>
+      <Dialog open={pending !== null} onOpenChange={(o) => { if (!o) setPending(null); }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-base">
-              <ShieldAlert className="w-4 h-4 text-warning" /> Export raw artifact JSON?
+              <ShieldAlert className="w-4 h-4 text-warning" aria-hidden />
+              {isDraft ? "Export an unverified draft?" : "Export raw artifact JSON?"}
             </DialogTitle>
             <DialogDescription className="text-xs leading-relaxed">
-              Raw artifacts may include PII, unreviewed leads, source metadata, and identifiers
-              the case has not yet redacted. Treat the export as sensitive investigative data.
+              {isDraft
+                ? `This report is not report-safe. The ${pending ? FORMAT_LABEL[pending].toLowerCase() : "export"} will be marked ${DRAFT_MARK} on the cover, in the file name and inside the data.`
+                : "Raw artifacts may include PII, unreviewed leads, source metadata, and identifiers the case has not yet redacted. Treat the export as sensitive investigative data."}
             </DialogDescription>
           </DialogHeader>
 
-          <div className="rounded-md border border-border-subtle bg-surface-2 px-3 py-2 flex items-center justify-between gap-2 text-xs">
-            <span className="text-muted-foreground tracking-normal text-micro">Classification</span>
-            <span className="font-mono text-foreground">INTERNAL</span>
-          </div>
+          {isDraft && (
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-md border border-border-subtle bg-surface-2 px-3 py-2.5 text-xs">
+              <dt className="text-muted-foreground">Report readiness</dt>
+              <dd className="text-right font-mono tabular-nums text-[hsl(var(--warning))]">{gate.readinessPct}% <span className="text-muted-foreground">/ {REPORT_READY_MIN_READINESS}%</span></dd>
+              <dt className="text-muted-foreground">Verified</dt>
+              <dd className="text-right font-mono tabular-nums">{reviewTally.verified}</dd>
+              <dt className="text-muted-foreground">Needs review</dt>
+              <dd className="text-right font-mono tabular-nums">{reviewTally.review}</dd>
+              <dt className="text-muted-foreground">Conflict (authority state)</dt>
+              <dd className="text-right font-mono tabular-nums">{reviewTally.conflict}</dd>
+              <dt className="text-muted-foreground">Quarantined</dt>
+              <dd className="text-right font-mono tabular-nums">{reviewTally.quarantined}</dd>
+              <dt className="text-muted-foreground">Coverage gaps (failed tool calls)</dt>
+              <dd className="text-right font-mono tabular-nums">{snapshot?.tools.failed ?? standaloneTools.failed}</dd>
+            </dl>
+          )}
+          {isDraft && gate.reasons.length > 0 && (
+            <ul className="list-disc space-y-0.5 pl-4 text-xs text-muted-foreground">
+              {gate.reasons.map((r) => <li key={r}>{r}</li>)}
+            </ul>
+          )}
+          {pending === "json" && isDraft && (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Raw artifacts may also include PII, unreviewed leads and unredacted identifiers.
+            </p>
+          )}
 
           <label className="flex items-start gap-2 text-xs leading-relaxed cursor-pointer">
-            <Checkbox
-              checked={jsonGateAck}
-              onCheckedChange={(v) => setJsonGateAck(v === true)}
-              className="mt-0.5"
-            />
+            <Checkbox checked={ack} onCheckedChange={(v) => setAck(v === true)} className="mt-0.5" />
             <span className="text-foreground">
-              I understand this export may include sensitive investigative data, including PII and
-              unreviewed leads, and I am authorized to handle it.
+              {isDraft
+                ? "I understand this is an unverified draft and will not present it as confirmed findings."
+                : "I understand this export may include sensitive investigative data, including PII and unreviewed leads, and I am authorized to handle it."}
+              {pending === "json" && isDraft && " I am authorized to handle the sensitive data it contains."}
             </span>
           </label>
 
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setJsonGateOpen(false)}>
-              Cancel
-            </Button>
-            <Button size="sm" disabled={!jsonGateAck} onClick={confirmJsonExport}>
-              Copy JSON
+            <Button variant="outline" size="sm" onClick={() => setPending(null)}>Cancel</Button>
+            <Button size="sm" disabled={!ack} onClick={confirmPending}>
+              {pending ? (isDraft ? `Export draft · ${FORMAT_LABEL[pending]}` : FORMAT_LABEL[pending] === "Raw JSON" ? "Copy JSON" : FORMAT_LABEL[pending]) : "Export"}
             </Button>
           </DialogFooter>
         </DialogContent>

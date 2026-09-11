@@ -1,7 +1,7 @@
 import { useId, useMemo } from "react";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ReviewAdjustment } from "@/lib/intel";
-import { buildConfidenceProfile, DIMENSION_DEFINITIONS, type ConfidenceDimension } from "@/lib/confidence-dimensions";
+import { buildConfidenceProfile, DIMENSION_DEFINITIONS, type ConfidenceDimension, type ConfidenceProfile } from "@/lib/confidence-dimensions";
 import { Radar, Info, ShieldCheck, ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { confidenceColor, tierInfo } from "@/lib/confidence-tier";
@@ -38,15 +38,20 @@ export function ConfidenceRadar({
   artifacts,
   seedValue,
   reviews,
+  profile: given,
 }: {
   artifacts: Artifact[];
   seedValue: string | null;
   reviews?: Record<string, ReviewAdjustment>;
+  /** The case snapshot's profile — the same version every other figure reads.
+   *  Computed here only when the radar is rendered standalone. */
+  profile?: ConfidenceProfile;
 }) {
-  const profile = useMemo(
-    () => buildConfidenceProfile({ artifacts, seedValue, reviews }),
-    [artifacts, seedValue, reviews],
+  const computed = useMemo(
+    () => (given ? null : buildConfidenceProfile({ artifacts, seedValue, reviews })),
+    [given, artifacts, seedValue, reviews],
   );
+  const profile = given ?? computed!;
 
   const dims = profile.dimensions;
   const n = dims.length;
@@ -93,7 +98,7 @@ export function ConfidenceRadar({
 
       <div className="mt-3 grid gap-4 sm:grid-cols-[minmax(0,260px)_1fr] items-center">
         {/* Radar (decorative; the list below is the accessible source of truth). */}
-        <svg viewBox="-26 0 332 236" className="w-full max-w-[300px] mx-auto overflow-visible" role="img" aria-label={a11ySummary} preserveAspectRatio="xMidYMid meet">
+        <svg viewBox="-26 0 332 236" className="hidden w-full max-w-[300px] mx-auto overflow-visible sm:block" role="img" aria-label={a11ySummary} preserveAspectRatio="xMidYMid meet">
           <defs>
             {/* The plot is filled with a GRADIENT of the tier token rather than
                 a flat alpha. A single-alpha polygon on a dark ground reads as a

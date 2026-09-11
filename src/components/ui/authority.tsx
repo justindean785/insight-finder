@@ -144,11 +144,11 @@ export function AuthorityLegend({ align = "end", className }: { align?: "start" 
           type="button"
           aria-label="Show the evidence authority legend"
           className={cn(
-            "inline-flex items-center gap-1 rounded border border-border-subtle bg-surface-2/50 px-1.5 py-px text-micro font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            "inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-data font-medium text-muted-foreground transition-colors duration-fast hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11",
             className,
           )}
         >
-          <Info className="h-3 w-3" strokeWidth={2} aria-hidden />
+          <Info className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
           Legend
         </button>
       </PopoverTrigger>

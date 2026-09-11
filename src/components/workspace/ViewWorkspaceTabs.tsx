@@ -79,7 +79,7 @@ export function ViewWorkspaceTabs({
                 onKeyDown={(e) => onKeyDown(e, idx)}
                 onClick={() => onChange(t.key)}
                 className={cn(
-                  "inline-flex h-9 items-center gap-2 rounded-lg px-3.5 text-meta font-medium transition-all",
+                  "inline-flex h-9 items-center gap-2 rounded-lg px-3.5 text-meta font-medium transition-colors duration-fast",
                   isActive
                     ? "tab-key-active text-foreground"
                     : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",

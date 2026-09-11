@@ -96,8 +96,9 @@ export function EvidenceMatrixTab({
                   data-active={filter === "FAILED"}
                   className="forensic-chip"
                   title="More status filters"
+                  aria-label="More status filters"
                 >
-                  <MoreHorizontal className="h-3 w-3" />
+                  <MoreHorizontal className="h-3 w-3" aria-hidden />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="text-xs">
@@ -132,8 +133,8 @@ export function EvidenceMatrixTab({
           ))}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button className="forensic-chip" title="More review filters">
-                <MoreHorizontal className="h-3 w-3" />
+              <button className="forensic-chip" title="More review filters" aria-label="More review filters">
+                <MoreHorizontal className="h-3 w-3" aria-hidden />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="text-xs">
@@ -262,7 +263,7 @@ export function EvidenceMatrixTab({
                       <div className="mt-2.5 flex items-center gap-2 cursor-help">
                         <div className="relative flex-1 h-1.5 rounded-full overflow-hidden bg-surface-3">
                           <div
-                            className="absolute inset-y-0 left-0 rounded-full transition-all"
+                            className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-slow ease-standard"
                             style={{ width: `${basePct}%`, background: "hsl(var(--muted-foreground) / 0.5)" }}
                           />
                           {/* The review-delta overlay is gone with the delta itself.

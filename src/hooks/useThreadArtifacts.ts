@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { z } from "zod";
 import { supabase } from "@/integrations/supabase/client";
 import { toSourceStrings } from "@/lib/source-strings";
@@ -119,6 +119,8 @@ type Store = {
   // retry" apart from a genuinely-empty case.
   loaded: boolean;
   error: boolean;
+  /** Epoch ms of the last SUCCESSFUL load — the case header's "Last synced". */
+  loadedAt: number | null;
   subscribers: Set<(snapshot: StoreSnapshot) => void>;
   channel: ReturnType<typeof supabase.channel> | null;
   loading: Promise<void> | null;
@@ -142,6 +144,7 @@ type StoreSnapshot = {
   hasMore: boolean;
   loaded: boolean;
   error: boolean;
+  loadedAt: number | null;
 };
 
 /** Hard cap on initial artifact load per thread. Large investigations
@@ -159,6 +162,7 @@ function snapshot(store: Store): StoreSnapshot {
     hasMore: store.hasMore,
     loaded: store.loaded,
     error: store.error,
+    loadedAt: store.loadedAt,
   };
 }
 
@@ -185,6 +189,7 @@ async function loadStore(threadId: string, store: Store) {
   store.items = dedupeArtifacts(rows);
   store.loaded = true;
   store.error = false;
+  store.loadedAt = Date.now();
   const snap = snapshot(store);
   for (const fn of store.subscribers) fn(snap);
 }
@@ -243,6 +248,7 @@ function acquireStore(threadId: string, listener: (snapshot: StoreSnapshot) => v
       hasMore: false,
       loaded: false,
       error: false,
+      loadedAt: null,
       subscribers: new Set(),
       channel: null,
       loading: null,
@@ -345,6 +351,7 @@ export function useThreadArtifacts(threadId: string) {
     hasMore: seed?.hasMore ?? false,
     loaded: seed?.loaded ?? false,
     error: seed?.error ?? false,
+    loadedAt: seed?.loadedAt ?? null,
   }));
 
   useEffect(() => {
@@ -364,14 +371,20 @@ export function useThreadArtifacts(threadId: string) {
     for (const fn of store.subscribers) fn(next);
   };
 
-  // Force a fresh SELECT — used by the evidence surfaces' error-retry affordance.
-  const retry = () => {
+  // Force a fresh SELECT — used by the evidence surfaces' error-retry affordance
+  // and by the case header's Refresh. Resolves once that read has settled, so a
+  // caller reconciling several sources can publish them together.
+  const reload = (): Promise<void> => {
     const store = stores.get(threadId);
-    if (store) void loadStore(threadId, store);
+    return store ? loadStore(threadId, store) : Promise.resolve();
   };
+  const retry = () => { void reload(); };
 
-  const userItems = snap.items.filter((a) => !isMetaArtifact(a));
-  const metaItems = snap.items.filter(isMetaArtifact);
+  // Memoised on the store's array: a fresh `filter()` on every render handed
+  // consumers a new `items` identity each time, so anything memoised on it —
+  // the case snapshot most of all — recomputed and republished forever.
+  const userItems = useMemo(() => snap.items.filter((a) => !isMetaArtifact(a)), [snap.items]);
+  const metaItems = useMemo(() => snap.items.filter(isMetaArtifact), [snap.items]);
   return {
     items: userItems,
     metaItems,
@@ -383,6 +396,8 @@ export function useThreadArtifacts(threadId: string) {
     // Distinct load states so a transient failure isn't shown as "empty".
     loading: !snap.loaded,
     error: snap.error,
+    loadedAt: snap.loadedAt,
     retry,
+    reload,
   };
 }

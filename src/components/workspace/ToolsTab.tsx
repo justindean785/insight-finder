@@ -1,14 +1,15 @@
-import { useMemo, useState } from "react";
-import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
-import { useThreadToolActivity, type ToolEvent } from "@/hooks/useThreadToolActivity";
+import { useEffect, useMemo, useState } from "react";
+import type { ToolEvent } from "@/hooks/useThreadToolActivity";
+import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { AuditTab } from "@/components/panel/AuditTab";
 import { CustodyTab } from "@/components/panel/CustodyTab";
 import { ToolHealthPanel } from "@/components/panel/ToolHealthPanel";
 import { EmptyState } from "@/components/panel/EmptyState";
 import {
-  MetricCard, FilterChips, ToolStatusBadge, ExpandableRow, TabHeader,
-  type FilterChip,
+  MetricCard, ToolStatusBadge, ExpandableRow,
 } from "@/components/ui/workspace-primitives";
+import { CompactFilter, SubTabs, type CompactOption } from "@/components/ui/compact-controls";
+import { fmtWallClock } from "@/lib/duration";
 import { Activity, Gauge, Lock, HeartPulse, CheckCircle2, XCircle, MinusCircle, ListChecks, Clock, DatabaseZap, Timer, type LucideIcon } from "lucide-react";
 import { timeAgo } from "@/lib/time";
 import { toolSecondaryLine } from "@/lib/tool-display";
@@ -31,55 +32,59 @@ const VIEWS: { key: View; label: string; icon: LucideIcon }[] = [
  * register, and the evidence chain-of-custody. This is where runtime detail
  * lives instead of being buried in chat messages.
  */
-export function ToolsTab({ threadId }: { threadId: string }) {
-  const { items } = useThreadArtifacts(threadId);
-  const activity = useThreadToolActivity(threadId);
-  const [view, setView] = useState<View>("activity");
+function isView(v: string): v is View {
+  return v === "activity" || v === "health" || v === "audit" || v === "custody";
+}
+
+export function ToolsTab({
+  threadId,
+  viewRequest,
+}: {
+  threadId: string;
+  /** Open a specific view (e.g. "health" from the recovery banner). `n` is a nonce. */
+  viewRequest?: { view: string; n: number } | null;
+}) {
+  // Counts and rows come from the case snapshot — the SAME version the case bar
+  // and the Tools tab badge print, so "48" here and "46" there cannot recur.
+  const { snapshot } = useCaseSnapshot();
+  const items = snapshot?.items ?? [];
+  const tools = snapshot?.tools;
+  const [view, setView] = useState<View>(
+    viewRequest && isView(viewRequest.view) ? viewRequest.view : "activity",
+  );
+  useEffect(() => {
+    if (viewRequest && isView(viewRequest.view)) setView(viewRequest.view);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewRequest?.n]);
 
   return (
     <div className="h-full flex flex-col min-h-0">
-      <TabHeader icon={Activity} title="Tools" subtitle="Activity, audit & chain of custody">
-        {/* Segmented view switcher — toggle buttons (aria-pressed), not ARIA
-            tabs: these swap content in place and have no associated tabpanels. */}
-        <div role="group" aria-label="Tools view" className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.035] p-1">
-          {VIEWS.map((v) => {
-            const Icon = v.icon;
-            const active = view === v.key;
-            return (
-              <button
-                key={v.key}
-                type="button"
-                aria-pressed={active}
-                onClick={() => setView(v.key)}
-                title={v.label}
-                aria-label={v.label}
-                className={cn(
-                  "inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-meta font-medium transition-colors",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  active
-                    ? "bg-white text-black"
-                    : "text-muted-foreground hover:text-foreground hover:bg-white/[0.05]",
-                )}
-              >
-                <Icon className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
-                <span className="hidden min-[420px]:inline">{v.label}</span>
-              </button>
-            );
-          })}
+      {/* The tab strip already names this section: the local control is the
+          only thing this row needs to carry. */}
+      <h2 className="sr-only">Tools</h2>
+      <div className="shrink-0 border-b border-white/[0.07] bg-surface-0 px-3 py-2 sm:px-4">
+        <div className="mx-auto flex max-w-6xl items-center gap-3">
+          <SubTabs<View>
+            label="Tools view"
+            options={VIEWS.map((v) => ({ key: v.key, label: v.label, icon: v.icon }))}
+            active={view}
+            onChange={setView}
+          />
         </div>
-      </TabHeader>
+      </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
         {view === "activity" && (
           <ActivityLog
-            events={activity.events}
-            ok={activity.ok}
-            failed={activity.failed}
-            skipped={activity.skipped}
-            gated={activity.gated}
-            degraded={activity.degraded}
-            total={activity.total}
-            loading={activity.loading}
+            events={tools?.events ?? []}
+            ok={tools?.ok ?? 0}
+            failed={tools?.failed ?? 0}
+            skipped={tools?.skipped ?? 0}
+            gated={tools?.gated ?? 0}
+            degraded={tools?.degraded ?? 0}
+            total={tools?.total ?? 0}
+            loading={!snapshot?.hydrated}
+            unavailable={Boolean(snapshot?.hydrated && tools && !tools.available)}
           />
         )}
         {view === "health" && <div className="mx-auto max-w-5xl"><ToolHealthPanel threadId={threadId} /></div>}
@@ -91,8 +96,8 @@ export function ToolsTab({ threadId }: { threadId: string }) {
 }
 
 function ActivityLog({
-  events, ok, failed, skipped, gated, degraded, total, loading,
-}: { events: ToolEvent[]; ok: number; failed: number; skipped: number; gated: number; degraded: number; total: number; loading: boolean }) {
+  events, ok, failed, skipped, gated, degraded, total, loading, unavailable = false,
+}: { events: ToolEvent[]; ok: number; failed: number; skipped: number; gated: number; degraded: number; total: number; loading: boolean; unavailable?: boolean }) {
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const pending = events.filter((e) => e.status === "pending").length;
   /**
@@ -172,7 +177,16 @@ function ActivityLog({
     });
   }, [events, filter]);
 
-  if (loading) return <div className="p-4 text-data text-muted-foreground">Loading activity…</div>;
+  if (loading) return <div className="p-4 text-data text-muted-foreground" role="status">Syncing tool activity…</div>;
+  if (unavailable) {
+    return (
+      <EmptyState
+        icon={Activity}
+        title="Tool activity could not be read"
+        hint="The tool-call ledger did not answer. Use Refresh in the case bar to try again — no figure here is a count of zero."
+      />
+    );
+  }
   if (total === 0) {
     return (
       <EmptyState
@@ -185,8 +199,8 @@ function ActivityLog({
     );
   }
 
-  const filters: FilterChip<ActivityFilter>[] = [
-    { key: "all", label: "All", count: total },
+  const filters: CompactOption<ActivityFilter>[] = [
+    { key: "all", label: "All", count: events.length },
     { key: "succeeded", label: "Succeeded", count: ok, tone: "ok" },
     ...(failed > 0 ? [{ key: "failed" as const, label: "Failed", count: failed, tone: "danger" as const }] : []),
     { key: "skipped", label: "Skipped", count: skipped },
@@ -196,13 +210,17 @@ function ActivityLog({
   ];
 
   return (
-    <div className="mx-auto max-w-4xl p-3 sm:p-4 space-y-4">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div className="mx-auto max-w-6xl p-3 sm:p-4 space-y-4">
+      {/* One row on desktop however many tiles apply; two balanced columns on a
+          phone, with an odd last tile spanning both instead of leaving a hole. */}
+      <div className="grid grid-cols-2 gap-2.5 lg:grid-flow-col lg:auto-cols-fr [&>*:last-child:nth-child(odd)]:col-span-2 lg:[&>*:last-child:nth-child(odd)]:col-span-1">
         <MetricCard
-          label="Tools shown"
+          label="Tool calls"
           value={total}
           icon={ListChecks}
-          hint="Every tool call recorded for this case, failures included."
+          hint={events.length < total
+            ? `Every tool call recorded for this case, failures included. The list below holds the ${events.length} rows the server returned; the ledger holds more.`
+            : "Every tool call recorded for this case, failures included. The same figure as the case bar and the Tools tab."}
         />
         <MetricCard label="Succeeded" value={ok} icon={CheckCircle2} tone={ok > 0 ? "ok" : "neutral"} hint="Calls that returned a usable result." />
         <MetricCard
@@ -291,7 +309,7 @@ function ActivityLog({
               const slow = r.ms >= 10_000;
               return (
                 <div key={r.tool} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_3.5rem_4.5rem_2.5rem] items-center gap-2">
-                  <span className="truncate font-mono text-eyebrow uppercase tracking-wider text-foreground/85" title={r.tool}>{r.tool}</span>
+                  <span className="truncate font-mono text-data text-foreground/85" title={r.tool}>{r.tool}</span>
                   <span className="relative h-1.5 overflow-hidden rounded-sm bg-surface-3">
                     <span
                       className="absolute inset-y-0 left-0 rounded-sm"
@@ -322,9 +340,10 @@ function ActivityLog({
         </section>
       )}
 
-      <FilterChips<ActivityFilter>
-        ariaLabel="Filter tool activity by status"
+      <CompactFilter<ActivityFilter>
+        label="Filter tool activity"
         options={filters}
+        primary={["all", "succeeded", "failed"]}
         active={filter}
         onChange={setFilter}
       />
@@ -369,12 +388,16 @@ function fmtMicroUsd(micro: number | null): string | null {
   return `$${usd.toFixed(2)}`;
 }
 
-/** Wall-clock, at the precision an analyst actually reads it. */
+/**
+ * Wall-clock, at the precision an analyst actually reads it. Past a minute it
+ * is `fmtWallClock`'s "5m 15s" — the same format the Overview prints, so one
+ * run's time never reads "315s" on this tab and "5m 15s" on the other.
+ */
 function fmtDuration(ms: number | null): string | null {
   if (ms == null || !Number.isFinite(ms) || ms < 0) return null;
   if (ms < 1000) return `${Math.round(ms)}ms`;
   if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.round(ms / 1000)}s`;
+  return fmtWallClock(ms);
 }
 
 function ActivityRowSummary({ e }: { e: ToolEvent }) {
@@ -390,7 +413,7 @@ function ActivityRowSummary({ e }: { e: ToolEvent }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-meta text-foreground truncate">{e.displayName}</span>
-          <span className="font-mono text-eyebrow uppercase tracking-wider text-muted-foreground/70 shrink-0">{e.toolName}</span>
+          <span className="hidden font-mono text-micro text-muted-foreground shrink-0 sm:inline">{e.toolName}</span>
           {e.cached && (
             <span
               title="Served from cache — no provider call was made and nothing was charged. The data may be older than this timestamp."

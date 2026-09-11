@@ -163,7 +163,7 @@ export default function HomeHub() {
       <main className="relative z-10 mx-auto max-w-6xl px-6 sm:px-10 pb-16">
         <section className="pt-6 sm:pt-10 pb-10 rounded-3xl border border-white/[0.07] bg-[linear-gradient(160deg,hsl(var(--film)/0.05),hsl(var(--film)/0.018)_52%,hsl(var(--film)/0.008))] px-5 sm:px-7 py-7 sm:py-8 shadow-[0_26px_90px_-54px_rgba(0,0,0,0.98)] backdrop-blur-xl">
           <div className="flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.26em] text-[hsl(var(--intel-blue))]">
-            <span className="h-1 w-1 animate-pulse rounded-full bg-[hsl(var(--intel-blue))]" />
+            <span aria-hidden className="h-1 w-1 rounded-full bg-[hsl(var(--intel-blue))]" />
             Workspace
           </div>
           <h1 className="mt-2 font-display text-3xl sm:text-4xl font-semibold tracking-tight">
@@ -303,7 +303,7 @@ function HubCard({
   return (
     <Link
       to={to}
-      className="group relative flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[linear-gradient(150deg,hsl(var(--film)/0.06),hsl(var(--film)/0.02)_55%,hsl(var(--film)/0.008))] p-5 shadow-[0_20px_70px_-44px_rgba(0,0,0,0.96)] backdrop-blur-xl transition-all duration-300 ease-premium hover:-translate-y-0.5 hover:border-[hsl(var(--intel-blue)/0.4)] hover:shadow-[0_24px_70px_-34px_hsl(var(--intel-blue)/0.62)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--intel-blue)/0.5)]"
+      className="group relative flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[linear-gradient(150deg,hsl(var(--film)/0.06),hsl(var(--film)/0.02)_55%,hsl(var(--film)/0.008))] p-5 shadow-[0_20px_70px_-44px_rgba(0,0,0,0.96)] transition-[transform,border-color,box-shadow] duration-standard ease-standard hover:-translate-y-0.5 hover:border-[hsl(var(--intel-blue)/0.4)] hover:shadow-[0_24px_70px_-34px_hsl(var(--intel-blue)/0.62)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--intel-blue)/0.5)]"
     >
       {/* hover sheen — intel-blue wash that fades in on the top edge */}
       <div
