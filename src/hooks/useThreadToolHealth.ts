@@ -135,7 +135,7 @@ export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "load
   return aggregate(raw.map((r) => ({
     toolName: r.tool_name ?? "",
     // Legacy rows (null outcome) fall back to the ok boolean before refining.
-    category: classifyDetailedOutcome(r.outcome ?? (r.ok === false ? "failed" : "ok"), r.error_msg, r.status_code),
+    category: classifyDetailedOutcome(r.outcome ?? (r.ok === false ? "failed" : "ok"), r.error_msg, r.status_code, r.tool_name),
     errorMsg: r.error_msg,
     statusCode: r.status_code ?? null,
     at: r.created_at ?? "",

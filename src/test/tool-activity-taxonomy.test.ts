@@ -56,10 +56,21 @@ describe("classifyActivityRow — Activity/Health taxonomy parity", () => {
     // http_fingerprint on an email-only domain (MX, no A record). It sat under
     // "Needs attention — config or provider faults" beside a real bug.
     const dns = "error sending request for url (https://bencaleb.com/): client error (Connect): dns error: failed to lookup address information: No address associated with hostname";
-    expect(classifyActivityRow("failed", false, dns).status).toBe("succeeded");
-    expect(classifyActivityRow("failed", false, dns).category).toBe("empty");
+    expect(classifyActivityRow("failed", false, dns, null, "http_fingerprint").status).toBe("succeeded");
+    expect(classifyActivityRow("failed", false, dns, null, "http_fingerprint").category).toBe("empty");
     // A transient resolver failure is NOT a negative and stays a failure.
-    expect(c("dns error: Temporary failure in name resolution")).toBe("failed");
+    expect(classifyActivityRow("failed", false, "dns error: Temporary failure in name resolution", null, "http_fingerprint").status).toBe("failed");
+  });
+
+  it("…but only for a tool that fetches the TARGET: a provider's own host failing DNS is an outage", () => {
+    // Codex review, #579: the error text is identical when the unresolvable host
+    // is the provider's API. Only the tool tells the two apart.
+    const providerDns = "error sending request for url (https://api.provider.example/v1/read): dns error: failed to lookup address information: Name or service not known";
+    expect(classifyActivityRow("failed", false, providerDns, null, "jina_reader_scrape").status).toBe("failed");
+    // dns_records resolves through Cloudflare DoH — its DNS failure is Cloudflare's.
+    expect(classifyActivityRow("failed", false, providerDns, null, "dns_records").status).toBe("failed");
+    // No tool context at all: never assume the target.
+    expect(classifyActivityRow("failed", false, providerDns).status).toBe("failed");
   });
 
   it("leaves successful and empty outcomes untouched", () => {
@@ -106,6 +117,7 @@ describe("Activity tiles and Health tiles add up to the same figures", () => {
     row("emailrep", "failed", false, "upstream returned HTTP 429", 429),
     row("memory_save", "failed", false, 'duplicate key value violates unique constraint "agent_memory_dedup_idx"'),
     row("http_fingerprint", "failed", false, "dns error: failed to lookup address information: No address associated with hostname"),
+    row("jina_reader_scrape", "failed", false, "error sending request for url (https://r.jina.example/): dns error: Name or service not known"),
     row("markdown_new", "failed", false, "markdown.new 500: File too large (17MB). Maximum size is 10MB", 500),
     row("legacy_tool", null, null, null),
     row("legacy_tool", null, false, "boom"),
@@ -114,7 +126,7 @@ describe("Activity tiles and Health tiles add up to the same figures", () => {
   it("Succeeded = success + no record; Failed = Needs attention; Degraded and Skipped match exactly", () => {
     const activity = { succeeded: 0, failed: 0, degraded: 0, skipped: 0 };
     for (const r of rows) {
-      const s = classifyActivityRow(r.outcome, r.ok, r.error_msg, r.status_code).status;
+      const s = classifyActivityRow(r.outcome, r.ok, r.error_msg, r.status_code, r.tool_name).status;
       if (s === "succeeded") activity.succeeded++;
       else if (s === "failed") activity.failed++;
       else if (s === "degraded") activity.degraded++;
@@ -130,7 +142,7 @@ describe("Activity tiles and Health tiles add up to the same figures", () => {
     expect(activity).toEqual(health);
     expect(activity.succeeded + activity.failed + activity.degraded + activity.skipped).toBe(rows.length);
     // And the specific calls land where an analyst would expect.
-    expect(health).toEqual({ succeeded: 9, failed: 3, degraded: 4, skipped: 4 });
+    expect(health).toEqual({ succeeded: 9, failed: 4, degraded: 4, skipped: 4 });
   });
 });
 
@@ -146,7 +158,7 @@ describe("Health reads the shared store's events — no second read, no reclassi
     ];
     // The store's event shape, built the way `toEvent` builds it.
     const events = raw.map((r, i) => {
-      const c = classifyActivityRow(r.outcome, r.ok, r.error_msg, r.status_code);
+      const c = classifyActivityRow(r.outcome, r.ok, r.error_msg, r.status_code, r.tool_name);
       return {
         id: `e${i}`, toolName: r.tool_name, displayName: r.tool_name, actionLabel: r.tool_name,
         tone: c.tone, status: c.status, category: c.category, errorMsg: r.error_msg, statusCode: r.status_code,

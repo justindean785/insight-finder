@@ -166,11 +166,12 @@ export function classifyActivityRow(
   ok: boolean | null,
   errorMsg: string | null,
   statusCode: number | null = null,
+  toolName: string | null = null,
 ): { tone: ToolTone; status: ToolStatus; category: CanonicalOutcome } {
   // Legacy rows (null outcome) fall back to the ok boolean — the same rule
   // `aggregateToolHealth` applies, so a legacy row is classified identically.
   const coarse = outcome ?? (ok === false ? "failed" : "ok");
-  const category = classifyDetailedOutcome(coarse, errorMsg, statusCode);
+  const category = classifyDetailedOutcome(coarse, errorMsg, statusCode, toolName);
   switch (CANONICAL_OUTCOME_META[category].tone) {
     case "ok":
     case "empty":
@@ -195,7 +196,7 @@ function cleanReason(errorMsg: string | null): string | undefined {
 
 function toEvent(r: ActivityRow): ToolEvent {
   const statusCode = typeof r.status_code === "number" ? r.status_code : null;
-  const { tone, status, category } = classifyActivityRow(r.outcome, r.ok, r.error_msg, statusCode);
+  const { tone, status, category } = classifyActivityRow(r.outcome, r.ok, r.error_msg, statusCode, r.tool_name);
   const rawCharged = typeof r.charged_micro_usd === "number" ? r.charged_micro_usd : null;
   return {
     id: r.id,

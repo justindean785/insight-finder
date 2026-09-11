@@ -38,6 +38,7 @@ import {
   displayKind,
   extractSourceInfo,
   isReputationArtifact,
+  independentSourceClassCount,
   type ConfLabel,
   type ReviewAdjustment,
 } from "@/lib/intel";
@@ -521,19 +522,28 @@ function artifactSourceClasses(a: Artifact): Set<string> {
 // NOT touch confidence caps, source classification, or status derivation — Signal
 // reuses the same bucket() the Confirmed/Probable counters use.
 /**
- * Findings backed by ≥2 INDEPENDENT source classes, analyst-rejected rows
- * excluded — the ONE count both the "Cross-source" axis and the
- * "Auto-corroboration" tile print.
+ * Findings backed by ≥2 INDEPENDENT source classes — the ONE count both the
+ * "Cross-source" axis and the "Auto-corroboration" tile print.
  *
  * The tile used to print the Confirmed bucket instead. Confirmed includes
  * analyst-confirmed rows (a decision, not a second source), so on a live case
  * the tile read "33 / 91 — findings backed by ≥2 independent source classes"
  * while this axis, three sections below, read "1/91". A reader of the printed
  * report was told 33 findings were independently corroborated. One was.
+ *
+ * "Independent" is the ENGINE's definition, not a raw category count:
+ * `independentSourceClassCount` — the one `labelForArtifact` uses — drops the
+ * non-corroborating classes (ai_summary, web_search, username_sweep, …), so
+ * `['breach', 'ai_summary']` is one class, not two. And a row that may not link
+ * to the subject at all (`isClusterIneligible`: quarantined, collision) or that
+ * the analyst rejected corroborates nothing, however many classes it carries.
+ * (Codex review, #579.)
  */
 // eslint-disable-next-line react-refresh/only-export-components
 export function countCrossSourceCorroborated(artifacts: Artifact[], reviews?: Reviews): number {
-  return artifacts.filter((a) => !isRejectedReview(revOf(reviews, a)) && artifactSourceClasses(a).size >= 2).length;
+  return artifacts.filter((a) =>
+    !isRejectedReview(revOf(reviews, a)) && !isClusterIneligible(a) && independentSourceClassCount(a) >= 2,
+  ).length;
 }
 
 export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel, reviews?: Reviews): ReportMetric[] {

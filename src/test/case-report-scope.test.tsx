@@ -181,3 +181,23 @@ describe("a value that asserts its own confidence is printed as a claim", () => 
     expect(cell?.textContent).not.toMatch(/engine 92%/);
   });
 });
+
+describe("cross-source corroboration uses the engine's definition of independent", () => {
+  // Codex review, #579: a raw two-category count granted corroboration the label
+  // engine withholds. `['breach', 'ai_summary']` is ONE independent class, and a
+  // quarantined row corroborates nothing however many classes it carries.
+  const rows = [
+    art({ id: "c1", kind: "phone", value: "+15550100", source: "indicia_phone", metadata: { source_category: ["data_broker", "breach"] } }),
+    art({ id: "c2", kind: "email", value: "a@mail.example", source: "rapidapi_breach_search", metadata: { source_category: ["breach", "ai_summary"] } }),
+    art({
+      id: "c3", kind: "name", value: "Common Namesake", source: "oathnet_lookup",
+      metadata: { source_category: ["data_broker", "breach"], subject_unlinked: true, subject_unlinked_reason: "same-name collision axis" },
+    }),
+  ];
+
+  it("counts only the row with two INDEPENDENT classes that may link to the subject", () => {
+    expect(countCrossSourceCorroborated(rows as never, {})).toBe(1);
+    const axis = buildAnalyticRadar(rows as never, "LOW", {}).find((m) => m.label === "Cross-source");
+    expect(axis?.detail).toMatch(/^1\/3 /);
+  });
+});

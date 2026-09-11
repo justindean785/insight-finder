@@ -87,11 +87,18 @@ export const CANONICAL_OUTCOME_META: Record<CanonicalOutcome, OutcomeMeta> = {
 const SKIP_RE =
   /execution plan required|duplicate call|burst limit|same-tool (?:cycle limit|budget)|paid-call (?:cycle limit|budget)|active-call concurrency|internal concurrency cap|internal (?:paid-call|throttle)|already has a call in-flight|already ran for this entity|high-cost tool already used|guard not met|weak lead blocked|expected value\s+\d+\s+below|disabled after \d+ consecutive|degraded this run|suppressed for investigation|selector blacklisted|unavailable:\s*(?:disabled|missing_key|gated)|\bgated\b|not configured|provider disabled|rate-limited\s*[—-]\s*provider|provider\b[^]*?\bsuppressed|5xx\s*[—-]\s*provider|finalize window open|run tool-call cap reached/i;
 
-// A hostname that DNS says has no address is a successful negative: the lookup
-// worked and the target has nothing there (e.g. an email-only domain with MX but
-// no A record). Only the definitive resolver answers — "temporary failure in name
-// resolution" is transient and stays a failure.
-const EMPTY_RE = /no usable result|no record found|not found\b|no results?\b|no address associated with hostname|name or service not known|\bnxdomain\b/i;
+const EMPTY_RE = /no usable result|no record found|not found\b|no results?\b/i;
+// A hostname that DNS says has no address is a successful negative — but ONLY
+// when that hostname is the TARGET, which is true only for a tool that fetches
+// the target itself. For every other tool the unresolvable host is the
+// provider's own API, and that is an outage (Codex review, #579). The error
+// text cannot tell the two apart; the tool can. Only the definitive resolver
+// answers: "temporary failure in name resolution" is transient everywhere.
+const DNS_NEGATIVE_RE = /no address associated with hostname|name or service not known|\bnxdomain\b/i;
+/** Tools that fetch the investigation TARGET's own host (not a provider API).
+ *  `dns_records` is deliberately absent: it resolves through Cloudflare DoH, so
+ *  a DNS failure there is Cloudflare's hostname. */
+const TARGET_HOST_FETCH_TOOLS = new Set(["http_fingerprint"]);
 const CANCEL_RE = /\babort(?:ed|error)?\b|signal (?:has been|was) aborted|\bcancell?ed\b/i;
 const TIMEOUT_RE = /\btimed?\s?out\b|exceeded\s+\d+\s?ms|_timeout\b|\btimeout\b/i;
 // Message-only forms too: many rows carry the code in `error_msg` ("429 Too Many
@@ -131,6 +138,8 @@ export function classifyDetailedOutcome(
   coarse: string | null | undefined,
   errorMsg: string | null | undefined,
   statusCode: number | null | undefined,
+  /** The tool that made the call — scopes rules that depend on WHOSE host failed. */
+  toolName?: string | null,
 ): CanonicalOutcome {
   const oc = String(coarse ?? "").toLowerCase();
   const msg = String(errorMsg ?? "").trim();
@@ -148,6 +157,7 @@ export function classifyDetailedOutcome(
   // Successful negative.
   if (code === 404) return "empty";
   if (msg && EMPTY_RE.test(msg)) return "empty";
+  if (msg && toolName && TARGET_HOST_FETCH_TOOLS.has(toolName) && DNS_NEGATIVE_RE.test(msg)) return "empty";
 
   // Cancellation vs. timeout: a bare AbortError = the outer investigation budget
   // aborting an in-flight call (not the provider's fault). A per-tool timeout has
@@ -181,7 +191,7 @@ export function normalizeProviderError(
   statusCode: number | null | undefined,
   category?: CanonicalOutcome,
 ): string {
-  const cat = category ?? classifyDetailedOutcome("failed", errorMsg, statusCode);
+  const cat = category ?? classifyDetailedOutcome("failed", errorMsg, statusCode, toolName);
   const code = typeof statusCode === "number" ? statusCode : null;
   const raw = String(errorMsg ?? "").trim();
   const short = raw.length > 140 ? `${raw.slice(0, 139)}…` : raw;
