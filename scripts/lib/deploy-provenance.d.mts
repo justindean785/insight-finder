@@ -76,10 +76,23 @@ export type Verdict = {
 };
 
 /** The mirror checkout the sync was pushed to, when one is available. */
-export type MirrorFacts = { commit: string | null; treeDigest: string | null };
+export type MirrorFacts = {
+  commit: string | null;
+  treeDigest: string | null;
+  /** `git rev-parse HEAD` in the mirror checkout. */
+  localHead?: string | null;
+  /** `git rev-parse origin/main` in the mirror checkout, after a best-effort fetch. */
+  remoteMain?: string | null;
+};
 
 export type TreeComparison = {
   status: "equal" | "differs" | "not_run";
+  note: Note | null;
+};
+
+/** Has the mirror's local HEAD actually reached its GitHub remote? */
+export type PushComparison = {
+  status: "pushed" | "not_pushed" | "not_run";
   note: Note | null;
 };
 
@@ -95,6 +108,7 @@ export type LogEntry = {
   mirror_commit: string | null;
   mirror_tree_digest: string | null;
   mirror_tree_equality: TreeComparison["status"];
+  mirror_push_status: PushComparison["status"];
   /** Always null: the deploy path exposes no artifact digest or attestation. */
   deployed_artifact_digest: null;
   /** Always false: unestablished, never rounded up to "probably fine". */
@@ -118,11 +132,16 @@ export function verifyDeployedCommit(input: {
   live: LiveHealthOk;
   repo: RepoFacts;
   ledger?: LedgerState;
+  mirror?: MirrorFacts | null;
 }): Verdict;
 export function compareSourceTrees(input: {
   canonicalTreeDigest: string | null;
   mirrorTreeDigest: string | null;
 }): TreeComparison;
+export function verifyMirrorPushed(input: {
+  localHead: string | null;
+  remoteMain: string | null;
+}): PushComparison;
 export function buildLogEntry(input: {
   live: LiveHealthOk;
   repo: RepoFacts;

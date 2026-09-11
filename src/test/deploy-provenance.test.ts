@@ -34,6 +34,7 @@ import {
   type LiveHealthFailed,
   type RepoFacts,
   compareSourceTrees,
+  verifyMirrorPushed,
 } from "../../scripts/lib/deploy-provenance.mjs";
 
 /**
@@ -201,6 +202,48 @@ describe("verifyDeployedCommit", () => {
     expect(verdict.markerProvenanceOk).toBe(false);
     expect(verdict.problems[0].code).toBe("unreadable_build_info");
   });
+
+  it("blocks an otherwise-healthy deploy when the mirror was never pushed", () => {
+    // THE 2026-09-11 CASE, driven through the full verdict rather than just the
+    // helper: marker provenance, ledger, and the local mirror tree can ALL be
+    // clean — this is the one axis that still catches a mirror sync that only
+    // exists on the laptop. Lovable deploys origin/main, not the local clone.
+    const verdict = verifyDeployedCommit({
+      live,
+      repo: healthy,
+      mirror: {
+        commit: "33d676e",
+        treeDigest: healthy.sourceTreeDigest,
+        localHead: "33d676ea1b2c3d4e5f60718293a4b5c6d7e8f901",
+        remoteMain: "0000000deadbeef0000000000000000000000000",
+      },
+    });
+    expect(verdict.markerProvenanceOk).toBe(false);
+    expect(verdict.problems.map((p) => p.code)).toContain("mirror_local_not_pushed");
+  });
+
+  it("does not block on a mirror that was actually pushed", () => {
+    const verdict = verifyDeployedCommit({
+      live,
+      repo: healthy,
+      mirror: {
+        commit: "33d676e",
+        treeDigest: healthy.sourceTreeDigest,
+        localHead: "33d676ea1b2c3d4e5f60718293a4b5c6d7e8f901",
+        remoteMain: "33d676ea1b2c3d4e5f60718293a4b5c6d7e8f901",
+      },
+    });
+    expect(verdict.markerProvenanceOk).toBe(true);
+    expect(verdict.problems).toEqual([]);
+  });
+
+  it("does not regress existing callers that omit mirror entirely", () => {
+    // Every pre-existing call site (and every test above this one) never passed
+    // `mirror`. That absence must keep reading as not_run, not as a problem.
+    const verdict = verifyDeployedCommit({ live, repo: healthy });
+    expect(verdict.markerProvenanceOk).toBe(true);
+    expect(verdict.problems).toEqual([]);
+  });
 });
 
 describe("verifyLedgerConsistency", () => {
@@ -250,6 +293,39 @@ describe("verifyLedgerConsistency", () => {
     });
     expect(verdict.markerProvenanceOk).toBe(false);
     expect(verdict.problems.map((p) => p.code)).toContain("ledger_ref_divergence");
+  });
+});
+
+describe("verifyMirrorPushed", () => {
+  // The full-SHA pair a mirror checkout actually produces: `git rev-parse HEAD`
+  // and `git rev-parse origin/main`, after a best-effort fetch.
+  const pushed = "33d676ea1b2c3d4e5f60718293a4b5c6d7e8f901";
+  const stale = "0000000deadbeef0000000000000000000000000";
+
+  it("reports pushed when local HEAD matches origin/main", () => {
+    const result = verifyMirrorPushed({ localHead: pushed, remoteMain: pushed });
+    expect(result).toEqual({ status: "pushed", note: null });
+  });
+
+  it("reports not_pushed, with a mirror_local_not_pushed note, when they diverge", () => {
+    // THE 2026-09-11 CASE: a mirror sync commit made locally and never pushed.
+    // The local tree still compares "equal" to canonical (compareSourceTrees has
+    // no way to know the commit never left the laptop) — this is the check that
+    // catches what that one cannot: does origin/main, what Lovable actually
+    // fetches, hold this commit at all?
+    const result = verifyMirrorPushed({ localHead: pushed, remoteMain: stale });
+    expect(result.status).toBe("not_pushed");
+    expect(result.note?.code).toBe("mirror_local_not_pushed");
+    expect(result.note?.detail).toContain("has not been pushed");
+  });
+
+  it("reports not_run — never pushed — when either SHA is unavailable", () => {
+    // No mirror path, a mirror clone with no origin/main tracking ref, or a
+    // fetch that failed with nothing cached: all legitimate absences, none of
+    // which may read as confirmation that the mirror is current.
+    expect(verifyMirrorPushed({ localHead: null, remoteMain: pushed })).toEqual({ status: "not_run", note: null });
+    expect(verifyMirrorPushed({ localHead: pushed, remoteMain: null })).toEqual({ status: "not_run", note: null });
+    expect(verifyMirrorPushed({ localHead: null, remoteMain: null })).toEqual({ status: "not_run", note: null });
   });
 });
 
@@ -351,6 +427,10 @@ describe("buildLogEntry", () => {
       mirror_commit: "33d676e",
       mirror_tree_digest: "4f8ecef31bba28965211cc2fdef0a577d605c7ef",
       mirror_tree_equality: "equal",
+      // This fixture's `mirror` carries no localHead/remoteMain (it predates the
+      // push check), which is exactly the "we never asked" state — not_run, not
+      // a silent "pushed".
+      mirror_push_status: "not_run",
       deployed_artifact_digest: null,
       deployed_bytes_verified: false,
       previous_build: "fb812a6",
@@ -372,6 +452,27 @@ describe("buildLogEntry", () => {
     });
     expect(entry.mirror_tree_equality).toBe("not_run");
     expect(entry.mirror_commit).toBeNull();
+    expect(entry.mirror_push_status).toBe("not_run");
+  });
+
+  it("records mirror_push_status independently of mirror_tree_equality", () => {
+    // The 2026-09-11 gap in one row: a local commit can make the TREE compare
+    // equal while the PUSH check still reports the truth. The ledger must be
+    // able to show both, not collapse them into one field.
+    const live = okHealth(liveHealth);
+    const verdict = verifyDeployedCommit({ live, repo });
+    const entry = buildLogEntry({
+      live, repo, verdict,
+      recordedAt: "x", previousBuild: null, previousBuildSource: "unknown",
+      mirror: {
+        commit: "33d676e",
+        treeDigest: repo.sourceTreeDigest,
+        localHead: "33d676ea1b2c3d4e5f60718293a4b5c6d7e8f901",
+        remoteMain: "0000000deadbeef0000000000000000000000000",
+      },
+    });
+    expect(entry.mirror_tree_equality).toBe("equal");
+    expect(entry.mirror_push_status).toBe("not_pushed");
   });
 
   it("distinguishes an unknown predecessor from no predecessor", () => {

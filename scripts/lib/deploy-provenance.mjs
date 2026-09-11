@@ -201,8 +201,12 @@ export function verifyLedgerConsistency({ lastEntryBuild, refBuild, unreadableRe
  * legitimate, it is just not reviewable through merged history. Record and flag,
  * do not block.
  */
-export function verifyDeployedCommit({ live, repo, ledger }) {
+export function verifyDeployedCommit({ live, repo, ledger, mirror }) {
   const problems = ledger ? verifyLedgerConsistency(ledger) : [];
+  if (mirror) {
+    const pushCheck = verifyMirrorPushed(mirror);
+    if (pushCheck.note) problems.push(pushCheck.note);
+  }
   const warnings = [];
 
   if (!repo?.exists) {
@@ -264,6 +268,47 @@ export function verifyDeployedCommit({ live, repo, ledger }) {
 }
 
 /**
+ * Has the mirror checkout's sync commit actually reached the mirror's GitHub
+ * remote? `compareSourceTrees` below answers "does the tree we HOLD match
+ * canonical" — but "we hold" means the LOCAL clone, and Lovable does not deploy
+ * the local clone. It pulls from that repo's `origin/main`. A sync commit made
+ * locally and never pushed makes the local tree compare "equal" to canonical
+ * while the mirror's actual GitHub state — what Lovable would fetch — is still
+ * stale. That happened on 2026-09-11: `verify:deploy` reported "mirror tree ->
+ * equal" against an unpushed local commit, a false green caught only because
+ * the Lovable agent independently re-pulled its own GitHub repo and refused to
+ * deploy stale code.
+ *
+ * Same instrument-trap shape as `ledger_ref_divergence`: the gate reports what
+ * it can see (the local clone), not what is true (what origin/main holds), and
+ * the two silently diverge under exactly the workflow this script exists to
+ * support — sync locally, verify, forget to push.
+ *
+ * `localHead` / `remoteMain` are both full SHAs from the mirror checkout,
+ * `git rev-parse HEAD` and `git rev-parse origin/main` respectively, taken
+ * AFTER a best-effort `git fetch origin main` so the comparison is not made
+ * against a remote ref that predates this run. Either being unavailable — no
+ * mirror path, a mirror clone with no `origin/main` tracking ref, a fetch that
+ * failed with no prior fetch to fall back on — is legitimately NOT RUN, exactly
+ * like an absent mirror checkout for the tree comparison. It must never read as
+ * "pushed".
+ */
+export function verifyMirrorPushed({ localHead, remoteMain }) {
+  if (!localHead || !remoteMain) return { status: "not_run", note: null };
+  if (localHead === remoteMain) return { status: "pushed", note: null };
+  return {
+    status: "not_pushed",
+    note: {
+      code: "mirror_local_not_pushed",
+      detail:
+        `mirror local HEAD ${localHead.slice(0, 12)} has not been pushed — its origin/main is at ` +
+        `${remoteMain.slice(0, 12)}. A sync commit that only exists locally deploys nothing: Lovable ` +
+        "pulls from origin/main, so this build would ship the stale code already on the remote.",
+    },
+  };
+}
+
+/**
  * Mirror-tree comparison. Separate from marker provenance on purpose: it answers
  * a different question (does the tree we PUSHED match the tree we HOLD?) and can
  * legitimately be NOT RUN when no mirror checkout is available. Conflating "not
@@ -316,6 +361,10 @@ export function buildLogEntry({
     canonicalTreeDigest: repo?.sourceTreeDigest ?? null,
     mirrorTreeDigest: mirror?.treeDigest ?? null,
   });
+  const pushCheck = verifyMirrorPushed({
+    localHead: mirror?.localHead ?? null,
+    remoteMain: mirror?.remoteMain ?? null,
+  });
   return {
     recorded_at: recordedAt,
     // What the running function said about itself.
@@ -330,6 +379,10 @@ export function buildLogEntry({
     mirror_commit: mirror?.commit ?? null,
     mirror_tree_digest: mirror?.treeDigest ?? null,
     mirror_tree_equality: treeComparison.status, // equal | differs | not_run
+    // Whether the mirror clone's HEAD was actually on its GitHub remote — the
+    // axis a locally-committed, never-pushed sync fails while still reading
+    // "equal" above.
+    mirror_push_status: pushCheck.status, // pushed | not_pushed | not_run
     // What nobody has measured.
     deployed_artifact_digest: null,
     deployed_bytes_verified: false,
