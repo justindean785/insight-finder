@@ -9,8 +9,8 @@
 
 | Axis | Value | How measured |
 |---|---|---|
-| canonical `main` | `f0a7217` (#571/#572/#573; was `82ae57b`) | `git rev-parse` |
-| live `osint-agent` build | **`f95a449`** — DEPLOYED 2026-09-11 | `/health` + `verify:deploy` |
+| canonical `main` | `7c7888f` (#575; was `f0a7217`) | `git rev-parse` |
+| live `osint-agent` build | **`f95a449`** — ⚠️ PREDATES #575, see §4.3 | `/health` + `verify:deploy` |
 | mirror `main` | `952929e` (synced for `f95a449`) | mirror clone |
 | Deploy state | ✅ **SHIPPED and VERIFIED** — freeze lifted | see §3 |
 | Build marker | `f95a449`, stamp commit `8abc3e8` (parent verified) | `verify:deploy` |
@@ -199,7 +199,18 @@ malformed UTF-8 away from the boundary still fails closed*, which pins that `str
 forgives only a truncated **trailing** sequence and never an invalid one mid-probe.
 Measured on `main`: **12 passed / 0 failed**.
 
-### 4.3 — Source class derives from the TOOL, not the ORIGIN · **CONFIRMED** · high leverage
+### 4.3 — Source class derives from the TOOL, not the ORIGIN · ✅ **FIXED in #575 — ⚠️ NOT DEPLOYED**
+
+> **Fixed on `main` at `7c7888f`; production is `f95a449`, which predates it.** A merge is
+> not a deploy. Until an `osint-agent` deploy ships #575, every live investigation still
+> runs the old classifier and still adjudicates no findings.
+>
+> Verified on `main`: `socialfetch_web_read (asec.ahnlab.com/en/94918)` -> `independent_public`,
+> `socialfetch_web_read (x.com/DarkWebInformer/...)` -> `social_profile_active`,
+> `countIndependentClasses` = **2** (was 1). Regressions hold: the `(instagram)` fast path,
+> the bare-slug fallback, and non-string failing closed to `unknown`. #575 also carried the
+> boundary through the persisted finding status (`lib/finding-row.ts`,
+> `recording-source-policy.ts`) — wider than this section specified.
 
 **This is why every case reports "the scoring engine adjudicated no findings."**
 
@@ -336,7 +347,7 @@ enumerable*, not nonexistent).
 
 ## 7 · Recommended order for the next session
 
-1. **§4.3 source classification by origin** — now the top item; unblocks adjudication everywhere.
+1. ~~**§4.3 source classification by origin**~~ — ✅ fixed in #575, **awaiting deploy**.
 2. ~~**§4.1 finalize corrective PR**~~ — ✅ done, merged as #571 and DEPLOYED (`f95a449`).
 3. ~~**§4.2**~~ — ✅ done, merged in #569. Parity is now restorable by a plain
    canonical → mirror sync.
