@@ -8,6 +8,7 @@ import { CaseSnapshotContext, type CaseSnapshot, type CaseSnapshotApi } from "@/
 import { useReviewStates, type ReviewState } from "@/lib/review";
 import { tallyAuthority } from "@/lib/authority";
 import { buildConfidenceProfile } from "@/lib/confidence-dimensions";
+import { withReviewGate } from "@/lib/report-export-gate";
 import {
   buildCaseSnapshot,
   CASE_THREAD_COLUMNS,
@@ -153,16 +154,26 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
     return data ? parseThreadRow(data) : null;
   }, [threadId]);
 
+  /**
+   * The custody chain's verdict, or `null` when the check did not run. A failed
+   * RPC, a missing row or a row without an `ok` field is NOT evidence of
+   * tampering — coercing it to `ok: false` put "chain broken at entry #null" in
+   * the header on a transport error. Same rule as CustodyTab's Verify.
+   */
   const fetchIntegrity = useCallback(async (): Promise<CaseIntegrity | null> => {
-    const [{ count }, { data: v }] = await Promise.all([
+    const [{ count, error: countError }, { data: v, error: rpcError }] = await Promise.all([
       supabase.from("evidence_log").select("id", { count: "exact", head: true }).eq("thread_id", threadId),
       supabase.rpc("verify_evidence_chain", { _thread_id: threadId }),
     ]);
+    if (rpcError) return null;
     const parsed = integritySchema.safeParse(Array.isArray(v) ? v[0] : v);
     const row = parsed.success ? parsed.data : null;
-    const total = Number(row?.total ?? count ?? 0);
-    const firstBreak = row?.first_break === null || row?.first_break === undefined ? null : Number(row.first_break);
-    return { ok: Boolean(row?.ok), total: Number.isFinite(total) ? total : 0, firstBreak };
+    if (!row || typeof row.ok !== "boolean") return null;
+    const rawTotal = row.total ?? (countError ? null : count);
+    const total = rawTotal === null || rawTotal === undefined ? NaN : Number(rawTotal);
+    if (!Number.isFinite(total)) return null;
+    const firstBreak = row.first_break === null || row.first_break === undefined ? null : Number(row.first_break);
+    return { ok: row.ok, total, firstBreak };
   }, [threadId]);
 
   /**
@@ -177,7 +188,7 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
       if (aliveRef.current && reconcileSeq.current === token) setShowSyncing(true);
     }, SYNC_LABEL_DELAY_MS);
     try {
-      const [row, integ] = await Promise.all([
+      const [row, integ, toolsRead, artifactsRead] = await Promise.all([
         fetchThread(),
         fetchIntegrity(),
         sourcesRef.current.reloadTools(),
@@ -187,9 +198,18 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
       // Batched with setReconciling(false) below: one render, one version.
       if (row) setThread(row);
       setThreadLoaded(true);
-      setIntegrity(integ);
-      setSyncedAt(Date.now());
-      setSyncError(false);
+      // A custody check that did not run keeps the last verdict; it never
+      // replaces a real one with an invented one.
+      if (integ) setIntegrity(integ);
+      // "Synced" is a claim that EVERY source was just read. The tool and
+      // artifact stores keep their last rows on a failed read, so without this
+      // check a refresh that only kept stale counts was stamped as a fresh sync.
+      if (integ && toolsRead && artifactsRead) {
+        setSyncedAt(Date.now());
+        setSyncError(false);
+      } else {
+        setSyncError(true);
+      }
     } catch {
       if (aliveRef.current && reconcileSeq.current === token) setSyncError(true);
     } finally {
@@ -216,7 +236,8 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
         if (!alive) return;
         setThread(row);
         setIntegrity(integ);
-        setSyncedAt(Date.now());
+        if (integ) setSyncedAt(Date.now());
+        else setSyncError(true);
       } catch {
         if (alive) setSyncError(true);
       } finally {
@@ -291,9 +312,18 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
     }
     return m;
   }, [artifacts.items, reviewGet]);
+  // Report-ready fails closed until the verdicts are actually read: while they
+  // load, or during an outage, `reviewMap` is empty, and a row the analyst
+  // dismissed would otherwise count toward a report-safe export.
+  const reviewAvailability = review.availability;
   const readiness = useMemo(
-    () => (artifacts.loading ? null : buildConfidenceProfile({ artifacts: artifacts.items, seedValue: thread?.seed_value ?? null, reviews: reviewMap })),
-    [artifacts.loading, artifacts.items, thread?.seed_value, reviewMap],
+    () => (artifacts.loading
+      ? null
+      : withReviewGate(
+        buildConfidenceProfile({ artifacts: artifacts.items, seedValue: thread?.seed_value ?? null, reviews: reviewMap }),
+        reviewAvailability,
+      )),
+    [artifacts.loading, artifacts.items, thread?.seed_value, reviewMap, reviewAvailability],
   );
 
   const core = useMemo(
@@ -331,11 +361,14 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
   );
 
   // ── Publication — frozen while a reconcile is in flight ─────────────────
+  // The shared stores also re-read on their own (heartbeat, refocus). A failure
+  // there keeps the old rows too, so it is a sync failure as much as one here.
+  const sourceError = syncError || tools.error || artifacts.error;
   const [published, setPublished] = useState<CaseSnapshot | null>(null);
   useEffect(() => {
     if (reconciling) return;
     setPublished((prev) => {
-      if (prev && prev.threadId === core.threadId && sameCore(prev, core) && prev.syncedAt === syncedAt && prev.syncError === syncError) {
+      if (prev && prev.threadId === core.threadId && sameCore(prev, core) && prev.syncedAt === syncedAt && prev.syncError === sourceError) {
         return prev;
       }
       const sameThread = prev?.threadId === core.threadId;
@@ -347,11 +380,11 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
         capturedAt: at,
         syncing: false,
         syncedAt,
-        syncError,
+        syncError: sourceError,
         lastChange: changes.length > 0 ? { changes, at } : sameThread && prev ? prev.lastChange : null,
       };
     });
-  }, [core, reconciling, syncedAt, syncError]);
+  }, [core, reconciling, syncedAt, sourceError]);
 
   const snapshot = useMemo<CaseSnapshot | null>(() => {
     if (!published || published.threadId !== threadId) return null;

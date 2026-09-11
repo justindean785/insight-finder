@@ -123,7 +123,7 @@ type Store = {
   loadedAt: number | null;
   subscribers: Set<(snapshot: StoreSnapshot) => void>;
   channel: ReturnType<typeof supabase.channel> | null;
-  loading: Promise<void> | null;
+  loading: Promise<boolean> | null;
   refCount: number;
   // Whether the realtime channel has completed its first SUBSCRIBED. A second
   // SUBSCRIBED means the socket recovered after a disconnect, so we reconcile
@@ -166,7 +166,8 @@ function snapshot(store: Store): StoreSnapshot {
   };
 }
 
-async function loadStore(threadId: string, store: Store) {
+/** Resolves `true` when the read succeeded, `false` when it failed. */
+async function loadStore(threadId: string, store: Store): Promise<boolean> {
   const { data, error } = await supabase
     .from("artifacts")
     .select("id,kind,value,confidence,source,created_at,metadata")
@@ -181,7 +182,7 @@ async function loadStore(threadId: string, store: Store) {
     store.error = true;
     const snap = snapshot(store);
     for (const fn of store.subscribers) fn(snap);
-    return;
+    return false;
   }
   const rows = (data ?? []) as Artifact[];
   store.loadedCount = rows.length;
@@ -192,6 +193,7 @@ async function loadStore(threadId: string, store: Store) {
   store.loadedAt = Date.now();
   const snap = snapshot(store);
   for (const fn of store.subscribers) fn(snap);
+  return true;
 }
 
 /**
@@ -372,11 +374,13 @@ export function useThreadArtifacts(threadId: string) {
   };
 
   // Force a fresh SELECT — used by the evidence surfaces' error-retry affordance
-  // and by the case header's Refresh. Resolves once that read has settled, so a
-  // caller reconciling several sources can publish them together.
-  const reload = (): Promise<void> => {
+  // and by the case header's Refresh. Resolves once that read has settled —
+  // `true` if it succeeded, `false` if it failed and the old rows were kept — so
+  // a caller reconciling several sources can publish them together, and never
+  // call a refresh that kept stale rows a successful one.
+  const reload = (): Promise<boolean> => {
     const store = stores.get(threadId);
-    return store ? loadStore(threadId, store) : Promise.resolve();
+    return store ? loadStore(threadId, store) : Promise.resolve(true);
   };
   const retry = () => { void reload(); };
 

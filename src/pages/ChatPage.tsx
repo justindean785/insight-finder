@@ -160,7 +160,7 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
       {panel("evidence", <EvidenceTab threadId={threadId} viewRequest={evidenceReq} />)}
       {panel(
         "report",
-        <div className="mx-auto w-full max-w-[60rem] px-4 py-3 sm:px-6"><ReportTab threadId={threadId} artifacts={snapshot?.items ?? []} /></div>,
+        <div className="mx-auto w-full max-w-[60rem] px-4 py-3 sm:px-6"><ReportTab threadId={threadId} artifacts={snapshot?.items ?? []} printActive={tab === "report"} /></div>,
         true,
       )}
       {panel("graph", <GraphTab threadId={threadId} />)}

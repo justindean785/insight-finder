@@ -10,6 +10,7 @@ import {
   evaluateExportGate,
   exportFilename,
   markMarkdown,
+  withReviewGate,
   wrapJsonExport,
 } from "@/lib/report-export-gate";
 
@@ -50,7 +51,7 @@ describe("the thresholds are the scoring's own, unchanged", () => {
 
 describe("evaluateExportGate", () => {
   it("a 2%-ready report is a draft, with the reason in plain words", () => {
-    const g = evaluateExportGate(profile(2, 75, true, false));
+    const g = evaluateExportGate(profile(2, 75, true, false), "ok");
     expect(g.mode).toBe("draft");
     expect(g.mark).toBe(DRAFT_MARK);
     expect(g.readinessPct).toBe(2);
@@ -58,24 +59,62 @@ describe("evaluateExportGate", () => {
   });
 
   it("names every unmet check, not just the first", () => {
-    const g = evaluateExportGate(profile(2, 40, false, false));
+    const g = evaluateExportGate(profile(2, 40, false, false), "ok");
     expect(g.reasons).toHaveLength(3);
   });
 
   it("follows reportReady exactly — it never overrules the scoring", () => {
-    expect(evaluateExportGate(profile(80, 80, true, true)).mode).toBe("report-safe");
+    expect(evaluateExportGate(profile(80, 80, true, true), "ok").mode).toBe("report-safe");
     // Numbers above the bar but reportReady false → still a draft.
-    expect(evaluateExportGate(profile(80, 80, true, false)).mode).toBe("draft");
+    expect(evaluateExportGate(profile(80, 80, true, false), "ok").mode).toBe("draft");
   });
 
   it("an unknown profile (still loading) is a draft", () => {
-    expect(evaluateExportGate(null).mode).toBe("draft");
+    expect(evaluateExportGate(null, "ok").mode).toBe("draft");
+  });
+});
+
+describe("report-safe fails closed until analyst verdicts are read", () => {
+  // Without verdicts an empty review map is indistinguishable from "nothing was
+  // rejected", so a row the analyst dismissed would count toward report-safe.
+  const strong = profile(80, 80, true, true);
+
+  it("a report-ready profile is still a draft while verdicts load, and says why", () => {
+    const g = evaluateExportGate(strong, "unknown");
+    expect(g.mode).toBe("draft");
+    expect(g.mark).toBe(DRAFT_MARK);
+    expect(g.reasons).toEqual([expect.stringMatching(/verdicts are still loading/)]);
+  });
+
+  it("…and during an outage, when they could not be read at all", () => {
+    const g = evaluateExportGate(strong, "unavailable");
+    expect(g.mode).toBe("draft");
+    expect(g.reasons[0]).toMatch(/verdicts could not be read/);
+  });
+
+  it("the verdict reason sits beside, not instead of, the scoring's own reasons", () => {
+    const g = evaluateExportGate(profile(2, 40, false, false), "unavailable");
+    expect(g.reasons).toHaveLength(4);
+  });
+
+  it("withReviewGate withholds reportReady only — every score is left as computed", () => {
+    const gated = withReviewGate(strong, "unavailable");
+    expect(gated.reportReady).toBe(false);
+    expect(gated.dimensions).toBe(strong.dimensions);
+    expect(gated.overall).toBe(strong.overall);
+    expect(withReviewGate(strong, "unknown").reportReady).toBe(false);
+  });
+
+  it("withReviewGate hands back the SAME object when it withholds nothing", () => {
+    expect(withReviewGate(strong, "ok")).toBe(strong);
+    const weak = profile(2, 75, true, false);
+    expect(withReviewGate(weak, "unavailable")).toBe(weak);
   });
 });
 
 describe("draft marking in every payload", () => {
-  const draft = evaluateExportGate(profile(2, 75, true, false));
-  const safe = evaluateExportGate(profile(80, 80, true, true));
+  const draft = evaluateExportGate(profile(2, 75, true, false), "ok");
+  const safe = evaluateExportGate(profile(80, 80, true, true), "ok");
   const at = "2026-09-11T10:00:00.000Z";
 
   it("puts UNVERIFIED-DRAFT in a draft's file name, and nothing in a safe one's", () => {

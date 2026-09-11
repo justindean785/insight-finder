@@ -118,7 +118,7 @@ export function CaseSyncStatus({ className, compact = false }: { className?: str
     detail = "Re-reading every source. The figures shown are the last complete version until this finishes.";
   } else if (snapshot.syncError) {
     label = syncedAt ? `Sync failed · ${clock(syncedAt)}` : "Sync failed";
-    detail = "The last refresh could not reach the server. The figures shown are from the last successful read.";
+    detail = "The last refresh did not read every source. Each figure shown is from its source's last successful read.";
   } else if (highlight && change) {
     label = `Updated ${clock(change.at)}`;
     detail = `Case updated: ${describeCaseChanges(change.changes)}.`;

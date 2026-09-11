@@ -17,8 +17,32 @@ import {
   REPORT_READY_MIN_READINESS,
   type ConfidenceProfile,
 } from "@/lib/confidence-dimensions";
+import type { ReviewAvailability } from "@/lib/review";
 
 export const DRAFT_MARK = "UNVERIFIED DRAFT";
+
+/**
+ * Report-ready, failing closed on the analyst's verdicts.
+ *
+ * `buildConfidenceProfile` reads verdicts as an input: a row the analyst
+ * dismissed or marked wrong stops counting. While those verdicts are still
+ * loading — or could not be read at all — an empty verdict map is
+ * indistinguishable from "nothing was ever rejected", so a strong-looking case
+ * could claim report-ready on evidence the analyst already threw out.
+ *
+ * Only `reportReady` is withheld; every score and dimension is left exactly as
+ * computed. Returns the SAME object when nothing is withheld, so memoised
+ * consumers do not churn.
+ */
+export function withReviewGate(profile: ConfidenceProfile, reviews: ReviewAvailability): ConfidenceProfile {
+  return reviews === "ok" || !profile.reportReady ? profile : { ...profile, reportReady: false };
+}
+
+function reviewReason(reviews: ReviewAvailability): string | null {
+  if (reviews === "unknown") return "Analyst verdicts are still loading, so evidence marked wrong or dismissed cannot be left out yet.";
+  if (reviews === "unavailable") return "Analyst verdicts could not be read, so evidence marked wrong or dismissed cannot be left out.";
+  return null;
+}
 
 export type ExportMode = "report-safe" | "draft";
 
@@ -32,7 +56,11 @@ export interface ExportGate {
   mark: typeof DRAFT_MARK | "REPORT-SAFE";
 }
 
-export function evaluateExportGate(profile: ConfidenceProfile | null): ExportGate {
+/**
+ * `reviews` is the analyst-verdict read state. Report-safe needs it to be "ok":
+ * the gate fails closed on its own, whatever profile it is handed.
+ */
+export function evaluateExportGate(profile: ConfidenceProfile | null, reviews: ReviewAvailability): ExportGate {
   if (!profile) {
     return {
       mode: "draft",
@@ -43,10 +71,12 @@ export function evaluateExportGate(profile: ConfidenceProfile | null): ExportGat
   }
   const dim = (key: string) => profile.dimensions.find((d) => d.key === key);
   const readiness = dim("readiness")?.value ?? 0;
-  if (profile.reportReady) {
+  const verdicts = reviewReason(reviews);
+  if (profile.reportReady && !verdicts) {
     return { mode: "report-safe", readinessPct: readiness, reasons: [], mark: "REPORT-SAFE" };
   }
   const reasons: string[] = [];
+  if (verdicts) reasons.push(verdicts);
   if (readiness < REPORT_READY_MIN_READINESS) {
     reasons.push(`Report readiness is ${readiness}% — report-safe needs ${REPORT_READY_MIN_READINESS}%.`);
   }

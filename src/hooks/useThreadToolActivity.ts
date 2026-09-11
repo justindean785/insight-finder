@@ -99,8 +99,13 @@ export interface ThreadToolActivity {
   error: boolean;
   /** Epoch ms of the last SUCCESSFUL load, or null if none has completed. */
   loadedAt: number | null;
-  /** Force a fresh read from persistence. Resolves once that read has settled. */
-  reload: () => Promise<void>;
+  /**
+   * Force a fresh read from persistence. Resolves once that read has settled:
+   * `true` if it succeeded, `false` if it failed (the last rows are kept and
+   * `error` is set) — so a caller reconciling several sources can tell a
+   * refresh that landed from one that only kept the old figures.
+   */
+  reload: () => Promise<boolean>;
 }
 
 /** One persisted tool_usage_log row (the authoritative per-call record). */
@@ -253,8 +258,8 @@ type Store = StoreSnapshot & {
   subscribers: Set<(snap: StoreSnapshot) => void>;
   channels: ReturnType<typeof supabase.channel>[];
   refCount: number;
-  inflight: Promise<void> | null;
-  queued: Promise<void> | null;
+  inflight: Promise<boolean> | null;
+  queued: Promise<boolean> | null;
   runWasActive: boolean;
   onRunState: ((event: Event) => void) | null;
   onVisible: (() => void) | null;
@@ -282,7 +287,8 @@ function publish(store: Store) {
   for (const fn of store.subscribers) fn(snap);
 }
 
-async function runLoad(store: Store): Promise<void> {
+/** Resolves `true` when the read succeeded, `false` when it failed. */
+async function runLoad(store: Store): Promise<boolean> {
   const { data, error, count } = await supabase
     .from("tool_usage_log")
     // `outcome` is not in the generated types yet (added by migration) —
@@ -292,12 +298,12 @@ async function runLoad(store: Store): Promise<void> {
     .order("created_at", { ascending: true });
   // A store released while its read was in flight must not be written to —
   // and neither may one that has since been replaced under the same key.
-  if (stores.get(store.key) !== store) return;
+  if (stores.get(store.key) !== store) return !error;
   if (error) {
     store.loaded = true;
     store.error = true;
     publish(store);
-    return;
+    return false;
   }
   const rows = (data ?? []) as unknown as ActivityRow[];
   // Failed calls are part of the record, not noise to be hidden.
@@ -315,15 +321,17 @@ async function runLoad(store: Store): Promise<void> {
   store.error = false;
   store.loadedAt = Date.now();
   publish(store);
+  return true;
 }
 
 /**
  * Coalesced load. At most one read is in flight per store; a request that
  * arrives mid-read queues exactly ONE follow-up, so a burst of triggers costs
  * two reads, never N, and no trigger is lost (the follow-up starts after the
- * current read and therefore sees everything that caused it).
+ * current read and therefore sees everything that caused it). A queued caller
+ * gets the follow-up's outcome — the read that actually saw its trigger.
  */
-function requestLoad(store: Store): Promise<void> {
+function requestLoad(store: Store): Promise<boolean> {
   if (!store.inflight) {
     store.inflight = runLoad(store).finally(() => {
       store.inflight = null;
@@ -485,7 +493,7 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
 
   const reload = useCallback(() => {
     const store = stores.get(scopeKey);
-    return store ? requestLoad(store) : Promise.resolve();
+    return store ? requestLoad(store) : Promise.resolve(true);
   }, [scopeKey]);
 
   // Effects run after render. Keying the snapshot by scope prevents one frame of

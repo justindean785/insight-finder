@@ -14,6 +14,7 @@ import {
   evaluateExportGate,
   exportFilename,
   markMarkdown,
+  withReviewGate,
   wrapJsonExport,
   DRAFT_MARK,
   type ExportGate,
@@ -63,7 +64,15 @@ const FORMAT_LABEL: Record<ExportFormat, string> = {
   json: "Raw JSON",
 };
 
-export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts: Artifact[] }) {
+export function ReportTab({
+  threadId, artifacts, printActive = true,
+}: {
+  threadId: string;
+  artifacts: Artifact[];
+  /** Whether Ctrl+P / the print menu should print this report. False while the
+   *  tab is mounted but hidden behind another workspace section. */
+  printActive?: boolean;
+}) {
   const [reportType, setReportType] = useState<ReportType>("full");
   const [pending, setPending] = useState<ExportFormat | null>(null);
   const [ack, setAck] = useState(false);
@@ -140,13 +149,14 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
   const matrixMd = useMemo(() => buildEvidenceMatrixMarkdown(artifacts, reviews), [artifacts, reviews]);
 
   // Readiness: the snapshot's profile (same version as every other figure), or
-  // computed here when rendered standalone.
+  // computed here when rendered standalone. Never computed locally beside a
+  // snapshot that has none yet — that would read an empty verdict map.
   const localProfile = useMemo(
-    () => (snapshot?.readiness ? null : buildConfidenceProfile({ artifacts, seedValue: seed.value, reviews })),
-    [snapshot?.readiness, artifacts, seed.value, reviews],
+    () => (snapshot ? null : withReviewGate(buildConfidenceProfile({ artifacts, seedValue: seed.value, reviews }), review.availability)),
+    [snapshot, artifacts, seed.value, reviews, review.availability],
   );
-  const profile = snapshot?.readiness?.profile ?? localProfile;
-  const gate: ExportGate = useMemo(() => evaluateExportGate(profile), [profile]);
+  const profile = snapshot ? snapshot.readiness?.profile ?? null : localProfile;
+  const gate: ExportGate = useMemo(() => evaluateExportGate(profile, review.availability), [profile, review.availability]);
   const isDraft = gate.mode === "draft";
 
   // Analyst review state for the toolbar summary. "verified" comes from the
@@ -171,7 +181,12 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
   // fires for every print path (button, shortcut, menu), so the class is set for
   // all of them — a class toggled only around this tab's own `window.print()`
   // left Ctrl+P printing one clipped viewport.
+  //
+  // Only while the Report is the tab on screen. The workspace keeps a visited
+  // panel mounted (hidden), so an always-on listener made Ctrl+P on Evidence or
+  // Investigate print the hidden report — or a blank page.
   useEffect(() => {
+    if (!printActive) return;
     const on = () => document.body.classList.add("printing-report");
     const off = () => document.body.classList.remove("printing-report");
     window.addEventListener("beforeprint", on);
@@ -181,7 +196,7 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
       window.removeEventListener("afterprint", off);
       off();
     };
-  }, []);
+  }, [printActive]);
 
   const perform = (format: ExportFormat) => {
     const now = new Date().toISOString();
@@ -353,7 +368,7 @@ export function ReportTab({ threadId, artifacts }: { threadId: string; artifacts
       <div className="space-y-3 pt-3">
         {/* Evidence-signal summary — UI-only, kept out of the printed report. */}
         <div className="no-print">
-          <ConfidenceRadar artifacts={artifacts} seedValue={seed.value} reviews={reviews} profile={profile ?? undefined} />
+          {profile && <ConfidenceRadar artifacts={artifacts} seedValue={seed.value} reviews={reviews} profile={profile} />}
         </div>
         {/* No inner scroll: the report flows in the page's single scroll container. */}
         <div className="rounded-lg border border-border-subtle bg-surface-1 px-4 py-5">
