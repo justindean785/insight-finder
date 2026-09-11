@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Bar,
   BarChart,
@@ -83,6 +85,8 @@ const revOf = (reviews: Reviews, a: Artifact): ReviewAdjustment => reviews?.[a.i
 // review state still drives bucketing and status elsewhere in this file; it just
 // no longer moves the figure. See src/lib/display-confidence.ts.
 const confOf = (_reviews: Reviews, a: Artifact): number | null => effectiveConfidence(a);
+/** Hoisted so ReactMarkdown sees a stable plugin list across renders. */
+const NARRATIVE_REMARK_PLUGINS = [remarkGfm];
 
 function statusOf(a: Artifact): string {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
@@ -174,7 +178,10 @@ function SourceBadges({ sources }: { sources: string[] }) {
           key={source}
           source={source}
           size="xs"
-          className="max-w-full whitespace-normal break-words [overflow-wrap:anywhere] text-left !rounded-md"
+          // `!h-auto`: the badge is a fixed-height pill, and a long tool name
+          // that wraps here overflowed it top and bottom — clipped on screen and
+          // printed as "•MINIMAX_WEB_SEA / RCH" with the first line cut off.
+          className="max-w-full !h-auto min-h-5 py-0.5 whitespace-normal break-words [overflow-wrap:anywhere] text-left !rounded-md"
         />
       ))}
     </span>
@@ -511,6 +518,22 @@ function artifactSourceClasses(a: Artifact): Set<string> {
 // DISPLAY-METRIC ONLY: these functions change what the radar axes COUNT. They do
 // NOT touch confidence caps, source classification, or status derivation — Signal
 // reuses the same bucket() the Confirmed/Probable counters use.
+/**
+ * Findings backed by ≥2 INDEPENDENT source classes, analyst-rejected rows
+ * excluded — the ONE count both the "Cross-source" axis and the
+ * "Auto-corroboration" tile print.
+ *
+ * The tile used to print the Confirmed bucket instead. Confirmed includes
+ * analyst-confirmed rows (a decision, not a second source), so on a live case
+ * the tile read "33 / 91 — findings backed by ≥2 independent source classes"
+ * while this axis, three sections below, read "1/91". A reader of the printed
+ * report was told 33 findings were independently corroborated. One was.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function countCrossSourceCorroborated(artifacts: Artifact[], reviews?: Reviews): number {
+  return artifacts.filter((a) => !isRejectedReview(revOf(reviews, a)) && artifactSourceClasses(a).size >= 2).length;
+}
+
 export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel, reviews?: Reviews): ReportMetric[] {
   // ONE eligible-positive population for every axis that measures STRENGTH.
   // An analyst-rejected row may not seed or strengthen a positive metric — the
@@ -548,7 +571,7 @@ export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel, 
 
   // Corroboration (BUG-3): findings backed by >=2 INDEPENDENT source classes,
   // NOT distinct source-label count (52 labels incl. 4x minimax != corroboration).
-  const corroborated = positive.filter((a) => artifactSourceClasses(a).size >= 2).length;
+  const corroborated = countCrossSourceCorroborated(artifacts, reviews);
   const corroborationValue = clampScore((corroborated / total) * 100);
 
   // Coverage (BUG-4): observed source CATEGORIES vs the expected set, not tool count.
@@ -648,6 +671,9 @@ function AnalyticRadar({ data }: { data: ReportMetric[] }) {
           fillOpacity={0.28}
           strokeWidth={2}
           dot={{ r: 2.5, fill: "hsl(var(--info))" }}
+          // No entry animation: a printed report re-lays out at page width, the
+          // chart re-renders, and Chrome captured it mid-animation — blank.
+          isAnimationActive={false}
         />
       </RadarChart>
     </ResponsiveContainer>
@@ -668,7 +694,7 @@ function CompactBarChart({ data, color = "hsl(var(--info))" }: { data: ChartDatu
           axisLine={false}
           tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }}
         />
-        <Bar dataKey="value" radius={[0, 6, 6, 0]} fill={color} />
+        <Bar dataKey="value" radius={[0, 6, 6, 0]} fill={color} isAnimationActive={false} />
       </BarChart>
     </ResponsiveContainer>
   );
@@ -981,10 +1007,26 @@ export function CaseReport({
 }) {
   const display = useMemo(() => extractDisplaySeed(seedValue, seedType), [seedValue, seedType]);
   const subjectProfile = useMemo(() => buildSubjectProfile(artifacts, reviews), [artifacts, reviews]);
-  const profileLinks = useMemo(() => buildProfileLinks(artifacts), [artifacts]);
-  const aliases = useMemo(() => buildAliases(artifacts), [artifacts]);
-  const breachRows = useMemo(() => buildBreachExposure(artifacts), [artifacts]);
+  // Sections that say "this is the subject's" read only rows still in scope.
+  // An analyst-rejected or quarantined row stays in the artifact tables and in
+  // chain of custody, but it may not be listed as the subject's footprint or
+  // breach exposure, or push the risk posture up. The Markdown export already
+  // dropped these rows ("removed from every active section by analyst review");
+  // the rendered report and its printed copy did not — a live case printed a
+  // rejected DNS provider's nameservers as the subject's "Digital Footprint" and
+  // a rejected same-name collision under "Breach Exposure". Same predicate
+  // (`bucket`) that files a row as excluded everywhere else in this report.
+  const inScope = useMemo(() => artifacts.filter((a) => bucket(a, revOf(reviews, a)) !== "excluded"), [artifacts, reviews]);
+  const profileLinks = useMemo(() => buildProfileLinks(inScope), [inScope]);
+  // Handles follow the Subject Profile's own rule (a rejected row is not a
+  // candidate) — quarantine eligibility for the profile is a separate decision.
+  const aliases = useMemo(
+    () => buildAliases(artifacts.filter((a) => !isRejectedReview(revOf(reviews, a)))),
+    [artifacts, reviews],
+  );
+  const breachRows = useMemo(() => buildBreachExposure(inScope), [inScope]);
   const analystConf = useMemo(() => analystConfidence(artifacts, reviews), [artifacts, reviews]);
+  const crossSource = useMemo(() => countCrossSourceCorroborated(artifacts, reviews), [artifacts, reviews]);
   const narrative = useMemo(() => {
     const last = (messages ?? []).filter((m) => m.role === "assistant" && m.summary?.trim()).slice(-1)[0];
     return last?.summary?.trim() ?? "";
@@ -994,7 +1036,7 @@ export function CaseReport({
   const registrations = useMemo(() => buildRegistrationRows(artifacts, reviews), [artifacts, reviews]);
   const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue, reviews), [artifacts, seedValue, reviews]);
   const unknowns = useMemo(() => buildUnknowns(artifacts), [artifacts]);
-  const risk = useMemo(() => computeRisk(artifacts), [artifacts]);
+  const risk = useMemo(() => computeRisk(inScope), [inScope]);
   const radar = useMemo(() => buildAnalyticRadar(artifacts, risk.level, reviews), [artifacts, risk.level, reviews]);
   const groupDistribution = useMemo(() => buildGroupDistribution(artifacts), [artifacts]);
   const sourceDistribution = useMemo(() => buildSourceDistribution(artifacts), [artifacts]);
@@ -1131,8 +1173,8 @@ export function CaseReport({
         </div>
         <div>
           <div className="text-micro font-mono tracking-normal text-muted-foreground">Auto-corroboration</div>
-          <div className="mt-1 font-display text-2xl font-semibold text-foreground">{buckets.confirmed.length} / {artifacts.length}</div>
-          <p className="mt-1 text-data leading-relaxed text-muted-foreground">Findings backed by ≥2 independent source classes. Breach-only / single-class evidence stays a lead by design.</p>
+          <div className="mt-1 font-display text-2xl font-semibold text-foreground">{crossSource} / {artifacts.length}</div>
+          <p className="mt-1 text-data leading-relaxed text-muted-foreground">Findings backed by ≥2 independent source classes. An analyst confirmation is a decision, not a second source, so it is not counted here. Breach-only / single-class evidence stays a lead by design.</p>
         </div>
       </section>
 
@@ -1206,8 +1248,11 @@ export function CaseReport({
       {narrative && (
         <>
           <SectionHeader>Analyst Narrative</SectionHeader>
-          <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4 whitespace-pre-wrap leading-relaxed text-foreground/90">
-            {narrative}
+          {/* Rendered as Markdown, as the chat renders the same text — shown
+              raw, the report printed "## Findings report" and "**Subject:**".
+              No raw-HTML plugin: model text is escaped, never injected. */}
+          <div className="chat-prose rounded-xl border border-white/[0.08] bg-white/[0.025] p-4 leading-relaxed text-foreground/90">
+            <ReactMarkdown remarkPlugins={NARRATIVE_REMARK_PLUGINS}>{narrative}</ReactMarkdown>
           </div>
         </>
       )}
@@ -1240,7 +1285,7 @@ export function CaseReport({
         <ReportChartCard title="Source Coverage" subtitle="Top sources contributing artifacts to this report.">
           <CompactBarChart data={sourceDistribution} color="hsl(var(--brain-cyan))" />
         </ReportChartCard>
-        <div className="rounded-xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.62] p-3">
+        <div className="report-chart-card rounded-xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.62] p-3">
           <div className="text-meta font-mono font-semibold tracking-normal text-muted-foreground">Radar Notes</div>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             {radar.map((metric) => (

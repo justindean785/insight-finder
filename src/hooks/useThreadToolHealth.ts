@@ -1,11 +1,10 @@
-import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import {
   classifyDetailedOutcome,
   normalizeProviderError,
   CANONICAL_OUTCOME_META,
   type CanonicalOutcome,
 } from "@/lib/tool-outcome";
+import type { ToolEvent } from "@/hooks/useThreadToolActivity";
 
 /**
  * Tool health for a thread, read from the AUTHORITATIVE `tool_usage_log` record
@@ -76,18 +75,25 @@ function worstOf(counts: Record<CanonicalOutcome, number>): CanonicalOutcome {
   return "success";
 }
 
-export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "loading" | "error"> {
+/** One classified call — the unit both entry points below aggregate. */
+interface HealthEntry {
+  toolName: string;
+  category: CanonicalOutcome;
+  errorMsg: string | null;
+  statusCode: number | null;
+  at: string;
+}
+
+function aggregate(entries: HealthEntry[]): Omit<ThreadToolHealth, "loading" | "error"> {
   const byTool = new Map<string, ToolHealthRow>();
   const totals = { ...emptyCounts(), total: 0 };
 
   // created_at ascending so the last needs-attention row we see is the most recent.
-  const sorted = [...raw].sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
+  const sorted = [...entries].sort((a, b) => a.at.localeCompare(b.at));
 
-  for (const r of sorted) {
-    const name = r.tool_name?.trim() || "unknown";
-    // Legacy rows (null outcome) fall back to the ok boolean before refining.
-    const coarse = r.outcome ?? (r.ok === false ? "failed" : "ok");
-    const category = classifyDetailedOutcome(coarse, r.error_msg, r.status_code);
+  for (const e of sorted) {
+    const name = e.toolName.trim() || "unknown";
+    const category = e.category;
 
     let row = byTool.get(name);
     if (!row) {
@@ -103,8 +109,8 @@ export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "load
       row.needsAttention = true;
       row.lastIssue = {
         category,
-        message: normalizeProviderError(name, r.error_msg, r.status_code, category),
-        statusCode: r.status_code ?? null,
+        message: normalizeProviderError(name, e.errorMsg, e.statusCode, category),
+        statusCode: e.statusCode,
       };
     }
   }
@@ -124,41 +130,34 @@ export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "load
   return { rows, totals, attention };
 }
 
-export function useThreadToolHealth(threadId: string): ThreadToolHealth {
-  const [state, setState] = useState<ThreadToolHealth>({
-    rows: [], totals: { ...emptyCounts(), total: 0 },
-    attention: [], loading: true, error: null,
-  });
+/** Aggregate raw `tool_usage_log` rows (classifies each one canonically). */
+export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "loading" | "error"> {
+  return aggregate(raw.map((r) => ({
+    toolName: r.tool_name ?? "",
+    // Legacy rows (null outcome) fall back to the ok boolean before refining.
+    category: classifyDetailedOutcome(r.outcome ?? (r.ok === false ? "failed" : "ok"), r.error_msg, r.status_code),
+    errorMsg: r.error_msg,
+    statusCode: r.status_code ?? null,
+    at: r.created_at ?? "",
+  })));
+}
 
-  useEffect(() => {
-    let alive = true;
-    setState((s) => ({ ...s, loading: true, error: null }));
-    const load = async () => {
-      const { data, error } = await supabase
-        .from("tool_usage_log")
-        .select("tool_name,outcome,ok,error_msg,status_code,created_at")
-        .eq("thread_id", threadId)
-        .order("created_at", { ascending: true });
-      if (!alive) return;
-      if (error) {
-        setState((s) => ({ ...s, loading: false, error: error.message }));
-        return;
-      }
-      // Supabase generated types lag the live schema (the `outcome` column was
-      // added by migration but types.ts isn't regenerated yet), so the typed
-      // select widens to SelectQueryError. Runtime data is correct — cast via
-      // unknown until types.ts is regenerated.
-      setState({ ...aggregateToolHealth((data ?? []) as unknown as RawRow[]), loading: false, error: null });
-    };
-    load();
-    const ch = supabase
-      .channel(`tool-health-${threadId}`)
-      .on("postgres_changes",
-        { event: "INSERT", schema: "public", table: "tool_usage_log", filter: `thread_id=eq.${threadId}` },
-        load)
-      .subscribe();
-    return () => { alive = false; void supabase.removeChannel(ch); };
-  }, [threadId]);
-
-  return state;
+/**
+ * Health from the case's SHARED tool store — the same events the Activity view,
+ * the case bar and the Tools badge read, each already carrying its canonical
+ * category.
+ *
+ * Health used to run its own SELECT plus a realtime subscription on
+ * `tool_usage_log`, a table that is not in the realtime publication: it loaded
+ * once and then froze while a live run kept adding calls — the same drift that
+ * put 46 in the header beside 48 in the Tools panel. It now has no read of its own.
+ */
+export function toolHealthFromEvents(events: ToolEvent[]): Omit<ThreadToolHealth, "loading" | "error"> {
+  return aggregate(events.map((e) => ({
+    toolName: e.toolName,
+    category: e.category,
+    errorMsg: e.errorMsg,
+    statusCode: e.statusCode,
+    at: e.at,
+  })));
 }

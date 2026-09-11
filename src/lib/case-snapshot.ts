@@ -147,10 +147,15 @@ export function describeEvidence(
   if (!integrity) return { text: `${artifactCount} evidence`, unledgered: 0, hint: undefined };
   const unledgered = Math.max(0, artifactCount - integrity.total);
   if (unledgered === 0) {
+    // The ARTIFACT count — the number the Evidence tab badge shows — not the
+    // ledger total. Printing the ledger here read as a mismatch with the tab
+    // three times in production (2 vs 50, 11 vs 9, and 146 vs 131 on
+    // 2026-09-11) even with this tooltip. The ledger total has its own figure
+    // now: the custody chip beside it ("146/146 linked").
     const hint = integrity.total > artifactCount
-      ? `${integrity.total} chain-verified evidence rows across ${artifactCount} deduped artifact${artifactCount === 1 ? "" : "s"} — one artifact can carry more than one evidence-log entry.`
+      ? `${artifactCount} artifact${artifactCount === 1 ? "" : "s"}, recorded in ${integrity.total} chain-of-custody entries — one artifact can carry more than one entry. The lock figure counts entries.`
       : undefined;
-    return { text: `${integrity.total} evidence`, unledgered: 0, hint };
+    return { text: `${artifactCount} evidence`, unledgered: 0, hint };
   }
   return {
     text: `${artifactCount} recorded · ${integrity.total} chain-verified`,

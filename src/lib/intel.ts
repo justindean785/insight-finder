@@ -1308,6 +1308,17 @@ function groupByReason<T>(items: T[], reasonOf: (item: T) => string): { reason: 
   return order.map((reason) => ({ reason, items: by.get(reason)! }));
 }
 
+/**
+ * Free text inside a Markdown list item, kept on ONE line. An analyst message
+ * with line breaks (a pasted "=== OATHNET INTELLIGENCE ===" block, a multi-line
+ * pivot request) ended the list item at its first newline and spilled the rest
+ * into the Timeline and Recent-activity lists as stray lines.
+ */
+function listLine(text: string, max = 200): string {
+  const flat = String(text ?? "").replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
 export function buildReportMarkdown(input: ReportInput): string {
   const { seedValue, seedType, messages, reviews, reportType, toolActivity, toolInvocations, authority } = input;
   const display = extractDisplaySeed(seedValue, seedType);
@@ -1615,7 +1626,7 @@ export function buildReportMarkdown(input: ReportInput): string {
         ? [`_Showing the ${shown.length} most recent of ${source.length} events; ${omitted} earlier event${omitted === 1 ? "" : "s"} omitted. The full chronology is in the Artifact / Entity Table._`, ""]
         : []),
       ...shown.map((t) =>
-        `- \`${new Date(t.time).toISOString()}\` — **${t.type}** — ${t.title}${t.source ? ` _(via ${humanizeSourceChain(t.source)})_` : ""}`,
+        `- \`${new Date(t.time).toISOString()}\` — **${t.type}** — ${listLine(t.title)}${t.source ? ` _(via ${humanizeSourceChain(t.source)})_` : ""}`,
       ),
     ].join("\n");
   })();
@@ -1652,11 +1663,11 @@ export function buildReportMarkdown(input: ReportInput): string {
     if (recent.length) {
       const lines = recent.map((m) => {
         const ts = new Date(m.created_at).toISOString();
-        if (m.role === "user") return `- \`${ts}\` — **query** — ${m.summary}`;
+        if (m.role === "user") return `- \`${ts}\` — **query** — ${listLine(m.summary)}`;
         if (m.toolCalls.length) {
           return `- \`${ts}\` — **tools** — ${m.toolCalls.map((t) => `\`${t.toolName}\`${t.resultSummary ? `(${t.resultSummary})` : ""}`).join(", ")}`;
         }
-        return `- \`${ts}\` — **report** — ${m.summary}`;
+        return `- \`${ts}\` — **report** — ${listLine(m.summary)}`;
       });
       parts.push("", "**Recent activity:**", ...lines);
     }

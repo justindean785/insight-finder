@@ -87,12 +87,19 @@ export const CANONICAL_OUTCOME_META: Record<CanonicalOutcome, OutcomeMeta> = {
 const SKIP_RE =
   /execution plan required|duplicate call|burst limit|same-tool (?:cycle limit|budget)|paid-call (?:cycle limit|budget)|active-call concurrency|internal concurrency cap|internal (?:paid-call|throttle)|already has a call in-flight|already ran for this entity|high-cost tool already used|guard not met|weak lead blocked|expected value\s+\d+\s+below|disabled after \d+ consecutive|degraded this run|suppressed for investigation|selector blacklisted|unavailable:\s*(?:disabled|missing_key|gated)|\bgated\b|not configured|provider disabled|rate-limited\s*[—-]\s*provider|provider\b[^]*?\bsuppressed|5xx\s*[—-]\s*provider|finalize window open|run tool-call cap reached/i;
 
-const EMPTY_RE = /no usable result|no record found|not found\b|no results?\b/i;
+// A hostname that DNS says has no address is a successful negative: the lookup
+// worked and the target has nothing there (e.g. an email-only domain with MX but
+// no A record). Only the definitive resolver answers — "temporary failure in name
+// resolution" is transient and stays a failure.
+const EMPTY_RE = /no usable result|no record found|not found\b|no results?\b|no address associated with hostname|name or service not known|\bnxdomain\b/i;
 const CANCEL_RE = /\babort(?:ed|error)?\b|signal (?:has been|was) aborted|\bcancell?ed\b/i;
 const TIMEOUT_RE = /\btimed?\s?out\b|exceeded\s+\d+\s?ms|_timeout\b|\btimeout\b/i;
-const RATELIMIT_RE = /\brate[\s-]?limit/i;
+// Message-only forms too: many rows carry the code in `error_msg` ("429 Too Many
+// Requests", "reddit request failed (403)") with no `status_code`, and the
+// Activity feed used to recognise them while this taxonomy did not.
+const RATELIMIT_RE = /\brate[\s-]?limit|too many requests|\b429\b/i;
 const CONFIG_RE = /invalid (?:or unauthorized )?(?:api )?key|unauthorized key|api[\s-]?key|missing[\s_-]?key|not configured|no api key|payment required|insufficient (?:credit|balance)|quota exceeded/i;
-const DENIED_RE = /\bforbidden\b|access denied/i;
+const DENIED_RE = /\bforbidden\b|access denied|\b403\b/i;
 
 // A 5xx does NOT always mean "the provider is down". Providers routinely answer
 // a deterministic, non-retryable input problem with a 500 — markdown.new returns

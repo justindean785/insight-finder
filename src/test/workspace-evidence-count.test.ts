@@ -20,10 +20,11 @@ describe("describeEvidence — header evidence summary", () => {
     expect(d.hint).toBe("48 recorded artifacts have no chain-of-custody entry");
   });
 
-  it("leaves the documented, legitimate direction's TEXT unchanged", () => {
-    // 29 evidence rows across 23 deduped artifacts — expected by design.
+  it("shows the ARTIFACT count in the legitimate direction — the Evidence tab's number", () => {
+    // 29 evidence rows across 23 deduped artifacts — expected by design. The
+    // header reads 23, like the tab; the 29 lives in the custody chip.
     const d = describeEvidence({ total: 29 }, 23);
-    expect(d.text).toBe("29 evidence");
+    expect(d.text).toBe("23 evidence");
     expect(d.unledgered).toBe(0);
   });
 
@@ -35,13 +36,17 @@ describe("describeEvidence — header evidence summary", () => {
   // an unexplained mismatch against the tab badge, reproducing the 2026-08-06
   // incident in miniature. `hint` must never be silent when the two genuinely
   // differ.
-  it("explains itself on the legitimate-but-different-numbers case (2026-08-10, thread 88cf94fa)", () => {
+  // 2026-09-11: the same confusion a third time — header "146 evidence", Evidence
+  // tab "131" — tooltip and all. The header now shows the tab's number and the
+  // custody chip carries the ledger total.
+  it("matches the tab badge and explains the ledger in the hint (88cf94fa, and 146 vs 131)", () => {
     const d = describeEvidence({ total: 11 }, 9);
-    expect(d.text).toBe("11 evidence");
+    expect(d.text).toBe("9 evidence");
     expect(d.unledgered).toBe(0);
     expect(d.hint).toBe(
-      "11 chain-verified evidence rows across 9 deduped artifacts — one artifact can carry more than one evidence-log entry.",
+      "9 artifacts, recorded in 11 chain-of-custody entries — one artifact can carry more than one entry. The lock figure counts entries.",
     );
+    expect(describeEvidence({ total: 146 }, 131).text).toBe("131 evidence");
   });
 
   it("says nothing extra when the two agree — no discrepancy exists to explain", () => {
@@ -63,9 +68,9 @@ describe("describeEvidence — header evidence summary", () => {
     );
   });
 
-  it("pluralizes the legitimate-direction hint's artifact count correctly", () => {
+  it("singularizes the legitimate-direction hint's artifact count correctly", () => {
     expect(describeEvidence({ total: 3 }, 1).hint).toBe(
-      "3 chain-verified evidence rows across 1 deduped artifact — one artifact can carry more than one evidence-log entry.",
+      "1 artifact, recorded in 3 chain-of-custody entries — one artifact can carry more than one entry. The lock figure counts entries.",
     );
   });
 });

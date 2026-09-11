@@ -1387,16 +1387,137 @@ All colors MUST be HSL.
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
-  /* Keep logical blocks intact across page breaks. */
-  body.printing-report #case-report-print-root section,
+  /* A PAPER palette. Setting `color: black` on the root reached almost nothing:
+     the report's text is coloured through theme tokens (`text-foreground`,
+     `text-[hsl(var(--info))]`, the confidence and authority scales), and in the
+     dark theme those resolve to near-white ink — so a printed report came out
+     as pale grey on white: the executive summary, the seed, every Subject
+     Profile value and every status chip were close to invisible. Re-pointing
+     the tokens inside the print root re-colours every class that uses them,
+     including ones added later. */
+  body.printing-report #case-report-print-root {
+    --background: 0 0% 100%;
+    --foreground: 222 32% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 32% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 32% 11%;
+    --primary: 222 32% 11%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 95%;
+    --secondary-foreground: 222 32% 11%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 32%;
+    --accent: 220 14% 93%;
+    --accent-foreground: 222 32% 11%;
+    --destructive: 352 72% 36%;
+    --destructive-foreground: 0 0% 100%;
+    --info: 194 86% 26%;
+    --success: 152 64% 24%;
+    --warning: 30 92% 30%;
+    --danger: 352 72% 38%;
+    --evidence: 215 16% 32%;
+    --info-muted: 194 60% 94%;
+    --success-muted: 152 50% 93%;
+    --warning-muted: 36 80% 93%;
+    --danger-muted: 352 70% 95%;
+    --confidence-high: 212 44% 22%;
+    --confidence-high-glow: 212 44% 22%;
+    --confidence-mid: 213 22% 34%;
+    --confidence-low: 214 14% 46%;
+    --highconf: 212 44% 22%;
+    --conf-confirmed: 212 48% 20%;
+    --conf-confirmed-glow: 212 48% 20%;
+    --conf-likely: 212 32% 30%;
+    --conf-possible: 213 22% 36%;
+    --conf-weak: 214 14% 44%;
+    --conf-unverified: 215 13% 50%;
+    --authority-verified: 152 64% 24%;
+    --authority-infrastructure: 202 84% 28%;
+    --authority-probable: 158 50% 24%;
+    --authority-review: 30 92% 30%;
+    --authority-weak: 216 16% 38%;
+    --authority-conflict: 352 72% 38%;
+    --authority-quarantine: 215 11% 38%;
+    --authority-failed: 216 13% 42%;
+    --surface-0: 0 0% 100%;
+    --surface-1: 220 20% 98%;
+    --surface-2: 220 16% 95%;
+    --surface-3: 220 14% 92%;
+    --surface-4: 220 12% 88%;
+    --border: 220 13% 78%;
+    --border-subtle: 220 13% 86%;
+    --border-strong: 220 13% 64%;
+  }
+  /* Hairlines drawn in translucent white vanish on paper; give them ink. */
+  body.printing-report #case-report-print-root [class*="border-white"] { border-color: #d5d9df !important; }
+  /* Take everything that is neither the report nor one of its ancestors OUT of
+     the layout. `visibility: hidden` alone keeps the space: the case sidebar
+     still occupied the left third of the page, so the report printed in a
+     narrow column on the right with the left of every page blank. */
+  body.printing-report *:not(:has(#case-report-print-root)):not(#case-report-print-root):not(#case-report-print-root *) {
+    display: none !important;
+  }
+  body.printing-report *:has(#case-report-print-root) {
+    max-width: none !important;
+    width: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+  }
+  html:has(body.printing-report), body.printing-report { background: #fff !important; }
+  /* Tables fit the page. The artifact tables carry a 1024px minimum for the
+     scrollable screen view; on paper that pushed Captured and Reasoning off the
+     right edge of every page. */
+  body.printing-report #case-report-print-root table {
+    min-width: 0 !important;
+    width: 100% !important;
+    table-layout: auto !important;
+    font-size: 8.5pt !important;
+  }
+  body.printing-report #case-report-print-root th,
+  body.printing-report #case-report-print-root td {
+    width: auto !important;
+    padding: 4px 6px !important;
+    overflow-wrap: anywhere;
+  }
+  body.printing-report #case-report-print-root .overflow-x-auto { overflow: visible !important; }
+  /* Display headings are painted with a light ink gradient clipped to the
+     glyphs (the global h1/h2 rule) — made for a dark ground, it printed the
+     case title as pale grey-blue. Solid ink on paper. */
+  body.printing-report #case-report-print-root h1,
+  body.printing-report #case-report-print-root h2 {
+    background: none !important;
+    -webkit-background-clip: border-box !important;
+    background-clip: border-box !important;
+    color: hsl(var(--foreground)) !important;
+    -webkit-text-fill-color: currentColor !important;
+  }
+  /* A truncated line on paper is lost text — let it wrap. */
+  body.printing-report #case-report-print-root .truncate {
+    white-space: normal !important;
+    overflow-wrap: anywhere;
+  }
+  /* Keep SMALL blocks intact across page breaks. Whole sections and tables used
+     to be unbreakable too, so any one taller than what was left of a page was
+     pushed to the next one — leaving a heading alone above half a blank page. */
   body.printing-report #case-report-print-root .report-kpi,
   body.printing-report #case-report-print-root .report-cover,
-  body.printing-report #case-report-print-root table,
+  body.printing-report #case-report-print-root .report-chart-card,
   body.printing-report #case-report-print-root tr,
   body.printing-report #case-report-print-root li {
     break-inside: avoid;
     page-break-inside: avoid;
   }
+  /* A section heading stays with what follows it. */
+  body.printing-report #case-report-print-root h2,
+  body.printing-report #case-report-print-root h3,
+  body.printing-report #case-report-print-root div:has(> h3) {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+  body.printing-report #case-report-print-root thead { display: table-header-group; }
   body.printing-report #case-report-print-root table,
   body.printing-report #case-report-print-root th,
   body.printing-report #case-report-print-root td {

@@ -1,6 +1,8 @@
-import { useThreadToolHealth, type ToolHealthRow } from "@/hooks/useThreadToolHealth";
+import { useMemo } from "react";
+import { toolHealthFromEvents, type ToolHealthRow } from "@/hooks/useThreadToolHealth";
+import type { ToolEvent } from "@/hooks/useThreadToolActivity";
 import { CANONICAL_OUTCOME_META, type CanonicalOutcome } from "@/lib/tool-outcome";
-import { CheckCircle2, XCircle, MinusCircle, CircleSlash, Activity, Clock, ShieldAlert } from "lucide-react";
+import { CheckCircle2, XCircle, CircleSlash, Activity, Clock, ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -87,22 +89,27 @@ function HealthRow({ row }: { row: ToolHealthRow }) {
   );
 }
 
-export function ToolHealthPanel({ threadId }: { threadId: string }) {
-  const { rows, totals, attention, loading, error } = useThreadToolHealth(threadId);
+/**
+ * Per-tool health for the case. Reads the SAME events the Activity view counts
+ * (the case snapshot's tool store), so the two views always add up to the same
+ * figures: Succeeded, Needs attention (Activity's "Failed"), Degraded, Skipped.
+ */
+export function ToolHealthPanel({ events, loading, error }: { events: ToolEvent[]; loading: boolean; error: boolean }) {
+  const { rows, totals, attention } = useMemo(() => toolHealthFromEvents(events), [events]);
 
   if (loading) {
     return (
       <div className="p-3 space-y-2" aria-busy="true" aria-label="Loading tool health">
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-          {[0, 1, 2, 3, 4].map((i) => <div key={i} className="h-12 rounded-xl bg-white/[0.04] animate-pulse" />)}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {[0, 1, 2, 3].map((i) => <div key={i} className="h-12 rounded-xl bg-white/[0.04] animate-pulse motion-reduce:animate-none" />)}
         </div>
-        {[0, 1, 2].map((i) => <div key={i} className="h-10 rounded-xl bg-white/[0.03] animate-pulse" />)}
+        {[0, 1, 2].map((i) => <div key={i} className="h-10 rounded-xl bg-white/[0.03] animate-pulse motion-reduce:animate-none" />)}
       </div>
     );
   }
 
-  if (error) {
-    return <div className="p-4 text-xs text-destructive">Couldn't load tool health: {error}</div>;
+  if (error && totals.total === 0) {
+    return <div className="p-4 text-xs text-destructive">The tool-call ledger could not be read. Refresh the case to try again.</div>;
   }
 
   if (totals.total === 0) {
@@ -114,24 +121,32 @@ export function ToolHealthPanel({ threadId }: { threadId: string }) {
     );
   }
 
+  const succeeded = sum(totals, ["success", "empty"]);
   const degraded = sum(totals, ["timeout", "rate_limited", "http_denied", "blocked"]);
   const skipped = sum(totals, ["skipped", "cancelled"]);
   const attentionCount = sum(totals, ["config_error", "failed", "unknown"]);
 
   return (
     <div className="p-3 space-y-3">
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-        <StatCount icon={CheckCircle2} label="Succeeded" value={totals.success} tone="ok" hint="Genuine successes" />
-        <StatCount icon={MinusCircle} label="No record" value={totals.empty} tone="empty" hint="Ran fine, target has no data (expected)" />
-        <StatCount icon={CircleSlash} label="Skipped" value={skipped} tone="skipped" hint="Governance / dedup / cancelled — intentionally not run" />
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <StatCount
+          icon={CheckCircle2}
+          label={totals.empty > 0 ? `Succeeded · ${totals.empty} no record` : "Succeeded"}
+          value={succeeded}
+          tone="ok"
+          hint={totals.empty > 0
+            ? `${totals.success} returned data; ${totals.empty} ran fine and found no record for the target (expected, not a fault).`
+            : "Calls that returned a usable result."}
+        />
+        <StatCount icon={ShieldAlert} label="Needs attention" value={attentionCount} tone="failed" hint="Config/key errors, genuine faults, or errors with no usable detail. The Activity view calls these Failed." />
         <StatCount icon={Clock} label="Degraded" value={degraded} tone="degraded" hint="Timed out / rate-limited / denied / blocked — transient, not breakage" />
-        <StatCount icon={ShieldAlert} label="Needs attention" value={attentionCount} tone="failed" hint="Config/key errors, genuine provider faults, or opaque unknowns" />
+        <StatCount icon={CircleSlash} label="Skipped" value={skipped} tone="skipped" hint="Policy, dedup, budget or missing key — intentionally not run" />
       </div>
 
       {attention.length > 0 && (
         <div className="space-y-1.5">
           <div className="text-micro font-semibold tracking-normal text-destructive/80 flex items-center gap-1.5">
-            <XCircle className="h-3 w-3" /> Needs attention ({attention.length}) — config or provider faults
+            <XCircle className="h-3 w-3" aria-hidden /> Needs attention ({attention.length})
           </div>
           {attention.map((r) => <HealthRow key={`att-${r.toolName}`} row={r} />)}
         </div>

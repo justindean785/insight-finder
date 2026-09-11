@@ -159,3 +159,26 @@ describe("buildReportMarkdown — Activity Log section", () => {
     expect(md).toContain("**Report markers:** 1");
   });
 });
+
+describe("buildReportMarkdown — multi-line analyst messages stay inside their list item", () => {
+  // 2026-09-11: a pasted OathNet block ("=== OATHNET INTELLIGENCE ===\nFound
+  // via…\nDatabase: …") ended its Timeline and Recent-activity list items at the
+  // first newline and spilled the rest into the export as stray lines.
+  it("flattens a pasted multi-line block onto the one list line", () => {
+    const pasted = "=== OATHNET INTELLIGENCE ===\nFound via oathnet.org\nDate: 2026-09-11T12:43:30Z\n\nDatabase: example.com\n\nphone national:";
+    const messages: MessageSummary[] = [
+      { id: "m9", role: "user", created_at: "2026-09-11T12:43:38Z", summary: pasted, toolCalls: [] },
+    ];
+    const md = buildReportMarkdown({ seedValue: "x@y.com", seedType: "email", artifacts: [baseArtifact()], messages });
+    const lines = md.split("\n");
+    const itemLines = lines.filter((l) => l.includes("=== OATHNET INTELLIGENCE ==="));
+    expect(itemLines.length).toBeGreaterThan(0);
+    for (const l of itemLines) {
+      expect(l.startsWith("- `")).toBe(true);
+      expect(l).toContain("Found via oathnet.org Date: 2026-09-11T12:43:30Z Database: example.com phone national:");
+    }
+    // Nothing from the block leaks onto a line of its own.
+    expect(lines.some((l) => l.trim() === "Found via oathnet.org")).toBe(false);
+    expect(lines.some((l) => l.trim() === "phone national:")).toBe(false);
+  });
+});

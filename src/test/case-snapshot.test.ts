@@ -42,6 +42,9 @@ const event = (i: number, over: Partial<ToolEvent> = {}): ToolEvent => ({
   actionLabel: "Search",
   tone: "ok",
   status: "succeeded",
+  category: "success",
+  errorMsg: null,
+  statusCode: null,
   at: new Date(NOW - (100 - i) * 1000).toISOString(),
   durationMs: 500,
   cached: false,
@@ -132,11 +135,12 @@ describe("buildCaseSnapshot — one view of the case", () => {
     expect(buildCaseSnapshot(input({ tools: { ...t, events } })).tools.lastStage).toBe("VERIFY");
   });
 
-  it("uses the chain-verified evidence text, with the artifact count beside it", () => {
+  it("shows the artifact count (the Evidence tab's number) and keeps the ledger total for the custody chip", () => {
     const s = buildCaseSnapshot(input());
     expect(s.evidence.artifacts).toBe(10);
     expect(s.evidence.ledger).toBe(12);
-    expect(s.evidence.text).toBe("12 evidence");
+    expect(s.evidence.text).toBe("10 evidence");
+    expect(s.evidence.hint).toMatch(/recorded in 12 chain-of-custody entries/);
   });
 });
 

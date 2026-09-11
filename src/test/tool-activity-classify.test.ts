@@ -12,9 +12,11 @@ describe("classifyActivityRow (#22 — tool_usage_log → activity)", () => {
     expect(classifyActivityRow("skipped", false, "provider disabled in config").status).toBe("gated");
   });
 
-  it("a throttle/budget skip reads as degraded", () => {
-    expect(classifyActivityRow("skipped", false, "burst limit reached for jina_reader_scrape").status).toBe("degraded");
-    expect(classifyActivityRow("skipped", false, "duplicate call: prior other").status).toBe("degraded");
+  it("a throttle/budget/dedup guard is a policy skip — the category Health counts it in", () => {
+    // These read "degraded" here while Health counted them Skipped. One call,
+    // one category: they are our own guards, not a degraded provider.
+    expect(classifyActivityRow("skipped", false, "burst limit reached for jina_reader_scrape").status).toBe("skipped");
+    expect(classifyActivityRow("skipped", false, "duplicate call: prior other").status).toBe("skipped");
   });
 
   it("a plain governance skip reads as skipped", () => {

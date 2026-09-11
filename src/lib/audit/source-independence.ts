@@ -75,11 +75,16 @@ export function checkIndependence(sources: Source[]): IndependenceFinding[] {
   }
   for (const [origin, group] of byOrigin) {
     if (group.length > 1) {
+      // The ids stay on `sources`; the MESSAGE is for a reader. It used to list
+      // every artifact UUID inline, and on a real case the report's Accuracy
+      // Guardrails became a page and a half of UUIDs — the one line that matters
+      // (how many, from where) was unreadable, on screen and on paper.
+      const label = origin.replace(/^src:/, "");
       findings.push({
         severity: "warn",
         message:
-          `Sources [${group.map((g) => g.id).join(", ")}] share origin "${origin}". ` +
-          `Treat as ONE source, not ${group.length}.`,
+          `${group.length} sources share origin "${label}" — ` +
+          `treat them as ONE source, not ${group.length}.`,
         sources: group.map((g) => g.id),
         effectiveCount: 1,
         declaredCount: group.length,

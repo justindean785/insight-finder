@@ -87,7 +87,15 @@ export function ToolsTab({
             unavailable={Boolean(snapshot?.hydrated && tools && !tools.available)}
           />
         )}
-        {view === "health" && <div className="mx-auto max-w-5xl"><ToolHealthPanel threadId={threadId} /></div>}
+        {view === "health" && (
+          <div className="mx-auto max-w-5xl">
+            <ToolHealthPanel
+              events={tools?.events ?? []}
+              loading={!snapshot?.hydrated}
+              error={Boolean(snapshot?.hydrated && tools && !tools.available)}
+            />
+          </div>
+        )}
         {view === "audit" && <div className="mx-auto max-w-5xl"><AuditTab threadId={threadId} artifacts={items} /></div>}
         {view === "custody" && <div className="mx-auto max-w-5xl"><CustodyTab threadId={threadId} /></div>}
       </div>
