@@ -1062,7 +1062,7 @@ function SourceWeightRow({ row }: { row: SourceRow }) {
       <div className="flex-1 min-w-0">
         <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
           <div
-            className="h-full rounded-full transition-all"
+            className="h-full rounded-full transition-[width] duration-slow ease-standard"
             style={{ width: `${Math.max(2, row.reliability)}%`, background: tone }}
           />
         </div>

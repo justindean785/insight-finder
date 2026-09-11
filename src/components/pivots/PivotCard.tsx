@@ -1,123 +1,147 @@
-import type { DisplayPivot, PivotPriority } from "@/lib/pivot-engine";
-import { Button } from "@/components/ui/button";
+import { useId } from "react";
+import type { DisplayPivot } from "@/lib/pivot-engine";
+import type { PivotEligibility, PivotValidation, RunnablePivot } from "@/lib/pivot-schema";
+import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
-import { ArrowRight, CheckSquare, Copy, EyeOff, Play, Square } from "lucide-react";
-
-/**
- * Single, shared pivot primitive used by BOTH the chat "Next steps" rail
- * (compact horizontal cards) and the Evidence → Pivots tab (full grid cards).
- *
- * Visuals stay on the matte-glass system. The priority accent uses the working
- * confidence tokens (--confidence-high / --confidence-mid) rather than the
- * collided --primary/--accent gradient so the accent actually reads.
- */
-
-const PRIORITY_BAR: Record<PivotPriority, string> = {
-  high: "bg-[hsl(var(--confidence-high))]",
-  medium: "bg-[hsl(var(--confidence-mid))]",
-  low: "bg-muted",
-};
+import { ArrowRight, Copy, EyeOff } from "lucide-react";
+import { PivotPreview, RepairNotice } from "@/components/pivots/PivotPreview";
 
 export type PivotCardProps = {
   pivot: DisplayPivot;
-  onRun: () => void;
+  validation: PivotValidation;
+  eligibility: PivotEligibility | null;
+  /** Whether a run can be dispatched from this page at all. */
+  canRun: boolean;
+  open: boolean;
+  onToggleOpen: () => void;
+  onStart: (pivot: RunnablePivot) => void;
   onCopy?: () => void;
   onSkip?: () => void;
-  onSelect?: () => void;
+  onSelect?: (checked: boolean) => void;
   selected?: boolean;
-  index: number;
-  compact?: boolean;
+  busy?: boolean;
 };
 
+/**
+ * One pivot in the Evidence › Pivots grid.
+ *
+ * A real checkbox for selection (it was a button drawing a square icon, with no
+ * checked state for assistive tech), no priority side-stripe, and a Run that
+ * opens the inline preview instead of starting work. A suggestion that failed
+ * validation renders as "needs repair" and has no Run at all.
+ */
 export function PivotCard({
   pivot,
-  onRun,
+  validation,
+  eligibility,
+  canRun,
+  open,
+  onToggleOpen,
+  onStart,
   onCopy,
   onSkip,
   onSelect,
   selected,
-  index,
-  compact,
+  busy,
 }: PivotCardProps) {
+  const checkboxId = useId();
   const searched = pivot.status === "searched";
+
+  if (validation.status === "invalid") {
+    return (
+      <div className="rounded-xl border border-dashed border-white/[0.1] bg-surface-1/60 p-3">
+        <RepairNotice action={validation.action} target={validation.target} problems={validation.problems} />
+        {onSkip && (
+          <div className="mt-2 flex justify-end">
+            <button type="button" onClick={onSkip} className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-data text-muted-foreground hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <EyeOff className="h-3.5 w-3.5" aria-hidden /> Hide
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const blocked = eligibility ? !eligibility.runnable : false;
+
   return (
     <div
       className={cn(
-        "group relative shrink-0 snap-start overflow-hidden rounded-xl glass border border-border-subtle p-3",
-        "transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/50 hover:ring-glow animate-pivot-in",
-        compact && "w-[260px]",
-        searched && "opacity-70",
+        "rounded-xl border bg-surface-1 p-3 transition-[border-color,background-color] duration-fast ease-standard",
+        open ? "border-[hsl(var(--brand)/0.4)]" : "border-white/[0.08] hover:border-border-strong",
       )}
-      style={{ animationDelay: `${Math.min(index * 40, 320)}ms` }}
     >
-      {/* Priority accent bar — confidence tokens, not the flat primary gradient. */}
-      <span
-        className={cn("absolute left-0 inset-y-2 w-0.5 rounded-full", PRIORITY_BAR[pivot.priority])}
-        aria-hidden
-      />
-
-      <div className="pl-2 space-y-1.5">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 min-w-0">
-            {onSelect && (
-              <button
-                type="button"
-                onClick={onSelect}
-                aria-label={selected ? "Deselect pivot" : "Select pivot"}
-                className="shrink-0 text-muted-foreground hover:text-primary"
-              >
-                {selected
-                  ? <CheckSquare className="w-3.5 h-3.5 text-primary" />
-                  : <Square className="w-3.5 h-3.5" />}
-              </button>
-            )}
-            <span className={`pivot-priority pivot-priority--${pivot.priority}`}>{pivot.priority}</span>
-            <span className="truncate text-eyebrow tracking-normal text-muted-foreground font-mono">
-              {pivot.type} · {pivot.source}
-            </span>
-          </div>
-          <span
-            className={cn(
-              "shrink-0 px-1.5 py-0.5 rounded border font-mono text-eyebrow uppercase tracking-wider",
-              pivot.status === "new"
-                ? "text-primary border-primary/40 bg-primary/10"
-                : "text-muted-foreground border-border bg-secondary/40",
-            )}
-          >
-            {pivot.status}
-          </span>
-        </div>
-
-        <div className="text-sm font-semibold text-foreground leading-snug group-hover:text-primary transition-colors">
-          {pivot.actionLabel}
-        </div>
-        <div className="font-mono text-xs text-foreground/88 break-all">{pivot.value}</div>
-        {pivot.reason && (
-          <div className="text-xs text-muted-foreground line-clamp-2">{pivot.reason}</div>
+      <div className="flex items-center gap-2">
+        {onSelect && (
+          <Checkbox
+            id={checkboxId}
+            checked={Boolean(selected)}
+            onCheckedChange={(v) => onSelect(v === true)}
+            aria-label={`Select pivot ${pivot.value}`}
+          />
         )}
+        <span className={`pivot-priority pivot-priority--${pivot.priority}`}>{pivot.priority}</span>
+        <span className="min-w-0 truncate text-micro text-muted-foreground">{pivot.type} · {pivot.source}</span>
+        <span
+          className={cn(
+            "ml-auto shrink-0 rounded border px-1.5 text-micro",
+            searched ? "border-white/10 text-muted-foreground" : "border-[hsl(var(--brand)/0.35)] text-[hsl(var(--intel-blue))]",
+          )}
+        >
+          {searched ? "searched" : "new"}
+        </span>
+      </div>
 
-        <div className="flex items-center justify-between gap-1 pt-0.5">
-          <Button
-            size="sm"
-            onClick={onRun}
-            className="h-7 px-2.5 gap-1 text-data bg-primary text-primary-foreground hover:bg-primary/90"
-          >
-            <Play className="w-3 h-3 fill-current" /> Run <ArrowRight className="w-3 h-3" />
-          </Button>
-          <div className="flex items-center gap-1">
-            {onCopy && (
-              <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-data hover:text-primary" onClick={onCopy}>
-                <Copy className="w-3 h-3" /> Copy
-              </Button>
-            )}
-            {onSkip && (
-              <Button size="sm" variant="ghost" className="h-6 px-2 gap-1 text-data" onClick={onSkip}>
-                <EyeOff className="w-3 h-3" /> Skip
-              </Button>
-            )}
-          </div>
+      <div className="mt-2 text-[14px] font-medium leading-snug text-foreground">{pivot.actionLabel}</div>
+      <div className="mt-0.5 break-all font-mono text-[13px] text-foreground/85">{pivot.value}</div>
+      {pivot.reason && <p className="mt-1 line-clamp-3 text-[13px] leading-snug text-muted-foreground">{pivot.reason}</p>}
+      {blocked && eligibility && (
+        <p className="mt-1 text-[13px] leading-snug text-[hsl(var(--danger))]">{eligibility.blockers.join(" ")}</p>
+      )}
+
+      <div className="mt-2.5 flex items-center justify-between gap-1">
+        <button
+          type="button"
+          onClick={onToggleOpen}
+          disabled={blocked || !canRun}
+          aria-expanded={open}
+          title={!canRun ? "Open this case in Investigate to run pivots" : undefined}
+          className={cn(
+            "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 text-data font-medium transition-colors duration-fast [@media(pointer:coarse)]:h-11",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            blocked || !canRun
+              ? "cursor-not-allowed border-white/[0.06] text-muted-foreground/60"
+              : open
+                ? "border-[hsl(var(--brand)/0.5)] bg-white/[0.06] text-foreground"
+                : "border-white/12 bg-white/[0.04] text-foreground/90 hover:bg-white/[0.08]",
+          )}
+        >
+          {open ? "Close" : searched ? "Run again" : "Run"}
+          {!open && <ArrowRight className="h-3.5 w-3.5 opacity-70" aria-hidden />}
+        </button>
+        <div className="flex items-center gap-0.5">
+          {onCopy && (
+            <button type="button" onClick={onCopy} aria-label={`Copy ${pivot.value}`} className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-data text-muted-foreground transition-colors duration-fast hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11">
+              <Copy className="h-3.5 w-3.5" aria-hidden /> Copy
+            </button>
+          )}
+          {onSkip && (
+            <button type="button" onClick={onSkip} aria-label={`Skip ${pivot.value}`} className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-data text-muted-foreground transition-colors duration-fast hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11">
+              <EyeOff className="h-3.5 w-3.5" aria-hidden /> Skip
+            </button>
+          )}
         </div>
       </div>
+
+      {open && eligibility && (
+        <PivotPreview
+          pivot={validation.pivot}
+          eligibility={eligibility}
+          busy={busy}
+          onCancel={onToggleOpen}
+          onStart={() => onStart(validation.pivot)}
+        />
+      )}
     </div>
   );
 }

@@ -1,12 +1,13 @@
-import { useEffect, useState, lazy, Suspense } from "react";
-import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
+import { useEffect, useState, lazy, Suspense, type ReactNode } from "react";
+import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
-import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
 import { ThreadSidebar } from "@/components/ThreadSidebar";
 import { ChatWindow } from "@/components/ChatWindow";
-import { WorkspaceHeader } from "@/components/workspace/WorkspaceHeader";
+import { WorkspaceHeader, MobileCaseStrip } from "@/components/workspace/WorkspaceHeader";
 import { WorkspaceTabs, type WorkspaceTab } from "@/components/workspace/WorkspaceTabs";
+import { CaseSnapshotProvider } from "@/components/workspace/CaseSnapshotProvider";
+import { RecoveryBanner } from "@/components/workspace/RecoveryBanner";
+import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 // Non-default tabs are code-split: Chat (default) loads eagerly; the heavier
 // Evidence/Report/Graph/Tools panels (and their markdown/graph libs) only load
 // when first opened, shrinking the initial ChatPage chunk and first paint.
@@ -17,7 +18,7 @@ const GraphTab = lazy(() => import("@/components/workspace/GraphTab").then((m) =
 const ReportTab = lazy(() => import("@/components/panel/ReportTab").then((m) => ({ default: m.ReportTab })));
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
-import { PanelLeftOpen, Plus } from "lucide-react";
+import { PanelLeftOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
 import { CommandPalette } from "@/components/CommandPalette";
@@ -27,16 +28,34 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 
 /**
- * Investigation workspace. A persistent header + top-level tab bar drive five
- * major modes — Chatbot, Evidence, Report, Graph, Tools — each filling the main
- * area. The chat stays mounted (just hidden) when other modes are active so an
- * in-flight run is never interrupted by switching tabs.
+ * Investigation workspace. One case bar + one tab strip drive six sections —
+ * Overview, Investigate, Evidence, Tools, Graph, Report — each filling the main
+ * area. The chat stays mounted (just hidden) when other sections are active so
+ * an in-flight run is never interrupted by switching tabs.
+ *
+ * Every case figure on this page — the case bar, the tab badges, and the
+ * Overview / Tools / Report panels — is read from ONE `CaseSnapshotProvider`,
+ * so they can never show counts from different reads side by side.
  */
 export default function ChatPage() {
   const { threadId } = useParams();
   const { user, loading } = useAuth();
+
+  if (loading) return <FullPageLoader />;
+  if (!user) return <Navigate to="/auth" replace />;
+  if (!threadId) return <Navigate to="/" replace />;
+
+  return (
+    <CaseSnapshotProvider key={threadId} threadId={threadId}>
+      <ChatWorkspace threadId={threadId} userId={user.id} />
+    </CaseSnapshotProvider>
+  );
+}
+
+function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string }) {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
+  const { snapshot } = useCaseSnapshot();
   const [tab, setTab] = useState<WorkspaceTab>("chat");
   // Persist the sidebar collapse across reloads — re-collapsing every session is
   // a common annoyance for a workspace tool.
@@ -48,17 +67,14 @@ export default function ChatPage() {
   }, [leftCollapsed]);
   const [mLeft, setMLeft] = useState(false);
 
-  // Reset to the conversation when switching cases.
-  useEffect(() => { setTab("chat"); setMLeft(false); }, [threadId]);
-
   // "New investigation" must CREATE a fresh thread, never route through "/"
   // (IndexRedirect resumes the most-recent EXISTING thread, so navigate("/")
   // reopens the latest old case instead of starting new).
   const [creating, setCreating] = useState(false);
   const createNew = async () => {
-    if (!user || creating) return;
+    if (creating) return;
     setCreating(true);
-    const { data, error } = await supabase.from("threads").insert({ user_id: user.id }).select("id").single();
+    const { data, error } = await supabase.from("threads").insert({ user_id: userId }).select("id").single();
     setCreating(false);
     if (error || !data) { toast.error(error?.message ?? "Could not create investigation"); return; }
     navigate(`/chat/${data.id}`);
@@ -69,6 +85,7 @@ export default function ChatPage() {
   // which lens to open, so the jump lands on the right view instead of always
   // dumping the user on the Board. The nonce forces re-honoring repeat jumps.
   const [evidenceReq, setEvidenceReq] = useState<{ view: string; n: number } | null>(null);
+  const [toolsReq, setToolsReq] = useState<{ view: string; n: number } | null>(null);
   useEffect(() => {
     const onNav = (e: Event) => {
       const detail = (e as CustomEvent).detail as { tab?: string; section?: string };
@@ -76,8 +93,10 @@ export default function ChatPage() {
       if (t === "overview") setTab("overview");
       else if (t === "chat") setTab("chat");
       else if (t === "report") setTab("report");
-      else if (["custody", "audit", "issues"].includes(t)) setTab("tools");
-      else if (["artifacts", "matrix", "clusters", "timeline"].includes(t) || detail?.section === "evidence") {
+      else if (["custody", "audit", "issues"].includes(t)) {
+        setTab("tools");
+        setToolsReq((prev) => ({ view: t === "issues" ? "health" : t, n: (prev?.n ?? 0) + 1 }));
+      } else if (["artifacts", "matrix", "clusters", "timeline"].includes(t) || detail?.section === "evidence") {
         setTab("evidence");
         const view = t === "matrix" ? "table"
           : t === "clusters" ? "clusters"
@@ -90,16 +109,40 @@ export default function ChatPage() {
     return () => window.removeEventListener("swarmbot:navigate", onNav);
   }, []);
 
-  // Counts for the tab bar badges. threadId is always defined past the guards
-  // below, but the hooks must run unconditionally — they no-op on "".
-  const { items } = useThreadArtifacts(threadId ?? "");
-  const activity = useThreadToolActivity(threadId ?? "", user?.id ?? "");
+  const viewFailedTools = () => {
+    setTab("tools");
+    setToolsReq((prev) => ({ view: "health", n: (prev?.n ?? 0) + 1 }));
+  };
 
-  if (loading) return <FullPageLoader />;
-  if (!user) return <Navigate to="/auth" replace />;
-  if (!threadId) return <Navigate to="/" replace />;
+  // Tab badges read the SAME published snapshot as the case bar and the panels.
+  const hydrated = Boolean(snapshot?.hydrated);
+  const tabCounts = buildWorkspaceTabCounts(snapshot?.items ?? [], snapshot?.tools.total ?? 0);
 
-  const tabCounts = buildWorkspaceTabCounts(items, activity.persistedTotal);
+  // Panels stay mounted once visited. Switching back is instant, and each tab
+  // keeps its own scroll position, filters and open drawers — the old
+  // mount-on-demand panels threw all of that away on every switch.
+  const [visited, setVisited] = useState<ReadonlySet<WorkspaceTab>>(() => new Set<WorkspaceTab>(["chat"]));
+  useEffect(() => {
+    setVisited((prev) => (prev.has(tab) ? prev : new Set(prev).add(tab)));
+  }, [tab]);
+
+  const panel = (key: Exclude<WorkspaceTab, "chat">, body: ReactNode, scroll = false) =>
+    visited.has(key) || tab === key ? (
+      <div
+        key={key}
+        role="tabpanel"
+        id={`workspace-tabpanel-${key}`}
+        aria-labelledby={`workspace-tab-${key}`}
+        hidden={tab !== key}
+        className={cn("absolute inset-0", scroll && "overflow-y-auto", tab === key && "ws-panel-enter")}
+      >
+        <ErrorBoundary>
+          <Suspense fallback={<FullPageLoader label="Loading workspace" fullScreen={false} className="absolute inset-0" />}>
+            {body}
+          </Suspense>
+        </ErrorBoundary>
+      </div>
+    ) : null;
 
   const content = (
     <div key="workspace-content" className="flex-1 min-h-0 relative">
@@ -108,45 +151,38 @@ export default function ChatPage() {
         role="tabpanel"
         id="workspace-tabpanel-chat"
         aria-labelledby="workspace-tab-chat"
-        className={cn("absolute inset-0", tab === "chat" ? "" : "hidden")}
+        hidden={tab !== "chat"}
+        className={cn("absolute inset-0", tab === "chat" && "ws-panel-enter")}
       >
         <ChatWindow threadId={threadId} />
       </div>
-      {tab !== "chat" && (
-        <Suspense fallback={<FullPageLoader label="Loading workspace" fullScreen={false} className="absolute inset-0" />}>
-          {tab === "overview" && <div role="tabpanel" id="workspace-tabpanel-overview" aria-labelledby="workspace-tab-overview" className="absolute inset-0"><ErrorBoundary><OverviewTab threadId={threadId} /></ErrorBoundary></div>}
-          {tab === "evidence" && <div role="tabpanel" id="workspace-tabpanel-evidence" aria-labelledby="workspace-tab-evidence" className="absolute inset-0"><ErrorBoundary><EvidenceTab threadId={threadId} viewRequest={evidenceReq} /></ErrorBoundary></div>}
-          {tab === "report" && (
-            <div role="tabpanel" id="workspace-tabpanel-report" aria-labelledby="workspace-tab-report" className="absolute inset-0 overflow-y-auto">
-              <ErrorBoundary>
-                <div className="chat-column mx-auto px-4 py-3 sm:px-7"><ReportTab threadId={threadId} artifacts={items} /></div>
-              </ErrorBoundary>
-            </div>
-          )}
-          {tab === "graph" && <div role="tabpanel" id="workspace-tabpanel-graph" aria-labelledby="workspace-tab-graph" className="absolute inset-0"><ErrorBoundary><GraphTab threadId={threadId} /></ErrorBoundary></div>}
-          {tab === "tools" && <div role="tabpanel" id="workspace-tabpanel-tools" aria-labelledby="workspace-tab-tools" className="absolute inset-0"><ErrorBoundary><ToolsTab threadId={threadId} /></ErrorBoundary></div>}
-        </Suspense>
+      {panel("overview", <OverviewTab threadId={threadId} />)}
+      {panel("evidence", <EvidenceTab threadId={threadId} viewRequest={evidenceReq} />)}
+      {panel(
+        "report",
+        <div className="mx-auto w-full max-w-[60rem] px-4 py-3 sm:px-6"><ReportTab threadId={threadId} artifacts={snapshot?.items ?? []} printActive={tab === "report"} /></div>,
+        true,
       )}
+      {panel("graph", <GraphTab threadId={threadId} />)}
+      {panel("tools", <ToolsTab threadId={threadId} viewRequest={toolsReq} />)}
     </div>
   );
 
   // ONE layout tree for both breakpoints. Switching between the mobile and
   // desktop chrome must NOT remount {content} (and the <ChatWindow> inside it):
   // a remount aborts the in-flight useChat stream and drops streamed messages.
-  // This previously happened whenever `isMobile` flipped — e.g. resizing across
-  // 768px or exiting fullscreen into a sub-768px window — because the mobile and
-  // desktop branches were separate return trees. Here {content} keeps a stable
-  // position (last child of <main>) and a stable key across the flip, so React
-  // preserves the ChatWindow fiber and the live run survives.
+  // {content} keeps a stable position (last child of <main>) and a stable key
+  // across the flip, so React preserves the ChatWindow fiber and the live run
+  // survives. The chrome slot is the SAME element type on both breakpoints for
+  // the same reason, one level up.
   return (
-    <div key={threadId} className="relative flex h-[100dvh] w-full overflow-hidden bg-background">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_12%,hsl(var(--film)/0.055),transparent_38%),radial-gradient(circle_at_82%_88%,hsl(var(--film)/0.03),transparent_32%)]" />
+    <div className="relative flex h-[100dvh] w-full overflow-hidden bg-background">
       <CommandPalette />
 
       {/* Desktop: persistent sidebar rail. Mobile uses the off-canvas Sheet below. */}
       {!isMobile && (
         <aside className={cn(
-          "rail-surface relative z-10 flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-white/8 shadow-[8px_0_38px_-30px_rgba(0,0,0,0.95)]",
+          "rail-surface relative z-10 flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-white/8 shadow-[8px_0_38px_-30px_rgba(0,0,0,0.95)] transition-[width] duration-200 ease-out",
           leftCollapsed ? "w-14" : "w-72",
         )}>
           <ThreadSidebar collapsed={leftCollapsed} onToggleCollapse={() => setLeftCollapsed((c) => !c)} />
@@ -154,31 +190,25 @@ export default function ChatPage() {
       )}
 
       <main className="relative z-10 flex h-full min-w-0 flex-1 flex-col">
-        {/* Chrome differs by breakpoint but is always exactly ONE slot, so
-            {content} stays at a stable index and is never remounted. */}
-        {isMobile ? (
-          <header key="chrome" className="shrink-0 h-14 px-2 flex items-center gap-2 border-b border-white/8 bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.94),hsl(var(--surface-0)/0.86))] backdrop-blur-xl">
-            <button onClick={() => setMLeft(true)} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white/[0.035] text-muted-foreground transition-all duration-500 ease-premium hover:text-foreground hover:bg-white/[0.06] active:scale-[0.97]" aria-label="Open cases">
-              <PanelLeftOpen className="w-4 h-4 text-foreground/80" />
-            </button>
-            <Link
-              to="/"
-              aria-label="Home"
-              className="hidden min-[430px]:inline shrink-0 font-display font-semibold text-sm tracking-tight text-foreground select-none hover:text-foreground/80 transition-colors"
-            >
-              Insight Finder
-            </Link>
-            <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} variant="inline" />
-            <button onClick={createNew} disabled={creating} className="shrink-0 w-9 h-9 rounded-xl grid place-items-center border border-white/10 bg-white text-black transition-all duration-500 ease-premium hover:bg-white/90 active:scale-[0.97] disabled:opacity-60" aria-label="New investigation">
-              <Plus className="w-4 h-4 text-black" />
-            </button>
-          </header>
-        ) : (
-          <div key="chrome" className="shrink-0">
-            <WorkspaceHeader threadId={threadId} />
-            <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} />
-          </div>
-        )}
+        <div key="chrome" className="shrink-0">
+          {isMobile ? (
+            <>
+              <header className="flex items-end gap-1.5 border-b border-white/[0.07] bg-surface-0 px-1.5 pt-1">
+                <button onClick={() => setMLeft(true)} className="mb-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors duration-fast hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Open cases">
+                  <PanelLeftOpen className="h-4 w-4 text-foreground/80" aria-hidden />
+                </button>
+                <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} loading={!hydrated} variant="inline" />
+              </header>
+              <MobileCaseStrip onNew={createNew} creating={creating} />
+            </>
+          ) : (
+            <>
+              <WorkspaceHeader threadId={threadId} />
+              <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} loading={!hydrated} />
+            </>
+          )}
+          <RecoveryBanner snapshot={snapshot} onViewFailedTools={viewFailedTools} onStartNew={createNew} />
+        </div>
 
         {content}
       </main>
@@ -188,9 +218,7 @@ export default function ChatPage() {
         <Sheet open={mLeft} onOpenChange={setMLeft}>
           <SheetContent side="left" className="rail-surface p-0 w-[82vw] max-w-[300px] sm:max-w-[300px] border-r border-white/8 [&>button]:hidden overflow-hidden">
             {/* Radix requires an accessible name + description on every dialog
-                surface. This drawer had neither, which logged a Radix a11y
-                error and announced an unlabelled dialog to screen readers.
-                Visually hidden — the drawer's own content is self-evident. */}
+                surface. Visually hidden — the drawer's own content is self-evident. */}
             <SheetHeader className="sr-only">
               <SheetTitle>Investigations</SheetTitle>
               <SheetDescription>Switch between your cases, or start a new investigation.</SheetDescription>

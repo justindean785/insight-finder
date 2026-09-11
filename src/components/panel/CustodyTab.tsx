@@ -170,6 +170,7 @@ export function CustodyTab({ threadId }: { threadId: string }) {
           verification={verification}
           verifying={verifying}
           total={rows.length}
+          hardCount={hardCount}
           onRecheck={verify}
           onJumpToBreak={(seq) => {
             const el = document.getElementById(`custody-seq-${seq}`);
@@ -203,8 +204,8 @@ export function CustodyTab({ threadId }: { threadId: string }) {
             {exporting ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Download className="w-3.5 h-3.5 mr-1.5" />}
             {exporting ? "Exporting…" : "Export bundle"}
           </Button>
-          <Button size="sm" variant="ghost" onClick={load} title="Refresh">
-            <RefreshCw className="w-3.5 h-3.5" />
+          <Button size="sm" variant="ghost" onClick={load} title="Refresh the custody log" aria-label="Refresh the custody log">
+            <RefreshCw className="w-3.5 h-3.5" aria-hidden />
           </Button>
         </div>
       </div>
@@ -363,12 +364,15 @@ function ChainIntegrityBanner({
   verification,
   verifying,
   total,
+  hardCount,
   onRecheck,
   onJumpToBreak,
 }: {
   verification: { state: "ok" | "broken" | "unavailable"; total: number; first_break: number | null } | null;
   verifying: boolean;
   total: number;
+  /** Entries that preserve a source (hard), as opposed to inferred state (soft). */
+  hardCount: number;
   onRecheck: () => void;
   onJumpToBreak: (seq: number) => void;
 }) {
@@ -382,7 +386,7 @@ function ChainIntegrityBanner({
       className={cn(
         "evidence-tile p-3 flex items-center justify-between gap-3",
         ok && "evidence-tile--highconf",
-        broken && "evidence-tile--danger animate-red-edge",
+        broken && "evidence-tile--danger",
       )}
     >
       <div className="flex items-center gap-3 min-w-0">
@@ -398,7 +402,7 @@ function ChainIntegrityBanner({
         </span>
         <div className="min-w-0">
           <div className="flex items-baseline gap-2">
-            <span className="label-eyebrow">Chain integrity</span>
+            <span className="label-eyebrow">Hash chain</span>
             <span
               className={cn(
                 "font-mono text-data tabular-nums",
@@ -407,11 +411,22 @@ function ChainIntegrityBanner({
                 (unavailable || !verification) && "text-muted-foreground",
               )}
             >
-              {verifying ? "checking…" : ok ? "100%" : broken ? "broken" : unavailable ? "not verified" : "—"}
+              {verifying ? "checking…" : ok ? "valid" : broken ? "broken" : unavailable ? "not verified" : "—"}
             </span>
           </div>
+          {/* Two different claims, stated separately. A valid chain proves the
+              LOG was not altered; it says nothing about whether the sources
+              themselves were preserved. "100%" beside a lock read as both. */}
           <div className="text-data text-muted-foreground mt-0.5">
-            {ok && <>No broken links · <span className="font-mono tabular-nums text-foreground/80">{verification!.total}</span> events anchored</>}
+            {ok && (
+              <>
+                <span className="font-mono tabular-nums text-foreground/80">{verification!.total}/{verification!.total}</span> entries linked
+                {" · "}
+                <span className={cn("font-mono tabular-nums", hardCount === 0 ? "text-[hsl(var(--warning))]" : "text-foreground/80")}>{hardCount}</span> hard-preserved
+                {" · "}
+                <span className="font-mono tabular-nums text-foreground/80">{total - hardCount}</span> soft
+              </>
+            )}
             {broken && (
               <>
                 Hash mismatch at <span className="font-mono text-danger">#{verification!.first_break ?? "?"}</span>

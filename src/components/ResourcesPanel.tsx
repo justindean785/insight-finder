@@ -1,4 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+import { useToolbarSlot } from "@/hooks/useToolbarSlot";
+import { CompactFilter, FilterPopover, MenuSelect, type CompactOption } from "@/components/ui/compact-controls";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Globe, User as UserIcon, Network, ShieldAlert, Image as ImgIcon, Tag,
@@ -42,7 +45,6 @@ import {
   partitionBulkCorpusRows,
   type BulkCorpusDisplayRow,
 } from "@/lib/bulk-corpus-display";
-import { FilterChips } from "@/components/ui/workspace-primitives";
 import {
   AuthorityChip, AuthorityCaveat, AuthorityLegend, AuthoritySpine, RuleLabel, UnderlyingStrength,
 } from "@/components/ui/authority";
@@ -1322,48 +1324,72 @@ export function EvidenceBoard({ threadId }: { threadId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, review.revision]);
 
+  const slot = useToolbarSlot();
+
+  const filterOptions: CompactOption<EvidenceStatusFilter>[] = [
+    { key: "analyst", label: "Analyst view", count: counts.analyst, hint: "Everything that needs a decision — leads and exclusions hidden" },
+    { key: "all", label: "All", count: counts.all },
+    { key: "strong", label: "Findings", count: counts.strong, tone: "ok" },
+    { key: "review", label: "Needs review", count: counts.review, tone: "warn" },
+    // Only offered when there is something in it — an always-present
+    // "Quarantined 0" trains analysts to stop reading the number.
+    ...(counts.quarantined > 0
+      ? [{ key: "quarantined" as const, label: "Quarantined", count: counts.quarantined }]
+      : []),
+    { key: "weak", label: "Leads", count: counts.weak },
+    { key: "excluded", label: "Excluded", count: counts.excluded, tone: "danger" },
+  ];
+  const sortOptions: CompactOption<EvidenceSortMode>[] = [
+    { key: "strength", label: "Strength" },
+    { key: "confidence", label: "Confidence" },
+    { key: "newest", label: "Newest" },
+  ];
+
+  // One toolbar row: the common filters inline, the rest behind More, sort as a
+  // labelled menu, the legend beside it. Below `sm` it all folds into a single
+  // Filters button that states the active choices.
+  const controls = items.length > 0 ? (
+    <>
+      <div className="hidden min-w-0 flex-wrap items-center justify-end gap-2 sm:flex">
+        <CompactFilter<EvidenceStatusFilter>
+          label="Filter evidence"
+          options={filterOptions}
+          primary={["analyst", "all", "review"]}
+          active={statusFilter}
+          onChange={setStatusFilter}
+        />
+        <MenuSelect<EvidenceSortMode> label="Sort" options={sortOptions} active={sortMode} onChange={setSortMode} />
+        <AuthorityLegend />
+      </div>
+      <div className="flex items-center gap-2 sm:hidden">
+        <FilterPopover
+          sections={[
+            {
+              label: "Show",
+              options: filterOptions,
+              active: statusFilter,
+              // Resolve the key back through the option list, so only a real
+              // filter key can ever reach the state setter.
+              onChange: (k) => { const hit = filterOptions.find((o) => o.key === k); if (hit) setStatusFilter(hit.key); },
+            },
+            {
+              label: "Sort by",
+              options: sortOptions,
+              active: sortMode,
+              onChange: (k) => { const hit = sortOptions.find((o) => o.key === k); if (hit) setSortMode(hit.key); },
+            },
+          ]}
+        />
+        <AuthorityLegend />
+      </div>
+    </>
+  ) : null;
+
   return (
     <>
-      {items.length > 0 && (
-        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-x-3 gap-y-2 px-2 py-2.5 border-b border-border-subtle bg-[linear-gradient(180deg,hsl(var(--surface-1)/0.94),hsl(var(--surface-0)/0.88))] backdrop-blur-xl">
-          <FilterChips<EvidenceStatusFilter>
-            ariaLabel="Filter evidence by strength"
-            active={statusFilter}
-            onChange={setStatusFilter}
-            options={[
-              { key: "analyst", label: "Analyst view", count: counts.analyst, tone: "ok" },
-              { key: "all", label: "All", count: counts.all },
-              { key: "strong", label: "Findings", count: counts.strong, tone: "ok" },
-              { key: "review", label: "Needs review", count: counts.review, tone: "warn" },
-              // Only offered when there is something in it — an always-present
-              // "Quarantined 0" trains analysts to stop reading the number.
-              ...(counts.quarantined > 0
-                ? [{ key: "quarantined" as const, label: "Quarantined", count: counts.quarantined }]
-                : []),
-              { key: "weak", label: "Leads", count: counts.weak },
-              { key: "excluded", label: "Excluded", count: counts.excluded, tone: "danger" },
-            ]}
-          />
-          {/* The sort group takes its own line on a phone. `ml-auto` on a
-              wrapping flex row pushed it to a line of its own anyway, but with
-              the "SORT" label stranded beside a wrapped chip row rather than
-              above it. Wrapping as a unit is what it looked like it did. */}
-          <div className="flex w-full flex-wrap items-center gap-1.5 sm:ml-auto sm:w-auto">
-            <span className="text-eyebrow uppercase tracking-[0.14em] text-muted-foreground/70">Sort</span>
-            <FilterChips<EvidenceSortMode>
-              ariaLabel="Sort evidence"
-              active={sortMode}
-              onChange={setSortMode}
-              options={[
-                { key: "strength", label: "Strength" },
-                { key: "confidence", label: "Confidence" },
-                { key: "newest", label: "Newest" },
-              ]}
-            />
-            <AuthorityLegend />
-          </div>
-        </div>
-      )}
+      {controls && (slot
+        ? createPortal(controls, slot)
+        : <div className="flex flex-wrap items-center justify-end gap-2 border-b border-border-subtle px-2 py-2">{controls}</div>)}
       <ArtifactsList
         items={items}
         threadId={threadId}

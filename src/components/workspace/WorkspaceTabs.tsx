@@ -1,13 +1,20 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { ChevronDown, MessagesSquare, Database, FileText, Share2, Activity, LayoutDashboard, type LucideIcon } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { ChevronDown, MessagesSquare, Database, FileText, Share2, Activity, LayoutDashboard, Check, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 export type WorkspaceTab = "overview" | "chat" | "evidence" | "report" | "graph" | "tools";
 
 /** Per-tab badge data. `value` is the section count (how many items live in the
  * tab); `alert` is the number that NEEDS ATTENTION (failed tool calls, breaches)
- * and renders as a red dot — never as a count, so a tab number always means the
+ * and renders as a dot — never as a count, so a tab number always means the
  * same thing as the word next to it. */
 export type TabCount = { value: number; alert?: number };
 
@@ -25,7 +32,11 @@ const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
 const COMPACT_PRIMARY = TABS.filter((t) => t.key === "overview" || t.key === "chat" || t.key === "evidence");
 const COMPACT_MORE = TABS.filter((t) => t.key === "tools" || t.key === "graph" || t.key === "report");
 
-/** Small red "needs attention" dot. Carries a label so it is not color-only. */
+function countText(value: number): string {
+  return value > 999 ? "999+" : String(value);
+}
+
+/** "Needs attention" dot. Carries a label so it is not colour-only. */
 function AlertDot({ count, className }: { count: number; className?: string }) {
   if (count <= 0) return null;
   const label = `${count} need${count === 1 ? "s" : ""} attention`;
@@ -34,102 +45,78 @@ function AlertDot({ count, className }: { count: number; className?: string }) {
       role="img"
       aria-label={label}
       title={label}
-      className={cn(
-        "inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-destructive shadow-[0_0_6px_hsl(var(--destructive)/0.85)]",
-        className,
-      )}
+      className={cn("inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--danger))]", className)}
     />
   );
 }
 
-/** Count pill that recolours for the raised (white) active tab vs the dim rest.
- * The slot is reserved even at zero so an async count loading in never reflows
- * the tab bar. */
-function CountPill({ value, active }: { value: number; active: boolean }) {
-  return (
-    <span
-      aria-hidden={value === 0}
-      className={cn(
-        "inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-full px-1 font-mono text-eyebrow tabular-nums leading-none transition-colors",
-        value === 0
-          ? "opacity-0"
-          : active
-            ? "bg-[hsl(var(--intel-blue)/0.22)] text-[hsl(var(--intel-blue))]"
-            : "bg-surface-3 text-muted-foreground",
-      )}
-    >
-      {value > 999 ? "999+" : value}
-    </span>
-  );
-}
-
 /**
- * Primary workspace navigation — the five major investigation modes. These are
- * top-level app sections (not nested panel tabs): a single active mode fills the
- * main workspace. Rendered as a real segmented control — the active tab is a
- * raised surface, not just tinted text — so it unmistakably reads as a tab you
- * switch between. Tab badges OWN the section counts (Evidence = artifacts,
- * Tools = tool calls); a red dot flags items needing attention.
+ * Primary workspace navigation — the six case sections.
+ *
+ * Desktop: one centred, stable strip of labelled tabs. The active tab is marked
+ * by a 2px signal underline and a faintly lifted ground — no white pill, no
+ * per-tab count bubbles, no boxed container. Centring uses `safe center`, which
+ * falls back to start alignment the moment the strip overflows, so the first
+ * tab can never be pushed into negative scroll space (#525).
+ *
+ * Mobile: Overview, Investigate and Evidence as labelled tabs, and Tools, Graph
+ * and Report behind a More menu. The More trigger ALWAYS carries a name — "More"
+ * or, when one of its sections is active, "More, current section: Graph" — so
+ * primary navigation is never an unlabelled icon.
  */
 export function WorkspaceTabs({
   active,
   onChange,
   counts,
+  loading = false,
   variant = "bar",
 }: {
   active: WorkspaceTab;
   onChange: (t: WorkspaceTab) => void;
   counts?: Partial<Record<WorkspaceTab, TabCount>>;
+  /** Counts are not known yet: show a placeholder, never a false 0. */
+  loading?: boolean;
   variant?: "bar" | "inline";
 }) {
+  if (variant === "inline") {
+    return <CompactNav active={active} onChange={onChange} counts={counts} loading={loading} />;
+  }
+  return <TabBar active={active} onChange={onChange} counts={counts} loading={loading} />;
+}
+
+function TabCountBadge({ count, loading, active }: { count?: TabCount; loading: boolean; active: boolean }) {
+  if (!count) return null;
+  if (loading) return <span aria-hidden className="h-2.5 w-4 rounded-sm bg-white/[0.08]" />;
+  return (
+    <>
+      {count.value > 0 && (
+        <span className={cn("font-mono text-data tabular-nums leading-none", active ? "text-foreground/70" : "text-muted-foreground")}>
+          {countText(count.value)}
+        </span>
+      )}
+      {count.alert ? <AlertDot count={count.alert} /> : null}
+    </>
+  );
+}
+
+function TabBar({
+  active, onChange, counts, loading,
+}: {
+  active: WorkspaceTab;
+  onChange: (t: WorkspaceTab) => void;
+  counts?: Partial<Record<WorkspaceTab, TabCount>>;
+  loading: boolean;
+}) {
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const [moreOpen, setMoreOpen] = useState(false);
-  // The "More" trigger lives inside the mobile chrome header, which has
-  // `backdrop-blur-xl` — a backdrop-filter creates a NEW stacking context, so an
-  // in-flow `z-50` dropdown is trapped *inside* that context and paints behind
-  // the later-in-DOM `absolute inset-0` workspace panels (the "More does
-  // nothing" bug). Rendering the menu through a portal to <body> with fixed
-  // positioning escapes that trap so it lands above the panels.
-  const moreBtnRef = useRef<HTMLButtonElement | null>(null);
-  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
 
-  useLayoutEffect(() => {
-    if (!moreOpen) return;
-    const place = () => {
-      const el = moreBtnRef.current;
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      setMenuPos({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) });
-    };
-    place();
-    // Reposition on scroll/resize so a fixed menu tracks its trigger instead of
-    // detaching; `capture` catches scrolls on any ancestor scroll container.
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => {
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
-    };
-  }, [moreOpen]);
-
+  // Keep the active tab in view when it changes from outside (command palette,
+  // "View failed tools").
   useEffect(() => {
-    if (!moreOpen) return;
-    const onDown = (e: PointerEvent) => {
-      const t = e.target as Node | null;
-      if (moreBtnRef.current?.contains(t)) return;
-      if (t instanceof Element && t.closest("[data-workspace-more-menu]")) return;
-      setMoreOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMoreOpen(false); };
-    document.addEventListener("pointerdown", onDown, true);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onDown, true);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [moreOpen]);
+    const idx = TABS.findIndex((t) => t.key === active);
+    tabRefs.current[idx]?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [active]);
 
-  // Roving arrow-key navigation across the tab bar (WAI-ARIA tabs pattern).
+  // Roving arrow-key navigation (WAI-ARIA tabs, automatic activation).
   const onKeyDown = (e: React.KeyboardEvent, idx: number) => {
     let next = idx;
     if (e.key === "ArrowRight") next = (idx + 1) % TABS.length;
@@ -142,164 +129,19 @@ export function WorkspaceTabs({
     tabRefs.current[next]?.focus();
   };
 
-  if (variant === "inline") {
-    const moreActive = COMPACT_MORE.some((t) => t.key === active);
-    const activeMore = COMPACT_MORE.find((t) => t.key === active);
-    const ActiveMoreIcon = activeMore?.icon;
-    const moreAlert = COMPACT_MORE.reduce((sum, t) => sum + (counts?.[t.key]?.alert ?? 0), 0);
-
-    return (
-      <div className="relative min-w-0 flex-1">
-        <div
-          role="tablist"
-          aria-label="Investigation workspace"
-          className="flex min-w-0 items-center gap-1 rounded-xl border border-white/10 bg-white/[0.035] p-1"
-        >
-          {COMPACT_PRIMARY.map((t) => {
-            const Icon = t.icon;
-            const isActive = active === t.key;
-            const count = counts?.[t.key];
-            const idx = TABS.indexOf(t);
-            return (
-              <button
-                key={t.key}
-                ref={(el) => { tabRefs.current[idx] = el; }}
-                id={`workspace-tab-${t.key}`}
-                role="tab"
-                aria-selected={isActive}
-                aria-controls={`workspace-tabpanel-${t.key}`}
-                // Below 460px the chip is icon-only (matching the "More" button's
-                // label breakpoint), so a narrow bar never renders the useless
-                // 1-char truncation "C…"/"E…"/"R…". The label stays in the
-                // accessible tree via sr-only (see the span below), so we do NOT
-                // set aria-label — that would override the accessible name and drop
-                // the count span from the screen-reader announcement (Phase C3).
-                title={t.label}
-                tabIndex={isActive ? 0 : -1}
-                onKeyDown={(e) => onKeyDown(e, idx)}
-                onClick={() => { setMoreOpen(false); onChange(t.key); }}
-                className={cn(
-                  "relative min-w-0 flex-1 inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-data font-medium transition-all duration-200 ease-premium active:scale-[0.98]",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-                  isActive ? "bg-white text-black shadow-sm" : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
-                )}
-              >
-                <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={1.8} />
-                <span className="truncate max-[459px]:sr-only">{t.label}</span>
-                {count && count.value > 0 && (
-                  <span
-                    className={cn(
-                      "inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 font-mono text-micro tabular-nums leading-none",
-                      isActive ? "bg-black/10 text-black/65" : "bg-surface-4 text-foreground",
-                    )}
-                  >
-                    {count.value > 99 ? "99+" : count.value}
-                  </span>
-                )}
-                {count?.alert ? <AlertDot count={count.alert} className="absolute -right-0.5 -top-0.5" /> : null}
-              </button>
-            );
-          })}
-          <button
-            type="button"
-            ref={moreBtnRef}
-            // When a "More" tab (Tools/Graph) is the active workspace tab, this
-            // trigger stands in as its tab element so the active tabpanel's
-            // aria-labelledby={workspace-tab-<key>} resolves to a real node.
-            id={moreActive && activeMore ? `workspace-tab-${activeMore.key}` : undefined}
-            aria-haspopup="menu"
-            aria-expanded={moreOpen}
-            onClick={() => setMoreOpen((open) => !open)}
-            className={cn(
-              "relative inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-data font-medium transition-all duration-200 ease-premium active:scale-[0.98]",
-              moreActive ? "bg-[hsl(var(--info-muted))] text-[hsl(var(--info))]" : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
-            )}
-          >
-            {activeMore && ActiveMoreIcon ? (
-              <>
-                <ActiveMoreIcon className="h-3.5 w-3.5" strokeWidth={1.8} />
-                <span className="hidden min-[460px]:inline">{activeMore.label}</span>
-              </>
-            ) : (
-              <span>More</span>
-            )}
-            <ChevronDown className="h-3 w-3" />
-            {moreAlert > 0 && !moreActive ? <AlertDot count={moreAlert} className="absolute -right-0.5 -top-0.5" /> : null}
-          </button>
-        </div>
-
-        {moreOpen && menuPos && typeof document !== "undefined" && createPortal(
-          <div
-            data-workspace-more-menu
-            role="menu"
-            style={{ position: "fixed", top: menuPos.top, right: menuPos.right }}
-            className="z-[60] w-44 overflow-hidden rounded-xl border border-white/10 bg-[hsl(var(--popover))] p-1 shadow-[0_24px_80px_-34px_rgba(0,0,0,0.95)]"
-          >
-            {COMPACT_MORE.map((t) => {
-              const Icon = t.icon;
-              const count = counts?.[t.key];
-              return (
-                <button
-                  key={t.key}
-                  type="button"
-                  role="menuitem"
-                  onClick={() => { setMoreOpen(false); onChange(t.key); }}
-                  className={cn(
-                    "flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm transition-all duration-200 ease-premium",
-                    active === t.key ? "bg-surface-2 text-foreground" : "text-muted-foreground hover:bg-surface-1 hover:text-foreground",
-                  )}
-                >
-                  <Icon className="h-4 w-4" strokeWidth={1.8} />
-                  <span className="min-w-0 flex-1 truncate">{t.label}</span>
-                  {count?.alert ? <AlertDot count={count.alert} /> : null}
-                  {count && count.value > 0 && (
-                    <span className="font-mono text-eyebrow tabular-nums text-muted-foreground">
-                      {count.value > 99 ? "99+" : count.value}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>,
-          document.body,
-        )}
-      </div>
-    );
-  }
-
-  // Full-width nav strip with centered segmented control — matches the widened
-  // chat column so chrome and content share one symmetrical axis.
   return (
-    <div className="relative border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.72),hsl(var(--surface-0)/0.55))] backdrop-blur-xl">
-      {/* `safe center`, not `center`. A plain `justify-content: center` on an
-          overflow container distributes the overflow to BOTH sides, and the left
-          half lands at a negative offset that `scrollLeft` can never reach — so
-          the first tab sits permanently off-origin, underneath the z-10 rail,
-          unclickable by pointer while still reachable by keyboard. `safe` falls
-          back to start alignment the moment the content overflows, which keeps
-          every tab inside the scrollable range. Browsers without `safe` drop the
-          declaration and inherit `normal` (= start), which is the same safe
-          behaviour rather than a regression. */}
-      <div className="chat-column mx-auto flex justify-safe-center overflow-x-auto px-4 py-2 sm:px-7 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <div
-          role="tablist"
-          aria-label="Investigation workspace"
-          // `shrink-0` + `sm:w-max`: as a flex item this list was shrinking below
-          // its content (550px box around 675px of tabs) with `overflow-x: visible`,
-          // so the tabs escaped the list's own bounds and the scroller's
-          // scrollWidth never accounted for them. At its natural width the list
-          // overflows the SCROLLER instead, which is the thing that can scroll.
-          className="inline-flex w-full max-w-full shrink-0 items-center justify-safe-center gap-0.5 rounded-xl border border-white/[0.08] bg-[hsl(var(--film)/0.035)] p-1 shadow-[inset_0_1px_0_hsl(var(--film)/0.05)] sm:w-max sm:gap-1"
-        >
+    <div className="relative border-b border-white/[0.07] bg-surface-0">
+      <div className="flex justify-safe-center overflow-x-auto px-3 sm:px-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div role="tablist" aria-label="Investigation workspace" className="flex w-max shrink-0 items-stretch gap-1">
           {TABS.map((t, idx) => {
             const Icon = t.icon;
             const isActive = active === t.key;
-            const count = counts?.[t.key];
             return (
               <button
                 key={t.key}
                 ref={(el) => { tabRefs.current[idx] = el; }}
                 id={`workspace-tab-${t.key}`}
+                type="button"
                 role="tab"
                 aria-selected={isActive}
                 aria-controls={`workspace-tabpanel-${t.key}`}
@@ -307,36 +149,146 @@ export function WorkspaceTabs({
                 onKeyDown={(e) => onKeyDown(e, idx)}
                 onClick={() => onChange(t.key)}
                 className={cn(
-                  // A raised, machined segment rather than a tinted rectangle:
-                  // the active tab now sits on its own surface with a top
-                  // catch-light and a 2px accent rail along the bottom edge, so
-                  // it reads as the selected face of a control instead of a
-                  // block of colour. Same palette, more deliberate.
-                  "group/tab relative inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-[7px] px-2.5 text-meta font-medium transition-[background-color,color,box-shadow] duration-150 sm:flex-none sm:gap-2 sm:px-4",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                  "relative inline-flex h-10 shrink-0 items-center gap-2 rounded-t-md px-3.5 text-[14px] font-medium",
+                  "transition-[color,background-color,box-shadow] duration-fast ease-standard",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                   isActive
-                    ? "bg-surface-3 text-foreground shadow-[inset_0_1px_0_hsl(var(--film)/0.07),0_1px_2px_hsl(0_0%_0%/0.5)]"
-                    : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground/90",
+                    ? "bg-surface-2 text-foreground shadow-[inset_0_-2px_0_hsl(var(--brand))]"
+                    : "text-muted-foreground hover:bg-white/[0.03] hover:text-foreground",
                 )}
               >
                 <Icon
-                  className={cn("h-4 w-4 shrink-0 transition-colors", isActive ? "text-[hsl(var(--intel-blue))]" : "text-current")}
+                  className={cn("h-4 w-4 shrink-0", isActive ? "text-[hsl(var(--intel-blue))]" : "opacity-75")}
                   strokeWidth={1.8}
+                  aria-hidden
                 />
-                <span className="leading-none tracking-tight">{t.label}</span>
-                {isActive && (
-                  <span
-                    aria-hidden
-                    className="pointer-events-none absolute inset-x-2 bottom-0 h-[2px] rounded-full bg-[hsl(var(--intel-blue))] shadow-[0_0_10px_-1px_hsl(var(--intel-blue)/0.8)]"
-                  />
-                )}
-                {count ? <CountPill value={count.value} active={isActive} /> : null}
-                {count?.alert ? <AlertDot count={count.alert} /> : null}
+                <span className="leading-none">{t.label}</span>
+                <TabCountBadge count={counts?.[t.key]} loading={loading} active={isActive} />
               </button>
             );
           })}
         </div>
       </div>
     </div>
+  );
+}
+
+function CompactNav({
+  active, onChange, counts, loading,
+}: {
+  active: WorkspaceTab;
+  onChange: (t: WorkspaceTab) => void;
+  counts?: Partial<Record<WorkspaceTab, TabCount>>;
+  loading: boolean;
+}) {
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const activeMore = COMPACT_MORE.find((t) => t.key === active);
+  const moreAlert = COMPACT_MORE.reduce((sum, t) => (t.key === active ? sum : sum + (counts?.[t.key]?.alert ?? 0)), 0);
+
+  // Roving focus across the three labelled tabs.
+  const onKeyDown = (e: React.KeyboardEvent, idx: number) => {
+    let next = idx;
+    if (e.key === "ArrowRight") next = (idx + 1) % COMPACT_PRIMARY.length;
+    else if (e.key === "ArrowLeft") next = (idx - 1 + COMPACT_PRIMARY.length) % COMPACT_PRIMARY.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = COMPACT_PRIMARY.length - 1;
+    else return;
+    e.preventDefault();
+    onChange(COMPACT_PRIMARY[next].key);
+    tabRefs.current[next]?.focus();
+  };
+
+  return (
+    <nav aria-label="Workspace sections" className="flex min-w-0 flex-1 items-stretch gap-1">
+      <div role="tablist" aria-label="Investigation workspace" className="flex min-w-0 flex-1 items-stretch gap-0.5">
+        {COMPACT_PRIMARY.map((t, idx) => {
+          const isActive = active === t.key;
+          const count = counts?.[t.key];
+          return (
+            <button
+              key={t.key}
+              ref={(el) => { tabRefs.current[idx] = el; }}
+              id={`workspace-tab-${t.key}`}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              aria-controls={`workspace-tabpanel-${t.key}`}
+              tabIndex={isActive || (activeMore && idx === 0) ? 0 : -1}
+              onKeyDown={(e) => onKeyDown(e, idx)}
+              onClick={() => onChange(t.key)}
+              className={cn(
+                "relative inline-flex h-11 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-t-md px-2 text-[13.5px] font-medium",
+                "transition-[color,background-color,box-shadow] duration-fast ease-standard",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                isActive
+                  ? "bg-surface-2 text-foreground shadow-[inset_0_-2px_0_hsl(var(--brand))]"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <span className="whitespace-nowrap">{t.label}</span>
+              {!loading && count && count.value > 0 && (
+                <span className="font-mono text-data tabular-nums text-muted-foreground max-[479px]:hidden">{countText(count.value)}</span>
+              )}
+              {!loading && count?.alert ? <AlertDot count={count.alert} /> : null}
+            </button>
+          );
+        })}
+      </div>
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            // When a More section is active, this trigger is the element that
+            // labels its panel (`aria-labelledby="workspace-tab-<key>"`).
+            id={activeMore ? `workspace-tab-${activeMore.key}` : undefined}
+            aria-label={activeMore ? `More, current section: ${activeMore.label}` : "More sections: Tools, Graph, Report"}
+            className={cn(
+              "relative inline-flex h-11 shrink-0 items-center gap-1 rounded-t-md px-2.5 text-[13.5px] font-medium",
+              "transition-[color,background-color,box-shadow] duration-fast ease-standard",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+              activeMore
+                ? "bg-surface-2 text-foreground shadow-[inset_0_-2px_0_hsl(var(--brand))]"
+                : "text-muted-foreground hover:text-foreground data-[state=open]:text-foreground",
+            )}
+          >
+            <span className="whitespace-nowrap">{activeMore ? activeMore.label : "More"}</span>
+            <ChevronDown className="h-3.5 w-3.5" aria-hidden />
+            {!loading && moreAlert > 0 && <AlertDot count={moreAlert} className="absolute right-1 top-2" />}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          sideOffset={4}
+          className="w-56 rounded-xl border-white/10 bg-[hsl(var(--popover))] p-1 shadow-overlay"
+        >
+          <DropdownMenuLabel className="px-2.5 pb-1 pt-1.5 text-micro font-medium text-muted-foreground">More sections</DropdownMenuLabel>
+          <DropdownMenuRadioGroup value={activeMore?.key ?? ""} onValueChange={(v) => onChange(v as WorkspaceTab)}>
+            {COMPACT_MORE.map((t) => {
+              const Icon = t.icon;
+              const count = counts?.[t.key];
+              const selected = t.key === active;
+              return (
+                <DropdownMenuRadioItem
+                  key={t.key}
+                  value={t.key}
+                  className={cn(
+                    "flex min-h-11 items-center gap-2.5 rounded-lg py-2 pl-2.5 pr-2.5 text-[14px] [&>span:first-child]:hidden",
+                    selected ? "bg-surface-3 text-foreground" : "text-muted-foreground focus:text-foreground",
+                  )}
+                >
+                  <Icon className="h-4 w-4 shrink-0" strokeWidth={1.8} aria-hidden />
+                  <span className="min-w-0 flex-1 truncate">{t.label}</span>
+                  {!loading && count?.alert ? <AlertDot count={count.alert} /> : null}
+                  {!loading && count && count.value > 0 && (
+                    <span className="font-mono text-data tabular-nums text-muted-foreground">{countText(count.value)}</span>
+                  )}
+                  {selected && <Check className="h-3.5 w-3.5 text-[hsl(var(--intel-blue))]" aria-hidden />}
+                </DropdownMenuRadioItem>
+              );
+            })}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </nav>
   );
 }

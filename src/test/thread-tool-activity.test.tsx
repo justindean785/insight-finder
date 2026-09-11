@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  toolActivityStoreCount,
   useThreadToolActivity,
   type ThreadToolActivity,
 } from "@/hooks/useThreadToolActivity";
@@ -317,6 +318,53 @@ describe("useThreadToolActivity persisted count", () => {
 
     next.resolve({ data: rows(2), error: null });
     await waitFor(() => expect(result.current.persistedTotal).toBe(2));
+  });
+
+  // The 46-vs-48 defect: the header, the tab badge and the Tools panel each ran
+  // their OWN instance — own read, own channel, own refresh triggers — so they
+  // could only agree by luck. They now share one store per (account, thread).
+  it("shares ONE store — one read and one channel pair — across every consumer of a thread", async () => {
+    mock.rowsByThread.set("thread-a", rows(46));
+    const header = renderActivityHook("thread-a", "account-a");
+    const badge = renderActivityHook("thread-a", "account-a");
+    const panel = renderActivityHook("thread-a", "account-a");
+
+    await waitFor(() => expect(panel.result.current.loading).toBe(false));
+    expect(toolActivityStoreCount()).toBe(1);
+    expect(mock.queriedTables.filter((t) => t === "tool_usage_log")).toHaveLength(1);
+    // tool_usage_log on one channel, the threads heartbeat on another — ONE pair.
+    expect(mock.channels.filter((c) => c.active)).toHaveLength(2);
+
+    // A refresh through any consumer moves every consumer, in the same update.
+    mock.rowsByThread.set("thread-a", rows(48));
+    await act(async () => { await header.result.current.reload(); });
+    expect(header.result.current.persistedTotal).toBe(48);
+    expect(badge.result.current.persistedTotal).toBe(48);
+    expect(panel.result.current.persistedTotal).toBe(48);
+  });
+
+  // tool_usage_log is not in the realtime publication, so a tool-row event
+  // never arrives in production. The threads heartbeat (published) does.
+  it("reconciles on a threads UPDATE — the heartbeat is the signal that actually arrives", async () => {
+    mock.rowsByThread.set("thread-a", rows(46));
+    const { result } = renderActivityHook("thread-a", "account-a");
+    await waitFor(() => expect(result.current.persistedTotal).toBe(46));
+
+    mock.rowsByThread.set("thread-a", rows(48));
+    await emit("threads", { new: { id: "thread-a", status: "active" } });
+
+    await waitFor(() => expect(result.current.persistedTotal).toBe(48));
+  });
+
+  it("keeps the last good count through a failed refresh instead of repainting 0", async () => {
+    mock.rowsByThread.set("thread-a", rows(5));
+    const { result } = renderActivityHook("thread-a", "account-a");
+    await waitFor(() => expect(result.current.persistedTotal).toBe(5));
+
+    mock.pendingByThread.set("thread-a", Promise.resolve({ data: null as unknown as TestRow[], error: { message: "boom" } as unknown as null }));
+    await act(async () => { await result.current.reload(); });
+    expect(result.current.error).toBe(true);
+    expect(result.current.persistedTotal).toBe(5);
   });
 
   it("does not query or alter the evidence data source", async () => {

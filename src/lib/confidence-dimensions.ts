@@ -59,6 +59,14 @@ export interface ConfidenceProfile {
 }
 
 const REPORT_SAFE_LABELS = new Set(["CONFIRMED", "ATTESTED", "CORRELATED"]);
+
+/**
+ * The report-ready bar. These were inline literals in the `reportReady`
+ * expression below; they are named — NOT changed — so the export gate and its
+ * copy ("report-safe needs 60%") read the same number the scoring uses.
+ */
+export const REPORT_READY_MIN_READINESS = 60;
+export const REPORT_READY_MIN_CONFLICT_FREE = 60;
 const IDENTITY_KINDS = new Set(["name", "person", "email", "phone"]);
 const DAY = 24 * 60 * 60 * 1000;
 const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
@@ -202,7 +210,10 @@ export function buildConfidenceProfile(input: {
   const dimensions = [identity, selectors, corroboration, diversity, recency, conflictFree, readiness];
   const overall = clamp(dimensions.reduce((s, d) => s + d.value, 0) / dimensions.length);
   // Report-ready = a real verified/corroborated base AND conflicts under control.
-  const reportReady = readinessValue >= 60 && conflictFree.value >= 60 && identity.sufficient;
+  const reportReady =
+    readinessValue >= REPORT_READY_MIN_READINESS &&
+    conflictFree.value >= REPORT_READY_MIN_CONFLICT_FREE &&
+    identity.sufficient;
 
   return {
     dimensions,

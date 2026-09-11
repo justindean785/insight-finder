@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
@@ -25,7 +25,12 @@ import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked } from "@/lib/submit-guard";
 import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
-import { dedupeCards, normalizeTarget } from "@/lib/next-step-cards";
+import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
+import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
+import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
+import { registerPivotRunner } from "@/lib/pivot-runner";
+import { DEFAULT_CONTROLS, evaluatePreflight, type PreflightControls } from "@/lib/composer-preflight";
+import { ScopeControls, ScopeToggle, TargetChip } from "@/components/composer/ComposerPreflight";
 import { hasReportShape, joinAssistantTranscript, stripReasoningPerPart } from "@/lib/report-shape";
 import { findLastReportIndex, isReportMessage } from "@/lib/superseded-reports";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
@@ -63,16 +68,6 @@ const FUNCTIONS_URL = osintAgentUrl(SUPABASE_URL, SUPABASE_PROJECT_ID);
 const FAIL_PREFIX = "__STATUS__:failed:";
 const CACHE_BANNER_TYPE = "data-investigation-cache";
 
-type NextStepSuggestion = {
-  title: string;
-  detail?: string;
-  prompt: string;
-  icon: "pivot" | "spark";
-  meta: string;
-  priority?: RecommendedPivot["priority"];
-  /** Normalized dedupe key target (e.g. name/email), if this card pivots on one. */
-  target?: string;
-};
 
 // Cross-browser timeout helper. AbortSignal.timeout() is missing on
 // Safari ≤ 17.3, Firefox ESR, and Node 18 (used by Vitest), where the
@@ -714,38 +709,36 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
   const visibleParts = group.parts.filter((part) => deriveToolTone(part) !== "error");
   return (
     <div className="chat-card text-[13px] leading-relaxed text-muted-foreground" data-speaker="tool">
+      {/* One row per cycle when collapsed: stage, calls, EV, what it touched,
+          what came of it, when. The old three-line card spent ~200px per cycle
+          on a run log the analyst mostly scans past; the reason and the calls
+          themselves are one click away. */}
       <button
         type="button"
-        className="w-full px-4 py-3 text-left"
+        className="w-full px-3.5 py-2 text-left"
         aria-expanded={expanded}
         onClick={() => setExpanded((value) => !value)}
       >
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
-          <span className="font-medium text-foreground/90">
+        <div className="flex min-w-0 items-center gap-2">
+          {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden />}
+          <span className="shrink-0 font-medium text-foreground/90">
             {cycleSummaryLabel(humanizeStage(group.stage), group.cycleId)}
           </span>
-          <span className="tabular-nums">{group.parts.length} call{group.parts.length === 1 ? "" : "s"}</span>
-          {avgExpected != null && <span className="tabular-nums">EV {avgExpected}</span>}
-          {time && <span className="ml-auto tabular-nums text-muted-foreground/80">{time}</span>}
+          <span className="shrink-0 tabular-nums">{group.parts.length} call{group.parts.length === 1 ? "" : "s"}</span>
+          {avgExpected != null && <span className="hidden shrink-0 tabular-nums sm:inline">EV {avgExpected}</span>}
+          {(selectors.length > 0 || extra > 0) && (
+            <span className="min-w-0 flex-1 truncate text-foreground/70" title={Array.from(new Set(group.selectors)).join(" · ")}>
+              {selectors.join(" · ")}{extra > 0 ? ` · +${extra}` : ""}
+            </span>
+          )}
+          {!(selectors.length > 0 || extra > 0) && <span className="flex-1" />}
+          {summaryBits.length > 0 && (
+            <span className="hidden shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground sm:inline">{summaryBits.join(" · ")}</span>
+          )}
+          {time && <span className="shrink-0 tabular-nums text-muted-foreground/80">{time}</span>}
         </div>
-        {(selectors.length > 0 || extra > 0) && (
-          <div className="mt-1.5 break-all pl-5 text-foreground/75 sm:break-words">
-            {selectors.join(" · ")}
-            {extra > 0 ? ` · +${extra} more` : ""}
-          </div>
-        )}
-        {summaryBits.length > 0 && (
-          <div className="mt-1.5 flex flex-wrap gap-1.5 pl-5">
-            {summaryBits.map((bit) => (
-              <span key={bit} className="rounded border border-white/8 bg-black/20 px-1.5 py-0.5 font-mono text-[11px] tabular-nums">
-                {bit}
-              </span>
-            ))}
-          </div>
-        )}
-        {group.reasons[0] && (
-          <div className="mt-1.5 pl-5 text-[12px] text-muted-foreground/80">
+        {expanded && group.reasons[0] && (
+          <div className="mt-1 pl-5 text-[12px] text-muted-foreground/80">
             {group.reasons[0]}
           </div>
         )}
@@ -845,10 +838,10 @@ function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => voi
     }
   };
   return (
-    <div className="alert-panel-danger p-5 animate-fade-up animate-red-edge">
+    <div className="alert-panel-danger p-5 animate-fade-up">
       <div className="flex items-start gap-3">
         <span className="shrink-0 mt-0.5 inline-flex items-center justify-center w-9 h-9 rounded-xl bg-destructive/15 border border-destructive/30">
-          <AlertTriangle className="w-4 h-4 text-destructive animate-warning-pulse" />
+          <AlertTriangle className="w-4 h-4 text-destructive" aria-hidden />
         </span>
         <div className="min-w-0 flex-1 space-y-1">
           <div className="text-micro font-mono font-semibold tracking-normal text-destructive/80">
@@ -1272,6 +1265,14 @@ function ChatWindowInner({
   // analyst scrolls up — re-engagement waits until they SETTLE at the bottom.
   const lastUserScrollUpRef = useRef(0);
   const [input, setInput] = useState("");
+  // Structured preflight around the free-form request. Advisory: the controls
+  // travel as written instructions (see composer-preflight.ts).
+  const [controls, setControls] = useState<PreflightControls>(DEFAULT_CONTROLS);
+  const [controlsOpen, setControlsOpen] = useState(false);
+  const [composerFocused, setComposerFocused] = useState(false);
+  // Which Next-steps row has its run preview open (see NextSteps).
+  const [openStep, setOpenStep] = useState<string | null>(null);
+  const composerIds = { textarea: useId(), help: useId(), objectiveError: useId(), panel: useId() };
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [stopping, setStopping] = useState(false);
   // The SDK error THIS CLIENT's dropped stream produced, held BY IDENTITY while
@@ -1325,12 +1326,14 @@ function ChatWindowInner({
   const decisionSetsRef = useRef(decisionSets);
   decisionSetsRef.current = decisionSets;
   const [seedValue, setSeedValue] = useState<string | null>(null);
+  // The Next-steps ranking depends on the seed and on analyst verdicts, both
+  // loaded asynchronously. Rendering before they land reshuffled the list a
+  // second after load — the row an analyst reached for could move or vanish.
+  const [seedLoaded, setSeedLoaded] = useState(false);
   // Skipped pivots (normalized-target keys) so a lead the analyst dismissed in
   // the Pivots tab never reappears in the chat rail. Hydrated from localStorage
   // and kept in sync via the skip-changed event other surfaces dispatch.
   const [pivotSkip, setPivotSkip] = useState<Set<string>>(new Set());
-  // Which "Next steps" card is expanded into its full mini-brief (click to open).
-  const [expandedPivot, setExpandedPivot] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<
     Array<{ id: string; name: string; size: number; type: string; path: string; url: string; uploading?: boolean }>
@@ -1345,7 +1348,9 @@ function ChatWindowInner({
       .eq("id", threadId)
       .maybeSingle()
       .then(({ data }) => {
-        if (alive) setSeedValue((data as { seed_value: string | null } | null)?.seed_value ?? null);
+        if (!alive) return;
+        setSeedValue((data as { seed_value: string | null } | null)?.seed_value ?? null);
+        setSeedLoaded(true);
       });
     return () => { alive = false; };
   }, [threadId]);
@@ -1753,6 +1758,11 @@ function ChatWindowInner({
     const text = input.trim();
     const hasFiles = attachments.length > 0;
     if ((!text && !hasFiles) || isSubmitBlocked(status, submitLockRef.current)) return;
+    // The preflight decides what is sent: the request exactly as typed, plus the
+    // analyst's Scope & controls only when they changed any of them.
+    if (!preflight.canSubmit) return;
+    const outgoing = preflight.message.trim();
+    const customizedRun = preflight.customized;
     if (uploading) {
       toast.error("Wait for uploads to finish");
       return;
@@ -1763,11 +1773,13 @@ function ChatWindowInner({
       (a) => `- [${a.name}](${a.url}) (${a.type || "file"}, ${formatBytes(a.size)})`,
     );
     const composed = hasFiles
-      ? `${text}${text ? "\n\n" : ""}Attached files:\n${attachLines.join("\n")}`
-      : text;
-    // Try the investigation cache only for the FIRST user message in this thread.
+      ? `${outgoing}${outgoing ? "\n\n" : ""}Attached files:\n${attachLines.join("\n")}`
+      : outgoing;
+    // Try the investigation cache only for the FIRST user message in this
+    // thread — and never for a run with custom controls, which a cached result
+    // could not have honoured.
     const isFirstMessage = messages.length === 0;
-    if (isFirstMessage && user && !hasFiles) {
+    if (isFirstMessage && user && !hasFiles && !customizedRun) {
       const seed = detectSeed(text);
       if (seed) {
         const { data: hit } = await supabase
@@ -1868,6 +1880,8 @@ function ChatWindowInner({
     }
     setInput("");
     setAttachments([]);
+    setControls(DEFAULT_CONTROLS);
+    setControlsOpen(false);
     try {
       await beginInvestigation();
       await sendMessage({ text: composed });
@@ -1976,13 +1990,35 @@ function ChatWindowInner({
         toast.error(`"${detail.value}" was dismissed by the analyst — not dispatched. Reset its review to run it.`);
         return;
       }
+      // A run already in flight holds the submit lock, and sendText would drop
+      // this pivot without a word. Say so instead.
+      if (isSubmitBlocked(status, submitLockRef.current)) {
+        toast.info("A run is in progress on this case. Start the pivot when it finishes.");
+        return;
+      }
       const prompt = detail.prompt ??
         `Pivot on ${detail.value}${detail.type ? ` (${detail.type})` : ""}. Run the next investigation step on this lead.`;
+      toast.success(`Pivot on ${detail.value} sent to the agent`);
       void sendText(prompt);
     };
     window.addEventListener("proximity:run-pivot", onRunPivot as EventListener);
-    return () => window.removeEventListener("proximity:run-pivot", onRunPivot as EventListener);
-  }, [threadId, sendText]);
+    // Tell the Pivots surface that something on this page can actually run a
+    // pivot (the read-only case view has no chat, so nothing listens there).
+    const unregister = registerPivotRunner(threadId);
+    return () => {
+      window.removeEventListener("proximity:run-pivot", onRunPivot as EventListener);
+      unregister();
+    };
+  }, [threadId, sendText, status]);
+
+  // The rail's Run rides the SAME bus as the Pivots tab, so the manual dispatch
+  // guard above (analyst-rejected selectors) applies to it too. It used to call
+  // sendText directly and skip that refusal.
+  const runPivotFromRail = useCallback((p: RunnablePivot) => {
+    window.dispatchEvent(new CustomEvent("proximity:run-pivot", {
+      detail: { threadId, value: p.target, type: p.targetType, prompt: p.prompt },
+    }));
+  }, [threadId]);
 
   // Render a cached investigation: insert user msg + cached artifacts + synthetic
   // assistant msg (with cache banner sentinel part) into the DB, then reload state.
@@ -2159,10 +2195,16 @@ function ChatWindowInner({
   }, []);
 
   const retryLastUser = async () => {
+    // The same synchronous lock the composer and the pivot rail hold. Retry used
+    // to skip it, so a double-click on "Retry investigation" started two billed
+    // runs: the server has no idempotency key and does not reject overlaps.
+    if (isSubmitBlocked(status, submitLockRef.current)) return;
     const lastUser = [...messages].reverse().find((m) => m.role === "user") as UIMessage | undefined;
     if (!lastUser) return toast.error("No previous message to retry");
     const text = (lastUser.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
     if (!text) return toast.error("Last message was empty");
+    submitLockRef.current = true;
+    try {
     // Optimistically remove the trailing failed assistant message from view
     setMessages((prev) => {
       const out = [...prev];
@@ -2177,9 +2219,31 @@ function ChatWindowInner({
     });
     await beginInvestigation();
     await sendMessage({ text });
+    } catch (e) {
+      console.error("retry failed:", e);
+      toast.error(`Failed to retry: ${describeTransportError(e)}`);
+    } finally {
+      submitLockRef.current = false;
+    }
   };
 
   const isLoading = status === "submitted" || status === "streaming";
+  // A follow-up inherits the case's target; only a first request needs one.
+  const isFollowUp = useMemo(() => messages.some((m) => m.role === "user"), [messages]);
+  const preflight = useMemo(
+    () => evaluatePreflight({ text: input, attachments: attachments.length, isFollowUp, controls }),
+    [input, attachments.length, isFollowUp, controls],
+  );
+  // Auto-grow the request box: one calm line when idle and empty, up to ~8
+  // lines while writing. Height is set on the element so it never reflows the
+  // transcript above more than the text itself needs.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const min = composerFocused || input ? 64 : 44;
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, min), 208)}px`;
+  }, [input, composerFocused]);
   // Watchdog-only ref: the terminal-status realtime handler below is set up in
   // an effect with a stable dependency array (see stopRef further down), so its
   // closure would otherwise see a stale `isLoading` from whenever the effect
@@ -2391,7 +2455,9 @@ function ChatWindowInner({
   // Memoized — without this the IIFE re-runs on every streamed token because
   // `messages` updates dozens of times per second during streaming.
   const suggestions = useMemo(() => {
-    if (isLoading || messages.length === 0) return [] as NextStepSuggestion[];
+    if (isLoading || messages.length === 0) return [] as NextStepItem[];
+    // Wait for every input the ranking depends on, so the list is stable when shown.
+    if (!seedLoaded || review.availability === "unknown") return [] as NextStepItem[];
     const latestAssistant = [...messages].reverse().find((m) => m.role === "assistant");
     if (!latestAssistant) return [];
     // "Next Steps" implies the investigation reached a real closing report.
@@ -2410,42 +2476,44 @@ function ChatWindowInner({
         .map((part) => part.text ?? ""),
     );
     if (!hasReportShape(latestText)) return [];
-    const out: NextStepSuggestion[] = [];
+    const out: NextStepItem[] = [];
     const seenLabels = new Set<string>();
+    const seenKeys = new Set<string>();
+    const artifactsById = new Map(artifacts.map((a) => [a.id, a] as const));
+    const reviewOf = (id: string) => review.map[id] ?? "new";
     // ONE engine over LIVE state: report recommendations + artifact findings,
     // deduped, already-run-filtered and ranked. Chat only takes the top 3
     // still-actionable ("new") pivots; already-searched ones sink to the Pivots
-    // tab. Recomputes whenever artifacts stream in or a new turn lands.
+    // tab. Each is VALIDATED before it may carry a Run button — a malformed
+    // suggestion (a table row, a report footer) stays visible as "needs repair".
     const ranked = computePivots({ artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets, reviews: review.map });
     for (const p of ranked.filter((candidate) => candidate.status === "new").slice(0, 3)) {
+      const dedupe = cardDedupeKey({ title: p.actionLabel, target: p.value });
+      if (seenKeys.has(dedupe)) continue;
+      seenKeys.add(dedupe);
       seenLabels.add(p.actionLabel);
+      const validation = validatePivotSuggestion(pivotSuggestionInput(p));
       out.push({
-        title: p.actionLabel,
-        detail: p.detail,
-        prompt: p.prompt,
-        icon: "pivot",
-        meta: `${p.type} verification`,
-        priority: p.priority,
-        target: p.value,
+        kind: "pivot",
+        key: dedupe,
+        validation,
+        eligibility: validation.status === "valid" ? pivotEligibility(validation.pivot, { artifactsById, review: reviewOf }) : null,
       });
     }
     // Always include 1-2 generic next steps as fallback.
     const generic = [
-      { title: "Summarize findings", detail: "Rank strongest claims and confidence", prompt: "Summarize the strongest findings so far and rate overall confidence.", meta: "report" },
-      { title: "Check for breaches", detail: "Run credential exposure on strongest identifiers", prompt: "Run breach and credential-exposure checks on the strongest identifiers found so far.", meta: "verification" },
-      { title: "Find more pivots", detail: "Return the next 3 highest-value leads", prompt: "Suggest the next 3 highest-value pivots based on what's been discovered.", meta: "planning" },
+      { title: "Summarize findings", detail: "Rank the strongest claims and rate overall confidence.", prompt: "Summarize the strongest findings so far and rate overall confidence." },
+      { title: "Check for breaches", detail: "Run credential-exposure checks on the strongest identifiers.", prompt: "Run breach and credential-exposure checks on the strongest identifiers found so far." },
+      { title: "Find more pivots", detail: "Return the next three highest-value leads.", prompt: "Suggest the next 3 highest-value pivots based on what's been discovered." },
     ] as const;
     for (const g of generic) {
       if (out.length >= 4) break;
       if (seenLabels.has(g.title)) continue;
       seenLabels.add(g.title);
-      out.push({ ...g, icon: "spark" });
+      out.push({ kind: "action", key: `action:${g.title}`, title: g.title, detail: g.detail, prompt: g.prompt });
     }
-    // Collapse cards that point at the same normalized target + action — e.g.
-    // "Review lead · Damien O Brien" and "Review lead · Damien O'Brien" surfaced
-    // from the same source are one lead, not two. Keep the first (highest-ranked).
-    return dedupeCards(out).slice(0, 4);
-  }, [isLoading, messages, artifacts, seedValue, reportPivots, pivotSkip, queriedTargets, review.map]);
+    return out.slice(0, 4);
+  }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability]);
 
   return (
     <div className="chat-stage relative h-full min-w-0 overflow-hidden bg-background">
@@ -2628,86 +2696,14 @@ function ChatWindowInner({
             <FailedRunCard reason={error.message} onRetry={retryLastUser} />
           )}
           {suggestions.length > 0 && (
-            <div className="chat-next-steps w-full animate-fade-up">
-              <div className="chat-next-steps__head">
-                <Sparkles className="h-3 w-3 shrink-0 opacity-80" />
-                <span>Next steps</span>
-                <span className="ml-auto font-mono text-[10px] font-medium tabular-nums tracking-normal normal-case opacity-70">
-                  {suggestions.length}
-                </span>
-              </div>
-              <div className="chat-next-steps__list">
-                {suggestions.map((s, i) => {
-                  const cardId = `${s.title}-${i}`;
-                  const expanded = expandedPivot === cardId;
-                  return (
-                    <div key={cardId} className="chat-next-steps__row group" data-priority={s.priority}>
-                      <button
-                        type="button"
-                        className="min-w-0 flex-1 text-left"
-                        aria-expanded={expanded}
-                        onClick={() => setExpandedPivot(expanded ? null : cardId)}
-                      >
-                        <div className="flex min-w-0 items-center gap-1.5">
-                          {s.priority && (
-                            <span className={`pivot-priority pivot-priority--${s.priority} shrink-0`}>
-                              {s.priority}
-                            </span>
-                          )}
-                          <span className="truncate text-[13px] font-medium leading-tight text-foreground">
-                            {s.title}
-                          </span>
-                          {s.meta && (
-                            <span className="hidden truncate text-[10px] text-muted-foreground/75 sm:inline">
-                              · {s.meta}
-                            </span>
-                          )}
-                          {(s.detail || s.target) && (
-                            <ChevronDown
-                              className={cn(
-                                "ml-auto h-3 w-3 shrink-0 text-muted-foreground/45 transition-transform group-hover:text-muted-foreground",
-                                expanded && "rotate-180",
-                              )}
-                              aria-hidden
-                            />
-                          )}
-                        </div>
-                        {/* line-clamp-1 cut these mid-sentence ("Email discovered
-                            via hunter verify…"), which is exactly the width at
-                            which a rationale stops being a rationale — and
-                            nothing on the row said it could be opened, so the
-                            rest was simply lost. Two lines carries the actual
-                            reason, and the chevron says there is more. */}
-                        {s.detail && (
-                          <p
-                            className={cn(
-                              "mt-0.5 text-[11px] leading-snug text-muted-foreground",
-                              !expanded && "line-clamp-2",
-                            )}
-                          >
-                            {s.detail}
-                          </p>
-                        )}
-                        {expanded && s.target && (
-                          <p className="mt-1 flex items-center gap-1.5 text-[11px]">
-                            <span className="text-muted-foreground/70">Target</span>
-                            <span className="truncate font-mono text-foreground/85">{s.target}</span>
-                          </p>
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => sendText(s.prompt)}
-                        className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-white/12 bg-white/[0.05] px-2.5 text-[11px] font-medium text-foreground/90 transition-colors hover:border-white/20 hover:bg-white/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        Run
-                        <ArrowRight className="h-3 w-3 opacity-70" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+            <NextSteps
+              items={suggestions}
+              onRunPivot={runPivotFromRail}
+              onRunAction={(prompt) => void sendText(prompt)}
+              busy={isLoading}
+              openKey={openStep}
+              onOpenChange={setOpenStep}
+            />
           )}
           <div ref={endRef} />
         </div>
@@ -2757,7 +2753,7 @@ function ChatWindowInner({
             </div>
           )}
           <div className="composer-shell p-1">
-            <div className="relative rounded-[11px] bg-background/60">
+            <div className="rounded-[11px] bg-background/60">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -2766,49 +2762,112 @@ function ChatWindowInner({
                 className="hidden"
                 onChange={(e) => onFilesPicked(e.target.files)}
               />
+              <div className="flex items-center justify-between gap-2 px-3 pt-2">
+                <label htmlFor={composerIds.textarea} className="text-data font-medium text-foreground/90">
+                  Investigation request
+                </label>
+                <span className="hidden text-micro text-muted-foreground sm:inline" aria-hidden>
+                  <kbd className="font-sans">⌘/Ctrl</kbd> + <kbd className="font-sans">Enter</kbd> to start · Enter for a new line
+                </span>
+              </div>
+              {controlsOpen && (
+                <div id={composerIds.panel}>
+                  <ScopeControls
+                    controls={controls}
+                    onChange={setControls}
+                    result={preflight}
+                    objectiveErrorId={composerIds.objectiveError}
+                  />
+                </div>
+              )}
               <Textarea
                 ref={inputRef}
+                id={composerIds.textarea}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-                placeholder="Investigate an email, username, phone, IP, or domain…"
-                aria-label="Investigation query — enter an email, username, phone, IP, or domain"
-                rows={2}
-                className="min-h-[72px] max-h-32 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 pl-[3.25rem] sm:pl-14 pr-14 sm:pr-16 py-3 sm:py-4 text-body leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70"
+                onFocus={() => setComposerFocused(true)}
+                onBlur={() => setComposerFocused(false)}
+                onKeyDown={(e) => {
+                  // Enter writes a new line; Cmd/Ctrl+Enter starts the run — and
+                  // only when the preflight says the request is valid. An IME
+                  // composition's confirming Enter is never a submit.
+                  if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+                  if (e.metaKey || e.ctrlKey) {
+                    e.preventDefault();
+                    if (preflight.canSubmit && !isLoading) void send();
+                  }
+                }}
+                placeholder="e.g. analyst@example.com — who controls this mailbox?"
+                aria-describedby={composerIds.help}
+                aria-invalid={Boolean(preflight.errors.target)}
+                rows={1}
+                enterKeyHint="enter"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                className="min-h-[44px] max-h-52 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 px-3 py-2 text-[16px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70 sm:text-body"
               />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isLoading}
-                className="absolute bottom-3 left-2.5 rounded-full h-9 w-9 bg-surface-1 hover:bg-surface-2 border border-white/10 text-muted-foreground hover:text-foreground transition-all"
-                aria-label="Attach file"
-                title="Attach file"
-              >
-                <Paperclip className="w-4 h-4" />
-              </Button>
-              <Button
-                onClick={isLoading ? stopInvestigation : send}
-                disabled={isLoading ? stopping : ((!input.trim() && attachments.length === 0) || uploading)}
-                size="icon"
-                className={cn(
-                  "absolute bottom-3 right-2.5 rounded-2xl h-10 w-10 border-0",
-                  isLoading
-                    ? "bg-destructive text-destructive-foreground hover:bg-destructive/90 shadow-[0_8px_24px_-10px_hsl(var(--danger)/0.65)]"
-                    : "bg-gradient-to-br from-primary to-[hsl(var(--intel-violet))] hover:opacity-95 text-primary-foreground shadow-[0_8px_24px_-8px_hsl(var(--intel-blue)/0.7)]",
-                )}
-                aria-label={isLoading ? "Stop investigation" : "Start investigation"}
-                title={isLoading ? "Stop investigation" : "Start investigation"}
-              >
-                {isLoading
-                  ? stopping
-                    ? <Loader2 className="w-4 h-4 animate-spin" />
-                    : <Square className="w-3.5 h-3.5 fill-current" />
-                  : <ArrowUp className="w-4 h-4" />}
-              </Button>
+              <div className="flex flex-wrap items-center gap-1.5 px-2 pb-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isLoading}
+                  className="h-8 w-8 shrink-0 rounded-md text-muted-foreground transition-colors duration-fast hover:bg-white/[0.05] hover:text-foreground [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+                  aria-label="Attach file"
+                  title="Attach file"
+                >
+                  <Paperclip className="h-4 w-4" aria-hidden />
+                </Button>
+                <TargetChip
+                  result={preflight}
+                  kindOverride={controls.targetKind}
+                  onKindChange={(k) => setControls((c) => ({ ...c, targetKind: k }))}
+                />
+                <ScopeToggle
+                  open={controlsOpen}
+                  onToggle={() => setControlsOpen((o) => !o)}
+                  customized={preflight.customized}
+                  panelId={composerIds.panel}
+                />
+                <Button
+                  type="button"
+                  onClick={isLoading ? stopInvestigation : () => void send()}
+                  disabled={isLoading ? stopping : (!preflight.canSubmit || uploading)}
+                  className={cn(
+                    "ml-auto h-9 shrink-0 gap-1.5 rounded-lg px-3.5 text-data font-semibold transition-colors duration-fast [@media(pointer:coarse)]:h-11",
+                    isLoading
+                      ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      : "bg-white text-black hover:bg-white/90 disabled:bg-white/[0.08] disabled:text-muted-foreground disabled:opacity-100",
+                  )}
+                >
+                  {isLoading
+                    ? stopping
+                      ? <><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Stopping…</>
+                      : <><Square className="h-3.5 w-3.5 fill-current" aria-hidden /> Stop investigation</>
+                    : <>Start investigation <ArrowUp className="h-4 w-4 rotate-90" aria-hidden /></>}
+                </Button>
+              </div>
             </div>
           </div>
+          {/* One stable line under the composer: the helper, the error, or the
+              pre-submit summary — so what the request will do is always
+              stated, and the box never jumps as it changes. */}
+          <p
+            id={composerIds.help}
+            aria-live="polite"
+            className={cn(
+              "mt-1.5 min-h-[1.25rem] truncate px-1 text-micro",
+              preflight.errors.target ? "text-[hsl(var(--danger))]" : "text-muted-foreground",
+            )}
+          >
+            {preflight.errors.target
+              ? preflight.errors.target
+              : preflight.empty
+                ? "Enter one primary target, then state the question you need answered."
+                : `Target: ${preflight.summary.target} · Objective: ${preflight.summary.objective} · Scope: ${preflight.summary.scope} · Depth: ${preflight.summary.depth} · Budget: ${preflight.summary.budget}`}
+          </p>
         </div>
       </div>
     </div>
