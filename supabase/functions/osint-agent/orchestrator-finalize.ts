@@ -198,10 +198,43 @@ export function shouldForceFinalize(
   stepNumber: number,
   opts?: { budgetMs?: number; reserveMs?: number; maxSteps?: number },
 ): boolean {
+  return wallClockFinalizeDue(elapsedMs, opts) || stepCapFinalizeDue(stepNumber, opts);
+}
+
+/**
+ * The WALL-CLOCK half of shouldForceFinalize: the reserve window has opened and
+ * execution time remains. This is the ONLY trigger a correlation pass may defer,
+ * because deferring it leaves later steps in which to finalize.
+ */
+export function wallClockFinalizeDue(
+  elapsedMs: number,
+  opts?: { budgetMs?: number; reserveMs?: number },
+): boolean {
   const budgetMs = opts?.budgetMs ?? ORCHESTRATOR_WALL_CLOCK_MS;
   const reserveMs = opts?.reserveMs ?? FINALIZE_RESERVE_MS;
+  return elapsedMs >= budgetMs - reserveMs;
+}
+
+/**
+ * The STEP-CAP half: this is the LAST step the SDK will run, and it is NEVER
+ * deferrable.
+ *
+ * WHY THIS MUST NOT BE DEFERRED — the runtime contract, not a style preference.
+ * `stepNumber` is 0-indexed for the step ABOUT to run, so `maxSteps - 1` is the
+ * final step under `stopWhen: [stepCountIs(MAX_ORCHESTRATOR_STEPS)]` (index.ts).
+ * That stop condition is `!finalizeStarted && stepCountIs(...)` — gated on exactly
+ * the flag a deferral prevents from flipping. So deferring here means: this step
+ * runs, `finalizeStarted` stays false, the step limit fires, and THE RUN ENDS WITH
+ * NO FORCED FINALIZE AND NO REPORT. There is no later prepareStep to recover in.
+ * A test that proves safety by invoking prepareStep twice at this step number is
+ * simulating a callback production will never make.
+ */
+export function stepCapFinalizeDue(
+  stepNumber: number,
+  opts?: { maxSteps?: number },
+): boolean {
   const maxSteps = opts?.maxSteps ?? MAX_ORCHESTRATOR_STEPS;
-  return elapsedMs >= budgetMs - reserveMs || stepNumber >= maxSteps - 1;
+  return stepNumber >= maxSteps - 1;
 }
 
 /**
@@ -259,12 +292,77 @@ export function shouldSkipForFinalizeWindow(
   return elapsedMs >= budgetMs - reserveMs;
 }
 
-/** True when correlate is due but has not been attempted this cycle — finalize may defer once. */
+/**
+ * The number of correlation deferrals a single run may take. ONE.
+ *
+ * THE DEFECT THIS CLOSES. The predicate below used to be
+ * `correlateDue && lastCorrelateOutcome === null`, and its doc comment claimed
+ * finalize "may defer once". THERE WAS NO ONCE. `lastCorrelateOutcome` only
+ * becomes non-null when a correlate call actually dispatches, and `correlateDue()`
+ * is `artifactsSinceCorrelate >= CORRELATE_ARTIFACT_THRESHOLD`, a counter that
+ * `bumpAutoPersistedArtifacts` advances from auto-persist alone. So on a run where
+ * the model never issues a correlate call, both stayed true for the WHOLE run and
+ * the wall-clock forced finalize was negated on EVERY step — leaving the hard
+ * tool-call cap as the only surviving route to a report. A run that instead ran out
+ * of wall clock died with no report at all.
+ *
+ * Two INDEPENDENT bounds now hold, and both must pass for a deferral to be taken:
+ * this count, and the wall-clock floor below. Either alone is insufficient — a
+ * count-only bound still lets the single deferral land at 179s with no time left to
+ * synthesise, and a floor-only bound still allows unbounded deferrals before it.
+ */
+export const MAX_CORRELATE_FINALIZE_DEFERRALS = 1;
+
+/**
+ * How far PAST the reserve opening a correlation deferral may still be taken.
+ *
+ * The reserve window opens at `budgetMs - reserveMs` (90s of the 180s budget). A
+ * deferral pushes the closing synthesis later than that by design, so it needs its
+ * own ceiling: past this point finalize fires regardless of correlation state.
+ * 30s leaves 60s for the closing step, which covers the 43-51s synthesis tail
+ * measured in production on 2026-09-11 (thread d4873abc) with headroom.
+ */
+export const CORRELATE_DEFERRAL_GRACE_MS = 30_000;
+
+/** Elapsed time at or past which NO correlation deferral may be taken, ever. */
+export function correlateDeferralFloorMs(
+  opts?: { budgetMs?: number; reserveMs?: number; graceMs?: number },
+): number {
+  const budgetMs = opts?.budgetMs ?? ORCHESTRATOR_WALL_CLOCK_MS;
+  const reserveMs = opts?.reserveMs ?? FINALIZE_RESERVE_MS;
+  const graceMs = opts?.graceMs ?? CORRELATE_DEFERRAL_GRACE_MS;
+  return budgetMs - reserveMs + graceMs;
+}
+
+/**
+ * True when a forced finalize may be deferred ONE more time so a due correlation
+ * pass can run first. Pure — the caller owns the per-run counter.
+ *
+ * FAILS CLOSED on a non-finite counter or elapsed reading: an unreadable bound is
+ * treated as exhausted, so the run finalizes rather than deferring on bad input.
+ */
 export function shouldDeferFinalizeForCorrelate(
   correlateDue: boolean,
   lastCorrelateOutcome: "ok" | "failed" | null,
+  deferralsUsed: number,
+  elapsedMs: number,
+  /**
+   * True when THIS step is the last one the SDK will run (`stepCapFinalizeDue`).
+   * A required argument, not an option, so no call site can omit it and silently
+   * re-open the strand-with-no-report case. See `stepCapFinalizeDue`.
+   */
+  stepCapDue: boolean,
+  opts?: { budgetMs?: number; reserveMs?: number; graceMs?: number; maxDeferrals?: number },
 ): boolean {
-  return correlateDue && lastCorrelateOutcome === null;
+  // THE NON-DEFERRABLE TRIGGER, CHECKED FIRST. There is no later prepareStep to
+  // finalize in, so a deferral here ends the run with no report.
+  if (stepCapDue) return false;
+  if (!correlateDue) return false;
+  if (lastCorrelateOutcome !== null) return false;
+  const maxDeferrals = opts?.maxDeferrals ?? MAX_CORRELATE_FINALIZE_DEFERRALS;
+  if (!Number.isFinite(deferralsUsed) || deferralsUsed >= maxDeferrals) return false;
+  if (!Number.isFinite(elapsedMs) || elapsedMs >= correlateDeferralFloorMs(opts)) return false;
+  return true;
 }
 
 /**
