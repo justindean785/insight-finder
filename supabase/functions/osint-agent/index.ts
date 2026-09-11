@@ -52,7 +52,7 @@ import {
 } from "./orchestrator-budget.ts";
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective, shouldDeferFinalizeForCorrelate,
-  MAX_CORRELATE_FINALIZE_DEFERRALS, correlateDeferralFloorMs,
+  MAX_CORRELATE_FINALIZE_DEFERRALS, requiredCompletionMs,
   wallClockFinalizeDue, stepCapFinalizeDue,
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
@@ -950,7 +950,9 @@ Deno.serve(async (req) => {
             event: "finalize_deferred_for_correlate", thread_id: threadId,
             deferrals_used: correlateDeferralsUsed,
             max_deferrals: MAX_CORRELATE_FINALIZE_DEFERRALS,
-            elapsed_ms: elapsedMsNow, floor_ms: correlateDeferralFloorMs(),
+            elapsed_ms: elapsedMsNow,
+            remaining_ms: ORCHESTRATOR_WALL_CLOCK_MS - elapsedMsNow,
+            required_completion_ms: requiredCompletionMs(),
             step_number: stepNumber ?? 0,
           }));
         }
