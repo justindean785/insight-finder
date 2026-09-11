@@ -157,6 +157,14 @@ jobs:
       - name: Synthesis dedup index assertion
         run: psql --set ON_ERROR_STOP=1 -f .github/ci/assert-synthesis-dedup.sql
 
+      # Same principle for agent memory: drive the save path, don't grep the DDL.
+      # A stale pre-scope unique index refused every subject saved in both scopes
+      # (memory_save failed in production), and a leftover 3-argument overload
+      # made the analyst "Mark false" lesson ambiguous. The script rolls itself
+      # back and carries its own anti-vacuous guard.
+      - name: Agent memory scope assertion
+        run: psql --set ON_ERROR_STOP=1 -f .github/ci/assert-agent-memory-scope.sql
+
   edge:
     name: Edge functions (deno test)
     runs-on: ubuntu-latest
