@@ -9,11 +9,11 @@
 
 | Axis | Value | How measured |
 |---|---|---|
-| canonical `main` | `82ae57b` (#569 merged 07:15Z; was `fceba9d`) | `git rev-parse` |
-| live `osint-agent` build | `235f540` | `/health` |
-| mirror `main` | `1a5663b` | mirror clone |
-| Deploy state | **FROZEN — deliberately** | see §3 |
-| Build marker | **NOT stamped** | intentional; stamp must cover what actually ships |
+| canonical `main` | `f0a7217` (#571/#572/#573; was `82ae57b`) | `git rev-parse` |
+| live `osint-agent` build | **`f95a449`** — DEPLOYED 2026-09-11 | `/health` + `verify:deploy` |
+| mirror `main` | `952929e` (synced for `f95a449`) | mirror clone |
+| Deploy state | ✅ **SHIPPED and VERIFIED** — freeze lifted | see §3 |
+| Build marker | `f95a449`, stamp commit `8abc3e8` (parent verified) | `verify:deploy` |
 | `reveal_breach_data` | `true` | `/health` (settled, do not change) |
 | synthesis | `disabled` | `/health` |
 | Provider | `deepseek` / `glm-5.2` (Z.AI), `pinned` | `/health` |
@@ -57,16 +57,24 @@ boundary tests in `gemini_vision_test.ts`. Verified on `main`: **12 passed / 0 f
 
 ## 3 · Why the deploy is frozen
 
-Not an accident and not a gate failure. Two reasons, in order:
+**RESOLVED — the deploy shipped.** Both reasons for the freeze are closed:
 
-1. **The #568 P1 is confirmed** (§4.1). Deploying the finalize fix without the
-   corrective would ship a known-unsafe deferral window.
+1. ~~The #568 P1.~~ **CLOSED by #571** (§4.1), deployed as `f95a449`.
 2. ~~The mirror carried a live-runtime file canonical lacked.~~ **CLOSED by #569.**
 
-**§4.1 is now the only thing holding the freeze.**
+`verify:deploy` on the shipped build, every axis the instrument covers:
 
-**Do not deploy until the operator lifts the freeze.** Nothing is stamped, nothing is
-synced, no Lovable message was sent.
+```
+live build f95a449 · stamp 8abc3e8 (parent f95a449) · reachable from main: yes
+mirror tree -> equal · ledger / ref: f95a449 / f95a449 · reveal_breach_data=true
+DEPLOYED BYTES VERIFIED: NO   <- the standing ceiling, not a fault
+```
+
+> **Instrument trap, hit during this very check.** A first `verify:deploy` run reported
+> `mirror_tree_differs` — because it measured a LOCAL mirror clone that had not been
+> fetched since before the sync. After `git fetch`, `diff -rq` was empty across all four
+> function dirs and the gate read `mirror tree -> equal`. Fetch the mirror clone BEFORE
+> trusting that axis, exactly as `CLAUDE.md` says for `deploy/live`.
 
 ### Parity, measured
 
@@ -94,7 +102,7 @@ sync whenever the freeze lifts; nothing needs backporting in the other direction
 
 Ordered by leverage. All are **read-only findings**; none was implemented.
 
-### 4.1 — Finalize deferral can still strand a report · **CONFIRMED** · P1
+### 4.1 — Finalize deferral can still strand a report · ✅ **CLOSED in #571, DEPLOYED (`f95a449`)**
 
 Codex flagged it on #568 (thread `PRRT_kwDOSxbowM6hW_4I`, `orchestrator-finalize.ts:325`).
 Verified, and it is worse than the review argued.
@@ -131,12 +139,31 @@ wraps it.
 **Scale:** 55 / 173 runs (**31.8%**) die by stale heartbeat at the ceiling; healthy runs
 average **158.6 s** to `finalize_forced`. This is the dominant failure mode.
 
-**Next step:** smallest finalize-only PR — replace the grace-based floor with an explicit
-**required-completion budget**: defer only if
-`budgetMs − elapsedMs ≥ correlate_budget + synthesis_budget + margin`. Under current
-constants that is never satisfiable, so the honest effect is that the deferral retires.
-Ship it as a budget check, not a smaller constant, so it states *why* and self-corrects
-if the ceiling or tail moves.
+**How it closed (#571).** `CORRELATE_DEFERRAL_GRACE_MS` / `correlateDeferralFloorMs` were
+removed for an explicit `requiredCompletionMs()` summing four named sub-budgets tied to
+enforced/measured bounds: `CORRELATE_COMPLETION_BUDGET_MS` 60s (mirrors `cache.ts`'s
+enforced cap), `POST_CORRELATE_PLANNING_BUDGET_MS` 15s (above the ~13.3s measured),
+`FINALIZE_SYNTHESIS_BUDGET_MS` 55s (above the 51,359ms measured max),
+`COMPLETION_SAFETY_MARGIN_MS` 10s. Total **140s**, which exceeds the entire 90s reserve
+window — so no wall-clock-bound deferral is reachable today, stated in the code rather
+than hidden in a shrunk constant.
+
+> ### ⚠️ A SECOND ADMISSION PATH THIS HANDOFF MISSED
+>
+> This analysis covered only the deferral decision at the `prepareStep` boundary. It never
+> asked whether `minimax_correlate` could be admitted **mid-step**. `cache.ts`'s live-call
+> guard exempted it from the finalize-window skip **unconditionally**
+> (`!isFinalizeWindowLiveLookupExempt(name)`), so it was waved through at any elapsed
+> time, including right against the platform deadline — the same no-report overrun,
+> reachable through a second, unrelated gate. **The fix recommended here would have closed
+> one path and left the other open.** Codex caught it on #571's own review thread; the
+> exemption is now conditional on `ctx.hasCorrelateDispatchBudget`, recomputed live at call
+> time (not the stale elapsed from the last `prepareStep`) and failing closed for callers
+> that do not wire it.
+>
+> **Lesson for the next audit: when a budget guard is added at one boundary, enumerate
+> every other gate that can admit the same call.** A predicate is not a chokepoint until
+> you have proven there is only one way in.
 
 > **Product consequence the operator must decide:** retiring the deferral means
 > wall-clock-bound runs never correlate, so clusters stay null on exactly the runs that
@@ -309,8 +336,8 @@ enumerable*, not nonexistent).
 
 ## 7 · Recommended order for the next session
 
-1. **§4.3 source classification by origin** — smallest, unblocks adjudication everywhere.
-2. **§4.1 finalize corrective PR** — the 31.8% bucket. Then the deploy freeze can lift.
+1. **§4.3 source classification by origin** — now the top item; unblocks adjudication everywhere.
+2. ~~**§4.1 finalize corrective PR**~~ — ✅ done, merged as #571 and DEPLOYED (`f95a449`).
 3. ~~**§4.2**~~ — ✅ done, merged in #569. Parity is now restorable by a plain
    canonical → mirror sync.
 4. **§4.5 Gemini fallback** — reproduce the 400 before proposing a fix.
