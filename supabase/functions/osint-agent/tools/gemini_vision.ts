@@ -62,7 +62,7 @@ const TEXT_MIME =
 const MAX_TEXT_CHARS = 200_000;
 
 /** Sniff real content from bytes when the host lies (application/octet-stream). */
-function sniffKind(bytes: Uint8Array, mime: string): "pdf" | "image" | "text" | "binary" {
+export function sniffKind(bytes: Uint8Array, mime: string): "pdf" | "image" | "text" | "binary" {
   if (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) return "pdf";
   if (IMAGE_MIME.test(mime)) return "image";
   if (bytes[0] === 0x89 && bytes[1] === 0x50) return "image"; // PNG
@@ -70,7 +70,14 @@ function sniffKind(bytes: Uint8Array, mime: string): "pdf" | "image" | "text" | 
   if (TEXT_MIME.test(mime)) return "text";
   try {
     const probe = bytes.subarray(0, 4096);
-    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(probe);
+    // stream:true tells the decoder this probe may be a truncated chunk, so a
+    // multibyte UTF-8 character whose bytes straddle the 4096 cut point is
+    // buffered rather than rejected as invalid -- a genuinely malformed
+    // sequence anywhere else in the probe still throws. Without this, a
+    // valid-UTF-8 file was misclassified "binary" whenever a multibyte char
+    // happened to fall across the boundary, and later got base64'd and sent
+    // to Gemini as an inline PDF.
+    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(probe, { stream: true });
     // Reject payloads with NUL / heavy control bytes — those are real binaries.
     if (!decoded.includes("\u0000")) return "text";
   } catch { /* not utf-8 */ }
