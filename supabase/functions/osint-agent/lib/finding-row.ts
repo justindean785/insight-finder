@@ -23,7 +23,7 @@
  * finalize window.
  */
 import { detectContradictions, artifactsForFinding, isExplicitContradiction } from "../contradictions.ts";
-import { classifySource, countIndependentClasses } from "../source-classification.ts";
+import { classifySourceWithOrigin, countIndependentClasses } from "../source-classification.ts";
 import { computeAxes, sourceConfidence } from "../confidence.ts";
 import { applyRecordingSourcePolicy, resolveRecordingStatus } from "../recording-source-policy.ts";
 
@@ -84,7 +84,14 @@ export function buildFindingRow(
   // this finding (same taxonomy the frontend's independentSourceClassCount in
   // src/lib/intel.ts uses), so the boost can never exceed what
   // supporting_sources genuinely proves.
-  const corroborationCount = countIndependentClasses(i.supporting_sources.map(classifySource));
+  // `classifySourceWithOrigin` (not `classifySource`) so the count dedups by
+  // ORIGIN where one is known: the same hostname reached through two different
+  // tools, or on two of its own pages, is one source and must not corroborate
+  // itself. Sources with no URL-bearing qualifier carry originId:null and are
+  // counted by class exactly as before.
+  const corroborationCount = countIndependentClasses(
+    i.supporting_sources.map(classifySourceWithOrigin),
+  );
   const axes = computeAxes({
     sources: i.supporting_sources,
     corroborationCount,
@@ -134,7 +141,7 @@ export function buildFindingRow(
   // engine stays the single implementation of evidence policy. The surface
   // here is genuinely a list, which is exactly what `sources` is for. This
   // matches the line above that already classifies correctly via
-  // `supporting_sources.map(classifySource)`.
+  // `supporting_sources.map(classifySourceWithOrigin)`.
   const findingCap = applyRecordingSourcePolicy({
     rawConfidence: axes.case,
     sources: i.supporting_sources,
