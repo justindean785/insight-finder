@@ -6,6 +6,7 @@ import {
   deriveStatus,
   looksDeadEnd,
 } from "./confidence.ts";
+import { attributeClassesToOrigins } from "./source-classification.ts";
 
 export interface RecordingSourcePolicyInput {
   /** The singular, top-level provenance accepted by the recording tool. */
@@ -122,9 +123,22 @@ function surfaceSources(input: RecordingSourcePolicyInput): string[] {
 }
 
 /** Exact ordinary recording status path, excluding collision/bio overrides. */
+/** Resolve the SERVER-authoritative status for a recorded row.
+ *
+ *  `originSources` closes a second-authority-path gap: the caller's own
+ *  independence count may already honour origin identity (see
+ *  `classifySourceWithOrigin`), but the status below re-counts
+ *  `cap.source_classes`, which carries no origin. Handing the SOURCE LABELS in
+ *  — never a substitute set of classes — lets this function attribute the cap's
+ *  own, unmodified classes to their origins, so the same hostname read through
+ *  two tools cannot be recounted here as two independent sources. The cap's
+ *  classes stay the single authority on WHAT the evidence is; the attribution
+ *  is strictly deflationary and can only merge, never add. Callers that omit
+ *  it behave exactly as before. */
 export function resolveRecordingStatus(
   cap: CapResult,
   metadata: Record<string, unknown> | null | undefined,
+  opts?: { originSources?: readonly string[] },
 ): RecordingStatusResult {
   const reasonNotConfirmed = firstNonemptyReason(
     typeof metadata?.reason_not_confirmed === "string"
@@ -136,7 +150,9 @@ export function resolveRecordingStatus(
     deriveStatus({
       requested: typeof metadata?.status === "string" ? metadata.status : null,
       reasonNotConfirmed,
-      sourceClasses: cap.source_classes,
+      sourceClasses: opts?.originSources
+        ? attributeClassesToOrigins(cap.source_classes, opts.originSources)
+        : cap.source_classes,
       contradictions: Array.isArray(metadata?.contradictions)
         ? metadata.contradictions
         : [],

@@ -641,6 +641,53 @@ export function countIndependentClasses(
   return keys.size;
 }
 
+/** Attribute an ALREADY-DECIDED set of source classes to the origins they came
+ *  from, so a downstream independence count honours the origin boundary without
+ *  re-deciding what the classes are.
+ *
+ *  WHY THIS EXISTS. `buildFindingRow` has two authority paths over the same
+ *  evidence: `computeAxes` takes the origin-aware corroboration count, while the
+ *  PERSISTED status goes through the cap engine and `deriveStatus`, which
+ *  recounted `cap.source_classes` with no origin information. A same-origin pair
+ *  read by two tools that classify differently — `socialfetch_web_read
+ *  (x.com/…)` (social_profile_active) and `jina_reader_scrape (x.com/…)`
+ *  (independent_public) — counted 1 in the first path and 2 in the second, and
+ *  the row persisted as `needs_corroboration` with two authoritative source
+ *  categories instead of the single-source `observed`.
+ *
+ *  DELIBERATELY NOT A CLAMP. The cap engine can legitimately derive MORE classes
+ *  than there are source labels — #497's breach-split recovers infra classes from
+ *  one joined label, and breach metadata appends a class with no label at all —
+ *  so ceiling-ing the cap count by the per-label count would re-break #497.
+ *  Instead each cap class keeps its identity and merely gains the origin that
+ *  produced it.
+ *
+ *  STRICTLY DEFLATIONARY, by construction: `capClasses` is already unique, each
+ *  one yields exactly one entry, and the only possible effect is two classes
+ *  sharing an origin key and collapsing. The count can never rise. A class is
+ *  attributed only when the sources producing it name EXACTLY ONE distinct
+ *  origin; a class produced from several origins, or from none, stays a bare
+ *  class and is counted exactly as it is today. */
+export function attributeClassesToOrigins(
+  capClasses: readonly SourceClass[],
+  sources: readonly string[],
+): IndependentSourceEntry[] {
+  const originsByClass = new Map<SourceClass, Set<string>>();
+  for (const source of sources) {
+    const { originId, sourceClass } = classifySourceWithOrigin(source);
+    if (!originId) continue;
+    let set = originsByClass.get(sourceClass);
+    if (!set) originsByClass.set(sourceClass, (set = new Set<string>()));
+    set.add(originId);
+  }
+  return capClasses.map((sourceClass) => {
+    const origins = originsByClass.get(sourceClass);
+    return origins && origins.size === 1
+      ? { originId: [...origins][0], sourceClass }
+      : sourceClass;
+  });
+}
+
 /** Classes that are official/government public records (highest source quality). */
 export const OFFICIAL_CLASSES: ReadonlySet<SourceClass> = new Set<SourceClass>([
   "government_property_record",

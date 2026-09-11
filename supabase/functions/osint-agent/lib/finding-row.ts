@@ -177,8 +177,19 @@ export function buildFindingRow(
   const advisorySignals = contras
     .filter((c) => !isExplicitContradiction(c))
     .map((c) => `${c.kind}: ${c.detail}`);
+  // `originSources` carries the SAME origin boundary into the persisted status
+  // that `corroborationCount` above already applies to `computeAxes`. Without
+  // it the two authority paths disagree: a same-origin pair read by two tools
+  // that classify differently — socialfetch_web_read (x.com/…) and
+  // jina_reader_scrape (x.com/…) — counted 1 here and 2 inside deriveStatus,
+  // persisting `needs_corroboration` with two authoritative source categories
+  // where the single-source truth is `observed`. The cap's own classes are
+  // passed through untouched; only their INDEPENDENCE is re-attributed, and
+  // only ever downward.
   const { status: findingStatus, reasonNotConfirmed: findingReason } =
-    resolveRecordingStatus(findingCap, { contradictions: serverContradictions });
+    resolveRecordingStatus(findingCap, { contradictions: serverContradictions }, {
+      originSources: i.supporting_sources,
+    });
   const row = {
     thread_id: threadId,
     user_id: userId,
