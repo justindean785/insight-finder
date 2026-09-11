@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { AssertedConfidenceNote } from "@/components/ui/asserted-confidence-note";
 import {
   Bar,
   BarChart,
@@ -143,6 +144,7 @@ function ArtifactRow({ a, review }: { a: Artifact; review?: ReviewAdjustment }) 
             inferred · unverified
           </span>
         )}
+        <AssertedConfidenceNote value={a.value} engine={effectiveConfidence(a)} className="ml-2" />
       </td>
       <td className="px-3 py-2 text-data text-muted-foreground break-words [overflow-wrap:anywhere]" title={a.source ?? undefined}>
         <SourcePills artifact={a} />
@@ -706,15 +708,30 @@ function CompactBarChart({ data, color = "hsl(var(--info))" }: { data: ChartDatu
 
 /* ---------- narrative / dossier helpers ---------- */
 
+/**
+ * May this row speak FOR the subject — be its headline Name/Email/Phone/Address,
+ * one of its handles, or the basis of "Analyst confidence"?
+ *
+ * Not if the analyst rejected it, and not if it is cluster-ineligible
+ * (quarantined `subject_unlinked`, or a collision/namesake row). The pickers
+ * used to check rejection only, so a quarantined same-name collision — a
+ * different person the engine had already refused to link — could headline the
+ * profile, and could set the Analyst-confidence figure, as long as it carried the
+ * highest score. Same predicate (`isClusterIneligible`) the identity clusters,
+ * graph edges and this report's Excluded bucket already honour. Ineligible rows
+ * stay listed in the artifact tables: disclosure, not deletion.
+ */
+function eligibleForProfile(a: Artifact, reviews?: Reviews): boolean {
+  return !isRejectedReview(revOf(reviews, a)) && !isClusterIneligible(a);
+}
+
 function topByConfidence(artifacts: Artifact[], kinds: string[], reviews?: Reviews): Artifact | null {
   // Case-insensitive kind match + null-safe read. `pickBest` already lowercases;
   // this keeps the narrative builders consistent so a capitalized/undefined
   // `kind` never silently drops a row (or throws into the ErrorBoundary).
   const set = new Set(kinds.map((k) => k.toLowerCase()));
-  // Same rule as the identity pickers: a rejected row is not a candidate to
-  // become the subject's headline Name/Email/Phone/Address.
   const pool = artifacts.filter(
-    (a) => set.has(String(a.kind ?? "").toLowerCase()) && !isRejectedReview(revOf(reviews, a)),
+    (a) => set.has(String(a.kind ?? "").toLowerCase()) && eligibleForProfile(a, reviews),
   );
   if (!pool.length) return null;
   return pool.slice().sort((a, b) => (confOf(reviews, b) ?? 0) - (confOf(reviews, a) ?? 0))[0];
@@ -977,7 +994,7 @@ function MaskedValue({ label, value }: RevealField) {
 /** Strongest identity-bearing artifact confidence — the reasoned read, distinct
  *  from the strict ≥2-independent-class auto-corroboration count. */
 function analystConfidence(artifacts: Artifact[], reviews?: Reviews): number {
-  const pool = artifacts.filter((a) => ["name", "email", "phone", "address"].includes(a.kind));
+  const pool = artifacts.filter((a) => ["name", "email", "phone", "address"].includes(a.kind) && eligibleForProfile(a, reviews));
   return pool.reduce((mx, a) => Math.max(mx, confOf(reviews, a) ?? 0), 0);
 }
 
@@ -1018,10 +1035,9 @@ export function CaseReport({
   // (`bucket`) that files a row as excluded everywhere else in this report.
   const inScope = useMemo(() => artifacts.filter((a) => bucket(a, revOf(reviews, a)) !== "excluded"), [artifacts, reviews]);
   const profileLinks = useMemo(() => buildProfileLinks(inScope), [inScope]);
-  // Handles follow the Subject Profile's own rule (a rejected row is not a
-  // candidate) — quarantine eligibility for the profile is a separate decision.
+  // Handles follow the Subject Profile's own eligibility rule.
   const aliases = useMemo(
-    () => buildAliases(artifacts.filter((a) => !isRejectedReview(revOf(reviews, a)))),
+    () => buildAliases(artifacts.filter((a) => eligibleForProfile(a, reviews))),
     [artifacts, reviews],
   );
   const breachRows = useMemo(() => buildBreachExposure(inScope), [inScope]);

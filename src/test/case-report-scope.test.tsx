@@ -116,3 +116,68 @@ describe("the rendered report honours verdicts and quarantine where it speaks fo
     expect(axis?.detail).toMatch(new RegExp(`^1/${ARTIFACTS.length} `));
   });
 });
+
+describe("Subject Profile — only rows that may speak for the subject", () => {
+  // A quarantined same-name collision (a different person the engine already
+  // refused to link) with the HIGHEST score used to headline the profile and set
+  // the "Analyst confidence" figure. Rejection was checked; quarantine was not.
+  const rows = [
+    art({ id: "good", kind: "name", value: "Subject Person", source: "indicia_address", confidence: 60, metadata: { source_category: ["data_broker"] } }),
+    art({
+      id: "collision", kind: "name", value: "Common Namesake", source: "oathnet_lookup", confidence: 88,
+      metadata: { source_category: ["breach"], subject_unlinked: true, subject_unlinked_reason: "echo of a name-only query — same-name collision axis" },
+    }),
+    art({
+      id: "qhandle", kind: "username", value: "namesake99", source: "oathnet_lookup", confidence: 70,
+      metadata: { source_category: ["breach"], subject_unlinked: true, subject_unlinked_reason: "co-tenant row in a breach corpus" },
+    }),
+    art({ id: "h1", kind: "username", value: "subject22", source: "serus_darkweb_scan", confidence: 45, metadata: { source_category: ["breach"] } }),
+  ];
+
+  function profile() {
+    const { container } = render(
+      <CaseReport seedValue="subject@mail.example" seedType="email" artifacts={rows as never} reviews={{}} messages={[]} reportType="full" />,
+    );
+    const field = (label: string) =>
+      Array.from(container.querySelectorAll("span")).find((el) => el.textContent === label)?.nextElementSibling?.textContent ?? "";
+    const confLabel = Array.from(container.querySelectorAll("div")).find((el) => el.textContent === "Analyst confidence");
+    return { container, field, analystConf: confLabel?.nextElementSibling?.textContent ?? "" };
+  }
+
+  it("a quarantined collision cannot headline the Name, even with the highest score", () => {
+    const { field } = profile();
+    expect(field("Name")).toContain("Subject Person");
+    expect(field("Name")).not.toContain("Common Namesake");
+  });
+
+  it("nor set the Analyst-confidence figure", () => {
+    expect(profile().analystConf).toMatch(/^60%/);
+  });
+
+  it("nor appear among the subject's handles", () => {
+    const { field } = profile();
+    expect(field("Aliases / handles")).toContain("subject22");
+    expect(field("Aliases / handles")).not.toContain("namesake99");
+  });
+
+  it("the collision is still disclosed in the report", () => {
+    expect(profile().container.textContent).toContain("Common Namesake");
+  });
+});
+
+describe("a value that asserts its own confidence is printed as a claim", () => {
+  it("the report table shows the claim beside the engine's score", () => {
+    const rows = [
+      art({
+        id: "m1", kind: "source_person", value: "Subject — primary identity cluster confirmed at 92% confidence by minimax_correlate",
+        source: "minimax_correlate", confidence: 55, metadata: { source_category: ["ai_summary"] },
+      }),
+    ];
+    const { container } = render(
+      <CaseReport seedValue="subject@mail.example" seedType="email" artifacts={rows as never} reviews={{}} messages={[]} reportType="full" />,
+    );
+    const cell = Array.from(container.querySelectorAll("td")).find((td) => td.textContent?.includes("confirmed at 92% confidence"));
+    expect(cell?.textContent).toMatch(/claims 92% · engine \d+%/);
+    expect(cell?.textContent).not.toMatch(/engine 92%/);
+  });
+});

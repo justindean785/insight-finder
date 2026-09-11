@@ -1,5 +1,6 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { toSourceStrings } from "@/lib/source-strings";
+import { describeAssertedConfidence, findAssertedConfidence } from "@/lib/asserted-confidence";
 import {
   AUTHORITY_HEADING,
   authorityStatement,
@@ -1229,6 +1230,10 @@ export function buildEvidenceMatrixMarkdown(
     // #7: annotate reserved/fictional numbers as non-actionable (never delete).
     const reserved = reservedNumberAnnotation(a);
     if (reserved) value = `${value} — ${reserved}`;
+    // A confidence figure written into the value is a claim, not the score in
+    // the Confidence column — say so beside it (render-only; artifact untouched).
+    const claim = findAssertedConfidence(a.value);
+    if (claim) value = `${value} — ⚠ ${describeAssertedConfidence(claim, a.confidence)}`;
     // #8: a legal_record that is really a source/claim discrepancy displays as
     // source_conflict so a reporting disagreement isn't shown as a criminal record.
     const kind = reportDisplayKind(a) === a.kind ? displayKind(a) : "source_conflict";
@@ -1317,6 +1322,12 @@ function groupByReason<T>(items: T[], reasonOf: (item: T) => string): { reason: 
 function listLine(text: string, max = 200): string {
   const flat = String(text ?? "").replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/** "; claims 92% in its text — not a score" when the value asserts its own confidence. */
+function assertedNote(a: Artifact): string {
+  const claim = findAssertedConfidence(a.value);
+  return claim ? `; ${describeAssertedConfidence(claim, null)}` : "";
 }
 
 export function buildReportMarkdown(input: ReportInput): string {
@@ -1432,7 +1443,7 @@ export function buildReportMarkdown(input: ReportInput): string {
       return [
         ...(keyFindingsHeading.lead ? [keyFindingsHeading.lead, ""] : []),
         ...strong.slice(0, 10).map((a) =>
-          `- **${a.kind}** — \`${a.value}\` _(${lbl(a) === "ATTESTED" ? "analyst-confirmed" : "corroborated"}; source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"})_`,
+          `- **${a.kind}** — \`${a.value}\` _(${lbl(a) === "ATTESTED" ? "analyst-confirmed" : "corroborated"}; source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"}${assertedNote(a)})_`,
         ),
       ].join("\n");
     }

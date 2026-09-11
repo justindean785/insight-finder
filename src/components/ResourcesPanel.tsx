@@ -23,6 +23,7 @@ import {
 import { evidenceStatus } from "@/lib/evidence-status";
 import { authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
 import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
+import { AssertedConfidenceNote } from "@/components/ui/asserted-confidence-note";
 import {
   canReleaseLinkage, releasePatch,
   RELEASE_ACTION_LABEL, RELEASE_CONFIRM_BODY, RELEASE_CONFIRM_TITLE,
@@ -788,6 +789,7 @@ function ArtifactRow({
               </button>
             </span>
             <AuthorityCaveat view={authority} className="mt-0.5" />
+            <AssertedConfidenceNote value={a.value} engine={shown.effective} className="mt-0.5 self-start" />
           </span>
 
           {/* Authority — chip, then BOTH axes on one sub-line: how strong the
@@ -974,6 +976,7 @@ function ArtifactDrawerInner({
                 {shownArtifact.effective}% confidence
               </span>
             )}
+            <AssertedConfidenceNote value={artifact.value} engine={shownArtifact.effective} className="py-1" />
             <span className={"rounded-md border px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] " + REVIEW_CLASS[rState]}>
               {REVIEW_SHORT[rState]}
             </span>
