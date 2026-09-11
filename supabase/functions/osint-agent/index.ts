@@ -52,6 +52,8 @@ import {
 } from "./orchestrator-budget.ts";
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective, shouldDeferFinalizeForCorrelate,
+  MAX_CORRELATE_FINALIZE_DEFERRALS, correlateDeferralFloorMs,
+  wallClockFinalizeDue, stepCapFinalizeDue,
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
@@ -785,6 +787,12 @@ Deno.serve(async (req) => {
     // once, the first step prepareStep observes an exhausted budget.
     let capLogged = false;
     let openingGateLogged = false;
+    // Correlation finalize-deferral counter. Request-scoped by construction, like the
+    // nudge latches below, so one run's deferral cannot leak onto a concurrent run
+    // sharing a warm isolate. Incremented ONLY when a deferral actually suppresses a
+    // forced finalize that would otherwise have fired — never when finalize was not
+    // going to fire anyway, which would burn the run's single deferral for nothing.
+    let correlateDeferralsUsed = 0;
     // First-pass persistence nudge latch (DeepSeek deferral fix). Request-scoped —
     // owned by this per-request closure, NEVER a module-global, so one run's nudge
     // state can't leak onto a concurrent run sharing a warm isolate. Records the
@@ -915,8 +923,38 @@ Deno.serve(async (req) => {
         // that removed the "stream updates, then summarize" behavior. Left out so the
         // model concludes on its own, as it did days ago.
         const elapsedMsNow = Date.now() - runStartedAt;
-        const correlatePending = shouldDeferFinalizeForCorrelate(correlateDue(), guard.lastCorrelateOutcome);
-        if (finalizeStarted || capReached || (shouldForceFinalize(elapsedMsNow, stepNumber ?? 0) && !correlatePending)) {
+        // BOUNDED correlation deferral. `shouldDeferFinalizeForCorrelate` is now
+        // gated by BOTH a per-run counter (max 1) and a hard wall-clock floor, so a
+        // run whose model never issues a correlate call can no longer suppress the
+        // forced finalize indefinitely — the defect that left the tool-call cap as
+        // the only route to a report. The counter increments ONLY when a deferral
+        // actually suppresses a finalize that would otherwise have fired.
+        // The two finalize triggers are evaluated SEPARATELY because only one of
+        // them is deferrable. The step-cap trigger means this is the last step the
+        // SDK will run — `stopWhen: [!finalizeStarted && stepCountIs(...)]` ends the
+        // run after it — so deferring there strands the run with no report. Only the
+        // wall-clock trigger leaves later steps to finalize in.
+        const stepCapDue = stepCapFinalizeDue(stepNumber ?? 0);
+        const forceFinalizeNow = wallClockFinalizeDue(elapsedMsNow) || stepCapDue;
+        const correlatePending = shouldDeferFinalizeForCorrelate(
+          correlateDue(),
+          guard.lastCorrelateOutcome,
+          correlateDeferralsUsed,
+          elapsedMsNow,
+          stepCapDue,
+        );
+        const deferForCorrelate = forceFinalizeNow && correlatePending;
+        if (deferForCorrelate) {
+          correlateDeferralsUsed++;
+          console.log(JSON.stringify({
+            event: "finalize_deferred_for_correlate", thread_id: threadId,
+            deferrals_used: correlateDeferralsUsed,
+            max_deferrals: MAX_CORRELATE_FINALIZE_DEFERRALS,
+            elapsed_ms: elapsedMsNow, floor_ms: correlateDeferralFloorMs(),
+            step_number: stepNumber ?? 0,
+          }));
+        }
+        if (finalizeStarted || capReached || (forceFinalizeNow && !deferForCorrelate)) {
           const progress = countFinalizeProgress(stepMessages as Array<{ content?: unknown }>);
           if (!finalizeStarted) {
             finalizeStarted = true;

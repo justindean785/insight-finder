@@ -10,6 +10,7 @@ import {
   shouldDeferFinalizeForCorrelate,
   shouldSkipForFinalizeWindow,
   FINALIZE_RESERVE_MS,
+  correlateDeferralFloorMs,
 } from "./orchestrator-finalize.ts";
 import { ORCHESTRATOR_WALL_CLOCK_MS } from "./orchestrator-budget.ts";
 
@@ -27,9 +28,18 @@ Deno.test("minimax_correlate is not skipped after the reserve window opens", () 
   assertEquals(shouldSkipForFinalizeWindow(lateMs, false, { toolName: "minimax_correlate" }), false);
 });
 
-Deno.test("shouldDeferFinalizeForCorrelate: due and never attempted defers once", () => {
-  assertEquals(shouldDeferFinalizeForCorrelate(true, null), true);
-  assertEquals(shouldDeferFinalizeForCorrelate(true, "ok"), false);
-  assertEquals(shouldDeferFinalizeForCorrelate(true, "failed"), false);
-  assertEquals(shouldDeferFinalizeForCorrelate(false, null), false);
+// The deferral is now BOUNDED by a per-run counter and a hard wall-clock floor —
+// this test's original name said "defers once" but the two-argument predicate it
+// exercised had no "once" in it at all. The bound itself is driven end-to-end in
+// correlate_finalize_deferral_bound_test.ts; this keeps the eligibility axes.
+Deno.test("shouldDeferFinalizeForCorrelate: due and never attempted is eligible to defer", () => {
+  assertEquals(shouldDeferFinalizeForCorrelate(true, null, 0, openAt, false), true);
+  assertEquals(shouldDeferFinalizeForCorrelate(true, "ok", 0, openAt, false), false);
+  assertEquals(shouldDeferFinalizeForCorrelate(true, "failed", 0, openAt, false), false);
+  assertEquals(shouldDeferFinalizeForCorrelate(false, null, 0, openAt, false), false);
+});
+
+Deno.test("shouldDeferFinalizeForCorrelate: a spent counter or a passed floor blocks it", () => {
+  assertEquals(shouldDeferFinalizeForCorrelate(true, null, 1, openAt, false), false);
+  assertEquals(shouldDeferFinalizeForCorrelate(true, null, 0, correlateDeferralFloorMs(), false), false);
 });
