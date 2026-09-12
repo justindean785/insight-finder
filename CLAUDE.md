@@ -582,6 +582,44 @@ cap has to come from production, not from an estimate.
   measure **key-miss vs expiry**: L2 is keyed on full-param `input_hash`, which may be the
   real reason for the 1.6% hit rate.
 
+### ⚠️ Where each number DURABLY lives — measured 2026-09-13, before planning any week-long read
+
+A meter nobody can read a week later is not a meter. Checked against the live DB:
+
+| Store | Retention as measured | Holds |
+|---|---|---|
+| `tool_usage_log` | **15,136 rows back to 2026-06-08** — three months | every tool call: `outcome`, `status_code`, `cached`, cost. **Durable.** |
+| `evidence_log` / `artifacts` / `threads` | back to 2026-06-08 / 07-05 / 07-05 | case data. Durable. |
+| `orchestrator_invocations` / `orchestrator_step_metrics` | **only 2026-09-11 onward** (58 / 350 rows) | per-invocation and per-step timing + context |
+| `prompt_size_initial` / `prompt_size_step` / `run_budget_prior` | **nothing — `console.log` only** | the honest prompt terms and prior spend |
+
+**The two-day floor on the orchestrator tables is NOT a purge — do not report it as one.**
+There is no `pg_cron`, no trigger on either table, and every other table holds months. They
+are a two-day-old feature: `supabase/migrations/20260908000000_orchestrator_telemetry.sql`
+from #560, applied live around 2026-09-11. They accumulate normally from here. (Note the
+live migration ledger tops out at `20260825024640` and does **not** list it — more evidence
+for the rule above that `supabase/migrations/` is intent, not mechanism.)
+
+**The real gap is narrower and worse: the durable table records the WRONG number.**
+`orchestrator_invocations.initial_context_chars` and `orchestrator_step_metrics.context_chars`
+are fed by `approxPromptChars` (`telemetry.ts:175,223`) — the meter that omits the workflow
+addendum, the analyst-decisions block, the per-step directives and every tool schema. The
+honest measurement from #587 goes to `console.log` and therefore only to Supabase edge-function
+logs, which are short-lived and awkward to query. So a week from now the durable store will
+still hold the floor, and the accurate figure may be gone.
+
+Consequences for the ordered plan, so nobody mis-sequences it:
+
+- **A2b (per-investigation budget) is SAFE.** `run_budget_prior` classifies rows it reads from
+  `tool_usage_log`, which retains three months, so the week of evidence will be there even
+  though the log line is not. The plan stands.
+- **The context-size target is NOT safe to set from telemetry yet.** Before using
+  `prompt_size_step` for a threshold, give it a durable home — add the term breakdown to
+  `orchestrator_step_metrics` (a schema change, so **through Lovable and verified against the
+  live DB**, per the rule above), or persist it beside the existing row. Do **not** "fix"
+  `approxPromptChars` to close the gap: it routes providers, and changing it changes behaviour.
+  That is exactly why #587 left it alone.
+
 ### A 403 is not a dead credential
 
 The 2026-09-12 datasheet listed four "permanently dead" providers. One
