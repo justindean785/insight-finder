@@ -485,6 +485,67 @@ and do not act on the superseded originals:
   test must DRIVE the shipped control flow, never re-describe it.**
 - The 08-09 handoff's three-boundary framing is right; its status is not.
 
+## ⛔ BUILT AND UNWIRED — check before you build (2026-09-12)
+
+Five separate times in one session, the thing a plan said to build turned out to be
+already built and either disconnected at the call site or mislabelled. The work in this
+repo is not missing; its **instruments and labels** have been reporting something else, so
+each session diagnosed from bad readings and built beside the thing that already worked.
+That is the real answer to "we do all these upgrades and it never changes the app."
+
+**Before implementing anything from a plan or audit, grep for it first.** Verified cases:
+
+| Thing | Status on `main` |
+|---|---|
+| `toolAgentRole()` / `toolActionLabel()` (`src/lib/tool-display.ts`) | exported, unit-tested, **zero component consumers** until #587 |
+| `tool_health` view → `scoreExpectedValue` reliability prior | fully wired and loaded per run — but `runtime-policy.ts:373` states EV is **advisory and never blocks a call**, so nothing is ever suppressed by it |
+| `shouldAllowToolCall` (`runtime-policy.ts:556`) | complete, tested, **unreferenced**. Has `QUERY_FAMILY_NO_YIELD_LIMIT = 3` → `action:"suppress"` — i.e. most of the "stop calling what never yields" feature |
+| `tool-routing-policy.ts` | **100% dead code**; `RouteContext` already carries `highYieldTools`, `failedQueryFamilies`, `duplicateQueryKeys` |
+| `circuit.applyBaselineDisables(threadId)` (`circuit.ts:634`) | an **explicitly empty hook**, already called once per thread, kept for a persisted skip list |
+| `capabilities.seedTypes` | the gate is **fully enforced** at `capabilities.ts:184` — and no tool declares it, AND `index.ts:441` passes `null` as the seed type, so it can never fire ⚠️ |
+| Evidence board "Leads drawer" | **already shipped** (#543). Default filter is `analyst`, hiding weak/quarantined/excluded, with Leads and Excluded chips. `STATUS_FILTER_GROUPS` warns that a kind-based filter beside the authority states would be "a second, drifting source of truth" — do not add one |
+
+### ⚠️ Do NOT populate `seedTypes` to shrink the tool-schema payload
+
+It looks like the obvious fix for the ~95–105k chars of tool schemas re-serialized every
+step. It is the wrong mechanism: OSINT pivots **derive** new selector types mid-run — an
+email seed yields a domain, a username, a phone. Gating `crtsh_subdomains` off because the
+SEED was not a domain breaks the run's ability to follow the domain it just discovered.
+The real duplication is that `catalog.ts` exists to hold when-to-use guidance and is
+fetched once, while each tool's `description` still carries paragraphs of the same prose
+on every step. Cut there instead — and only after `prompt_size_step` reports the real
+number, not an estimate.
+
+### Instruments that were lying (all fixed in #587, none deployed as of writing)
+
+- **`approxPromptChars`** omits the workflow addendum, `analystDecisionsBlock` (0 → ~30k),
+  the per-step directives and **every tool schema**. The ~175k average `initial_context_chars`
+  in telemetry is a floor, not the figure.
+- **The run caps are per ISOLATE, not per investigation.** `index.ts:331` calls
+  `clearRuntime(threadId)` on every request and that is `THREADS.delete(threadId)`, while
+  `runtime-policy.ts:296-299` claims only "a brand-new investigation" clears them. An
+  investigation is 2–12 invocations, so `MAX_PAID_CALLS = 12` is really **24–144 per case**.
+  Production: 130 calls/12 invocations, 112/9, 102/6. This also explains 74
+  `minimax_correlate` calls against a documented cap of 2.
+- **`/health`'s tools line is a PRESENCE test** (`has(env.X_API_KEY)`). A dead key and a
+  working key are identical to it; it read "17/20 configured" throughout the period
+  `github_code_search` answered 401 on every call, and it does not move when a secret's
+  value is rotated, so it cannot confirm a fix either.
+- **The cache sweep could not have drained a row.** It handed all 5,000 identified ids to
+  one `DELETE`, and PostgREST renders `.in()` into the URL query string — a ~185 KB URL
+  against a ~24 KB gateway cap. Chunk at 300 (`lib/rejected-cluster-sweep.ts`'s figure).
+
+### A 403 is not a dead credential
+
+The 2026-09-12 datasheet listed four "permanently dead" providers. One
+(`rapidapi_breach_search`) was serving **391 successful lookups**, most recent that same
+day. `reddit_user` 403s because Reddit blocks datacenter IPs; FOFA answers HTTP 200 with
+`{"error":true}` when the account PLAN lacks a queried field (handled correctly at
+`tool-registry.ts:2588`). Always measure on `outcome` over real attempts
+(`outcome IN ('ok','failed')`) with skips and empties excluded from both numerator and
+denominator — the `tool_health` migration header explains why, and counting them is what
+made `gravatar_profile` read 35% reliable when it was ~100%.
+
 ## Misc
 - Today's working topology + history is also in the user's agent memory (`canonical-deploy-topology.md`, `deploy-blocker-lovable-supabase.md`).
 - A few non-default local branches/worktrees with unmerged work exist (`claude/upbeat-darwin-y842dl`, `left/beta-p0`, `insight-finder-tier0`) — leave them unless asked.
