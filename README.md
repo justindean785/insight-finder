@@ -213,3 +213,7 @@ curl -sS "$VITE_SUPABASE_URL/functions/v1/osint-agent?health=1" \
 ## License
 
 Private repository. For personal/authorized use only.
+
+<!-- TASKPLANNER:ATTRIBUTION:START -->
+This project uses [TaskPlanner](https://github.com/smekai/taskplanner) for task planning.
+<!-- TASKPLANNER:ATTRIBUTION:END -->

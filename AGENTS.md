@@ -80,3 +80,17 @@ update production edge code. The verified recipe (canonical copy in `CLAUDE.md`)
 `npm run test:coverage` · `npm run test:edge` · `npm run build`. The exact CI
 gate is `.github/workflows/ci.yml`. Frontend tests use vitest with a coverage
 ratchet in `vitest.config.ts` — don't lower the thresholds.
+
+<!-- TASKPLANNER:START -->
+## TaskPlanner workflow
+
+This repository tracks implementation work in `.tasks/`.
+
+- Read `.tasks/config.json` and use its state-file mapping, priorities, insertion, and sorting rules.
+- Select the highest-priority task from `.tasks/NEXT.md`, then `.tasks/BACKLOG.md`, unless the user selects a task.
+- Move the complete task section to `.tasks/IN_PROGRESS.md` before substantive implementation.
+- Because `aiPlanRequired` is true, keep a concise `### Plan` in the active task before coding.
+- Implement and verify only that task, preserve unrelated sections, then condense its plan into a done summary and move it to `.tasks/DONE.md`.
+- Add one short newest-first entry to `.tasks/WORK_LOG.md` when a task is completed.
+- Never change task IDs. Update `nextId` only when creating a task.
+<!-- TASKPLANNER:END -->
