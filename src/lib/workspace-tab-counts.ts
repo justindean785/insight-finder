@@ -21,7 +21,7 @@ export interface TabCountItem {
 }
 
 export interface WorkspaceTabCounts {
-  evidence: { value: number; alert: number };
+  evidence: { value: number; alert: number; hint?: string };
   tools: { value: number; alert: number };
 }
 
@@ -53,10 +53,16 @@ export function buildWorkspaceTabCounts(
 ): WorkspaceTabCounts {
   const breachCount = items.filter((a) => isBreachKind(a.kind)).length;
   return {
-    evidence: {
-      value: authority ? countAnalystActionable(authority) : items.length,
-      alert: breachCount,
-    },
+    evidence: authority
+      ? {
+        value: countAnalystActionable(authority),
+        alert: breachCount,
+        // The case header reports every persisted row; this badge reports what
+        // needs a decision. Both numbers are on screen at once, so the gap is
+        // stated here rather than left looking like two surfaces disagreeing.
+        hint: `${countAnalystActionable(authority)} of ${items.length} need a decision — leads, quarantined and excluded rows are under the All filter`,
+      }
+      : { value: items.length, alert: breachCount },
     tools: { value: persistedTotal, alert: 0 },
   };
 }

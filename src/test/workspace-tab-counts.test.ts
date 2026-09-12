@@ -127,6 +127,21 @@ describe("buildWorkspaceTabCounts — the Evidence badge counts what needs a dec
     expect(buildWorkspaceTabCounts([], 0, t).evidence.value).toBe(expected);
   });
 
+  it("carries a hint reconciling the badge with the case header's total", () => {
+    // Both numbers are on screen at once — the header says "55 evidence", the
+    // badge says 42 — so the gap must be explained, not left looking like two
+    // surfaces disagreeing (the complaint this whole area exists to fix).
+    const t = tally({ verified: 2, review: 1, weak: 9 });
+    const items = Array.from({ length: 12 }, () => art("url"));
+    const hint = buildWorkspaceTabCounts(items, 0, t).evidence.hint ?? "";
+    expect(hint).toContain("3 of 12");
+    expect(hint).toContain("All filter");
+  });
+
+  it("has no hint when there is no tally, because there is no gap to explain", () => {
+    expect(buildWorkspaceTabCounts([art("url")], 0).evidence.hint).toBeUndefined();
+  });
+
   it("the breach alert is unaffected by the tally", () => {
     const t = tally({ verified: 1 });
     const counts = buildWorkspaceTabCounts([art("breach_exposure"), art("email")], 0, t);

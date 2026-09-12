@@ -12,11 +12,15 @@ import {
 
 export type WorkspaceTab = "overview" | "chat" | "evidence" | "report" | "graph" | "tools";
 
-/** Per-tab badge data. `value` is the section count (how many items live in the
- * tab); `alert` is the number that NEEDS ATTENTION (failed tool calls, breaches)
+/** Per-tab badge data. `value` is what the tab SHOWS — not the size of the
+ * corpus behind it. Those differ on Evidence, whose board has defaulted to
+ * "Analyst view" since #543: the badge counts rows that need a decision, while
+ * the case header still reports every persisted row. `hint` carries that
+ * reconciliation so the gap is explained rather than left to be puzzled over.
+ * `alert` is the number that NEEDS ATTENTION (failed tool calls, breaches)
  * and renders as a dot — never as a count, so a tab number always means the
  * same thing as the word next to it. */
-export type TabCount = { value: number; alert?: number };
+export type TabCount = { value: number; alert?: number; hint?: string };
 
 const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
   // Overview leads: it is the only tab that answers "what is the state of this
@@ -90,7 +94,7 @@ function TabCountBadge({ count, loading, active }: { count?: TabCount; loading: 
   return (
     <>
       {count.value > 0 && (
-        <span className={cn("font-mono text-data tabular-nums leading-none", active ? "text-foreground/70" : "text-muted-foreground")}>
+        <span className={cn("font-mono text-data tabular-nums leading-none", active ? "text-foreground/70" : "text-muted-foreground")} title={count.hint}>
           {countText(count.value)}
         </span>
       )}
