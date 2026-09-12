@@ -23,7 +23,10 @@ import { dispatchTypeCandidates, isDispatchRefused, loadRefusedArtifacts, quaran
 import type { QuarantineRow } from "./lib/dispatch-quarantine.ts";
 import { buildRejectedDispatchKeys, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
 import { loadReviewsForThread, type ReviewDb } from "./reviews.ts";
-import { guard, takeCorrelateHint, shouldSkipRedundantCorrelate } from "./guard.ts";
+import {
+  guard, takeCorrelateHint, shouldSkipRedundantCorrelate,
+  correlateBudgetExhausted, correlateBudgetReason, bumpCorrelateCall,
+} from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
 import { isFinalizeWindowLiveLookupExempt } from "./orchestrator-finalize.ts";
 import {
@@ -1254,6 +1257,32 @@ export function wrapToolsWithCache(
         // for exactly what this does and does not block — it never blocks the
         // run's first correlate call or a retry after a failed one.
         if (name === "minimax_correlate") {
+          // The per-run BUDGET is checked first and covers what the freshness
+          // gate deliberately does not: the failure path. The gate keys on a
+          // successful prior pass, so a correlate that fails or times out is
+          // retried without limit — 7 and 8 calls in two measured production
+          // runs, 206s and 181s. Same free-refusal placement as the gate: no
+          // tool-call slot, no paid-call slot, no circuit state, and it never
+          // reaches live dispatch, so it cannot touch lastCorrelateOutcome.
+          if (correlateBudgetExhausted()) {
+            const reason = correlateBudgetReason();
+            await logUsage(false, false, Date.now() - t0, reason, null, true, {
+              input: inputJson,
+              runtime: { ...runtimeMetaBase, rejection_reason: "correlate_budget_spent", rejection_source: "correlate_budget" },
+            });
+            return attachRuntimeMeta({
+              ok: false,
+              skipped: true,
+              correlate_budget_spent: true,
+              error: reason,
+            }, {
+              ...runtimeMetaBase,
+              rejection_reason: "correlate_budget_spent",
+              stage: "TRIAGE",
+              cache_layer: "miss",
+              stale_cache: !!staleRecord,
+            });
+          }
           const freshness = shouldSkipRedundantCorrelate();
           if (freshness.skip) {
             await logUsage(false, false, Date.now() - t0, freshness.reason!, null, true, {
@@ -1451,6 +1480,11 @@ export function wrapToolsWithCache(
         let ok = true;
         let result: unknown;
         let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
+        // Spend the correlate budget at ADMISSION, not on completion: an
+        // attempt that times out is exactly the attempt the budget exists to
+        // bound, and it never reaches the completion handlers below.
+        if (name === "minimax_correlate") bumpCorrelateCall();
+
         try {
           // Phase 2: bound the live call with a per-tool hard timeout (returns a
           // schema-safe result on timeout, never throws). Recording/evidence tools

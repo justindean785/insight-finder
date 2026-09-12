@@ -372,6 +372,10 @@ export const SOCIALFETCH_YOUTUBE_HOSTS = ["youtube.com", "youtu.be"] as const;
 export const SOCIALFETCH_YOUTUBE_FAST_TIMEOUT_MS = 6_000;
 export const SOCIALFETCH_DEFAULT_TIMEOUT_MS = 18_000;
 
+/** Characters of converted document returned per `markdown_extract` call.
+ *  Bounded to protect the turn's context budget; `next_offset` pages past it. */
+export const MARKDOWN_EXTRACT_WINDOW = 12_000;
+
 export type SocialfetchHostDecision =
   | { action: "skip"; hint: string }
   | { action: "fast_timeout"; timeoutMs: number }
@@ -2608,8 +2612,13 @@ export function buildTools(ctx: ToolContext) {
             message: "url must be http or https",
           })
           .describe("Public http(s) URL of the document or page to convert"),
+        // Character offset into the converted document. The window is capped so
+        // one call cannot flood the turn's context; `next_offset` in the result
+        // is how you read the rest. See MARKDOWN_EXTRACT_WINDOW.
+        offset: z.number().int().min(0).optional()
+          .describe("Character offset to read from (default 0). Use next_offset from the previous call to page through a long document."),
       })),
-      execute: async ({ url }) => {
+      execute: async ({ url, offset }) => {
         try {
           const r = await fetchT("https://markdown.new/", {
             method: "POST",
@@ -2623,14 +2632,36 @@ export function buildTools(ctx: ToolContext) {
             return { error: `markdown.new ${r.status}: ${data?.error ?? "conversion failed"}`, status: r.status };
           }
           const content = String(data.content ?? "");
+          // PAGINATE, don't silently truncate. This used to return
+          // `content.slice(0, 12000)` with a bare `truncated: true` and no way
+          // to reach the rest — a 41,842-char upload arrived as 29% of itself
+          // and the model had no signal that the other 71% was retrievable, so
+          // it reasoned over a fragment as though it were the document.
+          //
+          // The window stays 12k ON PURPOSE. Raising it would trade a
+          // truncation bug for a context-growth bug, and context growth is the
+          // measured cause of the 180s invocation ceiling (27 of 54
+          // invocations forced-finalize at ~182s). Windowing gives full
+          // document access at a bounded per-turn cost; the model asks for
+          // more only when the first window justifies it.
+          const start = Math.min(Math.max(0, offset ?? 0), content.length);
+          const slice = content.slice(start, start + MARKDOWN_EXTRACT_WINDOW);
+          const end = start + slice.length;
           return {
             ok: true,
             source: "markdown.new",
             url,
             title: data.title,
             tokens: data.tokens,
-            truncated: content.length > 12000,
-            content: content.slice(0, 12000),
+            total_chars: content.length,
+            offset: start,
+            returned_chars: slice.length,
+            // Null when this window reached the end — the model's signal to stop.
+            next_offset: end < content.length ? end : null,
+            // Retained for back-compat with anything reading the old shape:
+            // true whenever this response is not the whole document.
+            truncated: content.length > end || start > 0,
+            content: slice,
           };
         } catch (e) { return { error: String(e) }; }
       },

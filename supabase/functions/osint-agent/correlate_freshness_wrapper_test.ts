@@ -9,7 +9,7 @@ import type { createClient } from "npm:@supabase/supabase-js@2";
 import { wrapToolsWithCache } from "./cache.ts";
 import { clearRuntime } from "./runtime-policy.ts";
 import * as circuit from "./circuit.ts";
-import { guard, MIN_NEW_ARTIFACTS_FOR_RECORRELATE } from "./guard.ts";
+import { guard, MIN_NEW_ARTIFACTS_FOR_RECORRELATE, resetCorrelateRun } from "./guard.ts";
 
 type SupabaseClient = ReturnType<typeof createClient>;
 
@@ -60,9 +60,19 @@ function wrap(calls: { n: number }, extra?: { toolCallBudget?: { genuine: number
   });
 }
 
+/**
+ * Start each case from a clean request, via the SHIPPED reset.
+ *
+ * This used to hand-roll `artifactsSinceCorrelate = 0; lastCorrelateOutcome =
+ * null`, which was a second copy of `resetCorrelateRun`'s body. When the
+ * per-run correlate budget was added to `guard`, the copy did not clear it and
+ * these cases silently starved each other — the third live dispatch in the file
+ * was refused as over-budget and the failure read as a freshness-gate bug.
+ * Call the real thing so a future field added to the run reset cannot drift
+ * away from the tests that depend on it.
+ */
 function resetGuardState() {
-  guard.artifactsSinceCorrelate = 0;
-  guard.lastCorrelateOutcome = null;
+  resetCorrelateRun();
 }
 
 const CORRELATE_INPUT = { seed: "example.com", artifacts: [{ kind: "domain", value: "example.com" }] };
