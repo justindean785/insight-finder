@@ -13,15 +13,28 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-09-12T11:27Z.** `main` = `d11f2f9` (#580). Live `osint-agent`
-> build = **`7c7888f`**, stamp `5807c31` (parent `7c7888f`), `deploy/live` → `7c7888f`,
-> ledger `7c7888f` — all three agree. `npm run verify:deploy` reports **VERIFIED** with
-> `mirror tree -> equal` (canonical and mirror both `c9edfe634fcf`), so the hard gate is
-> open and a backend deploy is unblocked. Bytes unverified, as always — read the scope
-> line, not the green word. `/health` carries both behavioural keys: `checks.synthesis`
-> = `{ok, "disabled"}` and `checks.rejected_cluster_sweep` = `{ok, "clean: 361 rejected
-> review(s), 0 stale assignment(s)"}`. Orchestrator `selected_provider: deepseek`,
-> `orchestrator_reason: pinned`, `reveal_breach_data: true` — all as documented below.
+> **Dated state — 2026-09-12T15:00Z.** `main` = `2864860` (#581 squash-merged),
+> stamped to `BUILD_MARKER` `2864860` by #582. Mirror `main` = `0b559cf` — surgical
+> sync of 17 `osint-agent/` files; `diff -rq` empty for all four function dirs.
+> Live `osint-agent` build: **re-measure it.** The deploy for `2864860` was driven in
+> this session; `/health` is the only proof it landed, and this line is a measurement
+> taken before that confirmation, not a state.
+>
+> Previous verified state, for the ledger: live `7c7888f`, stamp `5807c31` (parent
+> `7c7888f`), `deploy/live` → `7c7888f`, `verify:deploy` VERIFIED with
+> `mirror tree -> equal` (both `c9edfe634fcf`). Bytes unverified, as always — read the
+> scope line, not the green word. `/health` carried both behavioural keys:
+> `checks.synthesis` = `{ok, "disabled"}` and `checks.rejected_cluster_sweep` =
+> `{ok, "clean: 361 rejected review(s), 0 stale assignment(s)"}`. Orchestrator
+> `selected_provider: deepseek`, `orchestrator_reason: pinned`,
+> `reveal_breach_data: true`.
+>
+> **⚠️ `subject_unlinked` is a PROMOTION gate as of #581 — the dispatch half of
+> #518/#519 is deliberately reversed.** A quarantined selector is now LOOKED UP, and
+> everything it yields inherits the quarantine (`lib/unproven-linkage.ts`). Analyst
+> rejection still refuses dispatch. Kill switch, read at call time:
+> `PROMOTION_QUARANTINE_DISABLED=true`. The table further down is updated; do not act
+> on any older text that says quarantine blocks a tool call.
 >
 > ⚠️ A fresh sandbox clone has **not** fetched the `deploy/live` ref, which leaves that
 > axis of the gate blind and can surface as a false `ledger_ref_divergence`. Run
@@ -253,7 +266,7 @@ re-fix solved problems and miss the one thing still open.
 | **write** | #433 | a name-only collision root persisting unquarantined at confidence 65 |
 | **pivot** | #436 | a quarantined selector offered as an ordinary "Run this pivot" card |
 | **promote** | **#448** | a quarantined artifact entering identity clusters, graph edges, confidence dimensions, the report, the audit — or being labelled CONFIRMED |
-| **dispatch** | #518, hardened by **#519** | a quarantined or analyst-rejected selector reaching a live tool call. `force` does not override it |
+| **dispatch** | #518/#519, **REVERSED for quarantine by #581** | an ANALYST-REJECTED selector reaching a live tool call. A QUARANTINED selector is now dispatched and its results tainted — see below. `force` overrides neither |
 
 **There is now a RELEASE path, added by #529 (merged 2026-09-08).** `linkage_confirmed` was
 the documented escape hatch from quarantine and every boundary READ it, but nothing in the
@@ -423,10 +436,12 @@ production corpus numbers that govern #477/#479/#482) →
 list, §7 the ordered plan) →
 `…_2026-09-03_evidence-board-and-pivot-quality` →
 `…_2026-09-07_drop-suppression-and-the-duplicate-pr` →
-**`SESSION_HANDOFF_2026-09-08_queue-drain-and-dispatch-deploy.md` (newest — read this one
-first)**. Its §3 is the trap list (three instruments that reported something other than what
-they named), §4 is the honest not-done list, and §5 says which open items are the operator's
-call rather than yours.
+`…_2026-09-08_queue-drain-and-dispatch-deploy.md` →
+**`SESSION_HANDOFF_2026-09-12_promotion-quarantine-and-measured-audit.md` (newest —
+read this one first)**. Its §2 is the promotion-quarantine switch and the invariant
+that makes it safe, §3 the trap list (four instruments that lied), §4 the report
+claims that did NOT survive verification, §5 what was deliberately not done, and
+§6 the ordered plan.
 `NEXT_SESSION_PROMPT.md` is the companion entry point and is the more current of the two.
 Take the dated state from the top of THIS file rather than from any handoff's own §1 state
 table — every one of them has been overtaken by a later session, including the 09-07 pair,
