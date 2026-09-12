@@ -48,7 +48,7 @@ import {
 } from "@/lib/recommended-pivots";
 import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon, ArrowRight } from "lucide-react";
 import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
-import { toolDisplayName, toolActionLabel, humanizeStage } from "@/lib/tool-display";
+import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
 import { humanizeSelector } from "@/lib/humanize-selector";
 import {
   isTerminalThreadUpdate,
@@ -960,7 +960,86 @@ const MarkdownBlock = memo(function MarkdownBlock({ content }: { content: string
 });
 
 
-function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean }) {
+/**
+ * The live run, as ONE row.
+ *
+ * While a run streams, `MessageViewImpl` used to render every tool invocation as
+ * its own card, and they cannot even be grouped: `deriveToolRuntime` reads
+ * `stage`/`cycle_id` off a tool part's OUTPUT, which a pending call does not have
+ * yet, so every in-flight call lands in the same `REVIEW:-1` bucket. The analyst
+ * got a flat stream of cards appearing faster than they could be read — the
+ * "can't keep up, can't see what's going on" complaint.
+ *
+ * So during a run the cards live in here, collapsed, and the summary line says
+ * who is working and on what. Nothing is hidden: expanding gives the same
+ * `ToolGroupSummary` / `ToolPart` hierarchy, and once the run settles
+ * `MessageViewImpl` renders them normally again.
+ *
+ * The role/action labels come from `toolAgentRole` + `toolActionLabel`, which
+ * have been exported and unit-tested in `@/lib/tool-display` with no consumer.
+ *
+ * A11y: `role="status"` + `aria-live` sit on the ONE-LINE summary text, never on
+ * the wrapper — a live region around the expandable body would re-announce the
+ * whole tool list on every streamed part. Deliberately NOT `role="region"`: the
+ * case-integrity e2e asserts no run-named region exists during a run.
+ */
+export function LiveActivityCard({ message, elapsedLabel }: { message: UIMessage | null; elapsedLabel: string }) {
+  const parts = (message?.parts ?? []) as MessagePartShape[];
+  const toolParts = parts.filter((p) => typeof p.type === "string" && p.type.startsWith("tool-"));
+  // Prefer the call still in flight; fall back to the most recent one so the
+  // label does not blank out in the gap between a result landing and the next
+  // call starting.
+  const inFlight = [...toolParts].reverse().find(
+    (p) => p.state !== "output-available" && p.state !== "output-error",
+  );
+  const chosen = inFlight ?? toolParts[toolParts.length - 1];
+  const toolName = typeof chosen?.type === "string" ? chosen.type.replace(/^tool-/, "") : "";
+  const role = toolName ? toolAgentRole(toolName) : "Analyst";
+  const action = toolName ? toolActionLabel(toolName) : "Preparing the investigation";
+
+  const groups = groupToolParts(parts).filter((entry) => "part" in entry || !isNoiseToolGroup(entry));
+  const cycles = groups.filter((entry): entry is ToolRunGroup => !("part" in entry));
+
+  return (
+    <details className="chat-card w-full min-w-0 group/live" data-speaker="agent">
+      <summary className="chat-card__header cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+        <span className="relative flex h-2 w-2 shrink-0" aria-hidden>
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60 opacity-75" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
+        </span>
+        <span
+          role="status"
+          aria-live="polite"
+          aria-label="Investigation in progress"
+          className="min-w-0 truncate font-medium text-foreground/85"
+        >
+          {role} · <span className="font-normal text-muted-foreground">{action}</span>
+        </span>
+        <span className="ml-auto flex shrink-0 items-center gap-2.5 text-data text-muted-foreground/70">
+          <span className="font-mono tabular-nums">{elapsedLabel}</span>
+          {toolParts.length > 0 && (
+            <span className="tabular-nums">
+              {toolParts.length} {toolParts.length === 1 ? "tool" : "tools"}
+            </span>
+          )}
+          <ChevronDown className="h-3 w-3 transition-transform group-open/live:rotate-180" aria-hidden />
+        </span>
+      </summary>
+      {groups.length > 0 && (
+        <div className="chat-card__body flex w-full flex-col gap-2">
+          <RunFlowRail groups={cycles} />
+          {groups.map((entry, i) => "part" in entry ? (
+            <ToolPart key={`live-tool-${i}`} part={entry.part} />
+          ) : (
+            <ToolGroupSummary key={`live-${entry.key}-${i}`} group={entry} />
+          ))}
+        </div>
+      )}
+    </details>
+  );
+}
+
+function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded, live }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean; live?: boolean }) {
   if (m.role === "user") {
     const text = (m.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
     // Split the human text from the "Attached files:" block the composer appends,
@@ -1072,7 +1151,10 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
       {cacheMeta && onRerun && (
         <CacheBanner cachedAt={cacheMeta.cachedAt} onRerun={onRerun} busy={!!rerunBusy} />
       )}
-      {visibleToolGroups.length > 0 && (
+      {/* While this message is the one streaming, LiveActivityCard owns these
+          cards and shows them collapsed under a single row. Rendering them here
+          too would put the same tool calls on screen twice. */}
+      {!live && visibleToolGroups.length > 0 && (
         <div className="flex w-full flex-col gap-2">
           <RunFlowRail groups={groupedCycles} />
           {visibleToolGroups.map((entry, i) => "part" in entry ? (
@@ -1125,8 +1207,13 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
           </div>
         </article>
       )}
+      {/* Fallback for a message whose groups were all filtered as noise. It needs
+          the SAME live check as the grouped block above: an all-skipped streaming
+          cycle makes `visibleToolGroups` empty, so without this the individual
+          cards render beside the summary row — the firehose returning in exactly
+          the case where the noise is highest. (Codex review, PR #587.) */}
       {parts.map((p, i) => {
-        if (typeof p.type === "string" && p.type.startsWith("tool-") && visibleToolGroups.length === 0) {
+        if (!live && typeof p.type === "string" && p.type.startsWith("tool-") && visibleToolGroups.length === 0) {
           return <ToolPart key={i} part={p as ToolPartShape} createdAt={createdAt} />;
         }
         return null;
@@ -1144,19 +1231,24 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
 // only ever passed to the streaming last message (whose object changes anyway),
 // and the rerun handler is presence-stable for a given cached-run message.
 function messagePropsEqual(
-  prev: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean },
-  next: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean },
+  prev: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; live?: boolean },
+  next: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; live?: boolean },
 ): boolean {
   return (
     prev.m === next.m &&
     prev.createdAt === next.createdAt &&
     prev.rerunBusy === next.rerunBusy &&
+    // `live` decides whether this message renders its own tool cards or defers
+    // to LiveActivityCard. Omitting it here would leave the settled message
+    // still suppressing them after the run ends — the cards would vanish.
+    !!prev.live === !!next.live &&
     !!prev.onRetry === !!next.onRetry &&
     !!prev.onRerun === !!next.onRerun
   );
 }
 
-const MessageView = memo(MessageViewImpl, messagePropsEqual);
+// Exported for the regression test on the live-suppression path above.
+export const MessageView = memo(MessageViewImpl, messagePropsEqual);
 
 function wrapChildren(children: React.ReactNode): React.ReactNode {
   if (typeof children === "string") return renderTextWithBadges(children);
@@ -2401,19 +2493,12 @@ function ChatWindowInner({
     const s = Math.floor(runElapsedMs / 1000);
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   })();
-  const currentStep = useMemo(() => {
+  // The message LiveActivityCard speaks for. It derives the role/action label and
+  // owns that message's tool cards while the run streams, so the in-flight-part
+  // selection that used to live here now sits with the thing that renders it.
+  const liveAssistantMessage = useMemo(() => {
     if (!isLoading) return null;
-    const lastAsst = [...messages].reverse().find((mm) => mm.role === "assistant");
-    if (!lastAsst) return null;
-    const toolParts = (lastAsst.parts as MessagePartShape[]).filter(
-      (p) => typeof p.type === "string" && p.type.startsWith("tool-"),
-    );
-    const inFlight = [...toolParts].reverse().find(
-      (p) => p.state !== "output-available" && p.state !== "output-error",
-    );
-    const chosen = inFlight ?? toolParts[toolParts.length - 1];
-    if (!chosen || typeof chosen.type !== "string") return null;
-    return toolDisplayName(chosen.type.replace(/^tool-/, ""));
+    return [...messages].reverse().find((mm) => mm.role === "assistant") ?? null;
   }, [isLoading, messages]);
 
   const reportPivots = useMemo(() => {
@@ -2653,28 +2738,13 @@ function ChatWindowInner({
                   onRerun={hasCacheBanner ? rerunInvestigation : undefined}
                   rerunBusy={rerunBusy}
                   superseded={superseded}
+                  live={isLoading && isLastAssistant}
                 />
               );
             });
           })()}
           {isLoading && (
-            <div
-              className="flex items-center gap-2.5 text-sm"
-              role="status"
-              aria-live="polite"
-              aria-label="Investigation in progress"
-            >
-              <span className="relative flex h-2 w-2 shrink-0">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60 opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
-              </span>
-              <span className="font-medium text-foreground/85">
-                {currentStep ? `Investigating · ${currentStep}` : "Investigating…"}
-              </span>
-              <span className="font-mono text-data tabular-nums text-muted-foreground/70">
-                {runElapsedLabel}
-              </span>
-            </div>
+            <LiveActivityCard message={liveAssistantMessage} elapsedLabel={runElapsedLabel} />
           )}
           {/* ONE card per failure.
               A failed run lands in two places: the live `error` state here, and

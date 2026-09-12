@@ -21,7 +21,7 @@ import {
   extractSourceInfo, CACHE_LAYER_LABEL, CACHE_LAYER_CLASS,
 } from "@/lib/intel";
 import { evidenceStatus } from "@/lib/evidence-status";
-import { authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
+import { ANALYST_ACTIONABLE_STATES, authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
 import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
 import {
   canReleaseLinkage, releasePatch,
@@ -155,7 +155,7 @@ export const STATUS_FILTER_GROUPS: Record<EvidenceStatusFilter, Set<string> | nu
    * unquarantined at confidence >= 65. This is what stops the other ~55 being
    * the first thing an analyst sees.
    */
-  analyst: new Set(["verified", "infrastructure", "probable", "review", "conflict"]),
+  analyst: new Set(ANALYST_ACTIONABLE_STATES),
   all: null,
   strong: new Set(["verified", "infrastructure", "probable"]),
   review: new Set(["review", "conflict"]),

@@ -44,7 +44,10 @@ import { selectOrchestratorProvider } from "./orchestrator_select.ts";
 import { FINDING_LABELS } from "./catalog.ts";
 import { SYSTEM_PROMPT_FULL } from "./system-prompt.ts";
 import { wrapToolsWithCache } from "./cache.ts";
-import { beginCycle, clearRuntime } from "./runtime-policy.ts";
+import { paidBudgetTier } from "./cache.ts";
+import { costForTool } from "./costs.ts";
+import { priorSpendEvent, summarizePriorSpend } from "./lib/run-budget.ts";
+import { beginCycle, clearRuntime, runtimeLimits } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
@@ -61,6 +64,7 @@ import {
   hasNoFindingsDecision, resolveTerminalState,
 } from "./orchestrator-finalize.ts";
 import { contextCharsFromMessages, createInvocationTelemetry } from "./telemetry.ts";
+import { measurePromptTerms, measureToolDescriptions, promptSizeEvent } from "./prompt-size.ts";
 import {
   loadReviewsForThread, applyReviewsToArtifacts, dropRejectedArtifacts,
   renderAnalystDecisionsBlock, REVIEW_STATE_UNAVAILABLE_NOTE,
@@ -329,6 +333,49 @@ Deno.serve(async (req) => {
     // debit failure being silently discarded while paid tool calls continue.
     let creditExhaustReason: string | null = null;
     clearRuntime(threadId);
+    // ---- Per-investigation spend instrument (A2a) ------------------------------
+    // `clearRuntime` above zeroes paidCalls/totalCalls/toolCounts on EVERY request,
+    // even though runtime-policy.ts documents those counters as lifetime-of-run and
+    // says only "a brand-new investigation" clears them. An investigation is 2-12
+    // invocations, so MAX_PAID_CALLS = 12 is really 24-144 paid calls per case.
+    //
+    // This MEASURES that; it does not change it. Turning a per-isolate cap into a
+    // per-investigation one means a case's fifth analyst turn can find the budget
+    // already spent, and choosing that number from an estimate would repeat the
+    // error this codebase keeps making — reading a partial window and acting on it.
+    // Enforcement lands separately, on the distribution this produces.
+    //
+    // Fire-and-forget so it cannot add latency to the run, and fail open: a
+    // telemetry read must never be able to stop an investigation.
+    void (async () => {
+      try {
+        const { data, error, count } = await supabaseAdmin
+          .from("tool_usage_log")
+          .select("tool_name,cached,outcome,cost_micro_usd", { count: "exact" })
+          .eq("thread_id", threadId);
+        if (error) {
+          console.warn("[run_budget_prior] read failed:", error.message);
+          return;
+        }
+        const rows = (data ?? []) as Array<Record<string, unknown>>;
+        const spend = summarizePriorSpend(
+          rows,
+          (name) => paidBudgetTier(costForTool(name), name) !== "free",
+        );
+        // An unbounded PostgREST select returns at most `db-max-rows` with NO error
+        // — a well-formed short 200. That silently biases this measurement LOW,
+        // which is the same shape as the bug #519 fixed at the dispatch boundary.
+        // Comparing against the exact count is what makes the number trustworthy.
+        const truncated = typeof count === "number" && count > rows.length;
+        console.log(priorSpendEvent(threadId, spend, {
+          invocation_paid_cap: runtimeLimits.maxPaidCallsPerRun,
+          rows_available: typeof count === "number" ? count : null,
+          truncated,
+        }));
+      } catch (e) {
+        console.warn("[run_budget_prior] read threw:", e);
+      }
+    })();
     // Seed breadcrumb for the cycle log — the first user message's text.
     const seedValueRaw = (() => {
       const fu = ((messages ?? []) as Array<{ role?: string; parts?: Array<{ type?: string; text?: string }> }>)
@@ -766,6 +813,29 @@ Deno.serve(async (req) => {
     const baseSystemPrompt =
       SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary
       + analystDecisionsBlock;
+    // ---- Prompt-size instrument (A1) -----------------------------------------
+    // `approxPromptChars` above stays exactly as it is: it is an INPUT TO PROVIDER
+    // ROUTING (the MiniMax pre-pivot and the DeepSeek safety budget), so inflating
+    // it would re-route runs that route fine today. This is the MEASUREMENT, and it
+    // counts the terms that figure silently drops — the workflow addendum, the
+    // analyst-decisions block (0 to ~30k on a reviewed thread) and the tool
+    // descriptions. The serialized tool input schemas stay uncounted and are named
+    // in `unmeasured` rather than guessed: zod@3 exposes no JSON-Schema export, so
+    // any number here would be invented. Read the total as "everything countable".
+    const promptTermBaseline = {
+      systemStatic: SYSTEM_PROMPT_FULL.length,
+      findingLabels: FINDING_LABELS.length,
+      workflowAddendum: buildWorkflowAddendum(detectedSeedType).length,
+      visionIntake: visionIntakeSummary.length,
+      analystDecisions: analystDecisionsBlock.length,
+      ...measureToolDescriptions(tools as unknown as Record<string, unknown>),
+    };
+    console.log(promptSizeEvent(
+      "prompt_size_initial",
+      threadId,
+      measurePromptTerms({ ...promptTermBaseline, messages: contextCharsFromMessages(trimmedMessages) }),
+      { routing_approx_prompt_chars: approxPromptChars },
+    ));
     // The two decision tools exist in the registry so forced-finalize can select them,
     // but they must never be available during ordinary investigation steps.
     const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));
@@ -888,6 +958,39 @@ Deno.serve(async (req) => {
         const stepMessagesOut = sanitizeModelMessages(
           capToolResultOutputs(budgeted, MAX_TOOL_RESULT_CHARS),
         );
+        // A1 instrument, per step. It must measure THE PROMPT THIS STEP ACTUALLY
+        // SENDS, not the registry-wide baseline: `prepareStep` narrows the tool set
+        // per branch (the persistence nudge exposes only record_artifacts, the
+        // report phase exposes none) and appends a different directive to the
+        // system string each time. Measuring before the branch would overcount tool
+        // descriptions by tens of thousands of chars and report `stepDirective` as
+        // zero while a directive is appended — reporting a number that is not the
+        // prompt, which is the exact defect this instrument exists to correct.
+        // So it is called from each return path, with that path's own system string
+        // and active-tool set.
+        const logPromptSize = (systemStr: string, activeTools?: readonly string[]) => {
+          const active: Record<string, unknown> = activeTools
+            ? Object.fromEntries(
+              activeTools
+                .filter((n) => n in (tools as Record<string, unknown>))
+                .map((n) => [n, (tools as Record<string, unknown>)[n]]),
+            )
+            : (tools as Record<string, unknown>);
+          console.log(promptSizeEvent(
+            "prompt_size_step",
+            threadId,
+            measurePromptTerms({
+              ...promptTermBaseline,
+              ...measureToolDescriptions(active),
+              // The directive is whatever this branch appended to baseSystemPrompt.
+              // Derived by difference rather than re-deriving which builder ran, so
+              // it cannot drift from the string actually sent.
+              stepDirective: Math.max(0, systemStr.length - baseSystemPrompt.length),
+              messages: contextCharsFromMessages(stepMessagesOut),
+            }),
+            { step_number: stepNumber ?? 0, active_tool_count: activeTools ? activeTools.length : undefined },
+          ));
+        };
         // Force the closing synthesis step when ANY run budget is exhausted:
         //  • P0 fix A — the wall-clock reserve window opened, or we hit the last step.
         //  • Run tool-call cap — MAX_TOOL_CALLS_PER_RUN genuine live calls reached
@@ -973,6 +1076,7 @@ Deno.serve(async (req) => {
           finalizeStepsRun++;
           finalizeDecisionSucceededThisStep = false;
           const finalizePlan = buildFinalizeStepPlan(finalizePhase);
+          logPromptSize(baseSystemPrompt + finalizePlan.directive, [...finalizePlan.activeTools]);
           return {
             messages: stepMessagesOut,
             activeTools: [...finalizePlan.activeTools],
@@ -1005,14 +1109,16 @@ Deno.serve(async (req) => {
             tool_calls: nudgeToolCalls, record_artifact_calls: nudgeRecordCalls,
             nudge_count: persistenceNudgeCount,
           }));
+          const nudgePlan = buildIntermediateStepPlan({
+            nudgePersistence: true,
+            normalActiveTools,
+            openingPhase: false,
+          });
+          logPromptSize(intermediateSystem, nudgePlan.activeTools);
           return {
             messages: stepMessagesOut,
             system: intermediateSystem,
-            ...buildIntermediateStepPlan({
-              nudgePersistence: true,
-              normalActiveTools,
-              openingPhase: false,
-            }),
+            ...nudgePlan,
           };
         }
         // Opening phase = this RUN has admitted no tool call yet (run-scoped by
@@ -1025,14 +1131,16 @@ Deno.serve(async (req) => {
             event: "opening_tool_gate", thread_id: threadId, step_number: stepNumber ?? 0,
           }));
         }
+        const intermediatePlan = buildIntermediateStepPlan({
+          nudgePersistence: false,
+          normalActiveTools,
+          openingPhase,
+        });
+        logPromptSize(intermediateSystem, intermediatePlan.activeTools);
         return {
           messages: stepMessagesOut,
           system: intermediateSystem,
-          ...buildIntermediateStepPlan({
-            nudgePersistence: false,
-            normalActiveTools,
-            openingPhase,
-          }),
+          ...intermediatePlan,
         };
       };
 

@@ -18,6 +18,7 @@ import {
   cacheSweepDryRun,
   describeCacheSweep,
   CACHE_SWEEP_BATCH,
+  CACHE_SWEEP_DELETE_CHUNK,
 } from "./cache-sweep.ts";
 
 type Row = { id: string; expires_at: string | null };
@@ -27,9 +28,10 @@ type Row = { id: string; expires_at: string | null };
  * "preserves live rows" is a property of the QUERY under test, not of a fixture
  * that only contains expired rows.
  */
-function fakeDb(rows: Row[], cfg: { selectError?: boolean; deleteError?: boolean; throwOn?: "select" | "delete" } = {}) {
+function fakeDb(rows: Row[], cfg: { selectError?: boolean; deleteError?: boolean; /** Succeed this many DELETE statements, then fail — models a fault partway through a chunked removal. */ deleteErrorAfter?: number; throwOn?: "select" | "delete" } = {}) {
   const table = [...rows];
   const deletes: string[][] = [];
+  let deleteCalls = 0;
   const db = {
     from(_t: string) {
       let mode: "select" | "delete" = "select";
@@ -46,6 +48,11 @@ function fakeDb(rows: Row[], cfg: { selectError?: boolean; deleteError?: boolean
         if (mode === "delete") {
           if (cfg.throwOn === "delete") throw new Error("boom");
           if (cfg.deleteError) return { error: { message: "delete denied" } };
+          deleteCalls++;
+          if (cfg.deleteErrorAfter !== undefined && deleteCalls > cfg.deleteErrorAfter) {
+            deletes.push([...new Set(ids ?? [])]);
+            return { error: { message: "delete denied" } };
+          }
           const set = new Set(ids ?? []);
           deletes.push([...set]);
           for (let i = table.length - 1; i >= 0; i--) if (set.has(table[i].id)) table.splice(i, 1);
@@ -112,6 +119,49 @@ Deno.test("⛔ (c) is BOUNDED — a 11k backlog is not one statement", async () 
 
 Deno.test("(c2) the default bound is the documented one", () => {
   assertEquals(CACHE_SWEEP_BATCH, 5_000);
+});
+
+/* ── (c3) the delete is chunked, because the transport cannot carry the batch ── */
+
+Deno.test("⛔ (c3) no DELETE ever carries more ids than the transport accepts", async () => {
+  // PostgREST renders `.in("id", ids)` into the URL query string. The full 5,000-id
+  // batch builds a ~185 KB URL and the gateway rejects past ~24 KB, so an unchunked
+  // sweep errors on EVERY probe and drains nothing. This is the regression guard:
+  // it asserts the SHAPE of what goes over the wire, not just the row count.
+  const n = CACHE_SWEEP_DELETE_CHUNK * 2 + 7;
+  const { db, table, deletes } = fakeDb(expired(n), {});
+  const r = await sweepExpiredCache(db, { now: NOW });
+
+  assertEquals(r.deleted, n, "every eligible row is still removed");
+  assertEquals(table.length, 0);
+  assertEquals(deletes.length, 3, "the removal is split across statements");
+  for (const d of deletes) {
+    assert(
+      d.length <= CACHE_SWEEP_DELETE_CHUNK,
+      `a delete carried ${d.length} ids, past the ${CACHE_SWEEP_DELETE_CHUNK} transport bound`,
+    );
+  }
+  // No id may be dropped or duplicated by the slicing.
+  assertEquals(new Set(deletes.flat()).size, n);
+});
+
+Deno.test("⛔ (c3) the chunk bound is the one the working sweep already uses", () => {
+  // 300 is `lib/rejected-cluster-sweep.ts`'s measured figure (that sweep converged
+  // 216 → 0 in production), not a guess. Raising it re-opens the URL-cap fault.
+  assertEquals(CACHE_SWEEP_DELETE_CHUNK, 300);
+  assert(CACHE_SWEEP_DELETE_CHUNK < CACHE_SWEEP_BATCH);
+});
+
+Deno.test("⛔ (c3) a mid-loop DELETE fault stops and reports only what was removed", async () => {
+  // Reporting the full batch after a partial failure would be a lie the operator
+  // acts on. The remaining rows are still expired; the next probe retries them.
+  const n = CACHE_SWEEP_DELETE_CHUNK + 5;
+  const { db, deletes } = fakeDb(expired(n), { deleteErrorAfter: 1 });
+  const r = await sweepExpiredCache(db, { now: NOW });
+
+  assertEquals(r.errors, 1);
+  assertEquals(r.deleted, CACHE_SWEEP_DELETE_CHUNK, "only the chunk that succeeded counts");
+  assertEquals(deletes.length, 2, "the loop stops at the fault rather than pressing on");
 });
 
 /* ── (d) a failure is recorded, never thrown ──────────────────────────────── */

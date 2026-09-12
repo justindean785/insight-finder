@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { describeCredentialHealth, summarizeCredentialHealth } from "./lib/credential-health.ts";
 import {
   corsHeaders, MINIMAX_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
@@ -393,6 +394,54 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
         r.checks.rejected_cluster_sweep = { ok: swept.ok, detail: describeSweep(swept) };
       } catch (e) {
         r.checks.rejected_cluster_sweep = { ok: false, detail: String(e).slice(0, 160) };
+      }
+      // Provider authorization health. The `tools` line above is a PRESENCE test
+      // (`has(env.X_API_KEY)`), so it read "17/20 optional tool APIs configured"
+      // throughout the period github_code_search answered 401 on every call — and
+      // it does not move when a secret's VALUE is rotated, so it cannot confirm a
+      // fix either. This reports what providers actually answered: who refused us,
+      // and who has succeeded SINCE refusing (the signal a rotation took).
+      //
+      // `ok` is allowed to go false here on purpose. A refusing provider is
+      // actionable, and if this line sits permanently red for a tool that 403s by
+      // policy rather than by credential (reddit_user blocks datacenter IPs), that
+      // is itself the signal to take it off the default sweep. Top-level `ok`
+      // is orchestrator+core only, so this never fails the probe.
+      try {
+        const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const { data, error, count } = await admin
+          .from("tool_usage_log")
+          .select("tool_name,status_code,outcome,created_at", { count: "exact" })
+          .gte("created_at", since)
+          .order("created_at", { ascending: false })
+          .limit(5000);
+        if (error) {
+          // NOT ok. An unreadable instrument is not a clean bill of health, and
+          // `ok:true` beside "unavailable" is the precise trap CLAUDE.md names:
+          // ok:true is not "it ran". The analyst-review path already sets this
+          // precedent — "verdicts unreadable: say so rather than implying nothing
+          // was rejected". Top-level `r.ok` is decided before this block, so this
+          // surfaces the lost evidence without failing the probe. (Codex review.)
+          r.checks.credentials = {
+            ok: false,
+            detail: `unavailable — cannot tell whether any provider is refusing us: ${error.message.slice(0, 100)}`,
+          };
+        } else {
+          const rows = (data ?? []) as Array<Record<string, unknown>>;
+          const health = summarizeCredentialHealth(rows);
+          // An unbounded or capped select returns short with NO error. Saying so
+          // keeps the counts readable as a floor rather than as the whole truth.
+          const truncated = typeof count === "number" && count > rows.length;
+          r.checks.credentials = {
+            ok: health.failing.length === 0,
+            detail: describeCredentialHealth(health, truncated),
+          };
+        }
+      } catch (e) {
+        r.checks.credentials = {
+          ok: false,
+          detail: `unavailable — cannot tell whether any provider is refusing us: ${String(e).slice(0, 100)}`,
+        };
       }
       // Finding synthesis. Deliberately AFTER recovery and inside the same
       // try/catch: a thread must be marked finished before it is a candidate, and
