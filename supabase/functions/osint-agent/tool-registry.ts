@@ -372,6 +372,10 @@ export const SOCIALFETCH_YOUTUBE_HOSTS = ["youtube.com", "youtu.be"] as const;
 export const SOCIALFETCH_YOUTUBE_FAST_TIMEOUT_MS = 6_000;
 export const SOCIALFETCH_DEFAULT_TIMEOUT_MS = 18_000;
 
+/** Characters of converted document returned per `markdown_extract` call.
+ *  Bounded to protect the turn's context budget; `next_offset` pages past it. */
+export const MARKDOWN_EXTRACT_WINDOW = 12_000;
+
 export type SocialfetchHostDecision =
   | { action: "skip"; hint: string }
   | { action: "fast_timeout"; timeoutMs: number }
@@ -2608,8 +2612,13 @@ export function buildTools(ctx: ToolContext) {
             message: "url must be http or https",
           })
           .describe("Public http(s) URL of the document or page to convert"),
+        // Character offset into the converted document. The window is capped so
+        // one call cannot flood the turn's context; `next_offset` in the result
+        // is how you read the rest. See MARKDOWN_EXTRACT_WINDOW.
+        offset: z.number().int().min(0).optional()
+          .describe("Character offset to read from (default 0). Use next_offset from the previous call to page through a long document."),
       })),
-      execute: async ({ url }) => {
+      execute: async ({ url, offset }) => {
         try {
           const r = await fetchT("https://markdown.new/", {
             method: "POST",
@@ -2623,14 +2632,36 @@ export function buildTools(ctx: ToolContext) {
             return { error: `markdown.new ${r.status}: ${data?.error ?? "conversion failed"}`, status: r.status };
           }
           const content = String(data.content ?? "");
+          // PAGINATE, don't silently truncate. This used to return
+          // `content.slice(0, 12000)` with a bare `truncated: true` and no way
+          // to reach the rest — a 41,842-char upload arrived as 29% of itself
+          // and the model had no signal that the other 71% was retrievable, so
+          // it reasoned over a fragment as though it were the document.
+          //
+          // The window stays 12k ON PURPOSE. Raising it would trade a
+          // truncation bug for a context-growth bug, and context growth is the
+          // measured cause of the 180s invocation ceiling (27 of 54
+          // invocations forced-finalize at ~182s). Windowing gives full
+          // document access at a bounded per-turn cost; the model asks for
+          // more only when the first window justifies it.
+          const start = Math.min(Math.max(0, offset ?? 0), content.length);
+          const slice = content.slice(start, start + MARKDOWN_EXTRACT_WINDOW);
+          const end = start + slice.length;
           return {
             ok: true,
             source: "markdown.new",
             url,
             title: data.title,
             tokens: data.tokens,
-            truncated: content.length > 12000,
-            content: content.slice(0, 12000),
+            total_chars: content.length,
+            offset: start,
+            returned_chars: slice.length,
+            // Null when this window reached the end — the model's signal to stop.
+            next_offset: end < content.length ? end : null,
+            // Retained for back-compat with anything reading the old shape:
+            // true whenever this response is not the whole document.
+            truncated: content.length > end || start > 0,
+            content: slice,
           };
         } catch (e) { return { error: String(e) }; }
       },
@@ -4504,20 +4535,46 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: memoSchema("github_code_search", () => z.object({ query: z.string() })),
       execute: async ({ query }) => {
         try {
-          const headers: Record<string, string> = {
-            "User-Agent": "Proximity-OSINT",
-            Accept: "application/vnd.github.v3.text-match+json",
+          const url = `https://api.github.com/search/code?q=${encodeURIComponent(query)}&per_page=20`;
+          const call = async (authed: boolean) => {
+            const headers: Record<string, string> = {
+              "User-Agent": "Proximity-OSINT",
+              Accept: "application/vnd.github.v3.text-match+json",
+            };
+            if (authed && GITHUB_API_TOKEN) headers.Authorization = `Bearer ${GITHUB_API_TOKEN}`;
+            const res = await fetchT(url, { headers });
+            const body = await res.text();
+            let parsed: GitHubCodeSearchResponse = {};
+            try { parsed = JSON.parse(body); } catch { parsed = { raw: body.slice(0, 500) }; }
+            return { res, body, parsed };
           };
-          if (GITHUB_API_TOKEN) headers.Authorization = `Bearer ${GITHUB_API_TOKEN}`;
-          const r = await fetchT(`https://api.github.com/search/code?q=${encodeURIComponent(query)}&per_page=20`, { headers });
-          const text = await r.text();
-          let data: GitHubCodeSearchResponse = {};
-          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 500) }; }
+
+          let authenticated = !!GITHUB_API_TOKEN;
+          let { res: r, body: text, parsed: data } = await call(authenticated);
+
+          // A CONFIGURED-BUT-REJECTED token must not make this tool worse than
+          // no token at all. This tool's own description promises an
+          // unauthenticated fallback (60 req/hr), but that fallback only ever
+          // covered "no token set" — a stale or revoked GITHUB_API_TOKEN 401ed
+          // and the call was simply lost. Observed on the 2026-09-12
+          // `baig_azhar` case: `github_code_search` reported "Config 1 — HTTP
+          // 401" on the Health tab and persisted a `weak_lead` artifact saying
+          // the search FAILED, while the same query unauthenticated would have
+          // answered. Retry ONCE, without the credential, and report which
+          // mode produced the result.
+          let staleToken = false;
+          if (!r.ok && (r.status === 401 || r.status === 403) && authenticated) {
+            console.warn(`[github_code_search] token rejected (HTTP ${r.status}) — retrying unauthenticated`);
+            staleToken = true;
+            authenticated = false;
+            ({ res: r, body: text, parsed: data } = await call(false));
+          }
+
           if (!r.ok) {
             const remaining = r.headers.get("x-ratelimit-remaining");
             const reset = r.headers.get("x-ratelimit-reset");
-            console.warn(`[github_code_search] HTTP ${r.status} authed=${!!GITHUB_API_TOKEN} remaining=${remaining} reset=${reset} msg=${(data?.message ?? "").slice(0, 200)}`);
-            return { error: `github ${r.status}`, status: r.status, authenticated: !!GITHUB_API_TOKEN, rate_remaining: remaining, message: data?.message, snippet: text.slice(0, 300) };
+            console.warn(`[github_code_search] HTTP ${r.status} authed=${authenticated} stale_token=${staleToken} remaining=${remaining} reset=${reset} msg=${(data?.message ?? "").slice(0, 200)}`);
+            return { error: `github ${r.status}`, status: r.status, authenticated, token_rejected: staleToken, rate_remaining: remaining, message: data?.message, snippet: text.slice(0, 300) };
           }
           const items = (data?.items ?? []).map((i: GitHubCodeMatch) => {
             const textMatches = Array.isArray(i.text_matches) ? (i.text_matches as Array<{ fragment?: unknown }>) : [];
@@ -4526,7 +4583,7 @@ export function buildTools(ctx: ToolContext) {
               matches: textMatches.map((m) => m.fragment).slice(0, 3),
             };
           });
-          return { ok: true, authenticated: !!GITHUB_API_TOKEN, total: data?.total_count, items };
+          return { ok: true, authenticated, token_rejected: staleToken || undefined, total: data?.total_count, items };
         } catch (e) { return { error: String(e) }; }
       },
     }),

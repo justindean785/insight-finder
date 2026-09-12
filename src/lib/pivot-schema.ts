@@ -22,9 +22,12 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ReviewState } from "@/lib/review";
 import type { DisplayPivot } from "@/lib/pivot-engine";
 import { authorityFor } from "@/lib/authority";
+import { PIVOT_TARGET_TYPES, targetShapeProblems, type PivotTargetType } from "@/lib/pivot-target-shape";
 
-export const PIVOT_TARGET_TYPES = ["email", "username", "domain", "url", "ip", "name", "wallet", "phone"] as const;
-export type PivotTargetType = (typeof PIVOT_TARGET_TYPES)[number];
+// Re-exported, not redefined: `recommended-pivots` must be able to ask the
+// SAME question this schema answers before it emits a suggestion at all.
+export { PIVOT_TARGET_TYPES };
+export type { PivotTargetType };
 
 /** Report-derived pivots carry a synthetic source id, not an artifact. */
 export const REPORT_SOURCE_PREFIX = "report-pivot-";
@@ -40,20 +43,6 @@ const BOILERPLATE: { re: RegExp; problem: string }[] = [
   { re: /^(?:tbd|n\/?a|none|unknown|null|undefined|todo|placeholder|example|lorem ipsum.*|x{3,}|\?+|-+|…|\.{3})$/i, problem: "is placeholder text" },
   { re: /[<[{]\s*(?:target|value|selector|name|email|username|domain)\s*[>\]}]/i, problem: "is an unfilled template placeholder" },
 ];
-
-const SHAPE: Record<PivotTargetType, { re: RegExp; problem: string }> = {
-  email: { re: /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/, problem: "is not an email address" },
-  username: { re: /^@?[\p{L}\p{N}._-]{2,40}$/u, problem: "is not a single username" },
-  domain: { re: /^(?=.{3,253}$)(?:[a-z0-9-]+\.)+[a-z]{2,}$/i, problem: "is not a domain name" },
-  url: { re: /^https?:\/\/[^\s]+$/i, problem: "is not a URL" },
-  ip: { re: /^(?:\d{1,3}\.){3}\d{1,3}$|^[0-9a-f:]{3,39}$/i, problem: "is not an IP address" },
-  wallet: { re: /^[A-Za-z0-9]{20,100}$/, problem: "is not a wallet address" },
-  phone: { re: /^\+?[\d\s().-]{7,24}$/, problem: "is not a phone number" },
-  // A name is a few words. A sentence, a clause or a label with a colon is not.
-  name: { re: /^[\p{L}][\p{L}\p{M}'’.\-\s]{0,60}$/u, problem: "is not a name" },
-};
-
-const MAX_NAME_WORDS = 6;
 
 const estimateSchema = z.object({
   toolCalls: z.number().int().nonnegative().optional(),
@@ -77,13 +66,10 @@ export const pivotSuggestionSchema = z.object({
   for (const b of BOILERPLATE) {
     if (b.re.test(target)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["target"], message: `target ${b.problem}` });
   }
-  const shape = SHAPE[p.targetType];
-  if (!shape.re.test(target)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["target"], message: `target ${shape.problem}` });
-  if (p.targetType === "name" && target.split(/\s+/).filter(Boolean).length > MAX_NAME_WORDS) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["target"], message: `target is ${target.split(/\s+/).length} words — a sentence, not a name` });
-  }
-  if (p.targetType === "phone" && (target.match(/\d/g) ?? []).length < 7) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["target"], message: "target has too few digits for a phone number" });
+  // Shape comes from the shared table, so the producer can pre-check with the
+  // exact predicate that decides here — see lib/pivot-target-shape.ts.
+  for (const message of targetShapeProblems(p.targetType, target)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["target"], message });
   }
   const reason = p.reason.trim();
   for (const b of BOILERPLATE.slice(0, 4)) {
@@ -202,11 +188,22 @@ export function pivotEligibility(
     const allWithheld = views.every((v) => v.state === "quarantined" || v.state === "failed");
     linkage = views.some((v) => v.state !== "quarantined" && v.state !== "failed") ? "linked" : "unproven";
     if (allWithheld) {
-      blockers.push(
-        views.some((v) => v.state === "failed")
-          ? "Its source row was dismissed by an analyst."
-          : "Linkage to the subject is unproven (quarantined). The server refuses quarantined selectors.",
-      );
+      // An analyst DISMISSAL still blocks: the server refuses a rejected
+      // selector, and re-spending on a row the analyst struck out argues with
+      // them. A QUARANTINE no longer does — since the 2026-09-12 switch to
+      // promotion quarantine the server runs the lookup and withholds
+      // authority from what comes back, so the honest control is a warning
+      // that says what the result will and will not be worth. Blocking here
+      // was what left person-seed runs structurally unable to test the link
+      // they were investigating.
+      if (views.some((v) => v.state === "failed")) {
+        blockers.push("Its source row was dismissed by an analyst.");
+      } else {
+        warnings.push(
+          "Linkage to the subject is unproven (quarantined). This will run, but nothing it finds " +
+          "will count as the subject's evidence until the linkage is corroborated or you confirm it.",
+        );
+      }
     }
     if (views.some((v) => v.state === "conflict")) warnings.push("Its source row is marked as a conflict with the case.");
     if (views.every((v) => v.state === "weak")) warnings.push("It rests only on a low-confidence lead.");

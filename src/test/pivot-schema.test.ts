@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+import type { ReviewState } from "@/lib/review";
 import {
   BULK_QUEUE_UNAVAILABLE,
   pivotEligibility,
@@ -104,7 +105,8 @@ describe("pivotEligibility — linkage and authority before a run", () => {
     created_at: "2026-09-11T09:00:00Z",
     metadata: { sources: ["hunter_verify"], corroborations: 1, source_class: "provider", ...metadata },
   });
-  const ctx = (a: Artifact) => ({ artifactsById: new Map([[a.id, a]]), review: () => "new" as const });
+  const ctx = (a: Artifact, review: ReviewState = "new") =>
+    ({ artifactsById: new Map([[a.id, a]]), review: () => review });
 
   it("is runnable when a recorded row proves linkage", () => {
     const e = pivotEligibility(pivot(), ctx(artifact({})));
@@ -113,11 +115,27 @@ describe("pivotEligibility — linkage and authority before a run", () => {
     expect(e.blockers).toEqual([]);
   });
 
-  it("blocks a pivot whose only source is quarantined — the server would refuse it anyway", () => {
+  it("WARNS but does not block a quarantined source — the server now runs it and withholds authority", () => {
+    // Changed 2026-09-12 with the switch to promotion quarantine. This used to
+    // block, on the grounds that "the server would refuse it anyway" — which
+    // is no longer true, and blocking here is what left person-seed runs
+    // structurally unable to test the link they were investigating.
     const e = pivotEligibility(pivot(), ctx(artifact({ subject_unlinked: true, subject_unlinked_reason: "name-only query" })));
-    expect(e.runnable).toBe(false);
+    expect(e.runnable).toBe(true);
     expect(e.linkage).toBe("unproven");
-    expect(e.blockers.join(" ")).toMatch(/unproven/);
+    expect(e.blockers).toEqual([]);
+    // The analyst must still be told what the result will and will not be worth.
+    expect(e.warnings.join(" ")).toMatch(/unproven/);
+    expect(e.warnings.join(" ")).toMatch(/nothing it finds will count as the subject's evidence/);
+  });
+
+  it("an analyst DISMISSAL still blocks — that boundary did not move", () => {
+    // Quarantine is a machine claim about provenance; a Dismiss is a human
+    // ruling about reality. Re-spending on a struck-out row argues with the
+    // analyst, and the server still refuses it at dispatch.
+    const e = pivotEligibility(pivot(), ctx(artifact({}), "dismissed"));
+    expect(e.runnable).toBe(false);
+    expect(e.blockers.join(" ")).toMatch(/dismissed by an analyst/);
   });
 
   it("warns, without blocking, when the source is marked as a conflict", () => {

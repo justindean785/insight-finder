@@ -20,10 +20,15 @@ import * as circuit from "./circuit.ts";
 // (`dispatch-rejection.ts` + `loadReviewsForThread`) is a SEPARATE boundary that
 // runs alongside the quarantine read, not a competing implementation of it.
 import { dispatchTypeCandidates, isDispatchRefused, loadRefusedArtifacts, quarantineRefusal, reasonForKey } from "./lib/dispatch-quarantine.ts";
+import { unprovenLinkageMarker, UNPROVEN_LINKAGE_KEY, type UnprovenLinkage } from "./lib/unproven-linkage.ts";
+import { promotionQuarantineEnabled } from "./env.ts";
 import type { QuarantineRow } from "./lib/dispatch-quarantine.ts";
 import { buildRejectedDispatchKeys, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
 import { loadReviewsForThread, type ReviewDb } from "./reviews.ts";
-import { guard, takeCorrelateHint, shouldSkipRedundantCorrelate } from "./guard.ts";
+import {
+  guard, takeCorrelateHint, shouldSkipRedundantCorrelate,
+  correlateBudgetExhausted, correlateBudgetReason, bumpCorrelateCall,
+} from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
 import { isFinalizeWindowLiveLookupExempt } from "./orchestrator-finalize.ts";
 import {
@@ -1006,15 +1011,25 @@ export function wrapToolsWithCache(
         const sel = circuit.normalizeSelector(selectorType, selectorValue);
         const purpose = String(inp.purpose ?? "default");
         const force = inp.force === true;
-        // ---- subject_unlinked DISPATCH boundary ----
-        // FIRST, before budget reservation, the circuit breaker, the cache
-        // lookups and the live call — so a quarantined selector cannot start a
-        // direct, pivoted, cached, repeated or paid call. Placed here rather than
-        // per-tool because all ~89 tools funnel through this one wrapper.
+        // ---- subject_unlinked boundary: PROMOTION, not dispatch ----
+        // Operator decision 2026-09-12. A quarantined selector may now be
+        // LOOKED UP; nothing it returns inherits subject authority. Full
+        // rationale and the safety invariant: lib/unproven-linkage.ts.
         //
-        // `force` does NOT override it: a manual re-run of a quarantined selector
-        // is exactly the escape this boundary exists to close. Clearing it is an
-        // analyst linkage decision on the artifact, not a call-site flag.
+        // Placed here rather than per-tool because all ~89 tools funnel through
+        // this one wrapper.
+        //
+        // ⚠️ THE TAINT BELOW IS WHAT MAKES THIS SAFE. `username_sweep` on a
+        // harvested username is not a name-only query, so the write-path
+        // quarantine gate — which keys on QUERY SHAPE — does not fire for it.
+        // Drop this marker and a stranger's profiles persist at full subject
+        // authority and reach identity clusters and the report: exactly the
+        // hole #433 closed. The marker is not cosmetic provenance.
+        //
+        // ANALYST REJECTION IS UNAFFECTED and still refuses below — a Dismiss
+        // is a human ruling about reality, quarantine is a machine claim about
+        // provenance, and re-spending on a struck-out row argues with the analyst.
+        let unprovenLinkage: UnprovenLinkage | null = null;
         {
           const { keys: refusedKeys, rows: refusedRows } = await loadRefusedKeys();
           // Candidates, not the computed type alone — the paid breach tools take
@@ -1023,12 +1038,27 @@ export function wrapToolsWithCache(
           if (isDispatchRefused(refusedKeys, candidateTypes, sel)) {
             const declared = candidateTypes.find((t) => refusedKeys.has(`${t}:${sel}`)) ?? selectorType;
             const why = reasonForKey(refusedRows, circuit.normalizeSelector, declared, sel);
-            const refusal = quarantineRefusal(name, declared, sel, why);
-            console.warn(
-              `[quarantine-dispatch] refused ${name} on ${declared}:${sel}` +
-              (why ? ` (${why})` : ""),
-            );
-            return refusal;
+            if (!promotionQuarantineEnabled()) {
+              // KILL SWITCH. PROMOTION_QUARANTINE_DISABLED=true restores the
+              // pre-2026-09-12 dispatch block with no deploy. Kept because this
+              // reverses #433/#436/#448/#518/#519 and its blast radius is every
+              // paid tool in the registry; a bad outcome must be revertible in
+              // seconds, not in a mirror-sync-and-deploy cycle.
+              const refusal = quarantineRefusal(name, declared, sel, why);
+              console.warn(
+                `[quarantine-dispatch] refused ${name} on ${declared}:${sel}` +
+                (why ? ` (${why})` : ""),
+              );
+              return refusal;
+            }
+            unprovenLinkage = unprovenLinkageMarker(declared, sel, why);
+            console.log(JSON.stringify({
+              event: "unproven_linkage_dispatch",
+              tool: name,
+              parent_type: declared,
+              parent_value: sel,
+              parent_reason: why ?? null,
+            }));
           }
           // Same position, same shape, for the analyst's own rejections. `force`
           // does not override it either: the analyst clears a rejection by
@@ -1084,6 +1114,13 @@ export function wrapToolsWithCache(
           manual_override: manualOverride,
           weak_lead: weakLead.weak,
           weak_lead_reasons: weakLead.reasons,
+          // Unproven-linkage taint rides the BASE meta on purpose: every return
+          // path in this wrapper — live, cache hit, stale replay, selector
+          // reuse, timeout stub, budget refusal — spreads `runtimeMetaBase`,
+          // so one assignment covers all of them. Attaching it only to the
+          // live-call path would let a CACHED replay of the same quarantined
+          // selector come back clean and promote.
+          ...(unprovenLinkage ? { [UNPROVEN_LINKAGE_KEY]: unprovenLinkage } : {}),
         };
         let hash: string | null = null;
         let paramsHash: string | null = null;
@@ -1254,6 +1291,32 @@ export function wrapToolsWithCache(
         // for exactly what this does and does not block — it never blocks the
         // run's first correlate call or a retry after a failed one.
         if (name === "minimax_correlate") {
+          // The per-run BUDGET is checked first and covers what the freshness
+          // gate deliberately does not: the failure path. The gate keys on a
+          // successful prior pass, so a correlate that fails or times out is
+          // retried without limit — 7 and 8 calls in two measured production
+          // runs, 206s and 181s. Same free-refusal placement as the gate: no
+          // tool-call slot, no paid-call slot, no circuit state, and it never
+          // reaches live dispatch, so it cannot touch lastCorrelateOutcome.
+          if (correlateBudgetExhausted()) {
+            const reason = correlateBudgetReason();
+            await logUsage(false, false, Date.now() - t0, reason, null, true, {
+              input: inputJson,
+              runtime: { ...runtimeMetaBase, rejection_reason: "correlate_budget_spent", rejection_source: "correlate_budget" },
+            });
+            return attachRuntimeMeta({
+              ok: false,
+              skipped: true,
+              correlate_budget_spent: true,
+              error: reason,
+            }, {
+              ...runtimeMetaBase,
+              rejection_reason: "correlate_budget_spent",
+              stage: "TRIAGE",
+              cache_layer: "miss",
+              stale_cache: !!staleRecord,
+            });
+          }
           const freshness = shouldSkipRedundantCorrelate();
           if (freshness.skip) {
             await logUsage(false, false, Date.now() - t0, freshness.reason!, null, true, {
@@ -1451,6 +1514,11 @@ export function wrapToolsWithCache(
         let ok = true;
         let result: unknown;
         let errInfo: { errorMsg: string | null; statusCode: number | null } = { errorMsg: null, statusCode: null };
+        // Spend the correlate budget at ADMISSION, not on completion: an
+        // attempt that times out is exactly the attempt the budget exists to
+        // bound, and it never reaches the completion handlers below.
+        if (name === "minimax_correlate") bumpCorrelateCall();
+
         try {
           // Phase 2: bound the live call with a per-tool hard timeout (returns a
           // schema-safe result on timeout, never throws). Recording/evidence tools
