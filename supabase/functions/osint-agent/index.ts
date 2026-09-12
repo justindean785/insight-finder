@@ -61,6 +61,7 @@ import {
   hasNoFindingsDecision, resolveTerminalState,
 } from "./orchestrator-finalize.ts";
 import { contextCharsFromMessages, createInvocationTelemetry } from "./telemetry.ts";
+import { measurePromptTerms, measureToolDescriptions, promptSizeEvent } from "./prompt-size.ts";
 import {
   loadReviewsForThread, applyReviewsToArtifacts, dropRejectedArtifacts,
   renderAnalystDecisionsBlock, REVIEW_STATE_UNAVAILABLE_NOTE,
@@ -766,6 +767,29 @@ Deno.serve(async (req) => {
     const baseSystemPrompt =
       SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary
       + analystDecisionsBlock;
+    // ---- Prompt-size instrument (A1) -----------------------------------------
+    // `approxPromptChars` above stays exactly as it is: it is an INPUT TO PROVIDER
+    // ROUTING (the MiniMax pre-pivot and the DeepSeek safety budget), so inflating
+    // it would re-route runs that route fine today. This is the MEASUREMENT, and it
+    // counts the terms that figure silently drops — the workflow addendum, the
+    // analyst-decisions block (0 to ~30k on a reviewed thread) and the tool
+    // descriptions. The serialized tool input schemas stay uncounted and are named
+    // in `unmeasured` rather than guessed: zod@3 exposes no JSON-Schema export, so
+    // any number here would be invented. Read the total as "everything countable".
+    const promptTermBaseline = {
+      systemStatic: SYSTEM_PROMPT_FULL.length,
+      findingLabels: FINDING_LABELS.length,
+      workflowAddendum: buildWorkflowAddendum(detectedSeedType).length,
+      visionIntake: visionIntakeSummary.length,
+      analystDecisions: analystDecisionsBlock.length,
+      ...measureToolDescriptions(tools as unknown as Record<string, unknown>),
+    };
+    console.log(promptSizeEvent(
+      "prompt_size_initial",
+      threadId,
+      measurePromptTerms({ ...promptTermBaseline, messages: contextCharsFromMessages(trimmedMessages) }),
+      { routing_approx_prompt_chars: approxPromptChars },
+    ));
     // The two decision tools exist in the registry so forced-finalize can select them,
     // but they must never be available during ordinary investigation steps.
     const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));
@@ -888,6 +912,16 @@ Deno.serve(async (req) => {
         const stepMessagesOut = sanitizeModelMessages(
           capToolResultOutputs(budgeted, MAX_TOOL_RESULT_CHARS),
         );
+        // A1 instrument, per step: measured on the array actually handed to the
+        // model. `stepDirective` is reported as 0 rather than guessed — the branches
+        // below choose which directive to append, and a wrong attribution here would
+        // be the same class of error this instrument exists to correct.
+        console.log(promptSizeEvent(
+          "prompt_size_step",
+          threadId,
+          measurePromptTerms({ ...promptTermBaseline, messages: contextCharsFromMessages(stepMessagesOut) }),
+          { step_number: stepNumber ?? 0 },
+        ));
         // Force the closing synthesis step when ANY run budget is exhausted:
         //  • P0 fix A — the wall-clock reserve window opened, or we hit the last step.
         //  • Run tool-call cap — MAX_TOOL_CALLS_PER_RUN genuine live calls reached
