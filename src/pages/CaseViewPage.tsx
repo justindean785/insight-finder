@@ -192,6 +192,6 @@ export default function CaseViewPage() {
 /** Tab badges from the case snapshot — the same version the Tools and Report tabs read. */
 function CaseViewTabs({ active, onChange }: { active: ViewCaseTab; onChange: (t: ViewCaseTab) => void }) {
   const { snapshot } = useCaseSnapshot();
-  const tabCounts = buildWorkspaceTabCounts(snapshot?.items ?? [], snapshot?.tools.total ?? 0);
+  const tabCounts = buildWorkspaceTabCounts(snapshot?.items ?? [], snapshot?.tools.total ?? 0, snapshot?.authority ?? null);
   return <ViewWorkspaceTabs active={active} onChange={onChange} counts={tabCounts} />;
 }

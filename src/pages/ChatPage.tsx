@@ -116,7 +116,7 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
 
   // Tab badges read the SAME published snapshot as the case bar and the panels.
   const hydrated = Boolean(snapshot?.hydrated);
-  const tabCounts = buildWorkspaceTabCounts(snapshot?.items ?? [], snapshot?.tools.total ?? 0);
+  const tabCounts = buildWorkspaceTabCounts(snapshot?.items ?? [], snapshot?.tools.total ?? 0, snapshot?.authority ?? null);
 
   // Panels stay mounted once visited. Switching back is instant, and each tab
   // keeps its own scroll position, filters and open drawers — the old

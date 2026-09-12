@@ -23,6 +23,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
+import { ANALYST_ACTIONABLE_STATES, type AuthorityState } from "@/lib/authority";
 
 const art = (kind: string) => ({ kind });
 
@@ -62,9 +63,12 @@ describe("buildWorkspaceTabCounts — Evidence alert badge", () => {
 });
 
 describe("buildWorkspaceTabCounts — the surrounding counts are unchanged", () => {
-  it("evidence.value is every artifact, breach-shaped or not", () => {
+  it("with no authority tally, evidence.value falls back to every artifact", () => {
+    // The degraded path: mid-load there is no tally yet, and a confident 0 would
+    // read as "this case found nothing" on a case that found plenty.
     const items = [art("breach_exposure"), art("email"), art("domain")];
     expect(buildWorkspaceTabCounts(items, 0).evidence.value).toBe(3);
+    expect(buildWorkspaceTabCounts(items, 0, null).evidence.value).toBe(3);
   });
 
   it("tools.value is the persisted tool total and carries no alert", () => {
@@ -77,6 +81,57 @@ describe("buildWorkspaceTabCounts — the surrounding counts are unchanged", () 
       evidence: { value: 0, alert: 0 },
       tools: { value: 0, alert: 0 },
     });
+  });
+});
+
+describe("buildWorkspaceTabCounts — the Evidence badge counts what needs a decision", () => {
+  // The board's default filter has hidden weak leads, quarantined rows and
+  // excluded namesakes since #543, but the badge beside it read `items.length`.
+  // So the tab advertised 123 while the board showed a dozen — which is the whole
+  // of "8 minute investigations and 123 artifacts to sort through".
+  const tally = (over: Partial<Record<AuthorityState, number>> = {}): Record<AuthorityState, number> => ({
+    verified: 0, infrastructure: 0, probable: 0, review: 0,
+    weak: 0, quarantined: 0, conflict: 0, failed: 0, ...over,
+  });
+
+  it("counts only the states the board actually shows by default", () => {
+    const t = tally({ verified: 3, infrastructure: 1, probable: 2, review: 5, conflict: 1 });
+    expect(buildWorkspaceTabCounts([], 0, t).evidence.value).toBe(12);
+  });
+
+  it("the noise the board hides does not inflate the badge", () => {
+    // 120 rows of leads, quarantine, exclusions and failures beside 5 real ones.
+    const t = tally({ verified: 5, weak: 60, quarantined: 40, failed: 20 });
+    const value = buildWorkspaceTabCounts(Array.from({ length: 125 }, () => art("url")), 0, t).evidence.value;
+    expect(value).toBe(5);
+    expect(value).not.toBe(125);
+  });
+
+  it("reads 0 only when there is genuinely nothing to act on", () => {
+    const t = tally({ weak: 12, quarantined: 4 });
+    expect(buildWorkspaceTabCounts([art("url")], 0, t).evidence.value).toBe(0);
+  });
+
+  it("counts through the SAME set the board filters on, so the two cannot drift", () => {
+    // Not a restatement of the literal: it sums the badge over exactly the
+    // membership of ANALYST_ACTIONABLE_STATES, so adding a state to that set
+    // moves both surfaces together or this fails.
+    const t = tally();
+    let expected = 0;
+    for (const state of ANALYST_ACTIONABLE_STATES) {
+      t[state] = 7;
+      expected += 7;
+    }
+    t.weak = 99;
+    t.quarantined = 99;
+    expect(buildWorkspaceTabCounts([], 0, t).evidence.value).toBe(expected);
+  });
+
+  it("the breach alert is unaffected by the tally", () => {
+    const t = tally({ verified: 1 });
+    const counts = buildWorkspaceTabCounts([art("breach_exposure"), art("email")], 0, t);
+    expect(counts.evidence.alert).toBe(1);
+    expect(counts.evidence.value).toBe(1);
   });
 });
 
