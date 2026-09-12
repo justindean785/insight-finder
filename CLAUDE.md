@@ -310,14 +310,32 @@ Two things about it that must not be "simplified" later:
   *authority*, never their existence. Any future change that makes a quarantined row
   disappear is a regression, not a tightening.
 
-### ✅ The dispatch boundary BINDS — what is still open is its observability (P1)
+### ⚠️ The dispatch boundary now refuses ANALYST REJECTION ONLY (#581)
+
+**Read this before acting on anything above or below about dispatch.** As of #581
+(2026-09-12, operator decision) `subject_unlinked` is a PROMOTION gate, not a dispatch
+gate. Do NOT "restore" the quarantine refusal — it was opened deliberately.
 
 **Do not re-derive this from the old grep.** `grep -rn "isSubjectUnlinked" tool-registry.ts index.ts tools/`
 is still empty *and that is fine*: the guard lives in **`cache.ts`** (`wrapToolsWithCache`,
-the pre-flight block at ~:866-899), keyed by `dispatchKey` (`lib/dispatch-quarantine.ts`)
-and `buildRejectedDispatchKeys` (`lib/dispatch-rejection.ts`), and refuses a quarantined or
-analyst-rejected selector before budget, circuit, cache or the live call. `force` does not
-override it. Pinned by `quarantine_dispatch_test.ts` / `rejected_dispatch_test.ts`.
+the pre-flight block), keyed by `dispatchKey` (`lib/dispatch-quarantine.ts`) and
+`buildRejectedDispatchKeys` (`lib/dispatch-rejection.ts`). What it does now:
+
+- **analyst-rejected selector → REFUSED**, before budget, circuit, cache or the live call.
+  `force` does not override it. Pinned by `rejected_dispatch_test.ts`.
+- **quarantined selector → DISPATCHED, and its result tainted** with an
+  `unproven_linkage` marker (`lib/unproven-linkage.ts`). `extractFindings` stamps
+  `subject_unlinked` on everything the call yields, so authority is never inherited.
+  `force` cannot shed the taint. Pinned by `quarantine_dispatch_test.ts` (rewritten) and
+  `unproven_linkage_test.ts`.
+- **kill switch** `PROMOTION_QUARANTINE_DISABLED=true`, read at call time, restores the
+  old refusal on the running build with no deploy.
+
+⚠️ **The taint is the safety case, not provenance decoration.** The write-path quarantine
+gate keys on QUERY SHAPE, and `username_sweep` on a harvested username is not a name-only
+query — so if the marker is ever dropped, a stranger's profiles persist at full subject
+authority, join identity clusters and reach the report. That is the hole #433 closed,
+re-opened from a different direction.
 
 What remains open — **and #519 did NOT close it, despite what this file used to say.**
 #519 merged 2026-09-08 (`e50db9e`, deployed) and this line previously claimed it "stamps

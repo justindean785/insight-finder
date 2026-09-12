@@ -17,7 +17,7 @@ will be overtaken too.
 | edge suite | **1802** passed / 0 failed / 5 ignored |
 | frontend suite | **2087** passed / 1 skipped / 171 files |
 | e2e | **52** passed / 2 skipped (run BY HAND — see §3) |
-| live `/health` build | **see CLAUDE.md** — re-measure, do not trust this line |
+| live `/health` build | **`2864860`** — deployed and verified this session (was `7c7888f`) |
 
 Baselines were re-measured in a clean `git worktree` off `origin/main`.
 CLAUDE.md's previous figures (1634 edge, 1957/159 frontend) were stale *before*
@@ -146,11 +146,20 @@ are worth reading, but these five were checked against the code and are wrong:
   dead code" generalization does not hold for it.)
 - **"markdown_extract fix written but not deployed"** — was **not written at
   all**, in canonical or mirror. Fixed this session.
-- **"Circuit-break providers after 2 failures per run"** — already stricter:
-  `circuit.ts` suppresses a provider for the whole investigation on its FIRST
-  5xx/401/403/402/429/502/504. **The real gap is that the breaker is per-thread
-  and in-memory, so it never carries ACROSS runs** — which is why a provider
-  500ing for three days is retried fresh in every new investigation.
+- **"Circuit-break providers after 2 failures per run"** — mostly already
+  shipped, and stricter than asked, but **not uniformly**. Corrected after a
+  review caught me overstating it:
+  - **Provider-level** suppression for the whole investigation on the FIRST
+    occurrence: `http_500` (any other 5xx), `401`/`403`, `402`, `429`, and
+    `timeout` (immediately for a single-upstream provider; second timeout for
+    oathnet; third for a `GENERAL_MULTI_ORIGIN_TOOLS` fan-out tool).
+  - **Tool-level only:** `502`/`504` set `b.disabledReason` for the thread and
+    never call `suppressProvider`. **Sibling tools on the same provider keep
+    running after a gateway error** — so for grouped providers (OathNet's
+    five tools, DeepFind) part of the proposed work is genuinely NOT shipped.
+  - **The larger gap stands:** the breaker is per-thread and in-memory, so it
+    never carries ACROSS runs. A provider 500ing for three days is retried
+    fresh in every new investigation. That needs a persisted table.
 - **`ip_address` + `ip` as two rows** — `source` is in `artifactDedupKey` by
   design (four corpora agreeing is four coverage facts) and the report folds the
   twins.
@@ -173,6 +182,12 @@ are worth reading, but these five were checked against the code and are wrong:
 - **Cross-run provider health.** The genuinely missing piece behind the
   "low-yield paid tools" item. Needs a persisted table; the in-memory
   per-thread breaker cannot express it.
+- **Provider-level suppression on 502/504.** Today they disable only the
+  calling tool for the thread, so a grouped provider's sibling tools keep
+  being scheduled after a gateway error. A one-line change in `circuit.ts`
+  (call `suppressProvider` in that case arm, as 500 already does) — but it is
+  a real behaviour change to the breaker and belongs in its own PR with its
+  own test, not bolted onto this one.
 - **The Next-steps repair-card rail.** An attempt to drop malformed report lines
   reversed a documented, e2e-tested decision and was backed out. Four options
   and a recommendation in `docs/next-steps-repair-cards.md`. **Product call.**
