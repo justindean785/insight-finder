@@ -13,23 +13,43 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-09-12T20:00Z.** `main` = `c5a0467` (#581 `2864860` → #582 stamp
-> `5cbd7b0` → ledger `c50f383` → #583 docs `c5a0467`). `BUILD_MARKER` = `2864860`.
-> Mirror `main` = `958510c` — surgical sync of 18 `osint-agent/` files (17 + `build-info.ts`);
-> `diff -rq` empty for all four function dirs.
-> Live `osint-agent` build = **`2864860`** — DEPLOYED AND VERIFIED 2026-09-12T15:01Z:
-> `/health` moved `7c7888f` → `2864860`, `deploy/live` → `2864860`, ledger `c50f383`,
-> `verify:deploy` **VERIFIED** with `mirror tree -> equal` (`3da3b6a7d702`). Bytes
-> unverified, as always — read the scope line, not the green word.
->
-> Previous verified state, for the ledger: live `7c7888f`, stamp `5807c31` (parent
-> `7c7888f`), `deploy/live` → `7c7888f`, `verify:deploy` VERIFIED with
-> `mirror tree -> equal` (both `c9edfe634fcf`). Bytes unverified, as always — read the
-> scope line, not the green word. `/health` carried both behavioural keys:
-> `checks.synthesis` = `{ok, "disabled"}` and `checks.rejected_cluster_sweep` =
-> `{ok, "clean: 361 rejected review(s), 0 stale assignment(s)"}`. Orchestrator
+> **Dated state — 2026-09-13T00:05Z.** `main` = `95b8d50` (#587 `c87c07b` → #588 stamp
+> `4bdd1b4` → ledger `95b8d50`). `BUILD_MARKER` = `c87c07b`.
+> Mirror `main` = `71b79c4` — surgical sync of 11 `osint-agent/` files (10 + `build-info.ts`),
+> landed as mirror PR #84; `diff -rq` empty for all four function dirs.
+> Live `osint-agent` build = **`c87c07b`** — DEPLOYED AND VERIFIED 2026-09-13T00:02Z:
+> `/health` moved `2864860` → `c87c07b`, `deploy/live` → `c87c07b`, ledger `95b8d50`,
+> `verify:deploy` **VERIFIED** with `mirror tree -> equal` (`e0330dd1bf66`). Bytes
+> unverified, as always — read the scope line, not the green word. Orchestrator
 > `selected_provider: deepseek`, `orchestrator_reason: pinned`,
 > `reveal_breach_data: true`.
+>
+> **`/health` now carries THREE behavioural keys**, and the newest one is
+> **`checks.credentials`** (#587) — the proof-of-deploy key for this build, and the first
+> one that reports a *fault* rather than a state. On its first probe it read
+> `{"ok": false, "detail": "refusing: github_code_search (3x), deepfind_email_breach (2x),
+> reddit_user (1x) · recovered: indicia_person, jina_reader_scrape, wayback_cdx_search"}`.
+> That is correct behaviour, not a broken deploy: `ok:false` is what "a provider is refusing
+> us" is supposed to look like, and a read failure reports `ok:false` too, because "cannot
+> tell" is not healthy. The other two are `checks.synthesis` = `{ok, "disabled"}` and
+> `checks.rejected_cluster_sweep` = `{ok, "clean: 361 rejected review(s), 0 stale
+> assignment(s)"}`. **The next build's proof key must be a key that build introduces** — the
+> marker alone can never prove a bundle.
+>
+> ⚠️ **`github_code_search` is genuinely 401 and JD's fix did NOT take** — measured against
+> `tool_usage_log`, not inferred. Every call in the 21-day window failed `github 401`,
+> **including 2026-09-12T20:53Z**, hours after the token was reported fixed; there is not one
+> `ok` row in the window. The secret the code reads is `GITHUB_API_TOKEN`, falling back to
+> `GITHUB_TOKEN` (`env.ts:256`), set in **Supabase function settings**, not Vercel or the repo.
+> By contrast `rapidapi_breach_search` is **19 ok / 0 failed over 7 days** — that fix is
+> confirmed. `reddit_user`'s single failure is 2026-09-07 (datacenter-IP block, expected) and
+> `deepfind_email_breach` is 3 ok / 2 failed, listed only because its most recent event was a
+> failure. Do not treat the `/health` list as four dead providers; that is the exact mistake
+> the "A 403 is not a dead credential" section below exists to stop.
+>
+> Previous verified state, for the ledger: live `2864860`, stamp `5cbd7b0`, `deploy/live` →
+> `2864860`, ledger `c50f383`, `verify:deploy` VERIFIED with `mirror tree -> equal`
+> (`3da3b6a7d702`); before that live `7c7888f`, stamp `5807c31`, tree `c9edfe634fcf`.
 >
 > **⚠️ `subject_unlinked` is a PROMOTION gate as of #581 — the dispatch half of
 > #518/#519 is deliberately reversed.** A quarantined selector is now LOOKED UP, and
@@ -104,7 +124,9 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 > echoes about itself. It reads `{"ok": true, "detail": "disabled"}`, and `disabled` is
 > correct: synthesis ships dark behind two independently-defaulted-OFF flags. If you need to
 > confirm a future deploy landed, look for a key the new code introduces, not only the SHA.
-> The next such key is **`checks.rejected_cluster_sweep`** (2026-09-02): the health path now
+> The successor keys are **`checks.rejected_cluster_sweep`** (2026-09-02) and
+> **`checks.credentials`** (#587, live in `c87c07b` — see the dated state above). On
+> `rejected_cluster_sweep`: the health path now
 > clears stale `cluster_id`/`subject_id` on analyst-rejected rows every probe — bounded,
 > idempotent, converging to one read, kill switch `REJECTED_CLUSTER_SWEEP_DISABLED` — so a
 > Dismiss binds on the persisted columns within a probe interval instead of at the next
@@ -185,8 +207,8 @@ There is **ONE place to work: this repo, `justindean785/insight-finder`** (produ
 
 ## Edge function internals (gotchas)
 - **Live tool defs are in `supabase/functions/osint-agent/tool-registry.ts`** (`buildTools`), **not** inline in `index.ts` (which now only orchestrates the request). The god-file refactor moved them; `index.ts` has zero tool defs. The catalog↔runtime contract test (`src/test/catalog-guidance.test.ts`) reads `tool-registry.ts` (with an `index.ts` fallback) to assert every `catalog.ts` entry has a runtime def — keep `catalog.ts` and `tool-registry.ts` in sync when adding a tool. (Any older `tools/*.ts` files are stale mirrors, not the runtime source.)
-- Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts`). **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail.) **Edge baseline: 1802 passed / 0 failed / 5 ignored** (re-measured 2026-09-12T19:58Z on `main` at `c5a0467`, post-#581/#582/#583, with Deno 2.9.6 and `--no-lock`; the 1762/`d11f2f9`, 1634/`4a5eb1c`, 1624/`57c0912`, 1613/`2026-09-02`, 1539, 1517/`3b6fc44`, 1461/`3c2ef26`, 1446/`cf06cbb`, 1407/`03f64e4`, 1279/`5cc1940` and 1178/`394cd0b` figures are all stale, INCLUDING the "1778" this line briefly carried — that was the mid-branch figure before the promotion-quarantine tests landed). The 24 environmental failures are GONE — do not treat any failure as "probably environmental"; that excuse is retired. **Deno is NOT preinstalled** in the web/remote sandbox: `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y` (verified working 2026-08-28 — `dl.deno.land` answers 200 now, so the npm-registry workaround in `mem/ops/deno-tests-in-web-sandbox.md` is a fallback, not the only route). Pass `--no-lock`: an unqualified `deno test` rewrites `deno.lock` and drops four real dependency entries — or skip the install entirely and **use CI as the edge instrument**: any PR gives a clean `deno test` on a provisioned toolchain, and a red PR is still a usable measuring device if you read the per-job conclusions rather than the top-level X. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
-- **Frontend baseline: 2087 passed / 1 skipped / 171 files** (`npx vitest run`, re-measured 2026-09-12T20:00Z on `main` at `c5a0467`, post-#581/#582/#583. The 2071/169 (`d11f2f9`), 1957/159 (`4a5eb1c`), 1927/158 (`57c0912`), 1818/149 (2026-09-02), 1803/148, 1775/143 (`3b6fc44`), 1695/136, 1611/131, 1629/133, 1587/130, 1585/130, 1422/115 and 1288/105 figures are all stale). ⚠️ **Test FILES are the suite's own figure, not the coverage upload count.** CI's `Frontend (vitest + build)` job prints `there will be 137 files uploaded` immediately after the suite — that is the *coverage artifact* file count, and mistaking it for the suite figure already put a wrong number in one commit message. **If a run reports ~10 React failures, re-measure in an isolated worktree with its own `npm ci`** before believing them — a shared `node_modules` can produce a duplicate-React artifact that fabricates exactly that (this cost a session; PR #481's body still cites them as real). It is a *symptom to check*, not a rule that a shared tree always lies: the 1695 above was measured in the primary checkout with 0 failures, and CI's own `Frontend (vitest + build)` job agreed on the same head. Re-measure rather than trust it — this number moved three times in one session. The package manager is **npm** — there is no `pnpm-lock.yaml`. Use `npm ci`, `npm run typecheck|lint|test|build|test:edge`.
+- Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts`). **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail.) **Edge baseline: 1832 passed / 0 failed / 5 ignored** (re-measured 2026-09-13T00:04Z on `main` at `95b8d50`, post-#587/#588, with Deno 2.9.6 and `--no-lock`; the 1802/`c5a0467`, 1762/`d11f2f9`, 1634/`4a5eb1c`, 1624/`57c0912`, 1613/`2026-09-02`, 1539, 1517/`3b6fc44`, 1461/`3c2ef26`, 1446/`cf06cbb`, 1407/`03f64e4`, 1279/`5cc1940` and 1178/`394cd0b` figures are all stale, INCLUDING the "1778" this line briefly carried — that was the mid-branch figure before the promotion-quarantine tests landed). The 24 environmental failures are GONE — do not treat any failure as "probably environmental"; that excuse is retired. **Deno is NOT preinstalled** in the web/remote sandbox: `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y` (verified working 2026-08-28 — `dl.deno.land` answers 200 now, so the npm-registry workaround in `mem/ops/deno-tests-in-web-sandbox.md` is a fallback, not the only route). Pass `--no-lock`: an unqualified `deno test` rewrites `deno.lock` and drops four real dependency entries — or skip the install entirely and **use CI as the edge instrument**: any PR gives a clean `deno test` on a provisioned toolchain, and a red PR is still a usable measuring device if you read the per-job conclusions rather than the top-level X. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
+- **Frontend baseline: 2104 passed / 1 skipped / 172 files** (`npx vitest run`, re-measured 2026-09-13T00:05Z on `main` at `95b8d50`, post-#587/#588. The 2087/171 (`c5a0467`), 2071/169 (`d11f2f9`), 1957/159 (`4a5eb1c`), 1927/158 (`57c0912`), 1818/149 (2026-09-02), 1803/148, 1775/143 (`3b6fc44`), 1695/136, 1611/131, 1629/133, 1587/130, 1585/130, 1422/115 and 1288/105 figures are all stale). ⚠️ **Test FILES are the suite's own figure, not the coverage upload count.** CI's `Frontend (vitest + build)` job prints `there will be 137 files uploaded` immediately after the suite — that is the *coverage artifact* file count, and mistaking it for the suite figure already put a wrong number in one commit message. **If a run reports ~10 React failures, re-measure in an isolated worktree with its own `npm ci`** before believing them — a shared `node_modules` can produce a duplicate-React artifact that fabricates exactly that (this cost a session; PR #481's body still cites them as real). It is a *symptom to check*, not a rule that a shared tree always lies: the 1695 above was measured in the primary checkout with 0 failures, and CI's own `Frontend (vitest + build)` job agreed on the same head. Re-measure rather than trust it — this number moved three times in one session. The package manager is **npm** — there is no `pnpm-lock.yaml`. Use `npm ci`, `npm run typecheck|lint|test|build|test:edge`.
 - **⚠️ `npm run test:e2e` EXISTS and PR CI does not run it — run it by hand before merging any workspace change.** This line used to say the script did not exist; it does (`playwright test`, 54 specs over `e2e/workspace-tabs.spec.ts` and `e2e/case-integrity.spec.ts`, driving the harness build). The `e2e` job in `ci.yml` is `if: github.event_name == 'push'` — a deliberate cost call after #483 drained the Actions allowance — so it runs on pushes to `main` **only**. The workflow header states the trade plainly: *a PR can go green and merge while breaking the tab-reachability contract, and the failure surfaces on main AFTER the merge — a revert, not a block.* Measured 2026-09-12: a change that passed vitest, typecheck, lint, build AND the full edge suite still broke `case-integrity.spec.ts → next steps › 9`. **Baseline: 52 passed / 2 skipped.** Deno-style gotcha for the web sandbox — Chromium is pinned and must not be re-downloaded:
   `PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium-1194/chrome-linux/chrome npm run test:e2e`
 - **The orchestrator is DeepSeek-slot-pinned, not MiniMax-primary.** `/health` reports `selected_provider: deepseek`, `orchestrator_reason: "pinned"`, with MiniMax as **fallback**. Since #449 the slot is vendor-agnostic via `DEEPSEEK_BASE_URL`, and the live model is **`glm-5.2` served by Z.AI**. Anywhere this file or `AGENTS.md` says MiniMax is primary, it is wrong.
@@ -516,24 +538,49 @@ fetched once, while each tool's `description` still carries paragraphs of the sa
 on every step. Cut there instead — and only after `prompt_size_step` reports the real
 number, not an estimate.
 
-### Instruments that were lying (all fixed in #587, none deployed as of writing)
+### Instruments that were lying — #587 shipped in `c87c07b` 2026-09-13
 
-- **`approxPromptChars`** omits the workflow addendum, `analystDecisionsBlock` (0 → ~30k),
-  the per-step directives and **every tool schema**. The ~175k average `initial_context_chars`
-  in telemetry is a floor, not the figure.
-- **The run caps are per ISOLATE, not per investigation.** `index.ts:331` calls
-  `clearRuntime(threadId)` on every request and that is `THREADS.delete(threadId)`, while
-  `runtime-policy.ts:296-299` claims only "a brand-new investigation" clears them. An
-  investigation is 2–12 invocations, so `MAX_PAID_CALLS = 12` is really **24–144 per case**.
-  Production: 130 calls/12 invocations, 112/9, 102/6. This also explains 74
-  `minimax_correlate` calls against a documented cap of 2.
-- **`/health`'s tools line is a PRESENCE test** (`has(env.X_API_KEY)`). A dead key and a
-  working key are identical to it; it read "17/20 configured" throughout the period
-  `github_code_search` answered 401 on every call, and it does not move when a secret's
-  value is rotated, so it cannot confirm a fix either.
-- **The cache sweep could not have drained a row.** It handed all 5,000 identified ids to
-  one `DELETE`, and PostgREST renders `.in()` into the URL query string — a ~185 KB URL
-  against a ~24 KB gateway cap. Chunk at 300 (`lib/rejected-cluster-sweep.ts`'s figure).
+**Read the per-item status, not the heading.** #587 made all four *legible*; it repaired
+exactly one of them. Two now have an honest meter beside the broken reading, and the
+defect they measure is still there — which is the point, because the number that sets the
+cap has to come from production, not from an estimate.
+
+- **`approxPromptChars` — MEASURED, not fixed, deliberately.** It still omits the workflow
+  addendum, `analystDecisionsBlock` (0 → ~30k), the per-step directives and **every tool
+  schema**, so the ~175k average `initial_context_chars` in telemetry is still a floor.
+  `approxPromptChars` was left alone because it *routes providers*; changing it changes
+  behaviour. The honest meter is separate: `prompt-size.ts` → `prompt_size_initial` and
+  `prompt_size_step`, the latter logged from each of the three `prepareStep` return
+  branches so a nudge step reports the tool set it actually ships. It names
+  `tool_input_schemas_serialized` as unmeasured rather than estimating it — zod@3 has no
+  JSON-Schema export, so those bytes cannot be counted from inside the function.
+- **The run caps are per ISOLATE, not per investigation — STILL TRUE, now measured.**
+  `index.ts:331` calls `clearRuntime(threadId)` on every request and that is
+  `THREADS.delete(threadId)`, while `runtime-policy.ts:296-299` claims only "a brand-new
+  investigation" clears them. An investigation is 2–12 invocations, so `MAX_PAID_CALLS = 12`
+  is really **24–144 per case**. Production: 130 calls/12 invocations, 112/9, 102/6. This
+  also explains 74 `minimax_correlate` calls against a documented cap of 2. #587 adds
+  `run_budget_prior`, which classifies prior `tool_usage_log` rows into what actually
+  consumed a paid slot (cached replays and `outcome === "skipped"` consumed nothing; failed
+  and empty paid calls did), with the paid predicate **injected, not imported**, so it
+  cannot drift from the admission gate. **A2b — enforcing the per-investigation cap — is
+  deliberately NOT done and is blocked on a week of this data.** `MAX_PAID_CALLS` is a
+  settled operator decision; setting the replacement number from an estimate is the error
+  that condemned a healthy provider.
+- **`/health`'s tools line is STILL a PRESENCE test** (`has(env.X_API_KEY)`) and #587 did
+  not touch it. What it adds is **`checks.credentials`** beside it, which reads `outcome`
+  and `status_code` over a rolling 7 days and so can tell a dead key from a working one and
+  can confirm a rotation. It earned its keep on the first probe: it caught that
+  `github_code_search` is still 401 (see the dated state above). Read the two together —
+  the tools line says a secret is *set*, `checks.credentials` says whether it *works*.
+- **The cache sweep could not have drained a row — FIXED and deployed.** It handed all
+  5,000 identified ids to one `DELETE`, and PostgREST renders `.in()` into the URL query
+  string: a ~185 KB URL against a ~24 KB gateway cap. It now chunks at
+  `CACHE_SWEEP_DELETE_CHUNK = 300` and a chunk fault returns, so `deleted` reports only what
+  was actually removed. ⚠️ **`CACHE_SWEEP_ENABLED` is still OFF** — the chunking landed
+  first so that flipping the switch is a separate, reversible decision. Before tuning TTLs,
+  measure **key-miss vs expiry**: L2 is keyed on full-param `input_hash`, which may be the
+  real reason for the 1.6% hit rate.
 
 ### A 403 is not a dead credential
 
