@@ -44,7 +44,10 @@ import { selectOrchestratorProvider } from "./orchestrator_select.ts";
 import { FINDING_LABELS } from "./catalog.ts";
 import { SYSTEM_PROMPT_FULL } from "./system-prompt.ts";
 import { wrapToolsWithCache } from "./cache.ts";
-import { beginCycle, clearRuntime } from "./runtime-policy.ts";
+import { paidBudgetTier } from "./cache.ts";
+import { costForTool } from "./costs.ts";
+import { priorSpendEvent, summarizePriorSpend } from "./lib/run-budget.ts";
+import { beginCycle, clearRuntime, runtimeLimits } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
@@ -330,6 +333,49 @@ Deno.serve(async (req) => {
     // debit failure being silently discarded while paid tool calls continue.
     let creditExhaustReason: string | null = null;
     clearRuntime(threadId);
+    // ---- Per-investigation spend instrument (A2a) ------------------------------
+    // `clearRuntime` above zeroes paidCalls/totalCalls/toolCounts on EVERY request,
+    // even though runtime-policy.ts documents those counters as lifetime-of-run and
+    // says only "a brand-new investigation" clears them. An investigation is 2-12
+    // invocations, so MAX_PAID_CALLS = 12 is really 24-144 paid calls per case.
+    //
+    // This MEASURES that; it does not change it. Turning a per-isolate cap into a
+    // per-investigation one means a case's fifth analyst turn can find the budget
+    // already spent, and choosing that number from an estimate would repeat the
+    // error this codebase keeps making — reading a partial window and acting on it.
+    // Enforcement lands separately, on the distribution this produces.
+    //
+    // Fire-and-forget so it cannot add latency to the run, and fail open: a
+    // telemetry read must never be able to stop an investigation.
+    void (async () => {
+      try {
+        const { data, error, count } = await supabaseAdmin
+          .from("tool_usage_log")
+          .select("tool_name,cached,outcome,cost_micro_usd", { count: "exact" })
+          .eq("thread_id", threadId);
+        if (error) {
+          console.warn("[run_budget_prior] read failed:", error.message);
+          return;
+        }
+        const rows = (data ?? []) as Array<Record<string, unknown>>;
+        const spend = summarizePriorSpend(
+          rows,
+          (name) => paidBudgetTier(costForTool(name), name) !== "free",
+        );
+        // An unbounded PostgREST select returns at most `db-max-rows` with NO error
+        // — a well-formed short 200. That silently biases this measurement LOW,
+        // which is the same shape as the bug #519 fixed at the dispatch boundary.
+        // Comparing against the exact count is what makes the number trustworthy.
+        const truncated = typeof count === "number" && count > rows.length;
+        console.log(priorSpendEvent(threadId, spend, {
+          invocation_paid_cap: runtimeLimits.maxPaidCallsPerRun,
+          rows_available: typeof count === "number" ? count : null,
+          truncated,
+        }));
+      } catch (e) {
+        console.warn("[run_budget_prior] read threw:", e);
+      }
+    })();
     // Seed breadcrumb for the cycle log — the first user message's text.
     const seedValueRaw = (() => {
       const fu = ((messages ?? []) as Array<{ role?: string; parts?: Array<{ type?: string; text?: string }> }>)
