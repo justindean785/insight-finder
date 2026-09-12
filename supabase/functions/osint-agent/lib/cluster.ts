@@ -25,6 +25,7 @@
 // ---- Confidence tiers (JD's schema) -------------------------------------------
 import { loadReviewsForThread, dropRejectedArtifacts } from "../reviews.ts";
 import { normPhoneE164 } from "./selector-normalize.ts";
+import { canonicalKind } from "./kind-alias.ts";
 
 export const TIERS = { CONFIRMED: 90, LIKELY: 75, POSSIBLE: 50, WEAK: 30 } as const;
 export function tierFor(conf: number): string {
@@ -209,16 +210,38 @@ export function strongTokens(a: Artifact, knownHandles: Set<string>): string[] {
   if (isExcluded(a)) return [];
   const t = new Set<string>();
 
-  // Primary selector by kind.
+  // Primary selector by KIND — read through the alias table (lib/kind-alias.ts),
+  // never off the raw spelling.
+  //
+  // This module was the last selector keyspace the alias table had not reached.
+  // The write path (`artifactDedupKey`), the read path (`normalizeArtifactKey`)
+  // and the dispatch guard all canonicalise; clustering compared `a.kind`
+  // literally, so every alias spelling the rest of the pipeline treats as the
+  // same selector class contributed NOTHING here and its row could only ever
+  // become a singleton "unattributed cluster":
+  //
+  //   handle / social / social_account / github_account → no handle: token
+  //   subdomain                                          → no domain: token
+  //   person                                             → no reclassified-handle path
+  //
+  // Measured on the 2026-09-12 `baig_azhar` export: `ip_address` (auto-persist)
+  // and `ip` (record_artifacts) for one value sat in two different clusters.
+  //
+  // NOTE ON `ip`: an IP is deliberately still NOT a strong token. Shared NAT,
+  // CGNAT and hosting make IP equality a false-link hazard, the same reason
+  // names are excluded above — `detectContradictions` speaks to shared infra
+  // instead. Canonicalising the kind does not admit IPs to union-find; it only
+  // stops the alias spellings of the kinds that ARE strong from being dropped.
+  const kind = canonicalKind(a.kind, a.value);
   const email = normEmail(a.value);
   if (email) t.add(`email:${email}`);
-  if (a.kind === "phone") { const p = normPhoneE164(a.value); if (p) t.add(`phone:${p}`); }
-  if (a.kind === "username") t.add(`handle:${foldHandle(a.value)}`);
-  if (a.kind === "domain") { const r = domainRoot(a.value); if (r) { t.add(`domain:${r}`); t.add(`handle:${r}`); } }
-  if (a.kind === "name" && metaStr(a.metaRaw, "reclassified_from") === "username") {
+  if (kind === "phone") { const p = normPhoneE164(a.value); if (p) t.add(`phone:${p}`); }
+  if (kind === "username") t.add(`handle:${foldHandle(a.value)}`);
+  if (kind === "domain") { const r = domainRoot(a.value); if (r) { t.add(`domain:${r}`); t.add(`handle:${r}`); } }
+  if (kind === "name" && metaStr(a.metaRaw, "reclassified_from") === "username") {
     t.add(`handle:${foldHandle(a.value)}`); // reclassified username misfiled as a name
   }
-  if (a.kind === "account_id") { const id = (a.value.match(/\d{5,}/) ?? [])[0]; if (id) t.add(`acct:${id}`); }
+  if (kind === "account_id") { const id = (a.value.match(/\d{5,}/) ?? [])[0]; if (id) t.add(`acct:${id}`); }
 
   // Metadata-asserted handles.
   for (const k of ["associated_handle", "seed_association", "instagram", "handle", "github"]) {

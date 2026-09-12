@@ -1198,9 +1198,17 @@ export function inferToolGaps(audit: ToolAudit): { kind: string; suggested: stri
   const used = new Set(
     audit.tools.flatMap((t) => [t.tool.toLowerCase(), ...t.kinds.map((k) => k.toLowerCase())]),
   );
+  // Match the covered kinds through the alias table, not on their raw spelling.
+  // `SUGGESTED_TOOLS_BY_KIND` is keyed by selector CLASS (`ip`, `username`,
+  // `domain`), while `kindsCovered` holds whatever each write path recorded —
+  // the auto-persist path writes `ip_address`/`social_account`, the model's
+  // record_artifacts path writes `ip`/`username`. On the 2026-09-12
+  // `baig_azhar` export that left eight `ip_address` rows invisible to gap
+  // inference while a single `ip` row drove it, from the same case.
+  const covered = new Set([...audit.kindsCovered].map((k) => KIND_TO_PIVOT[k] ?? k));
   const gaps: { kind: string; suggested: string[] }[] = [];
   for (const [kind, tools] of Object.entries(SUGGESTED_TOOLS_BY_KIND)) {
-    if (!audit.kindsCovered.has(kind)) continue;
+    if (!covered.has(kind)) continue;
     const missing = tools.filter((t) => !used.has(t.toLowerCase()));
     if (missing.length) gaps.push({ kind, suggested: missing });
   }
@@ -1369,7 +1377,21 @@ export function buildReportMarkdown(input: ReportInput): string {
   // A "next step" is a recommendation to spend money on a selector. It must be
   // inferred from the kinds still IN the working set: recommending email tools
   // off a rejected email is the product arguing with the analyst.
-  const gaps = inferToolGaps(buildToolAudit(artifacts.filter((a) => !isOutOfSet(a)), reviews));
+  //
+  // A QUARANTINED row is out of the working set for the same reason and one
+  // stronger: since #518/#519 the dispatch guard REFUSES a `subject_unlinked`
+  // selector before the live call, so a tool recommended off one cannot run at
+  // all. On the 2026-09-12 `baig_azhar` export the case's only `url` artifact
+  // was a name-only collision hit, and the report still recommended
+  // http_fingerprint, archive_url, wayback_snapshots and urlscan_search
+  // against it — four spend recommendations, all of them guaranteed refusals.
+  // `isClusterIneligible` is the shared authority predicate (it honours a
+  // `linkage_confirmed` release), the same one the clusters, graph and report
+  // sections already consult.
+  const gaps = inferToolGaps(buildToolAudit(
+    artifacts.filter((a) => !isOutOfSet(a) && !isClusterIneligible(a)),
+    reviews,
+  ));
   const clusterReport = buildIdentityClusters(artifacts, seedValue, reviews);
   const isNameSearch = !!detectNameLocationSeed(seedValue);
 

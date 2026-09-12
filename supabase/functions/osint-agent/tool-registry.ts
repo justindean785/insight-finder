@@ -4504,20 +4504,46 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: memoSchema("github_code_search", () => z.object({ query: z.string() })),
       execute: async ({ query }) => {
         try {
-          const headers: Record<string, string> = {
-            "User-Agent": "Proximity-OSINT",
-            Accept: "application/vnd.github.v3.text-match+json",
+          const url = `https://api.github.com/search/code?q=${encodeURIComponent(query)}&per_page=20`;
+          const call = async (authed: boolean) => {
+            const headers: Record<string, string> = {
+              "User-Agent": "Proximity-OSINT",
+              Accept: "application/vnd.github.v3.text-match+json",
+            };
+            if (authed && GITHUB_API_TOKEN) headers.Authorization = `Bearer ${GITHUB_API_TOKEN}`;
+            const res = await fetchT(url, { headers });
+            const body = await res.text();
+            let parsed: GitHubCodeSearchResponse = {};
+            try { parsed = JSON.parse(body); } catch { parsed = { raw: body.slice(0, 500) }; }
+            return { res, body, parsed };
           };
-          if (GITHUB_API_TOKEN) headers.Authorization = `Bearer ${GITHUB_API_TOKEN}`;
-          const r = await fetchT(`https://api.github.com/search/code?q=${encodeURIComponent(query)}&per_page=20`, { headers });
-          const text = await r.text();
-          let data: GitHubCodeSearchResponse = {};
-          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 500) }; }
+
+          let authenticated = !!GITHUB_API_TOKEN;
+          let { res: r, body: text, parsed: data } = await call(authenticated);
+
+          // A CONFIGURED-BUT-REJECTED token must not make this tool worse than
+          // no token at all. This tool's own description promises an
+          // unauthenticated fallback (60 req/hr), but that fallback only ever
+          // covered "no token set" — a stale or revoked GITHUB_API_TOKEN 401ed
+          // and the call was simply lost. Observed on the 2026-09-12
+          // `baig_azhar` case: `github_code_search` reported "Config 1 — HTTP
+          // 401" on the Health tab and persisted a `weak_lead` artifact saying
+          // the search FAILED, while the same query unauthenticated would have
+          // answered. Retry ONCE, without the credential, and report which
+          // mode produced the result.
+          let staleToken = false;
+          if (!r.ok && (r.status === 401 || r.status === 403) && authenticated) {
+            console.warn(`[github_code_search] token rejected (HTTP ${r.status}) — retrying unauthenticated`);
+            staleToken = true;
+            authenticated = false;
+            ({ res: r, body: text, parsed: data } = await call(false));
+          }
+
           if (!r.ok) {
             const remaining = r.headers.get("x-ratelimit-remaining");
             const reset = r.headers.get("x-ratelimit-reset");
-            console.warn(`[github_code_search] HTTP ${r.status} authed=${!!GITHUB_API_TOKEN} remaining=${remaining} reset=${reset} msg=${(data?.message ?? "").slice(0, 200)}`);
-            return { error: `github ${r.status}`, status: r.status, authenticated: !!GITHUB_API_TOKEN, rate_remaining: remaining, message: data?.message, snippet: text.slice(0, 300) };
+            console.warn(`[github_code_search] HTTP ${r.status} authed=${authenticated} stale_token=${staleToken} remaining=${remaining} reset=${reset} msg=${(data?.message ?? "").slice(0, 200)}`);
+            return { error: `github ${r.status}`, status: r.status, authenticated, token_rejected: staleToken, rate_remaining: remaining, message: data?.message, snippet: text.slice(0, 300) };
           }
           const items = (data?.items ?? []).map((i: GitHubCodeMatch) => {
             const textMatches = Array.isArray(i.text_matches) ? (i.text_matches as Array<{ fragment?: unknown }>) : [];
@@ -4526,7 +4552,7 @@ export function buildTools(ctx: ToolContext) {
               matches: textMatches.map((m) => m.fragment).slice(0, 3),
             };
           });
-          return { ok: true, authenticated: !!GITHUB_API_TOKEN, total: data?.total_count, items };
+          return { ok: true, authenticated, token_rejected: staleToken || undefined, total: data?.total_count, items };
         } catch (e) { return { error: String(e) }; }
       },
     }),

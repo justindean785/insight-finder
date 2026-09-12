@@ -1,6 +1,7 @@
 import { detectSeed } from "@/lib/seed";
 import { isInfraDomain, type Pivot, type PivotType } from "@/lib/intel";
 import { looksLikeReasoning, stripInlineTags, stripReasoningMarkup } from "@/lib/sanitize-agent-text";
+import { isWellFormedTarget, type PivotTargetType } from "@/lib/pivot-target-shape";
 
 export type RecommendedPivot = {
   label: string;
@@ -35,6 +36,23 @@ const SECRET_RE = /\b(password|passcode|plaintext|secret|token|cookie|session|ss
 const MINOR_RE = /\b(minor|underage|child|teen)\b/i;
 const COLLISION_RE = /\b(excluded|collision|namesake|unrelated|wrong person|not the same person)\b/i;
 
+/**
+ * A line that NAMES the selector class and puts the value right after it:
+ * "Corroborate username jdoe88 across platforms", "Check ip address
+ * 203.0.113.44". Without this the value reads as the whole action clause
+ * ("username jdoe88 across platforms"), which is neither a runnable selector
+ * nor matchable against the tool log's already-searched keys.
+ *
+ * SINGLE-TOKEN KINDS ONLY. `name` is deliberately absent: a name is several
+ * words, so "the name Jordan Vale" would be truncated to "Jordan".
+ */
+const KIND_LED_RE = /\b(username|handle|alias|email|domain|wallet|ip|phone)\s+(?:address\s+|number\s+|for\s+|of\s+|:\s*)?["\u2018\u2019'`@]?([^\s,;:"'`]+)/i;
+
+const KIND_LED_TYPE: Record<string, PivotTargetType> = {
+  username: "username", handle: "username", alias: "username",
+  email: "email", domain: "domain", wallet: "wallet", ip: "ip", phone: "phone",
+};
+
 function compact(text: string): string {
   return text.replace(/\s+/g, " ").replace(/\s+([,.;:])/g, "$1").trim();
 }
@@ -54,6 +72,16 @@ function extractTarget(label: string): string {
     label.match(WALLET_RE)?.[0] ??
     label.match(DOMAIN_RE)?.[0];
   if (directIdentifier) return stripTrailingPunctuation(directIdentifier);
+
+  // The line names its own selector class — take the token after it, but only
+  // if that token is actually well-formed FOR that class, so "Verify email
+  // ownership" does not yield the selector "ownership".
+  const led = label.match(KIND_LED_RE);
+  if (led) {
+    const candidate = stripTrailingPunctuation(led[2]);
+    const ledType = KIND_LED_TYPE[led[1].toLowerCase()];
+    if (ledType && isWellFormedTarget(ledType, candidate)) return candidate;
+  }
 
   // Two additions here, both of which decide whether a pivot can EVER be marked
   // already-run. `computePivots` keys "have we searched this?" on
@@ -176,6 +204,24 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
     seen.add(key);
     const split = splitReason(line);
     const type = pivotType(value);
+    // The target must be SELECTOR-SHAPED before this becomes a suggestion.
+    //
+    // `extractTarget` falls back to the whole line when it finds no identifier
+    // in it, and `pivotType` maps anything it cannot classify to `name`, so an
+    // ordinary prose recommendation ("Search Memphis-area ICE protest coverage
+    // — did Azhar…") arrived downstream as a 30-word "name" pivot. The schema
+    // caught every one of them, which is what it is for — but the analyst was
+    // then shown a rail of dead "Suggestion needs repair" cards instead of next
+    // steps. Measured on the 2026-09-12 `baig_azhar` case: three of four.
+    //
+    // The check is the SCHEMA'S OWN predicate (lib/pivot-target-shape.ts), so a
+    // line dropped here is exactly a line that could never have run, and the
+    // producer can never emit something the validator would have refused.
+    //
+    // Only the pivot is dropped, never the recommendation: the line stays in
+    // the agent's report text, where the analyst reads it as prose. This rail
+    // is for one-click selectors, and a sentence is not one.
+    if (!isWellFormedTarget(type, value)) continue;
     // Report-recommended domains that are OSINT source infrastructure
     // (linkedin.com, bizfileonline.sos.ca.gov, opencorporates.com…) bypass
     // buildPivots' filter, so drop them here too — they are never actionable
