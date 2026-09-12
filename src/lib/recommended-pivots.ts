@@ -204,24 +204,6 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
     seen.add(key);
     const split = splitReason(line);
     const type = pivotType(value);
-    // The target must be SELECTOR-SHAPED before this becomes a suggestion.
-    //
-    // `extractTarget` falls back to the whole line when it finds no identifier
-    // in it, and `pivotType` maps anything it cannot classify to `name`, so an
-    // ordinary prose recommendation ("Search Memphis-area ICE protest coverage
-    // — did Azhar…") arrived downstream as a 30-word "name" pivot. The schema
-    // caught every one of them, which is what it is for — but the analyst was
-    // then shown a rail of dead "Suggestion needs repair" cards instead of next
-    // steps. Measured on the 2026-09-12 `baig_azhar` case: three of four.
-    //
-    // The check is the SCHEMA'S OWN predicate (lib/pivot-target-shape.ts), so a
-    // line dropped here is exactly a line that could never have run, and the
-    // producer can never emit something the validator would have refused.
-    //
-    // Only the pivot is dropped, never the recommendation: the line stays in
-    // the agent's report text, where the analyst reads it as prose. This rail
-    // is for one-click selectors, and a sentence is not one.
-    if (!isWellFormedTarget(type, value)) continue;
     // Report-recommended domains that are OSINT source infrastructure
     // (linkedin.com, bizfileonline.sos.ca.gov, opencorporates.com…) bypass
     // buildPivots' filter, so drop them here too — they are never actionable

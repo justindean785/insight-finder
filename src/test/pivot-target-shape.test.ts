@@ -1,10 +1,20 @@
 /**
  * The producer/validator shape contract.
  *
- * These drive the SHIPPED control flow — `extractRecommendedPivots` and
- * `validatePivotSuggestion` as the app calls them — rather than re-asserting
- * the regex table. The point of the fix is that those two agree; a test that
- * only re-describes `TARGET_SHAPE` could not tell whether they do.
+ * `TARGET_SHAPE` is ONE table, read by `pivot-schema` (may this suggestion get
+ * a Run button?) and by `recommended-pivots` (is the token after a named
+ * selector class actually that kind of selector?). These tests drive the
+ * SHIPPED functions rather than re-asserting the regexes, because the property
+ * that matters is that the two ends agree — a test that only re-described the
+ * table could not tell whether they do.
+ *
+ * ⚠️ WHAT IS DELIBERATELY *NOT* TESTED HERE: that a malformed report line is
+ * dropped. It is not, and must not be. A suggestion the validator refuses stays
+ * on the rail as a non-runnable "Suggestion needs repair" card — see
+ * `pivot-schema`'s docstring and the e2e `next steps › 9 · a malformed
+ * generated pivot is quarantined and cannot run`. That is the same
+ * disclosure-not-deletion rule quarantined artifacts get, and the case against
+ * changing it is in `docs/next-steps-repair-cards.md`.
  */
 import { describe, it, expect } from "vitest";
 import { extractRecommendedPivots, toDisplayPivots } from "@/lib/recommended-pivots";
@@ -27,7 +37,7 @@ function cardsFor(report: string) {
   }));
 }
 
-describe("report pivots never reach the rail as prose", () => {
+describe("malformed report lines stay visible and stay inert", () => {
   // Verbatim from the 2026-09-12 `baig_azhar` production case: three of the
   // four Next-steps cards rendered as "Suggestion needs repair".
   const PRODUCTION_REPORT = [
@@ -39,18 +49,20 @@ describe("report pivots never reach the rail as prose", () => {
     "- Verify baigazhar042@gmail.com",
   ].join("\n");
 
-  it("drops the three prose lines and keeps the one real selector", () => {
-    const recs = extractRecommendedPivots(PRODUCTION_REPORT);
-    expect(recs.map((r) => r.value)).toEqual(["baigazhar042@gmail.com"]);
-    expect(recs[0].type).toBe("email");
+  it("the real selector is runnable and the three prose lines are not", () => {
+    const cards = cardsFor(PRODUCTION_REPORT);
+    const runnable = cards.filter((c) => c.validation.status === "valid").map((c) => c.rec.value);
+    expect(runnable).toEqual(["baigazhar042@gmail.com"]);
+    // The other three are NOT dropped — they reach the rail as repair cards.
+    expect(cards).toHaveLength(4);
   });
 
-  it("emits no card the validator would refuse", () => {
-    for (const { rec, validation } of cardsFor(PRODUCTION_REPORT)) {
-      expect(
-        validation.status,
-        `"${rec.value}" was emitted but is ${validation.status}`,
-      ).toBe("valid");
+  it("every refused card carries a stated reason the analyst can read", () => {
+    for (const { validation } of cardsFor(PRODUCTION_REPORT)) {
+      if (validation.status === "invalid") {
+        expect(validation.problems.length).toBeGreaterThan(0);
+        expect(validation.problems.every((p) => p.trim().length > 0)).toBe(true);
+      }
     }
   });
 
@@ -69,13 +81,6 @@ describe("report pivots never reach the rail as prose", () => {
       ["name", "Jordan Vale"],
     ]);
   });
-
-  it("a six-word name is kept and a seven-word one is not — the producer uses the validator's own bound", () => {
-    const six = extractRecommendedPivots("## Recommended Next Pivots\n- Investigate Ana Maria Sofia Luisa Vale Castro");
-    expect(six).toHaveLength(1);
-    const seven = extractRecommendedPivots("## Recommended Next Pivots\n- Investigate Ana Maria Sofia Luisa Vale Castro Ruiz");
-    expect(seven).toHaveLength(0);
-  });
 });
 
 describe("a line that names its own selector class yields that selector", () => {
@@ -91,6 +96,11 @@ describe("a line that names its own selector class yields that selector", () => 
       .toEqual([["ip", "203.0.113.44"]]);
     expect(pivots("- Review domain: example.com").map((p) => [p.type, p.value]))
       .toEqual([["domain", "example.com"]]);
+  });
+
+  it("a recovered selector is actually RUNNABLE, not just better-looking", () => {
+    const [card] = cardsFor("## Recommended Next Pivots\n- Corroborate username jdoe88 across platforms");
+    expect(card.validation.status).toBe("valid");
   });
 
   it("does not treat the next word as a selector when it is not shaped like one", () => {
