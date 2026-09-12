@@ -958,16 +958,39 @@ Deno.serve(async (req) => {
         const stepMessagesOut = sanitizeModelMessages(
           capToolResultOutputs(budgeted, MAX_TOOL_RESULT_CHARS),
         );
-        // A1 instrument, per step: measured on the array actually handed to the
-        // model. `stepDirective` is reported as 0 rather than guessed — the branches
-        // below choose which directive to append, and a wrong attribution here would
-        // be the same class of error this instrument exists to correct.
-        console.log(promptSizeEvent(
-          "prompt_size_step",
-          threadId,
-          measurePromptTerms({ ...promptTermBaseline, messages: contextCharsFromMessages(stepMessagesOut) }),
-          { step_number: stepNumber ?? 0 },
-        ));
+        // A1 instrument, per step. It must measure THE PROMPT THIS STEP ACTUALLY
+        // SENDS, not the registry-wide baseline: `prepareStep` narrows the tool set
+        // per branch (the persistence nudge exposes only record_artifacts, the
+        // report phase exposes none) and appends a different directive to the
+        // system string each time. Measuring before the branch would overcount tool
+        // descriptions by tens of thousands of chars and report `stepDirective` as
+        // zero while a directive is appended — reporting a number that is not the
+        // prompt, which is the exact defect this instrument exists to correct.
+        // So it is called from each return path, with that path's own system string
+        // and active-tool set.
+        const logPromptSize = (systemStr: string, activeTools?: readonly string[]) => {
+          const active: Record<string, unknown> = activeTools
+            ? Object.fromEntries(
+              activeTools
+                .filter((n) => n in (tools as Record<string, unknown>))
+                .map((n) => [n, (tools as Record<string, unknown>)[n]]),
+            )
+            : (tools as Record<string, unknown>);
+          console.log(promptSizeEvent(
+            "prompt_size_step",
+            threadId,
+            measurePromptTerms({
+              ...promptTermBaseline,
+              ...measureToolDescriptions(active),
+              // The directive is whatever this branch appended to baseSystemPrompt.
+              // Derived by difference rather than re-deriving which builder ran, so
+              // it cannot drift from the string actually sent.
+              stepDirective: Math.max(0, systemStr.length - baseSystemPrompt.length),
+              messages: contextCharsFromMessages(stepMessagesOut),
+            }),
+            { step_number: stepNumber ?? 0, active_tool_count: activeTools ? activeTools.length : undefined },
+          ));
+        };
         // Force the closing synthesis step when ANY run budget is exhausted:
         //  • P0 fix A — the wall-clock reserve window opened, or we hit the last step.
         //  • Run tool-call cap — MAX_TOOL_CALLS_PER_RUN genuine live calls reached
@@ -1053,6 +1076,7 @@ Deno.serve(async (req) => {
           finalizeStepsRun++;
           finalizeDecisionSucceededThisStep = false;
           const finalizePlan = buildFinalizeStepPlan(finalizePhase);
+          logPromptSize(baseSystemPrompt + finalizePlan.directive, [...finalizePlan.activeTools]);
           return {
             messages: stepMessagesOut,
             activeTools: [...finalizePlan.activeTools],
@@ -1085,14 +1109,16 @@ Deno.serve(async (req) => {
             tool_calls: nudgeToolCalls, record_artifact_calls: nudgeRecordCalls,
             nudge_count: persistenceNudgeCount,
           }));
+          const nudgePlan = buildIntermediateStepPlan({
+            nudgePersistence: true,
+            normalActiveTools,
+            openingPhase: false,
+          });
+          logPromptSize(intermediateSystem, nudgePlan.activeTools);
           return {
             messages: stepMessagesOut,
             system: intermediateSystem,
-            ...buildIntermediateStepPlan({
-              nudgePersistence: true,
-              normalActiveTools,
-              openingPhase: false,
-            }),
+            ...nudgePlan,
           };
         }
         // Opening phase = this RUN has admitted no tool call yet (run-scoped by
@@ -1105,14 +1131,16 @@ Deno.serve(async (req) => {
             event: "opening_tool_gate", thread_id: threadId, step_number: stepNumber ?? 0,
           }));
         }
+        const intermediatePlan = buildIntermediateStepPlan({
+          nudgePersistence: false,
+          normalActiveTools,
+          openingPhase,
+        });
+        logPromptSize(intermediateSystem, intermediatePlan.activeTools);
         return {
           messages: stepMessagesOut,
           system: intermediateSystem,
-          ...buildIntermediateStepPlan({
-            nudgePersistence: false,
-            normalActiveTools,
-            openingPhase,
-          }),
+          ...intermediatePlan,
         };
       };
 

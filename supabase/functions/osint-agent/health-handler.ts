@@ -416,7 +416,16 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
           .order("created_at", { ascending: false })
           .limit(5000);
         if (error) {
-          r.checks.credentials = { ok: true, detail: `unavailable: ${error.message.slice(0, 120)}` };
+          // NOT ok. An unreadable instrument is not a clean bill of health, and
+          // `ok:true` beside "unavailable" is the precise trap CLAUDE.md names:
+          // ok:true is not "it ran". The analyst-review path already sets this
+          // precedent — "verdicts unreadable: say so rather than implying nothing
+          // was rejected". Top-level `r.ok` is decided before this block, so this
+          // surfaces the lost evidence without failing the probe. (Codex review.)
+          r.checks.credentials = {
+            ok: false,
+            detail: `unavailable — cannot tell whether any provider is refusing us: ${error.message.slice(0, 100)}`,
+          };
         } else {
           const rows = (data ?? []) as Array<Record<string, unknown>>;
           const health = summarizeCredentialHealth(rows);
@@ -429,7 +438,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
           };
         }
       } catch (e) {
-        r.checks.credentials = { ok: true, detail: `unavailable: ${String(e).slice(0, 120)}` };
+        r.checks.credentials = {
+          ok: false,
+          detail: `unavailable — cannot tell whether any provider is refusing us: ${String(e).slice(0, 100)}`,
+        };
       }
       // Finding synthesis. Deliberately AFTER recovery and inside the same
       // try/catch: a thread must be marked finished before it is a candidate, and

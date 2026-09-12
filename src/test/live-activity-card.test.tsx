@@ -11,7 +11,7 @@
 import { describe, expect, it, afterEach } from "vitest";
 import { render, cleanup } from "@testing-library/react";
 import type { UIMessage } from "ai";
-import { LiveActivityCard } from "@/components/ChatWindow";
+import { LiveActivityCard, MessageView } from "@/components/ChatWindow";
 
 afterEach(cleanup);
 
@@ -135,5 +135,36 @@ describe("LiveActivityCard", () => {
   it("survives a null message without throwing", () => {
     const { container } = render(<LiveActivityCard message={null} elapsedLabel="0:00" />);
     expect(container.querySelector("summary")!.textContent).toContain("Analyst");
+  });
+});
+
+describe("MessageView — the streaming message defers ALL its tool cards", () => {
+  // Codex review, PR #587. The grouped block was suppressed while live, but a
+  // SECOND render path — the fallback for a message whose groups were all
+  // filtered as noise — had no live check. An all-skipped streaming cycle makes
+  // `visibleToolGroups` empty, so the individual cards came back beside the
+  // summary row, in exactly the case where the noise is highest.
+  const skipped = (name: string) => ({
+    type: `tool-${name}`,
+    state: "output-available",
+    input: {},
+    output: { skipped: true, ok: false, error: "burst limit" },
+  });
+
+  const message = (parts: unknown[]): UIMessage =>
+    ({ id: "m9", role: "assistant", parts } as unknown as UIMessage);
+
+  it("renders no individual tool cards while live, even when every group is noise", () => {
+    const parts = [skipped("socialfetch_lookup"), skipped("leakcheck_lookup")];
+    const { container } = render(<MessageView m={message(parts)} live />);
+    // The fallback renders a .chat-card per tool part; the live card is not in
+    // this component at all, so anything here is the firehose coming back.
+    expect(container.querySelectorAll(".chat-card").length).toBe(0);
+  });
+
+  it("still renders them once the run settles, so history is not lost", () => {
+    const parts = [skipped("socialfetch_lookup"), skipped("leakcheck_lookup")];
+    const { container } = render(<MessageView m={message(parts)} />);
+    expect(container.querySelectorAll(".chat-card").length).toBeGreaterThan(0);
   });
 });

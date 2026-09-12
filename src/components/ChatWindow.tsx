@@ -1207,8 +1207,13 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
           </div>
         </article>
       )}
+      {/* Fallback for a message whose groups were all filtered as noise. It needs
+          the SAME live check as the grouped block above: an all-skipped streaming
+          cycle makes `visibleToolGroups` empty, so without this the individual
+          cards render beside the summary row — the firehose returning in exactly
+          the case where the noise is highest. (Codex review, PR #587.) */}
       {parts.map((p, i) => {
-        if (typeof p.type === "string" && p.type.startsWith("tool-") && visibleToolGroups.length === 0) {
+        if (!live && typeof p.type === "string" && p.type.startsWith("tool-") && visibleToolGroups.length === 0) {
           return <ToolPart key={i} part={p as ToolPartShape} createdAt={createdAt} />;
         }
         return null;
@@ -1242,7 +1247,8 @@ function messagePropsEqual(
   );
 }
 
-const MessageView = memo(MessageViewImpl, messagePropsEqual);
+// Exported for the regression test on the live-suppression path above.
+export const MessageView = memo(MessageViewImpl, messagePropsEqual);
 
 function wrapChildren(children: React.ReactNode): React.ReactNode {
   if (typeof children === "string") return renderTextWithBadges(children);
