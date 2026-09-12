@@ -29,6 +29,7 @@ import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 import { scrubArtifactRows } from "./safety.ts";
 import { checkpointKey } from "./incremental-persist.ts";
 import { isNullishLiteral } from "./lib/nullish-literal.ts";
+import { derivedUnlinkedContext, unprovenLinkageFromOutput } from "./lib/unproven-linkage.ts";
 import { canonicalPhoneValue, composeAddress, normPhoneE164 } from "./lib/selector-normalize.ts";
 
 /** Hard ceiling on auto-persisted rows PER tool call. Prevents one exhaustive
@@ -1345,6 +1346,32 @@ export function extractFindings(
         continue;
       }
       f.context = { ...(f.context ?? {}), ...SUBJECT_UNLINKED_CTX };
+    }
+  }
+
+  // DERIVED-LINKAGE STAMP — the promotion-quarantine invariant.
+  //
+  // The stamp above keys on QUERY SHAPE, which is why it is not enough on its
+  // own any more. Since 2026-09-12 a quarantined selector may be dispatched
+  // (lib/unproven-linkage.ts), and `username_sweep` on a harvested username is
+  // not a name-only query — so without this, a stranger's profiles would
+  // persist at FULL subject authority, join identity clusters and reach the
+  // report. That is the hole #433 closed, re-opened from a different direction.
+  //
+  // Authority is not inherited: a lookup whose parent selector has unproven
+  // linkage yields findings with unproven linkage. Runs LAST so a row already
+  // carrying a more specific reason (name-only echo, bulk corpus) keeps it.
+  const derivedParent = unprovenLinkageFromOutput(output);
+  if (derivedParent) {
+    const derivedCtx = derivedUnlinkedContext(derivedParent);
+    for (const f of findings) {
+      if ((f.context as Record<string, unknown> | undefined)?.subject_unlinked === true) {
+        // Already quarantined under a more specific reason — record the parent
+        // for release/audit, but do not overwrite why it was quarantined.
+        f.context = { ...(f.context ?? {}), unproven_linkage_parent: derivedCtx.unproven_linkage_parent };
+        continue;
+      }
+      f.context = { ...(f.context ?? {}), ...derivedCtx };
     }
   }
 

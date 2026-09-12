@@ -188,11 +188,22 @@ export function pivotEligibility(
     const allWithheld = views.every((v) => v.state === "quarantined" || v.state === "failed");
     linkage = views.some((v) => v.state !== "quarantined" && v.state !== "failed") ? "linked" : "unproven";
     if (allWithheld) {
-      blockers.push(
-        views.some((v) => v.state === "failed")
-          ? "Its source row was dismissed by an analyst."
-          : "Linkage to the subject is unproven (quarantined). The server refuses quarantined selectors.",
-      );
+      // An analyst DISMISSAL still blocks: the server refuses a rejected
+      // selector, and re-spending on a row the analyst struck out argues with
+      // them. A QUARANTINE no longer does — since the 2026-09-12 switch to
+      // promotion quarantine the server runs the lookup and withholds
+      // authority from what comes back, so the honest control is a warning
+      // that says what the result will and will not be worth. Blocking here
+      // was what left person-seed runs structurally unable to test the link
+      // they were investigating.
+      if (views.some((v) => v.state === "failed")) {
+        blockers.push("Its source row was dismissed by an analyst.");
+      } else {
+        warnings.push(
+          "Linkage to the subject is unproven (quarantined). This will run, but nothing it finds " +
+          "will count as the subject's evidence until the linkage is corroborated or you confirm it.",
+        );
+      }
     }
     if (views.some((v) => v.state === "conflict")) warnings.push("Its source row is marked as a conflict with the case.");
     if (views.every((v) => v.state === "weak")) warnings.push("It rests only on a low-confidence lead.");

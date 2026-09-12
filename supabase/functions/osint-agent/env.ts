@@ -73,6 +73,24 @@ export const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY") ?? "";
 // the default fallback is the DIRECT Gemini API below.
 export const ALLOW_LOVABLE_FALLBACK =
   (Deno.env.get("ALLOW_LOVABLE_FALLBACK") ?? "").trim().toLowerCase() === "true";
+
+/**
+ * PROMOTION quarantine (default) vs the older DISPATCH quarantine.
+ *
+ * Default ON — operator decision 2026-09-12: a `subject_unlinked` selector may
+ * be looked up, and nothing the lookup returns inherits subject authority
+ * (lib/unproven-linkage.ts). Analyst REJECTION still refuses dispatch; that is
+ * a separate boundary and this flag does not touch it.
+ *
+ * Set `PROMOTION_QUARANTINE_DISABLED=true` to restore the pre-2026-09-12
+ * behaviour where a quarantined selector could not reach a live call at all.
+ * Read at CALL TIME, not at module load, so the switch takes effect on the
+ * running build the moment the secret changes — this reverses five merged PRs
+ * and a bad outcome must be revertible in seconds, not in a deploy cycle.
+ */
+export function promotionQuarantineEnabled(): boolean {
+  return (Deno.env.get("PROMOTION_QUARANTINE_DISABLED") ?? "").trim().toLowerCase() !== "true";
+}
 export const lovableGateway = LOVABLE_API_KEY
   ? createOpenAICompatible({
       name: "lovable-ai-gateway",
