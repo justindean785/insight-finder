@@ -13,8 +13,10 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-09-13T00:05Z.** `main` = `95b8d50` (#587 `c87c07b` → #588 stamp
-> `4bdd1b4` → ledger `95b8d50`). `BUILD_MARKER` = `c87c07b`.
+> **Dated state — 2026-09-13T00:30Z.** `main` = `811c2cd` (#587 `c87c07b` → #588 stamp
+> `4bdd1b4` → ledger `95b8d50` → #589 docs → #590 docs `811c2cd`). `BUILD_MARKER` = `c87c07b`.
+> Re-confirmed at 00:30Z: **nothing is undeployed** — the only `supabase/functions/` change
+> between `c87c07b` and `main` is `build-info.ts` itself, which is the stamp offset, not code.
 > Mirror `main` = `71b79c4` — surgical sync of 11 `osint-agent/` files (10 + `build-info.ts`),
 > landed as mirror PR #84; `diff -rq` empty for all four function dirs.
 > Live `osint-agent` build = **`c87c07b`** — DEPLOYED AND VERIFIED 2026-09-13T00:02Z:
@@ -483,11 +485,14 @@ list, §7 the ordered plan) →
 `…_2026-09-03_evidence-board-and-pivot-quality` →
 `…_2026-09-07_drop-suppression-and-the-duplicate-pr` →
 `…_2026-09-08_queue-drain-and-dispatch-deploy.md` →
-**`SESSION_HANDOFF_2026-09-12_promotion-quarantine-and-measured-audit.md` (newest —
-read this one first)**. Its §2 is the promotion-quarantine switch and the invariant
-that makes it safe, §3 the trap list (four instruments that lied), §4 the report
-claims that did NOT survive verification, §5 what was deliberately not done, and
-§6 the ordered plan.
+`…_2026-09-12_promotion-quarantine-and-measured-audit.md` (its §2 is the
+promotion-quarantine switch, §3 the trap list of four instruments that lied) →
+**`SESSION_HANDOFF_2026-09-13_instrument-truth-and-the-lineage-prerequisite.md` (newest —
+read this one first)**. Its §3 carries the three verified findings that reorder the plan
+(the GitHub 401, the missing call-to-artifact lineage, telemetry durability), §5 states the
+goal, **§6 is the ordered roadmap**, **§7 is the small-PR discipline and why a large PR
+cannot be deployed or reverted here**, §8 the trap list, §9 the ruling on Codex's planning
+PR #586, §10 the open-PR queue.
 `NEXT_SESSION_PROMPT.md` is the companion entry point and is the more current of the two.
 Take the dated state from the top of THIS file rather than from any handoff's own §1 state
 table — every one of them has been overtaken by a later session, including the 09-07 pair,
@@ -619,6 +624,57 @@ Consequences for the ordered plan, so nobody mis-sequences it:
   live DB**, per the rule above), or persist it beside the existing row. Do **not** "fix"
   `approxPromptChars` to close the gap: it routes providers, and changing it changes behaviour.
   That is exactly why #587 left it alone.
+
+### ⛔ There is NO call-to-artifact lineage — it blocks the whole learning layer
+
+**Measured 2026-09-13 against the live DB.** `artifacts` columns are exactly
+`id, thread_id, user_id, kind, value, confidence, source, metadata, created_at, cluster_id,
+subject_id`. **There is no join key to `tool_usage_log`.** The closest thing is `metadata.tool`,
+present on **714 of 1,868** recent artifacts — **38%**, and only on auto-persisted rows
+(`auto_persist_source` and `via` carry the identical count; anything from `record_finding` /
+`record_artifacts` has nothing). It stores a tool **name**, not a call id, so it cannot say which
+of 74 `minimax_correlate` calls produced a row and cannot be joined at all.
+
+**Consequence:** you can measure how often a tool returned HTTP 200, and how many artifacts exist —
+but not *how often a source produced something an analyst kept*. Operational memory, per-dork
+yield, EV ordering and the operator's "15 false positives" ask are **all blocked on this**. It is a
+prerequisite, not a nice-to-have, and it comes before any learning code.
+
+Fix shape: an `artifact_tool_lineage` **junction table**, plus `run_id` and a stable `call_id` on
+`tool_usage_log`, carrying selector **type** rather than raw selector value for cross-case
+analytics (privacy-correct, and it also fixes rejection keys being per-thread only).
+**Never an array of artifact ids on the call row** — that re-creates the exact failure that broke
+the cache sweep: PostgREST renders `.in()` into the URL query string, ~5,000 uuids is a ~185 KB URL
+against a ~24 KB cap. Schema first, through Lovable, verified against the live DB; then the write
+path behind a kill switch with a new `/health` key. Full detail:
+`mem://architecture/artifact-tool-lineage-gap`.
+
+### ⛔ Ship in SMALL PRs — a large PR cannot be deployed or reverted here
+
+This is not style advice; it follows from the deploy topology above.
+
+1. **`/health` proves a BUILD, not a change.** Ship six changes in one build and a regression
+   cannot be bisected — there is nothing finer-grained to look at.
+2. **The behavioural-proof-key trick is per-build.** One new key (`checks.synthesis` →
+   `checks.rejected_cluster_sweep` → `checks.credentials`) cannot prove six changes landed.
+3. **Edge deploys are serialized and manual.** Each edge PR needs its own stamp → surgical sync →
+   hard gate → Lovable message → `/health` verify → ledger cycle. Batching changes does not batch
+   the risk, it concentrates it.
+4. **Frontend and edge ship on different channels.** Frontend goes live on merge via Vercel; edge
+   does **not** ship on merge at all. **Never mix them in one PR** — it can be neither cleanly
+   deployed nor cleanly reverted.
+5. **Review catches what CI cannot.** Every defect caught in review here was a *timeline or
+   identity* error that passed the full suite, typecheck, lint and build. Large diffs hide exactly
+   that class.
+6. **The merge queue is the bottleneck.** Big PRs sit in draft; small ones merge.
+
+Rules: one PR = one behaviour change + its tests + its kill switch · never mix frontend and edge ·
+never mix a schema change with the code that depends on it (schema first, applied and verified,
+*then* the code) · every behaviour-changing edge PR adds one new `/health` key or durable log event ·
+at most one edge PR in flight, frontend PRs run in parallel · docs and ledger updates ride
+separately · run `npm run test:e2e` by hand for anything touching `src/`.
+
+A worked six-PR decomposition of the lineage work is in §7 of the 2026-09-13 handoff.
 
 ### A 403 is not a dead credential
 
