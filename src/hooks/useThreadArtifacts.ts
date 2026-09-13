@@ -64,40 +64,59 @@ export function isMetaArtifact(a: Artifact): boolean {
   return META_KINDS.has(String(meta.label ?? "").toLowerCase());
 }
 
+function sourceSet(a: Artifact): string[] {
+  const md = (a.metadata ?? {}) as Record<string, unknown>;
+  return Array.from(new Set<string>([...toSourceStrings(md.sources), ...(a.source ? [a.source] : [])]));
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * Everything a consumer can read authority from. That is the top-level source
+ * and confidence plus the WHOLE metadata blob, not a list of "authority keys":
+ * cluster membership alone reads metadata.email / phone / address /
+ * parent_seed, so no key is safely descriptive. `sources` is folded to the set
+ * dedupe maintains, so a stored item and its raw twin compare equal when a
+ * realtime delta re-dedupes the store.
+ */
+function authorityFingerprint(a: Artifact): string {
+  const { sources: _sources, ...rest } = (a.metadata ?? {}) as Record<string, unknown>;
+  return stableStringify({ source: a.source, confidence: a.confidence, metadata: rest, sources: sourceSet(a).sort() });
+}
+
+function isEarlier(a: Artifact, b: Artifact): boolean {
+  const ta = Date.parse(a.created_at);
+  const tb = Date.parse(b.created_at);
+  if (ta !== tb && !Number.isNaN(ta) && !Number.isNaN(tb)) return ta < tb;
+  return a.id < b.id;
+}
+
+/**
+ * Collapse rows that are the same evidence twice — same kind, same normalized
+ * value AND identical authority — onto the earliest row.
+ *
+ * Rows that share a value but differ in authority stay separate items. The old
+ * merge spread a later row's metadata over the first, so one database row
+ * donated source class, cap, cluster, quarantine release (`linkage_confirmed`)
+ * and analyst confirmation (`reviewed`) to another, and the result depended on
+ * row order. One item cannot carry two rows' authority without inventing a
+ * merged authority object, so it doesn't try: each raw row stays the authority
+ * input, and every surface and export built on these items inherits that.
+ */
 function dedupeArtifacts(rows: Artifact[]): Artifact[] {
   const seen = new Map<string, Artifact>();
   for (const a of rows) {
-    const norm = normalizeValue(a.kind, a.value);
-    const key = `${a.kind.toLowerCase()}|${norm}`;
+    const key = `${a.kind.toLowerCase()}|${normalizeValue(a.kind, a.value)}|${authorityFingerprint(a)}`;
     const prev = seen.get(key);
-    if (!prev) {
-      const md = { ...(a.metadata ?? {}) } as Record<string, unknown>;
-      const sources = new Set<string>([
-        ...toSourceStrings(md.sources),
-        ...(a.source ? [a.source] : []),
-      ]);
-      md.sources = Array.from(sources);
-      seen.set(key, { ...a, metadata: md });
-      continue;
-    }
-    const prevMd = (prev.metadata ?? {}) as Record<string, unknown>;
-    const sources = new Set<string>([
-      ...toSourceStrings(prevMd.sources),
-      ...(prev.source ? [prev.source] : []),
-      ...(a.source ? [a.source] : []),
-    ]);
-    const prevReviewed = prevMd.reviewed === true;
-    const nextReviewed = a.metadata?.reviewed === true;
-    seen.set(key, {
-      ...prev,
-      confidence: Math.max(prev.confidence ?? 0, a.confidence ?? 0) || prev.confidence,
-      metadata: {
-        ...prevMd,
-        ...(a.metadata ?? {}),
-        sources: Array.from(sources),
-        reviewed: prevReviewed || nextReviewed,
-      },
-    });
+    if (prev && !isEarlier(a, prev)) continue;
+    seen.set(key, { ...a, metadata: { ...(a.metadata ?? {}), sources: sourceSet(a) } });
   }
   return Array.from(seen.values());
 }
