@@ -64,6 +64,21 @@ Deno.test("a 200 soft-404 that never names the user is NOT a registration", asyn
   }
 });
 
+/**
+ * The measured exception to "an echoing 200 is a registration", added
+ * 2026-09-13. Replaying this module's own decision chain against two different
+ * guaranteed-nonexistent handles, these six platforms answered 2xx AND echoed
+ * the requested handle into a high-signal region — so on them the echo proves a
+ * registration that cannot exist. They carry `echoUnsafe` in the site table and
+ * can no longer be proven by echo alone.
+ *
+ * This is the SAME bug class as the 2026-08-06 one in the header above, one
+ * layer down: that fix stopped STATUS alone from proving registration, and the
+ * ECHO path survived it. HackerRank is the worst case — 309 artifacts across
+ * 114 production threads, repeatedly marked false by the analyst.
+ */
+const ECHO_UNSAFE_SITES = ["HackerRank", "Minecraft (NameMC)", "Mixcloud", "Spotify", "Telegram", "Trakt"];
+
 Deno.test("a 200 whose body names the account IS a registration", async () => {
   stubFetch(() => ({
     status: 200,
@@ -72,7 +87,10 @@ Deno.test("a 200 whose body names the account IS a registration", async () => {
   try {
     const r = await sweepUsername("exampleuser710");
     assert(r.hits > 0, "a page that evidences the account must still be found");
-    assertEquals(r.unverified.length, 0);
+    // Assert the EXACT set rather than relaxing this to "a few may be
+    // unverified": that keeps the case a gate, and it fails loudly if a site
+    // silently gains or loses an echoUnsafe mark.
+    assertEquals(r.unverified.map((u) => u.site).sort(), [...ECHO_UNSAFE_SITES].sort());
   } finally {
     restore();
   }
