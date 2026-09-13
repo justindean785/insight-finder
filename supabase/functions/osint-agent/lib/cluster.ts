@@ -88,6 +88,58 @@ const STOP = new Set([
   "email", "breach", "password", "account", "linktree", "primary", "secondary",
 ]);
 
+/**
+ * URL structural separators. A URL carries its handle in a PATH SEGMENT, and
+ * `foldWords` below folds on whitespace only — so the whole URL became ONE
+ * unmatchable token ("https://soundcloud.com/wopdell" → "httpssoundcloudcomwopdell")
+ * and a URL artifact could join a subject ONLY when its metadata happened to
+ * carry a `handle` key.
+ *
+ * Measured on production thread 202d2756 (@wopdell, 2026-09-13): `audiomack.com/wop-dell`
+ * carried `metadata.handle` and joined the subject; `beatport.com/artist/wop-dell/1461425`
+ * did not and became a singleton — same artist, same handle spelling, opposite
+ * outcomes. 46 of 55 graph entities were isolated leads for this reason, including
+ * both Apple Music artist pages, SoundCloud, Trapaganda and Archodia. Those are the
+ * rows the corroboration bar needs, so the fragmentation also starved
+ * `finding-synthesis.ts` of eligible clusters.
+ */
+const URL_SEG_SEP = /[/:?&=#]+/;
+
+/**
+ * Stop words applied ONLY to URL path segments, never to the prose pass.
+ *
+ * Kept separate from STOP on purpose: STOP is shared with the established prose
+ * path, so adding words to it could DELETE a token a previous build produced and
+ * silently drop an existing join. This set only ever filters tokens this change
+ * introduces, which keeps the whole edit additive.
+ */
+const URL_PATH_STOP = new Set([
+  "artist", "artists", "user", "users", "channel", "channels", "track", "tracks",
+  "album", "albums", "playlist", "playlists", "watch", "video", "videos", "reel",
+  "reels", "status", "post", "posts", "search", "page", "pages", "about", "home",
+  "index", "embed", "share", "music", "apple", "spotify", "soundcloud", "audiomack",
+  "beatport", "threads", "telegram", "facebook", "reddit", "github", "linkedin",
+  "shazam", "iheart", "medium", "discogs", "genius", "bandcamp", "mixcloud",
+]);
+
+/**
+ * Kill switch, read at CALL TIME so it takes effect on the running build the
+ * moment the secret changes — no deploy cycle. Default ON.
+ *
+ * Deliberately a local read rather than an import from `env.ts`: that module
+ * constructs the AI gateway at load, and this one is unit-tested as a pure
+ * function over CSV fixtures. `Deno.env` is guarded because the fixture CLI path
+ * may run without `--allow-env`; a denied read falls back to ON, matching the
+ * default rather than silently disabling the join.
+ */
+export function urlHandleTokensEnabled(): boolean {
+  try {
+    return (Deno.env.get("CLUSTER_URL_HANDLE_TOKENS_DISABLED") ?? "").trim().toLowerCase() !== "true";
+  } catch {
+    return true;
+  }
+}
+
 export function normEmail(v: string): string | null {
   const m = String(v ?? "").toLowerCase().match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/);
   return m ? m[0] : null;
@@ -268,7 +320,24 @@ function foldWords(value: string): string[] {
   // Split on whitespace + brackets + commas only — NOT on '_'/'@'/'.' — so a handle like
   // "@manza_visuals" stays one token and folds to "manzavisuals" (matching the known
   // handle), instead of splitting into "manza"+"visuals" which match nothing.
-  return String(value ?? "").split(/[\s,()[\]{}|"']+/).map(foldHandle).filter((w) => w.length >= 3 && !STOP.has(w));
+  const chunks = String(value ?? "").split(/[\s,()[\]{}|"']+/);
+  const out = new Set<string>();
+  for (const chunk of chunks) {
+    const w = foldHandle(chunk);
+    if (w.length >= 3 && !STOP.has(w)) out.add(w);
+    // SECOND, ADDITIVE pass: also fold each URL path segment of this chunk. The
+    // whole-chunk token above is still emitted, so no token a previous build
+    // produced can disappear and no existing join can regress — this can only ADD
+    // candidates. Safety is unchanged because the CALLER (`strongTokens`) only
+    // keeps a word that matches an ESTABLISHED distinctive handle, so "us",
+    // "1575104299" or an 11-character video id still link nothing.
+    if (!urlHandleTokensEnabled() || !URL_SEG_SEP.test(chunk)) continue;
+    for (const seg of chunk.split(URL_SEG_SEP)) {
+      const s = foldHandle(seg);
+      if (s.length >= 3 && !STOP.has(s) && !URL_PATH_STOP.has(s)) out.add(s);
+    }
+  }
+  return [...out];
 }
 
 // ---- Union-find ---------------------------------------------------------------
@@ -572,6 +641,12 @@ export async function applyClusteringToThread(
       subject_count: subjects.length,
       merge_count: decisions.length,
       artifacts_updated: updated,
+      // The number this line exists to make readable after a deploy: a subject of
+      // one is an artifact that reached the graph as an isolated lead, contributed
+      // no source class to any cluster, and so could never clear finding
+      // synthesis's >=2-independent-class bar. Production thread 202d2756 ran at
+      // 46 isolated of 55 entities.
+      singleton_count: subjects.filter((s) => s.members.length === 1).length,
       decisions: decisions.slice(0, 60),
     }));
   }
