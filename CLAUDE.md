@@ -625,6 +625,25 @@ Consequences for the ordered plan, so nobody mis-sequences it:
   `approxPromptChars` to close the gap: it routes providers, and changing it changes behaviour.
   That is exactly why #587 left it alone.
 
+### ⚠️ OPEN mirror PR #41 — Lovable-authored, un-backported (as of 2026-09-13T00:55Z)
+
+`seeker-spark-search-5362c57c#41` — *"silence ai sdk warning spam and treat memory_save dedup as
+benign"* — is **open and not a draft**, and touches two real runtime files: `index.ts` (sets
+`AI_SDK_LOG_WARNINGS = false` on `globalThis`) and `tool-registry.ts` (a `memory_save` dedup
+collision returns `{ok:true, deduped:true}` rather than `{ok:false}`).
+
+The content looks correct — the second is arguably a finalize-wedge fix, since
+`resolveFinalizePhase` blocks the report phase until `memory_save` or `finalize_skip_memory`
+succeeds, and a collision is a genuine no-op rather than a laundered refusal. **The hazard is the
+channel, not the content:** it is authored where this repo cannot see it and **it does not touch
+`build-info.ts`**, so merging it on the mirror means the next deploy ships it while `/health`
+reports the SHA we stamped. That is the 2026-08-29 incident exactly.
+
+**Do not merge it on the mirror. Backport both hunks here** and let them flow through the normal
+pipeline; then close #41 as superseded. `diff -rq` is empty today only because #41 is unmerged —
+re-check it as part of the hard gate, and check `git log origin/main` in the mirror clone, not
+just `diff -rq`.
+
 ### ⛔ There is NO call-to-artifact lineage — it blocks the whole learning layer
 
 **Measured 2026-09-13 against the live DB.** `artifacts` columns are exactly

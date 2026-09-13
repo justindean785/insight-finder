@@ -46,6 +46,7 @@ This session unshallowed it (838 commits); a new sandbox will be shallow again.
 | e2e (by hand only) | **52 passed / 2 skipped** |
 | Open PRs | **9** — #586, #579, #574, #570, #567, #564, #541, #516, #502 |
 | Undeployed edge code | **none** — the only `supabase/functions/` change since `c87c07b` is `build-info.ts` itself, which is the documented stamp offset |
+| ⚠️ Mirror PR #41 | **OPEN, Lovable-authored, un-backported**, touches 2 runtime files — see §10. Do not merge it on the mirror; backport it here |
 
 **Nothing of this session's work is pending deploy.** Re-confirmed at 00:30Z against `/health`,
 `git diff c87c07b..origin/main -- supabase/functions/`, and `diff -rq` on all four function dirs.
@@ -477,6 +478,39 @@ what is a cheap set of API calls). **It has not been completed — treat every r
 
 **Do this cheaply**: `list_pull_requests`, then `pull_request_read` with `get_check_runs` per PR.
 Nine calls. Do not fan out subagents for it.
+
+### ⚠️ And one on the MIRROR: `seeker-spark-search-5362c57c` PR **#41** — open, Lovable-authored
+
+**Found 2026-09-13T00:55Z while closing out. This is the documented drift hazard, live right now.**
+
+`fix(osint-agent): silence ai sdk warning spam and treat memory_save dedup as benign` — not a
+draft, and it touches **two real runtime files**:
+
+- `index.ts` — sets `AI_SDK_LOG_WARNINGS = false` on `globalThis` to stop the MiniMax v2-compat
+  warning firing every orchestrator turn and drowning the function logs.
+- `tool-registry.ts` — a `memory_save` dedup-index collision now returns
+  `{ ok: true, deduped: true, saved: 0 }` instead of `{ ok: false, error }`.
+
+**Assessment, so the next session does not have to redo it:**
+
+- Both changes look *correct*, and the second one is arguably a **finalize-wedge fix**:
+  `resolveFinalizePhase` blocks the report phase until `memory_save` or `finalize_skip_memory`
+  succeeds, so a dedup collision returning `ok:false` could stall finalize. A collision is a
+  genuine no-op — the row already exists — so reporting it as success is not the
+  `UNKNOWN_TOOL_SINK` laundering pattern CLAUDE.md forbids. **Verify that reasoning before
+  trusting it**; the rule *a refusal must be legible as a refusal* is close by and it matters.
+- **The danger is not the content, it is the channel.** It is authored on the mirror, which this
+  repo never sees, and **it does not touch `build-info.ts`**. If it merges to mirror `main`, the
+  next unrelated deploy ships it while `/health` reports whatever SHA we stamped — the one
+  instrument for proving what is running would show no change at all. That is exactly the
+  2026-08-29 incident (11 Lovable commits, 25 runtime files, caught only by reading the diff).
+
+**What to do:** do **not** merge it on the mirror. **Backport both hunks into canonical as a small
+PR**, let them flow through the normal pipeline (merge → stamp → sync → gate → deploy → verify),
+then close #41 as superseded. After that `diff -rq` comes back empty on its own.
+
+Until then `diff -rq` **is** empty — verified 00:30Z — because #41 is unmerged. Re-check before
+any deploy, per the hard gate.
 
 ---
 
