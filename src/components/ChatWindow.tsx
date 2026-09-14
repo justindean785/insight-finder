@@ -30,7 +30,7 @@ import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type R
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
 import { registerPivotRunner } from "@/lib/pivot-runner";
 import { DEFAULT_CONTROLS, evaluatePreflight, type PreflightControls } from "@/lib/composer-preflight";
-import { ScopeControls, ScopeToggle, TargetChip } from "@/components/composer/ComposerPreflight";
+import { TargetChip } from "@/components/composer/ComposerPreflight";
 import { hasReportShape, joinAssistantTranscript, stripReasoningPerPart } from "@/lib/report-shape";
 import { findLastReportIndex, isReportMessage } from "@/lib/superseded-reports";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
@@ -1357,14 +1357,13 @@ function ChatWindowInner({
   // analyst scrolls up — re-engagement waits until they SETTLE at the bottom.
   const lastUserScrollUpRef = useRef(0);
   const [input, setInput] = useState("");
-  // Structured preflight around the free-form request. Advisory: the controls
-  // travel as written instructions (see composer-preflight.ts).
+  // Preflight around the free-form request: the parsed target and the analyst's
+  // correction of its type (see composer-preflight.ts).
   const [controls, setControls] = useState<PreflightControls>(DEFAULT_CONTROLS);
-  const [controlsOpen, setControlsOpen] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
   // Which Next-steps row has its run preview open (see NextSteps).
   const [openStep, setOpenStep] = useState<string | null>(null);
-  const composerIds = { textarea: useId(), help: useId(), objectiveError: useId(), panel: useId() };
+  const composerIds = { textarea: useId(), help: useId() };
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [stopping, setStopping] = useState(false);
   // The SDK error THIS CLIENT's dropped stream produced, held BY IDENTITY while
@@ -1850,8 +1849,8 @@ function ChatWindowInner({
     const text = input.trim();
     const hasFiles = attachments.length > 0;
     if ((!text && !hasFiles) || isSubmitBlocked(status, submitLockRef.current)) return;
-    // The preflight decides what is sent: the request exactly as typed, plus the
-    // analyst's Scope & controls only when they changed any of them.
+    // The preflight decides what is sent: the request exactly as typed, plus one
+    // Target line only when the analyst corrected the detected type.
     if (!preflight.canSubmit) return;
     const outgoing = preflight.message.trim();
     const customizedRun = preflight.customized;
@@ -1973,7 +1972,6 @@ function ChatWindowInner({
     setInput("");
     setAttachments([]);
     setControls(DEFAULT_CONTROLS);
-    setControlsOpen(false);
     try {
       await beginInvestigation();
       await sendMessage({ text: composed });
@@ -2840,16 +2838,6 @@ function ChatWindowInner({
                   <kbd className="font-sans">⌘/Ctrl</kbd> + <kbd className="font-sans">Enter</kbd> to start · Enter for a new line
                 </span>
               </div>
-              {controlsOpen && (
-                <div id={composerIds.panel}>
-                  <ScopeControls
-                    controls={controls}
-                    onChange={setControls}
-                    result={preflight}
-                    objectiveErrorId={composerIds.objectiveError}
-                  />
-                </div>
-              )}
               <Textarea
                 ref={inputRef}
                 id={composerIds.textarea}
@@ -2895,12 +2883,6 @@ function ChatWindowInner({
                   kindOverride={controls.targetKind}
                   onKindChange={(k) => setControls((c) => ({ ...c, targetKind: k }))}
                 />
-                <ScopeToggle
-                  open={controlsOpen}
-                  onToggle={() => setControlsOpen((o) => !o)}
-                  customized={preflight.customized}
-                  panelId={composerIds.panel}
-                />
                 <Button
                   type="button"
                   onClick={isLoading ? stopInvestigation : () => void send()}
@@ -2936,7 +2918,7 @@ function ChatWindowInner({
               ? preflight.errors.target
               : preflight.empty
                 ? "Enter one primary target, then state the question you need answered."
-                : `Target: ${preflight.summary.target} · Objective: ${preflight.summary.objective} · Scope: ${preflight.summary.scope} · Depth: ${preflight.summary.depth} · Budget: ${preflight.summary.budget}`}
+                : `Target: ${preflight.summary.target}`}
           </p>
         </div>
       </div>
