@@ -30,6 +30,7 @@ import {
   correlateBudgetExhausted, correlateBudgetReason, bumpCorrelateCall,
 } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
+import { cacheVersionFor } from "./lib/tool-cache-version.ts";
 import { isFinalizeWindowLiveLookupExempt } from "./orchestrator-finalize.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
@@ -1106,6 +1107,9 @@ export function wrapToolsWithCache(
           weakLeadPenalty: weakLead.weak ? 22 : 0,
           repeatedToolPenalty: circuit.isPremiumTool(name) ? 6 : 0,
         });
+        // Result-interpretation version for this tool (lib/tool-cache-version.ts), read at call
+        // time so its kill switch binds without a deploy. null ⇒ legacy, unversioned keys.
+        const cacheVersion = cacheVersionFor(name);
         const runtimeMetaBase = {
           selector: sel,
           selector_type: selectorType,
@@ -1121,6 +1125,9 @@ export function wrapToolsWithCache(
           // live-call path would let a CACHED replay of the same quarantined
           // selector come back clean and promote.
           ...(unprovenLinkage ? { [UNPROVEN_LINKAGE_KEY]: unprovenLinkage } : {}),
+          // Rides the base meta so every tool_usage_log row — live or replayed — records
+          // which interpretation served it. Omitted for unversioned tools.
+          ...(cacheVersion == null ? {} : { cache_version: cacheVersion }),
         };
         let hash: string | null = null;
         let paramsHash: string | null = null;
@@ -1130,12 +1137,18 @@ export function wrapToolsWithCache(
           // result even when the planner's `purpose` differs (the thread-scoped
           // selector-reuse lookup below keys on it). input_hash keeps the FULL params,
           // so the existing cross-thread exact-match layer is UNCHANGED.
-          paramsHash = await hashInput(semanticParams(params));
+          //
+          // A versioned tool folds its version into BOTH hashes, so a row written under an
+          // older interpretation matches neither the exact layer nor thread reuse. An
+          // unversioned tool adds nothing, so its keys stay byte-identical to before.
+          const versionKey = cacheVersion == null ? {} : { cache_version: cacheVersion };
+          paramsHash = await hashInput({ ...semanticParams(params), ...versionKey });
           hash = await hashInput({
             selector_type: selectorType,
             selector: sel,
             tool: name,
             params,
+            ...versionKey,
           });
         } catch {
           // Unhashable inputs can still run live, but are never cached.
