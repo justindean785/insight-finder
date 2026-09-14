@@ -126,21 +126,12 @@ test.describe("composer preflight", () => {
     await expect(page.getByText(/No email found in the request/)).toBeVisible();
   });
 
-  test("7 · invalid objective blocks submit and is associated with its field", async ({ page }) => {
-    await open(page, DRAFT);
-    await page.getByLabel("Investigation request").fill("analyst@example.com");
-    await page.getByRole("button", { name: /Scope & controls/ }).click();
-    const objective = page.getByLabel("Objective");
-    await objective.fill("tbd");
-    await expect(objective).toHaveAttribute("aria-invalid", "true");
-    await expect(page.getByRole("button", { name: "Start investigation" })).toBeDisabled();
-  });
-
   test("8 · valid preflight: parsed target and a pre-submit summary", async ({ page }) => {
     await open(page, DRAFT);
     await page.getByLabel("Investigation request").fill("analyst@example.com — who controls this mailbox?");
     await expect(page.getByLabel("Target type")).toHaveValue("email");
-    await expect(page.getByText(/Target: analyst@example\.com \(email\) · Objective: .* · Scope: .* · Depth: .* · Budget: .*/)).toBeVisible();
+    await expect(page.getByText("Target: analyst@example.com (email)", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Scope & controls/ })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Start investigation" })).toBeEnabled();
   });
 
