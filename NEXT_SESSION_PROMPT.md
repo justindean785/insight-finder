@@ -1,7 +1,7 @@
 # Next-session prompt — Insight Finder
 
 > Paste this whole file as the opening message of a fresh session. It is self-contained.
-> **Written 2026-09-13T00:40Z.** Every number is a dated measurement, not a state — re-verify.
+> **Written 2026-09-14T17:05Z.** Every number is a dated measurement, not a state — re-verify.
 
 ---
 
@@ -14,123 +14,155 @@ git fetch --unshallow --filter=blob:none                          # the clone is
 curl -s "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1"
 ```
 
-**Expect `main` = `811c2cd` or later and live edge build = `c87c07b`.**
+**Expect `main` = `ff6ad26` or later and live edge build = `0a04e1b`.**
 
 If either moved, another session has worked this repo — read the newest `SESSION_HANDOFF_*.md`
-before anything else. That has now happened **five** times, and once produced two conflicting PRs
+before anything else. That has now happened **six** times, and once produced two conflicting PRs
 for one task (#548 / #551).
 
-**Then run `list_pull_requests` and look at `draft`.** Nine PRs are open as of 2026-09-13, the
-oldest from 2026-08-25. The merge queue — not the deploy — is this project's documented bottleneck.
+**Then run `list_pull_requests` and look at `draft`.** The merge queue — not the deploy — is this
+project's documented bottleneck.
 
 Read, in order:
 
-1. **`SESSION_HANDOFF_2026-09-13_instrument-truth-and-the-lineage-prerequisite.md`** — newest.
-   Its §6 is the ordered roadmap, §7 is the small-PR discipline, §8 the trap list,
-   §9 the ruling on Codex's planning PR #586, §10 the open-PR queue.
+1. **`SESSION_HANDOFF_2026-09-14_sweep-false-positives-and-the-memory-retrieval-gap.md`** — newest.
+   §2 is the sweep bug that was manufacturing evidence, §4 the memory-retrieval gap, §5 the
+   built-and-dark synthesis layer, §7 the ruling on Lovable's audit prompt, §8 the trap list,
+   §9 the one open decision, §11 the ordered plan.
 2. **`CLAUDE.md`** — authoritative on deploy topology and on decisions that must not be
-   re-litigated. Its dated-state block and test baselines were refreshed 2026-09-13.
-3. `mem/index.md` — the memory index; two entries were added 2026-09-13.
+   re-litigated.
+3. `mem/index.md` — the memory index.
 
 ---
 
-## Verified state — 2026-09-13T00:30Z
+## Verified state — 2026-09-14T17:05Z
 
 | Axis | Value |
 |---|---|
-| `origin/main` | `811c2cd` |
-| Live `osint-agent` build | **`c87c07b`** — deployed and verified 2026-09-13T00:02Z |
-| `deploy/live` | `c87c07b` |
-| Mirror `main` | `71b79c4`; `diff -rq` empty for all four function dirs |
-| Vercel production | READY, `target: production`, on `c87c07b` |
-| Edge suite | **1832 / 0 failed / 5 ignored** |
-| Frontend suite | **2104 / 1 skipped / 172 files** |
-| e2e (by hand only) | **52 / 2 skipped** |
-| Open PRs | **9** |
-| Undeployed edge code | **none** |
+| canonical `main` | `ff6ad26` |
+| live edge build | `0a04e1b` (`ok: true`) |
+| `deploy/live` | `0a04e1b` |
+| mirror `main` | `5f01506` |
+| `diff -rq`, all 4 fn dirs | 0 differing paths |
+| `verify:deploy` | VERIFIED, `mirror tree -> equal` (`422991e39c8b`) |
+| edge suite | 1845 passed / 0 failed / 6 ignored |
+| frontend suite | 2104/1/172 — **carried forward, not re-measured 2026-09-14** |
+| Vercel production | on `main` |
+
+**Nothing is undeployed.** The last cycle shipped #592 + #594 together under stamp #595.
 
 ---
 
-## The goal
+## What shipped 2026-09-13 → 09-14
 
-> **~3 minutes instead of 8. ~25 high-signal artifacts instead of 123 mixed ones. And a system
-> that visibly sharpens with use.**
+- **#592** — a URL artifact could only join an identity cluster when its metadata happened to carry a
+  `handle` key, so the strongest artifacts became isolated singletons. `foldWords` now folds URL path
+  segments. Kill switch `CLUSTER_URL_HANDLE_TOKENS_DISABLED`.
+- **#594** — six platforms (HackerRank, Mixcloud, Spotify, Telegram, Trakt, NameMC) answer 2xx for
+  any string and echo it back, so the generic echo test proved a registration for **every username
+  ever swept**. New `echoUnsafe` marker. Live probe: 6 offenders before, 0 after.
+- **#595** — build marker `c87c07b` → `0a04e1b`. `ff6ad26` recorded the ledger.
 
-Today: 7.6% signal, 16% of invocations end on purpose, nothing is learned. The differentiator is
-the last clause — of the eleven platforms analysts compare this to, **none learns from its
-operator.**
-
----
-
-## What to do next, in order
-
-**1 · Operator action, five minutes: set `GITHUB_API_TOKEN`.** `github_code_search` has returned
-`401` on *every* call for 21 days with zero successes. The secret lives in **Supabase → project
-`skzqwbyvmwqarfgfvyky` → Edge Functions → Secrets** (falls back to `GITHUB_TOKEN`). It is **not**
-the Claude Code GitHub MCP connector — that is a separate system and works fine. This confusion has
-already happened once.
-
-**2 · Merge PR #574.** It closes a real hole in the deploy gate: `verify:deploy` computes the
-mirror tree digest from the mirror clone's **local** HEAD without checking it reached
-`origin/main`, so an unpushed sync commit reads green. On 2026-09-11 that nearly shipped stale code.
-
-**3 · Drain the rest of the PR queue** — cheaply. `list_pull_requests`, then `pull_request_read`
-with `get_check_runs` per PR. Nine calls. **Do not fan out subagents for it**; a previous attempt
-burned a lot of tokens on Opus agents for what is a handful of API calls.
-
-**4 · Gate 0 — call-to-artifact lineage.** The structural finding of the 09-13 session, verified
-against production: `artifacts` has **no join key** to `tool_usage_log`, and `metadata.tool` covers
-only **38%** of rows and stores a tool *name*, not a call id. Per-source yield cannot be computed
-honestly, so the entire learning layer — and the operator's "15 false positives" ask — is blocked
-on it. Ship it as a junction table, **never** an array column on the call row.
-
-Then §6 of the handoff: the replay benchmark, the outcome taxonomy, `coverage_observations`, the
-prompt clauses that mandate volume, A2b, and only then the learning loop.
+⚠️ **This build added NO new `/health` key**, unlike the last three. Its durable signal is
+`singleton_count` on the `clustering_applied` log line. **The behavioural confirmation is a scan** —
+see "First thing to check" below.
 
 ---
 
-## Ship in SMALL PRs — do not attempt the roadmap in one
+## First thing to check — did the deploy actually change the product?
 
-**In this repo a large PR cannot be deployed safely or reverted at all.** Full reasoning in §7 of
-the handoff; the rules:
+Re-run seed **`kaileyhxo`** (username). Measured before the deploy, from JD's own export:
 
-- **One PR = one behaviour change + its tests + its kill switch.**
-- **Never mix frontend and edge changes.** They ship on different channels — frontend goes live on
-  merge via Vercel; edge does **not** ship on merge at all.
-- **Never mix a schema change with the code that depends on it.** Schema first, applied through
-  Lovable, verified against the live DB, *then* the code.
-- **Every edge PR that changes behaviour adds one new `/health` key** or durable log event, so its
-  deploy is provable. `/health` proves a *build*, not a change — ship six changes in one build and
-  you cannot bisect a regression.
-- **At most one edge PR in flight** (the deploy queue is serialized). Frontend PRs run in parallel.
-- **Docs and ledger updates ride in their own PR.**
-- **Run `npm run test:e2e` by hand** for anything touching `src/` — PR CI skips it.
+| Handle | Claimed | Actually real |
+|---|---|---|
+| `kaileyhxo` | 3 platform registrations | **0** — all three fabricated |
+| `kaileymhart` | 3 platform registrations | **1** (SoundCloud only) |
+
+After `0a04e1b`, `kaileyhxo` should report **0 registrations** with HackerRank, Mixcloud and Telegram
+demoted to unverified leads. If it still reports 3, the deploy did not take — check `/health` `build`
+before touching any code.
 
 ---
 
-## A mirror push is not a deploy
+## ⛔ The one decision blocking the next PR
 
-```
-merge to main → npm run stamp:build → surgical mirror sync (only changed files)
-→ npm run verify:deploy reports `mirror tree -> equal`   ⛔ HARD GATE, re-run immediately before
-→ explicit Lovable deploy message (project 4ce11bc3-039d-4439-b293-acacca9e1e3a)
-→ /health build SHA MOVED   ← the only proof
-→ npm run record:deploy && git push origin HEAD deploy/live
-```
+Make an analyst **"false" mark suppress a platform globally** for the account instead of per-thread.
+Ask JD, and do not guess:
 
-`marker_offset_mismatch` between stamping and deploying is **expected**; the condition to read at
-that moment is `mirror tree -> equal`, nothing else.
+> **Does a single "false" mark suppress that platform for your account, or does it take N marks
+> across N separate cases before it sticks?**
+
+Context he gave, verbatim: *"I have explained over 100 times and mark false… and it still calls
+hacker rank… 200+ scans deep with 0 actionable pivots… that's the whole memory / improvement system
+I want."* He is right, and §3 of the handoff shows it could never have worked: the detector was wrong
+by construction, `sweeper.ts` takes **no suppression input at all**, and rejection keys are
+per-thread. Twelve lessons about HackerRank already sit in `agent_memory` with no lever to act on.
 
 ---
 
-## Non-negotiables
+## Then, in order
 
-- `REVEAL_BREACH_DATA` stays **ON**; `MAX_PAID_CALLS` stays **bounded**; intent is **never**
-  inferred from prose.
-- **Never touch** `toolChoice`, `stopWhen`, the finalize window, or termination logic.
-- **Quarantine is disclosure, not deletion.**
-- Integrity-critical changes need written sign-off **before** code.
-- Every live-behaviour change ships behind a **call-time** kill switch.
-- **No real investigated selectors** in code, comments, tests or PR bodies.
-- **Check whether it is already built before building it** — see CLAUDE.md's *BUILT AND UNWIRED*
-  table. Five separate times in one session the thing a plan said to build already existed.
+2. **Verify migration `20260907000000` against the live DB** — `artifacts_synthesis_cluster_uniq`.
+   Ops via Lovable, not a PR. `supabase/migrations/` is intent, not mechanism; the live ledger tops
+   out at `20260825024640`. **Hard prerequisite** before any synthesis flag.
+3. **`FINDING_SYNTHESIS_DRY_RUN` + forward path on** — measure distribution, write nothing.
+4. Flip dry-run off once it looks right. Backfill (175 closed cases) is a **separate, later** call.
+5. **Tool-lesson recall axis** — `memory_recall` matches on `subject` only, so 101 tool-reliability
+   lessons are filed under case-specific selectors and are unretrievable forever. Key tool lessons by
+   tool name and recall them every run.
+6. **Fix the `test:edge` glob** so `lib/*_test.ts` runs in CI. Expect surprises.
+7. Frontend channel, parallel: readiness denominator; Scope & controls.
+
+---
+
+## Do NOT rebuild these — they exist
+
+| Thing | Status |
+|---|---|
+| **finding synthesis** | complete, deployed, **three flags all OFF**. 9,615 artifacts / 181 threads / **13 finding rows lifetime**. Runs in the health sweep, structurally outside the finalize window |
+| `SweepSite.confirm` | the documented fix lever, unreachable until #594 — populating it needs a **known-real profile** per platform |
+| `shouldAllowToolCall` (`runtime-policy.ts:556`) | complete, tested, **unreferenced** |
+| `circuit.applyBaselineDisables()` | explicitly empty hook, already called once per thread |
+| `tool-routing-policy.ts` | 100% dead code |
+| Evidence board "Leads drawer" | already shipped (#543) |
+
+---
+
+## Traps that cost time this session
+
+- **`lib/*_test.ts` has NEVER run in CI.** `test:edge` globs `*_test.ts` at the osint-agent top level
+  only. `lib/cluster_test.ts` — the suite guarding against false identity merges — is executed by no
+  automated gate. Put new tests at the top level.
+- **`promoteConfidence`'s corroboration branch is a no-op.** `Math.max(c, Math.min(75, c)) === c`.
+  It can only cap, never promote. Confirmed across 64 production rows. Evidence-ranking — needs JD's
+  sign-off, not a drive-by.
+- **Report readiness is `reportSafe / TOTAL artifacts`**, denominator includes rows that can never be
+  report-safe. **Collecting more evidence lowers the score.**
+- **`marker_offset_mismatch` during a deploy is EXPECTED.** Read `mirror tree -> equal` and nothing
+  else at that moment.
+- **Lovable's `send_message` MCP call times out at 60s** regardless of `timeout_seconds`. The message
+  still lands. **Check `list_messages` before re-sending** — a second send supersedes and could
+  double-deploy.
+- **A 403 is not a dead credential.** `reddit_user` 403s on datacenter IPs, permanently.
+
+---
+
+## Carried forward — JD's, not the agent's
+
+1. **`GITHUB_API_TOKEN`** in Supabase → Edge Functions → Secrets. `github_code_search` still 3×
+   refusing; no deploy fixes it.
+2. **Lovable connector** on the Sept 20 A2b Routine — it stores no connectors, so the
+   per-investigation budget measurement cannot run.
+3. **Mirror PR #41** — open, unmerged, Lovable-authored, touches `index.ts` and `tool-registry.ts`,
+   does **not** touch `build-info.ts`. **Backport into canonical; never merge on the mirror.**
+
+---
+
+## Integrity items needing sign-off before anyone touches them
+
+- **Minor-safety redaction did not fire.** The `@wopdell` case printed a plaintext password and its
+  SHA-256 from a `com.roblox.client` stealer log while the report claimed minor-related records stay
+  redacted.
+- **Fabricated URLs persisted as evidence.** Three `gemini_deep_dork` YouTube URLs with impossible
+  video IDs at confidence 55. `auto-persist-findings.ts:254` validates URL **shape** only.
+- **`promoteConfidence`** (above).
