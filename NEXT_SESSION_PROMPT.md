@@ -49,7 +49,7 @@ Read, in order:
 | frontend suite | 2104/1/172 — **carried forward, not re-measured 2026-09-14** |
 | Vercel production | on `main` |
 
-**Nothing is undeployed.** The last cycle shipped #592 + #594 together under stamp #595.
+**Nothing is undeployed.** The latest edge cycle shipped **#599 under stamp #600** at `4bb19d9`; the cycle before it shipped #592 + #594 together under stamp #595 at `0a04e1b`.
 
 ---
 
@@ -62,10 +62,14 @@ Read, in order:
   any string and echo it back, so the generic echo test proved a registration for **every username
   ever swept**. New `echoUnsafe` marker. Live probe: 6 offenders before, 0 after.
 - **#595** — build marker `c87c07b` → `0a04e1b`. `ff6ad26` recorded the ledger.
+- **#597** — `test:edge` ran only the osint-agent top level, so five test files had never executed.
+  All 34 pass. Baseline 1845 → **1879** — coverage moved, not new tests.
+- **#598** — Scope & controls removed from the composer; it enforced nothing and polluted the seed.
+- **#599 + #600 stamp** — versioned the `username_sweep` cache key; marker `0a04e1b` → **`4bb19d9`**,
+  `f20d71e` recorded the ledger. Proof key: **`checks.tool_cache_version`**.
 
-⚠️ **This build added NO new `/health` key**, unlike the last three. Its durable signal is
-`singleton_count` on the `clustering_applied` log line. **The behavioural confirmation is a scan** —
-see "First thing to check" below.
+⚠️ #592/#594 added no new `/health` key, which is why #599's `checks.tool_cache_version` is the
+proof key for the CURRENT build. Read that key, not the marker alone.
 
 ---
 
@@ -89,7 +93,7 @@ versioned. Measured before the fix, from JD's own export:
 | `kaileyhxo` | 3 platform registrations | **0** — all three fabricated |
 | `kaileymhart` | 3 platform registrations | **1** (SoundCloud only) |
 
-After `0a04e1b`, `kaileyhxo` should report **0 registrations** with HackerRank, Mixcloud and Telegram
+On `4bb19d9` (the fix plus #599's versioned cache key), `kaileyhxo` should report **0 registrations** with HackerRank, Mixcloud and Telegram
 demoted to unverified leads. If it still reports 3, the deploy did not take — check `/health` `build`
 before touching any code.
 
@@ -142,9 +146,12 @@ per-thread. Twelve lessons about HackerRank already sit in `agent_memory` with n
 
 ## Traps that cost time this session
 
-- **`lib/*_test.ts` has NEVER run in CI.** `test:edge` globs `*_test.ts` at the osint-agent top level
-  only. `lib/cluster_test.ts` — the suite guarding against false identity merges — is executed by no
-  automated gate. Put new tests at the top level.
+- ~~**`lib/*_test.ts` has NEVER run in CI.**~~ **CLOSED by #597.** `test:edge` now passes
+  DIRECTORIES (`. ../evidence-export`) so Deno discovers recursively. Five files had never run,
+  including `lib/cluster_test.ts`; all 34 passed. Put new edge tests wherever they belong — the old
+  "put them at the top level" advice is retired, and do not restore the glob.
+- **A deployed tool-behaviour fix can be invisible behind `tool_call_cache`** — see the section
+  above. Bump `lib/tool-cache-version.ts` in the same PR.
 - **`promoteConfidence`'s corroboration branch is a no-op.** `Math.max(c, Math.min(75, c)) === c`.
   It can only cap, never promote. Confirmed across 64 production rows. Evidence-ranking — needs JD's
   sign-off, not a drive-by.
