@@ -4,6 +4,29 @@
 > Every number here is a **dated measurement**, not a state. Re-verify before acting.
 > Written 2026-09-14T17:05Z.
 
+> ## ⚠️ CORRECTION — added 2026-09-15T00:20Z
+>
+> **This handoff merged STALE and its §1 is wrong.** It was written against `ff6ad26` / live
+> `0a04e1b` and merged (#596) after four newer commits had already landed, so §1 records a state
+> that was three deploys old on arrival, and §11's plan lists as future work three things that
+> were already shipped. My error, not a drift event.
+>
+> **Real state at correction time:** `main` `06328a9`, live edge **`4bb19d9`**, `deploy/live`
+> `4bb19d9`, mirror `898a3a3`, `diff -rq` empty across all four function dirs, edge baseline
+> **1879 / 0 / 6**. Take the state from CLAUDE.md's dated block, never from here.
+>
+> **What landed after this was written:** #597 fixed the `test:edge` glob (§8's trap — five files
+> had never run; all 34 passed; baseline 1845 → 1879). #598 removed Scope & controls entirely
+> (§10.4's open question — answered). #599 versioned the `username_sweep` cache key, because
+> **#594's fix was invisible behind `tool_call_cache`**: a 17:19Z re-scan after the 16:30Z deploy
+> still narrated "3 confirmed hits (Mixcloud, Telegram, HackerRank)" from a replayed 13:44Z row.
+> §6's verification instruction would therefore have read as a failed deploy. That is the most
+> important thing on this page: **a fix to how a tool interprets a result is invisible while the
+> cache can replay a pre-fix row** — bump `lib/tool-cache-version.ts` in the same PR.
+>
+> Also since corrected: **`github_code_search` is RECOVERED** (§10.1), so that carried-forward
+> item is closed.
+
 ---
 
 ## 1. Verified state at close

@@ -1,7 +1,7 @@
 # Next-session prompt — Insight Finder
 
 > Paste this whole file as the opening message of a fresh session. It is self-contained.
-> **Written 2026-09-14T17:05Z.** Every number is a dated measurement, not a state — re-verify.
+> **Written 2026-09-14T17:05Z, CORRECTED 2026-09-15T00:20Z** — the first version merged stale. Every number is a dated measurement, not a state — re-verify.
 
 ---
 
@@ -14,7 +14,7 @@ git fetch --unshallow --filter=blob:none                          # the clone is
 curl -s "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1"
 ```
 
-**Expect `main` = `ff6ad26` or later and live edge build = `0a04e1b`.**
+**Expect `main` = `06328a9` or later and live edge build = `4bb19d9`.**
 
 If either moved, another session has worked this repo — read the newest `SESSION_HANDOFF_*.md`
 before anything else. That has now happened **six** times, and once produced two conflicting PRs
@@ -39,17 +39,17 @@ Read, in order:
 
 | Axis | Value |
 |---|---|
-| canonical `main` | `ff6ad26` |
-| live edge build | `0a04e1b` (`ok: true`) |
-| `deploy/live` | `0a04e1b` |
-| mirror `main` | `5f01506` |
+| canonical `main` | `06328a9` |
+| live edge build | `4bb19d9` (`ok: true`) |
+| `deploy/live` | `4bb19d9` |
+| mirror `main` | `898a3a3` |
 | `diff -rq`, all 4 fn dirs | 0 differing paths |
-| `verify:deploy` | VERIFIED, `mirror tree -> equal` (`422991e39c8b`) |
-| edge suite | 1845 passed / 0 failed / 6 ignored |
+| proof key for this build | `checks.tool_cache_version` = `username_sweep=v2, username_search=v2` |
+| edge suite | **1879** passed / 0 failed / 6 ignored (moved by #597's glob fix, not new tests) |
 | frontend suite | 2104/1/172 — **carried forward, not re-measured 2026-09-14** |
 | Vercel production | on `main` |
 
-**Nothing is undeployed.** The last cycle shipped #592 + #594 together under stamp #595.
+**Nothing is undeployed.** The latest edge cycle shipped **#599 under stamp #600** at `4bb19d9`; the cycle before it shipped #592 + #594 together under stamp #595 at `0a04e1b`.
 
 ---
 
@@ -62,23 +62,38 @@ Read, in order:
   any string and echo it back, so the generic echo test proved a registration for **every username
   ever swept**. New `echoUnsafe` marker. Live probe: 6 offenders before, 0 after.
 - **#595** — build marker `c87c07b` → `0a04e1b`. `ff6ad26` recorded the ledger.
+- **#597** — `test:edge` ran only the osint-agent top level, so five test files had never executed.
+  All 34 pass. Baseline 1845 → **1879** — coverage moved, not new tests.
+- **#598** — Scope & controls removed from the composer; it enforced nothing and polluted the seed.
+- **#599 + #600 stamp** — versioned the `username_sweep` cache key; marker `0a04e1b` → **`4bb19d9`**,
+  `f20d71e` recorded the ledger. Proof key: **`checks.tool_cache_version`**.
 
-⚠️ **This build added NO new `/health` key**, unlike the last three. Its durable signal is
-`singleton_count` on the `clustering_applied` log line. **The behavioural confirmation is a scan** —
-see "First thing to check" below.
+⚠️ #592/#594 added no new `/health` key, which is why #599's `checks.tool_cache_version` is the
+proof key for the CURRENT build. Read that key, not the marker alone.
 
 ---
 
+## ⛔ Read this before re-running any verification scan
+
+**A deployed fix to how a tool INTERPRETS a result is invisible while the cache can replay a
+pre-fix row.** Measured 2026-09-14: #594 went live at ~16:30Z and a **17:19Z re-scan still
+narrated "3 confirmed hits (Mixcloud, Telegram, HackerRank)"** — `tool_usage_log.cached` was true,
+replaying a 13:44Z row. The fix was live and correct; the cache made it look like the deploy had
+failed. #599 closed this with `lib/tool-cache-version.ts`, which folds a per-tool
+result-interpretation version into both cache hashes. **Bump that version in the same PR as any
+future tool-behaviour fix**, or your own verification will lie to you.
+
 ## First thing to check — did the deploy actually change the product?
 
-Re-run seed **`kaileyhxo`** (username). Measured before the deploy, from JD's own export:
+Re-run seed **`kaileyhxo`** (username), which is now a clean test because the cache key is
+versioned. Measured before the fix, from JD's own export:
 
 | Handle | Claimed | Actually real |
 |---|---|---|
 | `kaileyhxo` | 3 platform registrations | **0** — all three fabricated |
 | `kaileymhart` | 3 platform registrations | **1** (SoundCloud only) |
 
-After `0a04e1b`, `kaileyhxo` should report **0 registrations** with HackerRank, Mixcloud and Telegram
+On `4bb19d9` (the fix plus #599's versioned cache key), `kaileyhxo` should report **0 registrations** with HackerRank, Mixcloud and Telegram
 demoted to unverified leads. If it still reports 3, the deploy did not take — check `/health` `build`
 before touching any code.
 
@@ -110,8 +125,9 @@ per-thread. Twelve lessons about HackerRank already sit in `agent_memory` with n
 5. **Tool-lesson recall axis** — `memory_recall` matches on `subject` only, so 101 tool-reliability
    lessons are filed under case-specific selectors and are unretrievable forever. Key tool lessons by
    tool name and recall them every run.
-6. **Fix the `test:edge` glob** so `lib/*_test.ts` runs in CI. Expect surprises.
-7. Frontend channel, parallel: readiness denominator; Scope & controls.
+6. ~~Fix the `test:edge` glob~~ — **DONE, #597.** Five files had never run; all 34 passed.
+7. ~~Scope & controls~~ — **DONE, #598**, removed entirely. Frontend channel still has the
+   readiness denominator (`reportSafe / TOTAL`, which punishes collection).
 
 ---
 
@@ -130,9 +146,12 @@ per-thread. Twelve lessons about HackerRank already sit in `agent_memory` with n
 
 ## Traps that cost time this session
 
-- **`lib/*_test.ts` has NEVER run in CI.** `test:edge` globs `*_test.ts` at the osint-agent top level
-  only. `lib/cluster_test.ts` — the suite guarding against false identity merges — is executed by no
-  automated gate. Put new tests at the top level.
+- ~~**`lib/*_test.ts` has NEVER run in CI.**~~ **CLOSED by #597.** `test:edge` now passes
+  DIRECTORIES (`. ../evidence-export`) so Deno discovers recursively. Five files had never run,
+  including `lib/cluster_test.ts`; all 34 passed. Put new edge tests wherever they belong — the old
+  "put them at the top level" advice is retired, and do not restore the glob.
+- **A deployed tool-behaviour fix can be invisible behind `tool_call_cache`** — see the section
+  above. Bump `lib/tool-cache-version.ts` in the same PR.
 - **`promoteConfidence`'s corroboration branch is a no-op.** `Math.max(c, Math.min(75, c)) === c`.
   It can only cap, never promote. Confirmed across 64 production rows. Evidence-ranking — needs JD's
   sign-off, not a drive-by.
@@ -149,8 +168,10 @@ per-thread. Twelve lessons about HackerRank already sit in `agent_memory` with n
 
 ## Carried forward — JD's, not the agent's
 
-1. **`GITHUB_API_TOKEN`** in Supabase → Edge Functions → Secrets. `github_code_search` still 3×
-   refusing; no deploy fixes it.
+1. ~~**`GITHUB_API_TOKEN`**~~ — ✅ **RECOVERED.** `checks.credentials` now lists
+   `github_code_search` under `recovered`, not `refusing`. JD's fix took. Remaining refusals:
+   `deepfind_email_breach`, `reddit_user`, `deepfind_disposable_email`,
+   `deepfind_telegram_channel` — and a 403 is not a dead credential.
 2. **Lovable connector** on the Sept 20 A2b Routine — it stores no connectors, so the
    per-investigation budget measurement cannot run.
 3. **Mirror PR #41** — open, unmerged, Lovable-authored, touches `index.ts` and `tool-registry.ts`,

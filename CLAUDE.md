@@ -13,17 +13,49 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-09-14T17:05Z.** `main` = `ff6ad26` (#592 `eaf0191` → #594 `0a04e1b`
-> → #595 stamp `584da1b` → ledger `ff6ad26`). `BUILD_MARKER` = `0a04e1b`.
-> Live `osint-agent` build = **`0a04e1b`** — DEPLOYED AND VERIFIED 2026-09-14T16:45Z:
-> `/health` moved `c87c07b` → `0a04e1b`, `deploy/live` → `0a04e1b`, `verify:deploy` **VERIFIED**
-> with `mirror tree -> equal` (`422991e39c8b`). Mirror `main` = `5f01506`, `diff -rq` empty for all
-> four function dirs. Edge baseline re-measured: **1845 passed / 0 failed / 6 ignored**.
+> **Dated state — 2026-09-15T00:20Z.** `main` = `06328a9`. `BUILD_MARKER` = `4bb19d9`.
+> Live `osint-agent` build = **`4bb19d9`**, `ok: true`, `deploy/live` → `4bb19d9`,
+> mirror `main` = `898a3a3`, `diff -rq` **empty for all four function dirs**.
+> Edge baseline: **1879 passed / 0 failed / 6 ignored** — the number moved because #597 fixed the
+> test glob, not because tests were added.
+> Proof-of-deploy key for this build: **`checks.tool_cache_version`** =
+> `{ok, "username_sweep=v2, username_search=v2"}`.
 >
-> ⚠️ **This build added NO new `/health` key**, unlike the three before it. Its durable signal is
-> `singleton_count` on the `clustering_applied` log line — per-thread, edge-logs only. The
-> behavioural confirmation is a scan: re-run seed `kaileyhxo`, which claimed 3 platform
-> registrations of which **all three were fabricated**; it should now report 0.
+> ✅ **`github_code_search` is RECOVERED.** `checks.credentials` now lists it under `recovered`
+> rather than `refusing`. JD's `GITHUB_API_TOKEN` fix took. The remaining refusals are
+> `deepfind_email_breach`, `reddit_user`, `deepfind_disposable_email`, `deepfind_telegram_channel`
+> — and a 403 is not a dead credential, see the section at the bottom of this file.
+>
+> ⚠️ **CORRECTION — the 2026-09-14 handoff (#596) merged STALE and its §1 is wrong.** It was
+> written against `ff6ad26` / live `0a04e1b` and merged after four newer commits had already
+> landed, so it records a state that was three deploys old on arrival. #597, #598 and #599 below
+> are all things that handoff lists as *future* work. Take the state from THIS block, never from
+> that handoff's §1 — which is the standing rule for every handoff in the series.
+>
+> **What landed between `0a04e1b` and `4bb19d9`:**
+> - **#597** — `test:edge` globbed `*_test.ts` at the osint-agent top level only, so **five test
+>   files had never been executed by CI or by the documented local command**, including
+>   `lib/cluster_test.ts`, the suite guarding against false identity merges. All 34 pass. The
+>   script now passes directories so Deno discovers recursively. Baseline 1845 → **1879**.
+> - **#598** — **Scope & controls removed from the composer.** It enforced nothing (the endpoint
+>   accepts `{messages, threadId}` and nothing else) and its `— Scope & controls (analyst
+>   instructions) —` block was stored as part of the seed and truncated into the Timeline and
+>   Activity Log. A corrected target still reaches the agent as ONE `Target: <value> (<kind>)` line.
+> - **#599** — ⛔ **read this before trusting any tool-behaviour fix.** `tool_call_cache` is keyed on
+>   `sha256({selector_type, selector, tool, params})` with **nothing in the key saying which
+>   interpretation produced the row**, so a fix to how a tool decides its result stays invisible
+>   until old rows expire. Measured: #594 went live ~16:30Z and a **17:19Z re-scan still narrated
+>   "3 confirmed hits (Mixcloud, Telegram, HackerRank)"** — `tool_usage_log.cached` was true,
+>   replaying a 13:44Z row. `lib/tool-cache-version.ts` now folds a per-tool
+>   result-interpretation version into BOTH hashes. Kill switch `TOOL_CACHE_VERSION_DISABLED`.
+>
+> **The lesson, generalised: a deployed fix to how a tool INTERPRETS a result is invisible while
+> the cache can replay a pre-fix row.** Bump the tool's version in `lib/tool-cache-version.ts` in
+> the same PR, or the verification scan will look like the deploy failed.
+>
+> **Previous dated state — 2026-09-14T17:05Z.** `main` = `ff6ad26`, live `0a04e1b`
+> (#592 `eaf0191` → #594 `0a04e1b` → #595 stamp `584da1b` → ledger `ff6ad26`), mirror `5f01506`,
+> tree `422991e39c8b`, edge 1845/0/6 under the old glob.
 >
 > **What shipped:** #594 gave six platforms an `echoUnsafe` marker — HackerRank, Mixcloud, Spotify,
 > Telegram, Trakt and NameMC answer 2xx for ANY string and echo it back, so `accountIsProven`'s
@@ -227,7 +259,7 @@ There is **ONE place to work: this repo, `justindean785/insight-finder`** (produ
 
 ## Edge function internals (gotchas)
 - **Live tool defs are in `supabase/functions/osint-agent/tool-registry.ts`** (`buildTools`), **not** inline in `index.ts` (which now only orchestrates the request). The god-file refactor moved them; `index.ts` has zero tool defs. The catalog↔runtime contract test (`src/test/catalog-guidance.test.ts`) reads `tool-registry.ts` (with an `index.ts` fallback) to assert every `catalog.ts` entry has a runtime def — keep `catalog.ts` and `tool-registry.ts` in sync when adding a tool. (Any older `tools/*.ts` files are stale mirrors, not the runtime source.)
-- Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts`). **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail.) **Edge baseline: 1832 passed / 0 failed / 5 ignored** (re-measured 2026-09-13T00:04Z on `main` at `95b8d50`, post-#587/#588, with Deno 2.9.6 and `--no-lock`; the 1802/`c5a0467`, 1762/`d11f2f9`, 1634/`4a5eb1c`, 1624/`57c0912`, 1613/`2026-09-02`, 1539, 1517/`3b6fc44`, 1461/`3c2ef26`, 1446/`cf06cbb`, 1407/`03f64e4`, 1279/`5cc1940` and 1178/`394cd0b` figures are all stale, INCLUDING the "1778" this line briefly carried — that was the mid-branch figure before the promotion-quarantine tests landed). The 24 environmental failures are GONE — do not treat any failure as "probably environmental"; that excuse is retired. **Deno is NOT preinstalled** in the web/remote sandbox: `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y` (verified working 2026-08-28 — `dl.deno.land` answers 200 now, so the npm-registry workaround in `mem/ops/deno-tests-in-web-sandbox.md` is a fallback, not the only route). Pass `--no-lock`: an unqualified `deno test` rewrites `deno.lock` and drops four real dependency entries — or skip the install entirely and **use CI as the edge instrument**: any PR gives a clean `deno test` on a provisioned toolchain, and a red PR is still a usable measuring device if you read the per-job conclusions rather than the top-level X. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
+- Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read . ../evidence-export`). ⚠️ **It passes DIRECTORIES, not a `*_test.ts` glob** — #597 changed this because the glob matched the osint-agent top level only and five test files had never run. Do not "simplify" it back to a glob, and put new edge tests wherever they belong rather than at the top level. **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail.) **Edge baseline: 1879 passed / 0 failed / 6 ignored** (post-#597, which widened the runner to directories; the 1845/`0a04e1b` figure was the same suite under the old glob, so that jump is COVERAGE, not new tests. Re-measured with `--no-lock`; the 1845/`0a04e1b`, 1832/`95b8d50`, 1802/`c5a0467`, 1762/`d11f2f9`, 1634/`4a5eb1c`, 1624/`57c0912`, 1613/`2026-09-02`, 1539, 1517/`3b6fc44`, 1461/`3c2ef26`, 1446/`cf06cbb`, 1407/`03f64e4`, 1279/`5cc1940` and 1178/`394cd0b` figures are all stale, INCLUDING the "1778" this line briefly carried — that was the mid-branch figure before the promotion-quarantine tests landed). The 24 environmental failures are GONE — do not treat any failure as "probably environmental"; that excuse is retired. **Deno is NOT preinstalled** in the web/remote sandbox: `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y` (verified working 2026-08-28 — `dl.deno.land` answers 200 now, so the npm-registry workaround in `mem/ops/deno-tests-in-web-sandbox.md` is a fallback, not the only route). Pass `--no-lock`: an unqualified `deno test` rewrites `deno.lock` and drops four real dependency entries — or skip the install entirely and **use CI as the edge instrument**: any PR gives a clean `deno test` on a provisioned toolchain, and a red PR is still a usable measuring device if you read the per-job conclusions rather than the top-level X. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
 - **Frontend baseline: 2104 passed / 1 skipped / 172 files** (`npx vitest run`, re-measured 2026-09-13T00:05Z on `main` at `95b8d50`, post-#587/#588. The 2087/171 (`c5a0467`), 2071/169 (`d11f2f9`), 1957/159 (`4a5eb1c`), 1927/158 (`57c0912`), 1818/149 (2026-09-02), 1803/148, 1775/143 (`3b6fc44`), 1695/136, 1611/131, 1629/133, 1587/130, 1585/130, 1422/115 and 1288/105 figures are all stale). ⚠️ **Test FILES are the suite's own figure, not the coverage upload count.** CI's `Frontend (vitest + build)` job prints `there will be 137 files uploaded` immediately after the suite — that is the *coverage artifact* file count, and mistaking it for the suite figure already put a wrong number in one commit message. **If a run reports ~10 React failures, re-measure in an isolated worktree with its own `npm ci`** before believing them — a shared `node_modules` can produce a duplicate-React artifact that fabricates exactly that (this cost a session; PR #481's body still cites them as real). It is a *symptom to check*, not a rule that a shared tree always lies: the 1695 above was measured in the primary checkout with 0 failures, and CI's own `Frontend (vitest + build)` job agreed on the same head. Re-measure rather than trust it — this number moved three times in one session. The package manager is **npm** — there is no `pnpm-lock.yaml`. Use `npm ci`, `npm run typecheck|lint|test|build|test:edge`.
 - **⚠️ `npm run test:e2e` EXISTS and PR CI does not run it — run it by hand before merging any workspace change.** This line used to say the script did not exist; it does (`playwright test`, 54 specs over `e2e/workspace-tabs.spec.ts` and `e2e/case-integrity.spec.ts`, driving the harness build). The `e2e` job in `ci.yml` is `if: github.event_name == 'push'` — a deliberate cost call after #483 drained the Actions allowance — so it runs on pushes to `main` **only**. The workflow header states the trade plainly: *a PR can go green and merge while breaking the tab-reachability contract, and the failure surfaces on main AFTER the merge — a revert, not a block.* Measured 2026-09-12: a change that passed vitest, typecheck, lint, build AND the full edge suite still broke `case-integrity.spec.ts → next steps › 9`. **Baseline: 52 passed / 2 skipped.** Deno-style gotcha for the web sandbox — Chromium is pinned and must not be re-downloaded:
   `PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium-1194/chrome-linux/chrome npm run test:e2e`
@@ -717,13 +749,16 @@ memory while `sweeper.ts` had **no suppression input at all** (the platform list
 array) and rejection keys were per-thread — so the lesson was recorded twelve times with no lever to
 act on it even once.
 
-### ⛔ `lib/*_test.ts` has NEVER run in CI
+### ✅ `lib/*_test.ts` now runs in CI — CLOSED by #597 (2026-09-14)
 
-`test:edge` is `deno test … *_test.ts` — a shell glob that matches the osint-agent **top level
-only**. `lib/cluster_test.ts`, the C-1 acceptance suite whose entire job is guarding against false
-identity merges (the Hamza Shakoor case), is executed by **no automated gate**. Put new edge tests at
-the top level so they actually run. Fixing the glob is its own small PR and may surface failures that
-have been invisible for months.
+Kept because the *shape* recurs. `test:edge` was `deno test … *_test.ts`, a shell glob matching the
+osint-agent **top level only**, so five test files had never been executed by CI or by the
+documented local command — `lib/cluster_test.ts` (the C-1 suite guarding against false identity
+merges), `lib/memory_save_test.ts`, `lib/memory_supersession_test.ts`, `tools/serus_core_test.ts`
+and `evidence-export/text-sanitize_test.ts`. All 34 passed on first run, so nothing was being
+hidden — but nothing was being *checked* either. The script now passes directories so Deno
+discovers recursively. **Baseline 1845 → 1879: the number moved because coverage moved, not
+because tests were added.** When a suite total jumps, check the runner before crediting the code.
 
 ### ⛔ `promoteConfidence`'s corroboration branch is a mathematical no-op
 
