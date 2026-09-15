@@ -13,8 +13,26 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-09-13T00:30Z.** `main` = `811c2cd` (#587 `c87c07b` → #588 stamp
-> `4bdd1b4` → ledger `95b8d50` → #589 docs → #590 docs `811c2cd`). `BUILD_MARKER` = `c87c07b`.
+> **Dated state — 2026-09-14T17:05Z.** `main` = `ff6ad26` (#592 `eaf0191` → #594 `0a04e1b`
+> → #595 stamp `584da1b` → ledger `ff6ad26`). `BUILD_MARKER` = `0a04e1b`.
+> Live `osint-agent` build = **`0a04e1b`** — DEPLOYED AND VERIFIED 2026-09-14T16:45Z:
+> `/health` moved `c87c07b` → `0a04e1b`, `deploy/live` → `0a04e1b`, `verify:deploy` **VERIFIED**
+> with `mirror tree -> equal` (`422991e39c8b`). Mirror `main` = `5f01506`, `diff -rq` empty for all
+> four function dirs. Edge baseline re-measured: **1845 passed / 0 failed / 6 ignored**.
+>
+> ⚠️ **This build added NO new `/health` key**, unlike the three before it. Its durable signal is
+> `singleton_count` on the `clustering_applied` log line — per-thread, edge-logs only. The
+> behavioural confirmation is a scan: re-run seed `kaileyhxo`, which claimed 3 platform
+> registrations of which **all three were fabricated**; it should now report 0.
+>
+> **What shipped:** #594 gave six platforms an `echoUnsafe` marker — HackerRank, Mixcloud, Spotify,
+> Telegram, Trakt and NameMC answer 2xx for ANY string and echo it back, so `accountIsProven`'s
+> generic echo fallback proved a registration for every username ever swept (309 HackerRank
+> artifacts across 114 threads). #592 made `foldWords` fold URL path segments, so a URL artifact no
+> longer needs a `metadata.handle` key to join its cluster.
+>
+> **Previous dated state, for the record — 2026-09-13T00:30Z.** `main` = `811c2cd` (#587 `c87c07b` →
+> #588 stamp `4bdd1b4` → ledger `95b8d50` → #589 docs → #590 docs `811c2cd`).
 > Re-confirmed at 00:30Z: **nothing is undeployed** — the only `supabase/functions/` change
 > between `c87c07b` and `main` is `build-info.ts` itself, which is the stamp offset, not code.
 > Mirror `main` = `71b79c4` — surgical sync of 11 `osint-agent/` files (10 + `build-info.ts`),
@@ -487,8 +505,13 @@ list, §7 the ordered plan) →
 `…_2026-09-08_queue-drain-and-dispatch-deploy.md` →
 `…_2026-09-12_promotion-quarantine-and-measured-audit.md` (its §2 is the
 promotion-quarantine switch, §3 the trap list of four instruments that lied) →
-**`SESSION_HANDOFF_2026-09-13_instrument-truth-and-the-lineage-prerequisite.md` (newest —
-read this one first)**. Its §3 carries the three verified findings that reorder the plan
+`…_2026-09-13_instrument-truth-and-the-lineage-prerequisite.md` →
+**`SESSION_HANDOFF_2026-09-14_sweep-false-positives-and-the-memory-retrieval-gap.md` (newest —
+read this one first)**. Its §2 is the sweep bug that was manufacturing evidence, §4 the
+memory-retrieval gap, §5 the built-and-dark synthesis layer, §7 the ruling on Lovable's audit
+prompt, §8 the trap list, §9 the one open decision, §11 the ordered plan.
+
+The 09-13 handoff. Its §3 carries the three verified findings that reorder the plan
 (the GitHub 401, the missing call-to-artifact lineage, telemetry durability), §5 states the
 goal, **§6 is the ordered roadmap**, **§7 is the small-PR discipline and why a large PR
 cannot be deployed or reverted here**, §8 the trap list, §9 the ruling on Codex's planning
@@ -531,6 +554,8 @@ That is the real answer to "we do all these upgrades and it never changes the ap
 | `circuit.applyBaselineDisables(threadId)` (`circuit.ts:634`) | an **explicitly empty hook**, already called once per thread, kept for a persisted skip list |
 | `capabilities.seedTypes` | the gate is **fully enforced** at `capabilities.ts:184` — and no tool declares it, AND `index.ts:441` passes `null` as the seed type, so it can never fire ⚠️ |
 | Evidence board "Leads drawer" | **already shipped** (#543). Default filter is `analyst`, hiding weak/quarantined/excluded, with Leads and Excluded chips. `STATUS_FILTER_GROUPS` warns that a kind-based filter beside the authority states would be "a second, drifting source of truth" — do not add one |
+| **finding synthesis** (`finding-synthesis.ts`, `finding-synthesis-sweep.ts`, `lib/finding-row.ts`) | **complete, deployed, and switched OFF** behind `FINDING_SYNTHESIS_ENABLED` / `_BACKFILL_ENABLED` / `_DRY_RUN`. Runs in the HEALTH SWEEP — a separate request — so it is structurally incapable of failing finalize. Its header measures the gap it closes: **9,615 artifacts / 181 threads / 13 `kind='finding'` rows in the product's lifetime**, because `workflow_prompt.ts:34` makes `record_finding` advisory and the model almost never calls it (the `@wopdell` run: 87 tool calls, **zero**). ⚠️ Prerequisite before any flag flips: confirm migration `20260907000000` (`artifacts_synthesis_cluster_uniq`) is applied **against the live DB** — the sweep is an unlocked read-then-write fired every 60s |
+| `SweepSite.confirm` | the documented lever for a platform whose not-found page echoes the handle — **and unreachable until #594**, since no site configured it. Populating it honestly needs a KNOWN-REAL profile per platform, which is why #594 encodes the measured NEGATIVE (`echoUnsafe`) instead |
 
 ### ⚠️ Do NOT populate `seedTypes` to shrink the tool-schema payload
 
@@ -667,6 +692,55 @@ the cache sweep: PostgREST renders `.in()` into the URL query string, ~5,000 uui
 against a ~24 KB cap. Schema first, through Lovable, verified against the live DB; then the write
 path behind a kill switch with a new `/health` key. Full detail:
 `mem://architecture/artifact-tool-lineage-gap`.
+
+### ⛔ Memory IS learning — the RETRIEVAL is what is broken (measured 2026-09-14)
+
+Do not rebuild the memory layer, and do not accept "it never learns" at face value. Measured against
+the live DB: **1,395 `agent_memory` rows back to 2026-05-27, 517 of them `kind='lesson'`, 246 of
+those about tool reliability.** It captures exactly the right things —
+
+> *"rapidapi_breach_search returned 0 hits for this email while breach_check (leakcheck) returned 21"*
+> *"Instagram profile could not be scraped (HTTP 451 block + SocialFetch not_found)"*
+
+— and then buries them. **`memory_recall` matches on `subject` only** (`tool-registry.ts:5707`,
+`.or(agentMemoryOrFilter(subj))`), so a lesson about a TOOL is filed under the SELECTOR it was
+learned on (`caseypritchard1@gmail.com`, `baig_azhar`). **101 tool-reliability lessons are filed
+under a case-specific subject and can never surface again.**
+
+Fix shape: a second recall axis — key tool lessons by tool name (`tool:rapidapi_breach_search`) and
+recall that set every run regardless of seed.
+
+**Do NOT conflate this with a broken detector.** A tool that is wrong by construction is a code
+defect and must be fixed in code; memory carries genuinely case-specific knowledge. Conflating them
+is why this has felt broken from both ends. Worked example: 12 lessons about HackerRank existed in
+memory while `sweeper.ts` had **no suppression input at all** (the platform list is a hardcoded
+array) and rejection keys were per-thread — so the lesson was recorded twelve times with no lever to
+act on it even once.
+
+### ⛔ `lib/*_test.ts` has NEVER run in CI
+
+`test:edge` is `deno test … *_test.ts` — a shell glob that matches the osint-agent **top level
+only**. `lib/cluster_test.ts`, the C-1 acceptance suite whose entire job is guarding against false
+identity merges (the Hamza Shakoor case), is executed by **no automated gate**. Put new edge tests at
+the top level so they actually run. Fixing the glob is its own small PR and may surface failures that
+have been invisible for months.
+
+### ⛔ `promoteConfidence`'s corroboration branch is a mathematical no-op
+
+`lib/cluster.ts` advertises confidence promotion from cluster corroboration. The expression is
+`conf = Math.max(conf, Math.min(TIERS.LIKELY, member.confidence))`, and
+`Math.max(c, Math.min(75, c)) === c` for every `c`. It is an identity function. The branch can only
+ever CAP (contradicted → 40) or jump to 90 on a verified self-admission — confirmed across 64
+production rows, not one promoted upward. Either the expression is wrong or the comment is.
+**Evidence-ranking, so it needs explicit sign-off — do not "fix" it as a drive-by.**
+
+### ⛔ Report readiness punishes collection
+
+`confidence-dimensions.ts:196-201`: `readiness = reportSafe / TOTAL artifacts`, where report-safe
+means label ∈ `{CONFIRMED, ATTESTED, CORRELATED}`. The denominator includes `weak_lead`,
+`excluded_collision`, avatar placeholders and the engine's own notes — rows that can never be
+report-safe. **A more thorough run scores worse.** Measured: 7/64 = 11% on `@wopdell`, 2% on a
+120-artifact person case.
 
 ### ⛔ Ship in SMALL PRs — a large PR cannot be deployed or reverted here
 
