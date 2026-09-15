@@ -13,17 +13,49 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-09-14T17:05Z.** `main` = `ff6ad26` (#592 `eaf0191` → #594 `0a04e1b`
-> → #595 stamp `584da1b` → ledger `ff6ad26`). `BUILD_MARKER` = `0a04e1b`.
-> Live `osint-agent` build = **`0a04e1b`** — DEPLOYED AND VERIFIED 2026-09-14T16:45Z:
-> `/health` moved `c87c07b` → `0a04e1b`, `deploy/live` → `0a04e1b`, `verify:deploy` **VERIFIED**
-> with `mirror tree -> equal` (`422991e39c8b`). Mirror `main` = `5f01506`, `diff -rq` empty for all
-> four function dirs. Edge baseline re-measured: **1845 passed / 0 failed / 6 ignored**.
+> **Dated state — 2026-09-15T00:20Z.** `main` = `06328a9`. `BUILD_MARKER` = `4bb19d9`.
+> Live `osint-agent` build = **`4bb19d9`**, `ok: true`, `deploy/live` → `4bb19d9`,
+> mirror `main` = `898a3a3`, `diff -rq` **empty for all four function dirs**.
+> Edge baseline: **1879 passed / 0 failed / 6 ignored** — the number moved because #597 fixed the
+> test glob, not because tests were added.
+> Proof-of-deploy key for this build: **`checks.tool_cache_version`** =
+> `{ok, "username_sweep=v2, username_search=v2"}`.
 >
-> ⚠️ **This build added NO new `/health` key**, unlike the three before it. Its durable signal is
-> `singleton_count` on the `clustering_applied` log line — per-thread, edge-logs only. The
-> behavioural confirmation is a scan: re-run seed `kaileyhxo`, which claimed 3 platform
-> registrations of which **all three were fabricated**; it should now report 0.
+> ✅ **`github_code_search` is RECOVERED.** `checks.credentials` now lists it under `recovered`
+> rather than `refusing`. JD's `GITHUB_API_TOKEN` fix took. The remaining refusals are
+> `deepfind_email_breach`, `reddit_user`, `deepfind_disposable_email`, `deepfind_telegram_channel`
+> — and a 403 is not a dead credential, see the section at the bottom of this file.
+>
+> ⚠️ **CORRECTION — the 2026-09-14 handoff (#596) merged STALE and its §1 is wrong.** It was
+> written against `ff6ad26` / live `0a04e1b` and merged after four newer commits had already
+> landed, so it records a state that was three deploys old on arrival. #597, #598 and #599 below
+> are all things that handoff lists as *future* work. Take the state from THIS block, never from
+> that handoff's §1 — which is the standing rule for every handoff in the series.
+>
+> **What landed between `0a04e1b` and `4bb19d9`:**
+> - **#597** — `test:edge` globbed `*_test.ts` at the osint-agent top level only, so **five test
+>   files had never been executed by CI or by the documented local command**, including
+>   `lib/cluster_test.ts`, the suite guarding against false identity merges. All 34 pass. The
+>   script now passes directories so Deno discovers recursively. Baseline 1845 → **1879**.
+> - **#598** — **Scope & controls removed from the composer.** It enforced nothing (the endpoint
+>   accepts `{messages, threadId}` and nothing else) and its `— Scope & controls (analyst
+>   instructions) —` block was stored as part of the seed and truncated into the Timeline and
+>   Activity Log. A corrected target still reaches the agent as ONE `Target: <value> (<kind>)` line.
+> - **#599** — ⛔ **read this before trusting any tool-behaviour fix.** `tool_call_cache` is keyed on
+>   `sha256({selector_type, selector, tool, params})` with **nothing in the key saying which
+>   interpretation produced the row**, so a fix to how a tool decides its result stays invisible
+>   until old rows expire. Measured: #594 went live ~16:30Z and a **17:19Z re-scan still narrated
+>   "3 confirmed hits (Mixcloud, Telegram, HackerRank)"** — `tool_usage_log.cached` was true,
+>   replaying a 13:44Z row. `lib/tool-cache-version.ts` now folds a per-tool
+>   result-interpretation version into BOTH hashes. Kill switch `TOOL_CACHE_VERSION_DISABLED`.
+>
+> **The lesson, generalised: a deployed fix to how a tool INTERPRETS a result is invisible while
+> the cache can replay a pre-fix row.** Bump the tool's version in `lib/tool-cache-version.ts` in
+> the same PR, or the verification scan will look like the deploy failed.
+>
+> **Previous dated state — 2026-09-14T17:05Z.** `main` = `ff6ad26`, live `0a04e1b`
+> (#592 `eaf0191` → #594 `0a04e1b` → #595 stamp `584da1b` → ledger `ff6ad26`), mirror `5f01506`,
+> tree `422991e39c8b`, edge 1845/0/6 under the old glob.
 >
 > **What shipped:** #594 gave six platforms an `echoUnsafe` marker — HackerRank, Mixcloud, Spotify,
 > Telegram, Trakt and NameMC answer 2xx for ANY string and echo it back, so `accountIsProven`'s
@@ -717,13 +749,16 @@ memory while `sweeper.ts` had **no suppression input at all** (the platform list
 array) and rejection keys were per-thread — so the lesson was recorded twelve times with no lever to
 act on it even once.
 
-### ⛔ `lib/*_test.ts` has NEVER run in CI
+### ✅ `lib/*_test.ts` now runs in CI — CLOSED by #597 (2026-09-14)
 
-`test:edge` is `deno test … *_test.ts` — a shell glob that matches the osint-agent **top level
-only**. `lib/cluster_test.ts`, the C-1 acceptance suite whose entire job is guarding against false
-identity merges (the Hamza Shakoor case), is executed by **no automated gate**. Put new edge tests at
-the top level so they actually run. Fixing the glob is its own small PR and may surface failures that
-have been invisible for months.
+Kept because the *shape* recurs. `test:edge` was `deno test … *_test.ts`, a shell glob matching the
+osint-agent **top level only**, so five test files had never been executed by CI or by the
+documented local command — `lib/cluster_test.ts` (the C-1 suite guarding against false identity
+merges), `lib/memory_save_test.ts`, `lib/memory_supersession_test.ts`, `tools/serus_core_test.ts`
+and `evidence-export/text-sanitize_test.ts`. All 34 passed on first run, so nothing was being
+hidden — but nothing was being *checked* either. The script now passes directories so Deno
+discovers recursively. **Baseline 1845 → 1879: the number moved because coverage moved, not
+because tests were added.** When a suite total jumps, check the runner before crediting the code.
 
 ### ⛔ `promoteConfidence`'s corroboration branch is a mathematical no-op
 
