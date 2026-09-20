@@ -443,3 +443,46 @@ Also: "Recommended Next Steps" are per-kind templates ("Checking developer profi
 no relation to the case. With `parent` wired, the pivot engine has the chain and can recommend
 the one thing that would move this case from Likely to Confirmed: a second, independent source
 class tying the handle to the email.
+
+---
+
+## 10. The raw JSON export — the engine already knows, in the metadata
+
+The JSON export of the same case shows the merge gap is narrower than §9 said, and the fix is
+smaller. The cross-link union in `intel.ts` (~:2237) already reads `meta.email/emails`,
+`meta.phone/phones`, `meta.username` and `meta.address`. It misses this case for three exact
+reasons:
+
+| # | Miss | Evidence in the export | Fix |
+|---|---|---|---|
+| M1 | **Phone keys are not normalised.** The key is `phone:${raw.toLowerCase()}` | the Serus row carries `phones: ["8087838763", …]`; the phone artifacts are `+18087838763`. Same number, different key, no merge | key on digits only, leading `1` stripped, for both the value-based and metadata-based hits |
+| M2 | **Plural and `associated_*` handle keys are not read.** Only `meta.username` is | the Serus row has `usernames: [… "LilDee808" …]`; the MyFitnessPal rows have `associated_username: "LilDee808"` and `associated_email` | read `usernames`, `handles`, `associated_username`, `associated_email` in the same loops |
+| M3 | `current_address` on the name row and `cities/zips` on breach rows are not read | `Desiree M. Fleming` row: `current_address: "2514 S Beretania …"` | read `current_address` into the address key; leave city/zip alone (too coarse to be a merge signal) |
+
+With M1 + M2 alone, the seed cluster, the second email's cluster and both 808 phones collapse into
+one — from fifteen clusters to about four — using **only signals the engine already accepts**
+(`PHONE_MATCH`, `HANDLE_MATCH`, `EMAIL_MATCH`). Names stay out of the merge, as the T1-2 §8 rule
+requires. Frontend-only, pure, ~20 lines, and this thread is the regression fixture. It should be
+its own PR (one behaviour), not folded into #606.
+
+### Three other things the JSON makes explicit
+
+- **The model reached the right conclusion in run 1 and buried it in the wrong row.** The
+  exclusion row for the Chicago rapper says, in its `reason`: *"not connected to Desiree Fleming
+  or Hawaii"*. That is the case's identity call — stated once, in the metadata of the row about
+  someone else, never in a finding. `record_finding` was never called (advisory, §9 R4).
+- **A password became a name.** `extracted_password: "terence"` → `extracted_name: "Terence"` →
+  a `name` artifact at 55 in the Identity list. §9 R5, now with the exact field.
+- **A quarantined harvest can be laundered by re-recording its rows.** The `indicia_person`
+  name-only harvest is correctly `subject_unlinked` (19 identities). The model then persisted ten
+  of its emails, phones and addresses as separate rows at 60 with no quarantine marker. Here the
+  pick was defensible (the harvest contained the breach-chain email), but nothing checked that;
+  the engine took the model's word. Evidence-integrity: **needs sign-off**. Shape: a
+  `record_artifacts` row whose value appears inside an active `subject_unlinked` harvest on the
+  same thread inherits the marker unless it also matches a durable non-name selector already in
+  the subject cluster.
+- Two small corroborations the engine never used: the TikTok display name is `Dee-Ogge07`, and
+  the Serus `names` array carries `"Dee F"`. "Dee" is in the handle. Names are out of the merge by
+  rule, but they belong in the narrative, and the narrative is what the report lacks.
+- The JSON export carries `passwords: [...]` and `extracted_password` in metadata. It is behind the
+  acknowledgement dialog; it should still be masked at export (§9 R1).
