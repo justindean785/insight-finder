@@ -271,3 +271,78 @@ called 4 times in 14 days; it could become the cycle planner.
 2. C1: does one "false" mark suppress a platform for the account, or N marks across N cases?
 3. Auto-run ceiling: 3 cycles is the default here. A cycle is ~$0.10–0.30 at current usage.
 4. Whether Option 2 (a worker) is on the table at all, or the isolate is a fixed constraint.
+
+---
+
+## 7. Worked example — the `lildee808` run JD screenshotted (2026-09-20, thread `d72fa44a`)
+
+Five screenshots, one case, 18 minutes, $0.91. Everything below is from `orchestrator_invocations`,
+`tool_usage_log`, `messages` and `artifacts` for that thread, not from the screenshots.
+
+### The run, invocation by invocation
+
+| # | start | secs | steps | calls | ended by | context in → out (chars) | $ |
+|---|---|---|---|---|---|---|---|
+| 1 | 11:50 | 147 | 9 | 26 | **Stop pressed** | 44k → — | 0.12 |
+| 2 | 11:53 `lildee808_first` | **235** | 10 | 15 | finalize_forced | 100k → 186k | 0.17 |
+| 3 | 11:58 "pivot on chicago drill rapper finding" | 167 | 10 | 17 | finalize_forced | 223k → 386k | 0.25 |
+| 4 | 12:02 "run next pivots" | 184 | 11 | 18 | finalize_forced | 223k → **1,008,059** | 0.23 |
+| 5 | 12:06 pivot card `@deadbandswalking` | 122 | 6 | 9 | **Stop pressed** | 252k → — | 0.15 |
+
+Persisted assistant messages: 96 KB, 114 KB, 49 KB. Every completed run was force-finalized. Run 2
+overran the 3-minute wall clock, which is why its Findings table ends in a half-written row
+(`**bre`) — the dossier was being written at the edge of the isolate's life and got cut. Run 4's
+in-stream context reached one million characters; that is the exact failure #604's hard ceiling
+exists for, and the strongest argument for merging it first.
+
+### What the 80 tool calls actually were
+
+| bucket | calls | notes |
+|---|---|---|
+| useful, ok | 55 | |
+| **refused by the runtime** | **17 (21%)** | 11 "finalize window open", 5 "provider already in flight", 1 duplicate |
+| failed | 8 | **7 × `socialfetch_web_read` AbortError** (the same YouTube channel, retried across three runs), 1 × `indicia_person` 31 s timeout |
+| `minimax_correlate` | 5 called, **1 ran** | the prompt makes it mandatory before the report; the model calls it exactly when the finalize window has closed, so 4 of 5 were skipped |
+
+The YouTube retry is the clearest single defect: the narration itself says "YouTube continues to
+time out (3 attempts now)", and the tool log shows seven attempts, because the circuit state is
+cleared on every request (`clearRuntime`) and nothing durable says "this target is dead in this
+case". A per-thread dead-target list, persisted across invocations, stops that in one small edge PR.
+
+### Scope drift, and one integrity concern
+
+- `gemini_deep_dork` surfaced a name, **Jordan Rhodes**, that the next run spent calls debunking
+  ("likely hallucinated or conflated"). Recorded correctly as `excluded_collision` at 15 — the
+  integrity layer worked — but the calls were still spent.
+- The run then followed the subject's Instagram posts into a **Fuller Park gas-station shooting**
+  and recorded a `media_report` at confidence 55 naming the **victim**, a real third party with no
+  established link to the subject. Nothing in the taint or quarantine rules keys on "this row is
+  about someone else". That is evidence-ranking territory and needs JD's sign-off, but the shape
+  of the fix is the same as `subject_unlinked`: a `media_report` whose named person is not the
+  subject should carry the quarantine marker, not authority. Auto-run would have kept going down
+  that road, which is why its saturation stop and 3-cycle ceiling matter.
+
+### What the analyst saw, and why
+
+- **A full dossier while the status still said Running** (screenshot at 5:00). The finalize window
+  had opened; the model was writing the closing report inside the run. With `run_mode: cycle`
+  (A2) this becomes a short delta card.
+- **"Evidence Record — authoritative: no authoritative finding rows were recorded"** under a
+  seven-section dossier. True (`record_finding` is advisory and was never called), and confusing.
+  Finding synthesis is built and dark; the plan's C-track and #603 are the honest fixes. Until
+  then the dossier should not out-rank the line beneath it.
+- **An ASCII-art Network diagram that overflows a phone.** Model-generated. The fix is a prompt
+  rule (Network section as a list, never a box drawing) plus the cycle delta, which has no
+  Network section at all.
+- **After Stop: "Recovery unavailable … a new message would start a separate, billed run."**
+  Honest, and useless. With #606 the Continue / Auto-run / Write report bar appears under that
+  banner, so Stop is no longer a dead end.
+
+### Additions to the ordered plan from this case
+
+| # | PR | Ch | What |
+|---|---|---|---|
+| B7 | **Per-thread dead-target memory** | E | after 2 failures on the same `tool + target` in a thread, refuse further calls for that pair for the life of the case; persisted (`tool_usage_log` read at run start, like `run_budget_prior`), so it survives `clearRuntime` |
+| B8 | **Correlate at the boundary** (was B6) | E | promote: this run proves the "mandatory before report" rule cannot be honoured by a model-issued call |
+| A2′ | **No box drawings** | E (prompt) | ride with A2: Network section is a bullet list; tables ≤ 4 columns |
+| C5 | **Third-party `media_report` quarantine** | E | needs sign-off (evidence ranking). Shape: quarantine, not delete |
