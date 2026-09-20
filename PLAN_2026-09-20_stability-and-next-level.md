@@ -382,3 +382,64 @@ Two smaller UI items from the same screenshots (Track E):
 |---|---|---|
 | E8 | Time-and-spend list truncates names to 7 chars at phone width | "socialf…" ×2 and "minimax…" ×2 are indistinguishable; put the full name on its own line below 480px, or use `toolActionLabel` |
 | E9 | Health "Needs attention" must count repeated failures on one target | 3 of 3 attempts on one URL is attention-worthy whatever the category; count `tool + target` streaks, not categories |
+
+---
+
+## 9. The exported report (`osint-report-UNVERIFIED-DRAFT-lildee808.md` + PDF)
+
+Checked against the 79 artifact rows for thread `d72fa44a`. The PDF is the browser-print path of
+the same report, so the markdown is the authoritative content.
+
+### What the report says vs what the evidence supports
+
+The report presents **28 "Candidate Identity Clusters", 27 of them at a flat 55–60**, and calls
+the top "Key Finding" an `excluded_collision` — the Chicago drill rapper who is explicitly *not*
+the subject. It never states the one conclusion the artifacts actually support:
+
+> The seed handle is **Likely** (not Confirmed) tied to one person in Hawaii. Chain: a single
+> MyFitnessPal breach record carries username `LilDee808` with a second email; that email's
+> breach rows carry a full name, two 808-area phones and a Kauai town; public records for the
+> same name give Honolulu/Lihue addresses and two more emails. "Dee" + "808" (the Hawaii area
+> code) in the handle is consistent. Weakness: the handle-to-email link rests on ONE breach
+> record (one source class), and the name has 19 same-name collisions in public records.
+
+Every piece of that chain is in the artifact table. The engine split it into **fifteen
+separate clusters** (C003–C015, C026–C028): the email, each phone, each address, each
+name fragment ("Dee", "Desiree", "Fleming") is its own "unattributed cluster" at 60.
+
+### Why — built and unwired, again
+
+Both clusterers merge on selector **equality** only (`HANDLE_MATCH`, `EMAIL_MATCH`,
+`PHONE_MATCH`, plus address/IP as `SHARED_INFRASTRUCTURE`). A phone persisted *from* an email's
+breach record shares no selector with the email row, so it can never join it.
+
+**The report already honours a `parent` merge key** — `src/lib/intel.ts:2235` unions on
+`metadata.parent` / `parent_seed` / `seed` as `SHARED_INFRASTRUCTURE`. **Nothing writes it:
+14 of 9,269 artifacts in 60 days carry `parent`; 0 in this thread.** `record_artifacts` and the
+auto-persist path know the selector each call was made on (it is the dispatch key) and drop it.
+
+**Fix (edge, small, additive, kill switch):** stamp `metadata.parent = <type>:<queried selector>`
+on every artifact a call yields — for **durable** selector types only (email, phone, username,
+url, domain), never for a name, so a name-only query (the 19-identity harvest) cannot fan a
+merge out. Weight stays at `SHARED_INFRASTRUCTURE` (20), the weakest signal: "came from the same
+lookup" is co-occurrence, not linkage, and still needs a second class to reach Likely. Rides
+naturally with the lineage work (C4), which persists the same fact durably.
+
+`promoteConfidence`'s no-op corroboration branch (CLAUDE.md) is why nothing rises above 60 even
+where two classes agree; that one still needs sign-off.
+
+### Six more report-layer defects, in order of harm
+
+| # | Defect | Where | Fix shape |
+|---|---|---|---|
+| R1 | **Plaintext passwords in an export.** Three breach rows carry `password='…'` / `passwords …` in the artifact VALUE, so they print in the report, the PDF and the Network section | `record_artifacts` value text; `intel.ts:1369` only re-homes them | Mask at **export time** (`report-export-gate`), independent of `REVEAL_BREACH_DATA`, which is settled and stays on in the workbench. Better: never put a password in `value`; carry it in metadata |
+| R2 | **A murder victim as an identity cluster.** C020 and the Network "Identity" list name a third party from a news story beside the subject's candidates | cluster builder has no "about someone else" signal | C5 (third-party `media_report` quarantine) — needs sign-off |
+| R3 | **"Key Findings" leads with the excluded collision** because it is the only analyst-attested row | `authoritative-findings.ts` ranks attested first regardless of kind | exclude `excluded_collision` from Key Findings; it belongs only in the Collision section it already appears in |
+| R4 | **Readiness 3%** on a case with a usable identity chain | denominator counts every weak lead and note | #603, already open |
+| R5 | **Name fragments as artifacts** ("Dee", "Fleming", "Terence" = a password reused as a name) | `serus_darkweb_scan` extraction | do not persist single-token names from breach name fields; keep them in the parent row's metadata |
+| R6 | **Activity Log labels disagree with the tool log** — `record_artifacts (failed)`, `memory_recall (failed)`, three `exa_search (failed)`; the log says ok / ok / 1 ok + 1 skipped | `intel.ts` message-log section uses a fourth classifier | route it through the canonical taxonomy with #579 |
+
+Also: "Recommended Next Steps" are per-kind templates ("Checking developer profile traces") with
+no relation to the case. With `parent` wired, the pivot engine has the chain and can recommend
+the one thing that would move this case from Likely to Confirmed: a second, independent source
+class tying the handle to the email.
