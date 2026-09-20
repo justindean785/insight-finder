@@ -387,6 +387,23 @@ function hostMatchesAny(hostname: string, list: readonly string[]): boolean {
 
 /** Pure — hostname in, decision out. No I/O, no clock, so it is directly
  *  unit-testable without a live fetch. */
+/**
+ * Turn a fetch failure into the error string the log will carry. A fast-timeout
+ * abort (the YouTube policy above) used to surface as the raw
+ * "AbortError: The signal has been aborted", which the outcome taxonomy reads as
+ * "cancelled by the investigation's time budget — not a provider fault" and
+ * keeps out of Needs attention. It is a per-host timeout the code chose on
+ * purpose; name it so, in the "exceeded Nms" phrasing the taxonomy classifies as
+ * a timeout. Pure — unit-tested.
+ */
+export function socialfetchReadError(e: unknown, policy: SocialfetchHostDecision): string {
+  const raw = String(e);
+  if (policy.action === "fast_timeout" && /abort/i.test(raw)) {
+    return `socialfetch_web_read exceeded ${policy.timeoutMs}ms fast timeout (host policy: known-slow host)`;
+  }
+  return raw;
+}
+
 export function socialfetchHostPolicy(hostname: string): SocialfetchHostDecision {
   if (hostMatchesAny(hostname, SOCIALFETCH_TELEGRAM_HOSTS)) {
     return {
@@ -1755,7 +1772,7 @@ export function buildTools(ctx: ToolContext) {
           try { env = JSON.parse(text) as typeof env; } catch { env = { data: text.slice(0, 8000) }; }
           return { ok: r.ok, status: r.status, data: env?.data ?? env, meta: env?.meta ?? null, error: env?.error ?? null };
         } catch (e) {
-          return { error: String(e) };
+          return { error: socialfetchReadError(e, policy) };
         }
       },
     }),
