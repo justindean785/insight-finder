@@ -308,9 +308,12 @@ function ActivityLog({
             {spend.rows.map((r) => {
               const slow = r.ms >= 10_000;
               return (
-                <div key={r.tool} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_3.5rem_4.5rem_2.5rem] items-center gap-2">
-                  <span className="truncate font-mono text-data text-foreground/85" title={r.tool}>{r.tool}</span>
-                  <span className="relative h-1.5 overflow-hidden rounded-sm bg-surface-3">
+                <div key={r.tool} className="grid grid-cols-[minmax(0,1fr)_3.5rem_4.5rem_2.5rem] items-center gap-x-2 gap-y-0.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_3.5rem_4.5rem_2.5rem]">
+                  {/* Phone width: the name gets the whole first column and the bar
+                      drops to a second row. Truncating to ~7 chars left "socialf…"
+                      twice and "minimax…" twice in one list (2026-09-20). */}
+                  <span className="break-all font-mono text-data text-foreground/85 sm:truncate sm:break-normal" title={r.tool}>{r.tool}</span>
+                  <span className="relative order-last col-span-4 h-1.5 overflow-hidden rounded-sm bg-surface-3 sm:order-none sm:col-span-1">
                     <span
                       className="absolute inset-y-0 left-0 rounded-sm"
                       style={{
