@@ -24,6 +24,7 @@ import { unprovenLinkageMarker, UNPROVEN_LINKAGE_KEY, type UnprovenLinkage } fro
 import { promotionQuarantineEnabled } from "./env.ts";
 import type { QuarantineRow } from "./lib/dispatch-quarantine.ts";
 import { buildRejectedDispatchKeys, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
+import { buildDeadTargets, deadTargetMemoryEnabled, deadTargetCount, deadTargetRefusal, DEAD_TARGET_FLOOR, DEAD_TARGET_REFUSAL_ERROR } from "./lib/dead-target.ts";
 import { loadReviewsForThread, type ReviewDb } from "./reviews.ts";
 import {
   guard, takeCorrelateHint, shouldSkipRedundantCorrelate,
@@ -687,6 +688,36 @@ export function wrapToolsWithCache(
     }
     return toolHealthPromise;
   };
+  // ---- Dead-target memory (lib/dead-target.ts) -----------------------------------
+  // The circuit breaker forgets everything between requests; tool_usage_log does
+  // not. Loaded ONCE per run: only this case's FAILED rows, so the read is small.
+  // FAILS OPEN on any error, like loadToolHealth — a cost control, not authorization.
+  let deadTargetsPromise: Promise<Map<string, number>> | null = null;
+  const loadDeadTargets = (): Promise<Map<string, number>> => {
+    if (!deadTargetsPromise) {
+      deadTargetsPromise = (async () => {
+        try {
+          const { data, error } = await adminDb
+            .from("tool_usage_log")
+            .select("tool_name,outcome,input_json")
+            .eq("thread_id", ctx.investigationId)
+            .eq("outcome", "failed");
+          if (error) {
+            console.warn("[dead-target] load failed (gate open):", error.message);
+            return new Map();
+          }
+          return buildDeadTargets(
+            (data ?? []) as Array<Record<string, unknown>>,
+            (input) => circuit.normalizeSelector(detectSelectorType(input), detectSelectorValue(input)),
+          );
+        } catch (e) {
+          console.warn("[dead-target] load threw (gate open):", e);
+          return new Map();
+        }
+      })();
+    }
+    return deadTargetsPromise;
+  };
   // ---- subject_unlinked DISPATCH boundary --------------------------------------
   // Quarantine binds at write and read-back; without this it never bound at
   // DISPATCH, so a quarantined selector could still start its own paid tool
@@ -1070,6 +1101,24 @@ export function wrapToolsWithCache(
             const refusal = rejectionRefusal(name, rejectedAs, sel);
             console.warn(`[rejected-dispatch] refused ${name} on ${rejectedAs}:${sel} (analyst rejected)`);
             return refusal;
+          }
+        }
+        // ---- Dead-target memory: this (tool, selector) already failed in THIS case ----
+        // Before budget, circuit, cache and the live call, so a refusal reserves no
+        // slot of the run's tool-call budget. `force` overrides — the analyst asking
+        // for a retry is the one legitimate reason to try a dead target again.
+        if (deadTargetMemoryEnabled() && !force && !ALWAYS_ALLOW_TOOLS.has(name)) {
+          const prior = deadTargetCount(await loadDeadTargets(), name, sel);
+          if (prior >= DEAD_TARGET_FLOOR) {
+            const inputJsonForLog = redactSensitiveToolInput(name, normalizeForHash(input)) as unknown as Record<string, unknown>;
+            await logUsage(false, false, Date.now() - t0, DEAD_TARGET_REFUSAL_ERROR, null, true, {
+              input: inputJsonForLog,
+              runtime: { rejection_reason: "dead_target", rejection_source: "case_memory", prior_failures: prior },
+            });
+            console.log(JSON.stringify({
+              event: "dead_target_refused", thread_id: ctx.investigationId, tool: name, selector: sel, prior_failures: prior,
+            }));
+            return deadTargetRefusal(name, sel, prior);
           }
         }
         const overrideSelector = ctx.manualOverrideSelector

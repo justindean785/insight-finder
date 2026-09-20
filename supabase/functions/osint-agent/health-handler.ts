@@ -22,6 +22,7 @@ import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./
 import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
+import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -346,6 +347,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // reported on every probe — and its PRESENCE is the behavioural proof that the build
   // with versioned cache keys is the one running (see lib/tool-cache-version.ts).
   r.checks.tool_cache_version = describeToolCacheVersions();
+  // Per-case dead-target memory (lib/dead-target.ts). Pure, no DB. Its PRESENCE is the
+  // behavioural proof that the build carrying the gate is the one running.
+  r.checks.dead_target_memory = describeDeadTargetMemory();
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure
