@@ -24,6 +24,12 @@ import { KIND_TO_PIVOT } from "@/lib/intel";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked } from "@/lib/submit-guard";
+import { RunControls } from "@/components/pivots/RunControls";
+import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
+import {
+  AUTO_RUN_MAX_CYCLES, AUTO_RUN_SETTLE_MS, CONTINUE_PROMPT, REPORT_PROMPT,
+  autoRunStopMessage, canShowRunControls, decideAutoContinue,
+} from "@/lib/run-controls";
 import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
 import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
@@ -1402,6 +1408,10 @@ function ChatWindowInner({
   const submitLockRef = useRef(false);
   const [rerunBusy, setRerunBusy] = useState(false);
   const { items: artifacts } = useThreadArtifacts(threadId);
+  // Optional: absent in standalone renders/tests. Used only to keep the run
+  // controls off a thread whose run is live in another tab (overlap guard).
+  const caseSnapshot = useOptionalCaseSnapshot();
+  const serverRunActive = caseSnapshot?.snapshot?.run.state === "running";
   // Targets tools have already been run against — the "already investigated"
   // signal that stops the rail re-suggesting a pivot that's already been run.
   const queriedTargets = useThreadQueriedTargets(threadId);
@@ -1421,6 +1431,15 @@ function ChatWindowInner({
   // loaded asynchronously. Rendering before they land reshuffled the list a
   // second after load — the row an analyst reached for could move or vanish.
   const [seedLoaded, setSeedLoaded] = useState(false);
+  // Continue / Auto-run / Write report (lib/run-controls.ts). `artifactsBefore`
+  // is the artifact count snapshotted when a cycle was sent, so the decision
+  // after the run can ask "did that cycle record anything new?".
+  const [autoRun, setAutoRun] = useState<{ enabled: boolean; cyclesRun: number; artifactsBefore: number | null }>({
+    enabled: false, cyclesRun: 0, artifactsBefore: null,
+  });
+  // Set by stopInvestigation, cleared on the next send: Auto-run must never
+  // re-fire on a thread the analyst just stopped by hand.
+  const stoppedByAnalystRef = useRef(false);
   // Skipped pivots (normalized-target keys) so a lead the analyst dismissed in
   // the Pivots tab never reappears in the chat rail. Hydrated from localStorage
   // and kept in sync via the skip-changed event other surfaces dispatch.
@@ -1826,6 +1845,8 @@ function ChatWindowInner({
         .update({ status: "stopped", updated_at: new Date().toISOString() })
         .eq("id", threadId);
       if (statusError) throw statusError;
+      stoppedByAnalystRef.current = true;
+      setAutoRun((prev) => (prev.enabled ? { ...prev, enabled: false } : prev));
       toast.info("Investigation stopped");
     } catch (statusErr) {
       console.error("stopInvestigation status update failed:", statusErr);
@@ -2061,6 +2082,40 @@ function ChatWindowInner({
       submitLockRef.current = false;
     }
   }, [beginInvestigation, sendMessage, status]);
+
+  // --- Run controls -------------------------------------------------------
+  // Continue = one more cycle. Auto-run = keep cycling while each cycle still
+  // records new evidence, up to AUTO_RUN_MAX_CYCLES. Write report = the closing
+  // dossier, on demand, instead of after every turn.
+  const artifactsCountRef = useRef(artifacts.length);
+  artifactsCountRef.current = artifacts.length;
+  const sendCycle = useCallback(async (prompt: string, countAsAutoCycle: boolean) => {
+    if (isSubmitBlocked(status, submitLockRef.current)) return;
+    stoppedByAnalystRef.current = false;
+    setAutoRun((prev) => ({
+      ...prev,
+      cyclesRun: countAsAutoCycle ? prev.cyclesRun + 1 : prev.cyclesRun,
+      artifactsBefore: artifactsCountRef.current,
+    }));
+    await sendText(prompt);
+  }, [sendText, status]);
+  const runContinue = useCallback(() => { void sendCycle(CONTINUE_PROMPT, false); }, [sendCycle]);
+  const runWriteReport = useCallback(() => {
+    // A report request is the natural end of Auto-run.
+    setAutoRun((prev) => ({ ...prev, enabled: false }));
+    void sendCycle(REPORT_PROMPT, false);
+  }, [sendCycle]);
+  const toggleAutoRun = useCallback((enabled: boolean) => {
+    if (!enabled) {
+      setAutoRun((prev) => ({ ...prev, enabled: false }));
+      toast.info("Auto-run off — the current cycle will finish, then wait for you.");
+      return;
+    }
+    setAutoRun({ enabled: true, cyclesRun: 0, artifactsBefore: null });
+    // Arm and start immediately when idle; when a run is already going, the
+    // completion effect below picks it up.
+    if (!isSubmitBlocked(status, submitLockRef.current)) void sendCycle(CONTINUE_PROMPT, true);
+  }, [sendCycle, status]);
 
   // Listen for "run pivot" events dispatched from the Pivots tab.
   useEffect(() => {
@@ -2340,6 +2395,41 @@ function ChatWindowInner({
   // last ran. Updated every render, read only inside the fallback timer.
   const isLoadingRef = useRef(isLoading);
   isLoadingRef.current = isLoading;
+
+  // Auto-run: when a run ends, wait for the artifact subscription to settle,
+  // then either send the next cycle or say why it stopped. The decision is a
+  // pure function (decideAutoContinue) so the stop reasons are unit-tested.
+  const wasLoadingRef = useRef(false);
+  const autoRunRef = useRef(autoRun);
+  autoRunRef.current = autoRun;
+  const errorRef = useRef(error);
+  errorRef.current = error;
+  useEffect(() => {
+    const ended = wasLoadingRef.current && !isLoading;
+    wasLoadingRef.current = isLoading;
+    if (!ended || !autoRunRef.current.enabled) return;
+    const timer = window.setTimeout(() => {
+      if (unmountedRef.current || isLoadingRef.current) return;
+      const state = autoRunRef.current;
+      if (!state.enabled) return;
+      const decision = decideAutoContinue({
+        enabled: state.enabled,
+        cyclesRun: state.cyclesRun,
+        maxCycles: AUTO_RUN_MAX_CYCLES,
+        artifactsBefore: state.artifactsBefore,
+        artifactsNow: artifactsCountRef.current,
+        runFailed: Boolean(errorRef.current),
+        threadFinished: !stoppedByAnalystRef.current,
+      });
+      if (decision.action === "continue") {
+        void sendCycle(CONTINUE_PROMPT, true);
+        return;
+      }
+      setAutoRun((prev) => ({ ...prev, enabled: false }));
+      if (decision.reason !== "disabled") toast.info(autoRunStopMessage(decision.reason, AUTO_RUN_MAX_CYCLES));
+    }, AUTO_RUN_SETTLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [isLoading, sendCycle]);
 
   // Has this thread ever carried a run or a message? A brand-new thread is created
   // with `status='active'` (the DB column default) and no heartbeat, so the health
@@ -2819,6 +2909,23 @@ function ChatWindowInner({
                 );
               })}
             </div>
+          )}
+          {canShowRunControls({
+            isLoading,
+            hasAssistantTurn: messages.some((m) => m.role === "assistant"),
+            seedLoaded,
+            hasLiveError: Boolean(error) && !networkDropWhileAlive && !hasPersistedFailure(messages),
+            autoRunEnabled: autoRun.enabled,
+            serverRunActive,
+          }) && (
+            <RunControls
+              busy={isLoading}
+              autoRunEnabled={autoRun.enabled}
+              autoRunCyclesRun={autoRun.cyclesRun}
+              onContinue={runContinue}
+              onToggleAutoRun={toggleAutoRun}
+              onWriteReport={runWriteReport}
+            />
           )}
           <div className="composer-shell p-1">
             <div className="rounded-[11px] bg-background/60">
