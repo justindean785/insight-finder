@@ -346,3 +346,39 @@ case". A per-thread dead-target list, persisted across invocations, stops that i
 | B8 | **Correlate at the boundary** (was B6) | E | promote: this run proves the "mandatory before report" rule cannot be honoured by a model-issued call |
 | A2′ | **No box drawings** | E (prompt) | ride with A2: Network section is a bullet list; tables ≤ 4 columns |
 | C5 | **Third-party `media_report` quarantine** | E | needs sign-off (evidence ranking). Shape: quarantine, not delete |
+
+---
+
+## 8. The Tools tab screenshots — two panels, one minute, two truths
+
+Activity and Health for `lildee808` at 5:00, ~55 rows in `tool_usage_log`
+(40 ok · 3 empty · 3 failed `AbortError` · 9 skipped):
+
+| the same rows | Activity says | Health says |
+|---|---|---|
+| 3 × `socialfetch_web_read` AbortError | **Failed 3** (red) | **Cancelled 3**, "not a provider fault", **Needs attention 0** |
+| 1 × "duplicate call" skip | Degraded 1 | Skipped |
+| 3 × empty (404 / no record) | folded into Succeeded 43 | No record 3 |
+| 9 skips | Skipped 8 | Skipped 12 (9 + the 3 "cancelled") |
+
+Three classifiers, three truths — `classifyActivityRow` (Activity), `classifyDetailedOutcome`
+(Health) and `deriveToolTone` (chat cards). **The fix is already written: PR #579 routes Activity
+through the canonical taxonomy so the two panels count the same category.** It has been open and
+mergeable, not a draft, since 2026-09-11. Add it to the merge order.
+
+**But #579 will make both panels agree on a wrong label.** The three AbortErrors are not the
+investigation's time budget cancelling anything. They are `socialfetch_web_read`'s deliberate
+6-second YouTube fast-timeout (`SOCIALFETCH_YOUTUBE_FAST_TIMEOUT_MS`), which raises a raw
+`AbortError: The signal has been aborted` instead of the `exceeded Nms tool timeout` phrase the
+taxonomy knows. So a host the code *already knows is dead* reads as "Cancelled — not a provider
+fault" with Needs attention at zero, while the model retried it seven times. One-line edge fix,
+riding with B7: have the fast-timeout path return
+`socialfetch_web_read exceeded 6000ms fast timeout (youtube host policy)` so it classifies as
+`timeout`, and let B7's dead-target memory stop the retries.
+
+Two smaller UI items from the same screenshots (Track E):
+
+| # | Item | Notes |
+|---|---|---|
+| E8 | Time-and-spend list truncates names to 7 chars at phone width | "socialf…" ×2 and "minimax…" ×2 are indistinguishable; put the full name on its own line below 480px, or use `toolActionLabel` |
+| E9 | Health "Needs attention" must count repeated failures on one target | 3 of 3 attempts on one URL is attention-worthy whatever the category; count `tool + target` streaks, not categories |
