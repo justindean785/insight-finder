@@ -37,9 +37,13 @@ symptoms go with it.
 | Median invocations per case | 2 (max 13) |
 | Median tool calls per case | 35 (max 136) |
 
-**The single biggest lever is the prompt size per step, not the tools.** Nearly two thirds
-of the wall clock is the model re-reading ~60k tokens on every one of ~8 steps per run. The
-tool schemas alone are ~95–105k chars and are re-serialised every step (CLAUDE.md).
+> ⚠️ **CORRECTED in §11 (same day):** the model share is real but it is OUTPUT, not prefill.
+> Step time correlates 0.003 with input tokens and 0.798 with output tokens (~13 ms/token).
+> Prompt size is a cost lever; generated tokens and step count are the latency levers.
+
+**The single biggest lever is what the model writes per step, and how many steps it takes.**
+Roughly 57% of the wall clock is generation at ~77 tok/s, 41% is tools. The tool schemas
+(~95–105k chars re-serialised every step) cost money and budget, not seconds.
 
 ### How runs end (128 invocations, 14 days)
 
@@ -486,3 +490,100 @@ its own PR (one behaviour), not folded into #606.
   rule, but they belong in the narrative, and the narrative is what the report lacks.
 - The JSON export carries `passwords: [...]` and `extracted_password` in metadata. It is behind the
   acknowledgement dialog; it should still be masked at export (§9 R1).
+
+---
+
+## 11. The two Lovable audits (2026-09-20), verified claim by claim
+
+Both files were read in full and every quantitative claim was re-run against the live DB and
+the code. Verdicts, then the one thing that matters most.
+
+### What Lovable got right, and where it corrects THIS plan
+
+**Latency is output-bound, not input-bound. This overturns §1's "63% prefill" framing.**
+Measured over 825 steps: correlation of step wall-time with input tokens is **0.003**; with
+output tokens **0.798**. Regression: **13 ms per output token (~77 tok/s) plus a ~9 s
+intercept**. Quadrupling the prompt costs seconds; every 1,000 tokens the model writes costs
+~13 s. Consequence for the ordered plan: **B2/B3 (schema size, tool routing) are cost and
+budget fixes, not latency fixes.** The latency levers are (a) fewer output tokens per step
+and (b) fewer steps. That reorders Track B — A2 (cycle delta instead of dossier) is now the
+top latency item as well as the top UX item.
+
+**Where the 255 minutes of step time actually went (14 days):**
+
+| bucket | minutes | share |
+|---|---|---|
+| tool execution inside steps | ~105 | 41% |
+| model generation, tool-calling steps (13 ms/token) | ~86 | 34% |
+| model generation, the closing report step | **58** | 23% |
+| residual (TTFT, the per-step `threads.status` poll, misc) | ~6 | 2% |
+
+Lovable's "75% is the model talking" is overstated (it is ~57%), but the direction is right.
+
+**Every one of the 93 zero-tool steps is the LAST step of its invocation** — the forced
+closing report (p50 2,303 output tokens, ~30 s each, 58 min total). There are **zero**
+mid-run "essay" steps. So the fix is not "ban prose steps" or "cap every step at 600 tokens"
+(that would truncate every report mid-table, which already happens at the wall clock). The fix
+is A2: a cycle ends with a ~300-token delta, and the report is rendered in code from persisted
+rows with a ≤600-token narrative. Same conclusion as §2, now with the number that proves it.
+
+**The Gemini fallback has never worked.** 14 `gemini-direct` invocations, 14 `stream_error`
+at 0 steps, all "Bad Request", in bursts on 09-11 06:40–06:44 and 09-18 21:02–21:06 — exactly
+when the primary was unhealthy (the ledger shows an "Insufficient balance" on the Z.AI slot on
+09-13). So on a primary outage the product does not fail over, it dies, five times in four
+minutes. The recorded error is the bare reason-phrase because `onError` logs
+`error.message` and drops the provider body. **Fixed on the edge branch:** `describeStreamError`
+carries `statusCode` and a bounded `responseBody`, so the next failure says why (most likely a
+tool-schema shape Gemini's OpenAI-compatible endpoint rejects, e.g. `anyOf`). Disabling the
+fallback until then, as Lovable suggests, is reasonable and is an env change, not code.
+
+**Confirmed as stated:** `CLASS_CAP` breach/data_broker 60, `ai_summary` 55; `NEVER_HIGH` caps
+aggregator-only artifacts at 65 (`confidence.ts:475`); the stored confidence is
+`min(rawConfidence ?? 50, cap)` (`:488`), i.e. the model's number under a ceiling. Only the two
+page-reading tools produce ≥70. 95.6% of distinct values are single-sourced. Cache 99.3%
+expired, ~20 hits. `archive_sha256` null on every `evidence_log` row ever. `input_json` empty
+for `record_artifacts` and `triage_seed`. Idle gaps between invocations: p50 56 s, p90 16 min.
+
+### What Lovable got wrong
+
+- **"Analyst feedback rows are written in production but no code in this repo writes them; the
+  deployed engine has diverged."** False. `src/lib/analyst-feedback.ts` writes them through the
+  `record_analyst_feedback` RPC (migrations `20260717000000`, `20260806000001`,
+  `20260810000000`), and `ResourcesPanel.tsx` calls it. No divergence.
+- **"162 actions changed a confidence score zero times — feedback is decorative."** The zero
+  delta is by design and documented (CLAUDE.md, #534): the review answers "is this real?",
+  the confidence answers "how well sourced?", and the two are kept apart on purpose. What a
+  verdict DOES bind: dismiss/wrong refuses dispatch (`rejected_dispatch_test.ts`), excludes the
+  row from clusters, the graph and the report, and derived rows follow it; confirm/key labels
+  the row ATTESTED and lifts it into Key Findings. What is true and worth keeping from the
+  claim: a confirm never creates a `record_finding` row, which is why "No authoritative
+  finding rows" prints under a confirmed case. That is the finding-synthesis gap (§3 track C,
+  built and dark), not a decorative review UI.
+- **"12,788 artifacts, 128 at ≥70 — 1.0%."** 12,788 is the ALL-TIME artifact count; 1,231 of
+  those are ≥70 (9.6%). Over the last 12 days' threads it is 7.8%. The 3-day figure (4.8%) and
+  the lildee808 figure (0 of 79) are right. The direction holds; the headline number does not.
+- **"~15 tokens/s"** in the first audit vs **"45–55 tok/s"** in the second. Measured: ~77.
+
+### On the recommendations
+
+| Lovable proposal | Verdict |
+|---|---|
+| cap narration ~600 tokens/step | **No, not globally** — the 4k-token steps are the closing reports. Replace the dossier with a delta (A2) and render the report in code. A per-step cap outside finalize is worth testing later, but it sits in the termination-oscillation area (CLAUDE.md) and is not a first move |
+| cap per-cycle context at 80k chars | context is not the latency lever (corr 0.003). Server-owned history (A4) and #604's ceiling already address size; an 80k cap would drop selectors the run needs |
+| tools persist their own artifacts and return a receipt | **Yes** — this is the auto-persist path already in production (21 of 79 rows on the case carried `auto_persist_source`); extend it so `record_artifacts` takes ids, not retyped JSON. Rides with A2 |
+| build the report in code | **Yes** — the Report tab already does; A2's `report` mode makes it the only path |
+| confidence computed from corroboration | direction right; **integrity-critical, needs sign-off**, and beware: two breach aggregators agreeing are usually the same dump resold (system-prompt "mirrors of one leak") |
+| verification stage: aggregator hits confirmed by a page read before the report | **Yes** — the best idea in either file, and consistent with the data (9/14 and 6/10 strong from page reads, 0 elsewhere). New track item C6 |
+| background jobs instead of chat turns | §5 Option 2, unchanged: after cycles, not before |
+| disable gemini-direct; gate 100%-failing tools; cap correlate; cache sweep | gemini: env change now. Dead tools: `checks.credentials` + dead-target memory (edge branch). Correlate: B8. Cache sweep: **not before the payload store** (handoff 09-20 §10) |
+| wire the feedback read path | already wired for dismiss/wrong; for confirm the missing piece is a finding row — synthesis, dark |
+
+### ⛔ The one thing that matters most: do not let Lovable implement any of this "here"
+
+Both audits end with *"should I implement them here?"* "Here" is the mirror. A change the
+Lovable agent makes on the mirror ships on the next deploy with **no canonical commit, no
+`build-info.ts` change, and no way to see it from this repo** — that is the 2026-08-29
+incident exactly (11 commits, 25 runtime files, caught by a hand-read diff). CLAUDE.md's hard
+gate exists for this. The answer to Lovable is: **thank you, no — everything lands upstream
+first.** The two safe uses of its offer are (1) a paste-ready brief, and (2) the deploy step
+itself, as today.
