@@ -75,7 +75,7 @@ import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
 import { buildTools, TOOL_NAME_ALIASES } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
-import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
+import { isMessageSchemaError, classifyStreamProviderError, describeStreamError } from "./stream-error-classify.ts";
 import {
   shouldFallbackAfterMinimaxPreflight,
   minimaxPreflightFailureLabel,
@@ -1472,7 +1472,9 @@ Deno.serve(async (req) => {
       // investigation to keep running server-side, persist its artifacts as
       // they come in, and save the final assistant message via onFinish.
       onError: async ({ error }) => {
-        const msg = error instanceof Error ? error.message : String(error);
+        // Reason-phrase plus the provider's body/status when the SDK carried them,
+        // so a fallback "Bad Request" is diagnosable from the ledger.
+        const msg = describeStreamError(error);
         const errName = error instanceof Error ? error.name : "";
         const isCtxOverflow =
           /context window|context length|2013|invalid params.*context|exceeds limit/i.test(msg);

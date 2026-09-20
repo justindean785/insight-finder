@@ -62,3 +62,25 @@ export function classifyStreamProviderError(message: string, errorName = ""): st
   }
   return null;
 }
+
+
+/**
+ * The provider's own words, when the SDK carried them. An `APICallError` from
+ * the AI SDK keeps the HTTP body on `responseBody` and the status on
+ * `statusCode`; `error.message` alone is the reason-phrase ("Bad Request").
+ * Measured 2026-09-20: 14 of 14 `gemini-direct` fallback invocations died at
+ * 0 steps with exactly "Bad Request" recorded and nothing else, so the fallback
+ * has never worked in production and nobody can say why from the ledger.
+ * Pure — unit-tested. Bounded so a huge body cannot bloat a log row.
+ */
+export const STREAM_ERROR_DETAIL_MAX = 300;
+export function describeStreamError(error: unknown): string {
+  const base = error instanceof Error ? error.message : String(error);
+  const e = (error ?? {}) as { statusCode?: unknown; responseBody?: unknown };
+  const status = typeof e.statusCode === "number" ? e.statusCode : null;
+  const body = typeof e.responseBody === "string" ? e.responseBody.replace(/\s+/g, " ").trim() : "";
+  if (status == null && !body) return base;
+  const detail = [status != null ? `HTTP ${status}` : null, body ? body.slice(0, STREAM_ERROR_DETAIL_MAX) : null]
+    .filter(Boolean).join(" ");
+  return `${base} [${detail}]`;
+}

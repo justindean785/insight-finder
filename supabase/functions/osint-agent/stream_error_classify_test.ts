@@ -38,3 +38,23 @@ Deno.test("classifyStreamProviderError: does not fire on schema faults (those ar
   assert(isMessageSchemaError("Tool results are missing for tool calls call_a_1"));
   assertEquals(classifyStreamProviderError("Tool results are missing for tool calls call_a_1"), null);
 });
+
+Deno.test("describeStreamError: carries the provider status and body when the SDK has them, bounded", async () => {
+  const { describeStreamError, STREAM_ERROR_DETAIL_MAX } = await import("./stream-error-classify.ts");
+  const apiErr = Object.assign(new Error("Bad Request"), {
+    statusCode: 400,
+    responseBody: '{ "error": { "message": "Invalid JSON payload: tools[3].function.parameters.anyOf is not supported",\n  "status": "INVALID_ARGUMENT" } }',
+  });
+  const out = describeStreamError(apiErr);
+  if (!out.startsWith("Bad Request [HTTP 400 ")) throw new Error(`unexpected: ${out}`);
+  if (!out.includes("anyOf is not supported")) throw new Error(`body lost: ${out}`);
+  if (out.includes("\n")) throw new Error("body must be single-line");
+  const huge = Object.assign(new Error("Bad Request"), { statusCode: 400, responseBody: "x".repeat(5000) });
+  if (describeStreamError(huge).length > STREAM_ERROR_DETAIL_MAX + 40) throw new Error("not bounded");
+});
+
+Deno.test("describeStreamError: a plain Error or non-Error is the message alone", async () => {
+  const { describeStreamError } = await import("./stream-error-classify.ts");
+  if (describeStreamError(new Error("Investigation stopped by analyst")) !== "Investigation stopped by analyst") throw new Error("plain error changed");
+  if (describeStreamError("boom") !== "boom") throw new Error("string changed");
+});
