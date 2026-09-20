@@ -1438,7 +1438,11 @@ export function buildReportMarkdown(input: ReportInput): string {
     attested: attested.length,
   });
   const keyFindings = (() => {
-    const strong = [...confirmed, ...attested].filter((a) => !isOutOfSet(a));
+    // An exclusion the analyst confirmed is an attested NON-finding: "this is not
+    // the subject". It already has a home in the Collision section below; leading
+    // Key Findings with it (production export 2026-09-20: the only Key Finding
+    // was the excluded namesake) inverts what the heading promises.
+    const strong = [...confirmed, ...attested].filter((a) => !isOutOfSet(a) && !isCollisionArtifact(a));
     if (strong.length) {
       return [
         ...(keyFindingsHeading.lead ? [keyFindingsHeading.lead, ""] : []),
