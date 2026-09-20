@@ -109,3 +109,20 @@ describe("buildIdentityClusters — record-mates from breach extractors", () => 
     expect(clusters.find((x) => ids(x).has("1") && ids(x).has("2"))).toBeFalsy();
   });
 });
+
+describe("buildIdentityClusters — queried_selector as a record-mate key", () => {
+  it("rows auto-persisted from one lookup on a durable selector union with that selector's row", () => {
+    const email = mk({ id: "e", kind: "email", value: "cnnamongirl90@example.com" });
+    const b1 = mk({ id: "b1", kind: "breach_exposure", value: "Breach exposure: cnnamongirl90@example.com (oathnet_db)", metadata: { queried_selector: "cnnamongirl90@example.com" }, source: "oathnet_lookup" });
+    const b2 = mk({ id: "b2", kind: "breach_exposure", value: "Breach exposure: cnnamongirl90@example.com (leakcheck)", metadata: { queried_selector: "cnnamongirl90@example.com" }, source: "leakcheck_lookup" });
+    const { clusters } = buildIdentityClusters([email, b1, b2], "lildee808");
+    expect(ids(clusters.find((x) => ids(x).has("e"))!)).toEqual(new Set(["e", "b1", "b2"]));
+  });
+
+  it("a name-shaped queried_selector (whitespace) never unions anything", () => {
+    const a = mk({ id: "a", kind: "email", value: "one@example.com", metadata: { queried_selector: "Desiree Example" }, source: "indicia_person" });
+    const b = mk({ id: "b", kind: "phone", value: "+18085550000", metadata: { queried_selector: "Desiree Example" }, source: "indicia_person" });
+    const { clusters } = buildIdentityClusters([a, b], "lildee808");
+    expect(clusters.find((x) => ids(x).has("a") && ids(x).has("b"))).toBeFalsy();
+  });
+});

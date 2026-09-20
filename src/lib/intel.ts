@@ -2178,6 +2178,23 @@ export function phoneMergeKey(raw: string): string | null {
   return `phone:${digits}`;
 }
 
+/**
+ * `parent:`-namespaced key for "this row came from a lookup on selector X" (the
+ * auto-persist `queried_selector`) and for X's own row, so the two union under
+ * the weakest signal. Shape-gated: anything with whitespace is a person name
+ * and is never a merge key; emails and phones are normalised like their
+ * value-based keys so the namespaces cannot drift apart.
+ */
+export function recordMateKey(raw: string): string | null {
+  const t = raw.trim().toLowerCase();
+  if (!t || /\s/.test(t) || t.length < 5) return null;
+  if (t.includes("@")) return `parent:${t}`;
+  const pk = phoneMergeKey(t);
+  if (pk && /^[\d\s()+.-]+$/.test(t)) return `parent:${pk.slice("phone:".length)}`;
+  const h = normalizeHandle(t);
+  return h ? `parent:${h}` : null;
+}
+
 function normalizePersonName(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -2255,6 +2272,23 @@ export function buildIdentityClusters(
     }
     const parent = String(meta.parent ?? meta.parent_seed ?? meta.seed ?? "").trim().toLowerCase();
     if (parent) hits.push({ key: `parent:${parent}`, signal: "SHARED_INFRASTRUCTURE", raw: parent, platform });
+    // The auto-persist path stamps `queried_selector` — the selector the tool was
+    // called on — on every row it writes (21 of 79 rows on thread d72fa44a,
+    // 2026-09-20). Rows yielded by ONE lookup on one durable selector are
+    // record-mates and union under the same weakest signal as `parent`. Gated on
+    // shape, not kind: a selector with whitespace is a person name (the 19-identity
+    // name-only harvest), and name equality is never linkage (T1-2 §8).
+    const queriedKey = recordMateKey(String(meta.queried_selector ?? ""));
+    if (queriedKey && queriedKey !== `parent:${parent}`) {
+      hits.push({ key: queriedKey, signal: "SHARED_INFRASTRUCTURE", raw: String(meta.queried_selector), platform });
+    }
+    // …and the selector's OWN row publishes the same key, so the email/phone/
+    // username artifact and the rows a lookup on it yielded land together. Still
+    // shared-infra: it says "came from the same lookup", never "corroborated".
+    if (kind === "email" || kind === "phone" || kind === "username" || kind === "handle") {
+      const own = recordMateKey(v);
+      if (own) hits.push({ key: own, signal: "SHARED_INFRASTRUCTURE", raw: v, platform });
+    }
 
     // Cross-link selectors carried in metadata: a breach/profile row commonly
     // names the OTHER concrete selectors of the same person (the email row lists
