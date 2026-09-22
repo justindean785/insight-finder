@@ -760,18 +760,83 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
   );
 }
 
+/**
+ * A label the AGENT typed into its own prose. It is an ASSERTION, never a
+ * measurement, and the difference is the whole point of this block.
+ *
+ * The engine derives and caps confidence server-side (`record_finding` ->
+ * `countIndependentClasses`) and those values reach the screen through
+ * `ui/confidence.tsx` / `ui/authority.tsx` as FILLED chips. What arrives here is
+ * a string the model wrote with nothing behind it. Measured on a real run
+ * (2026-09-22): the transcript published "Confirmed (95)" and "Confirmed (90)"
+ * while the engine held zero finding rows and a maximum confidence of 65.
+ *
+ * Until today a stated label was painted with the same token, the same border
+ * alpha and the same fill as a computed one, so the two were indistinguishable.
+ * Two things changed.
+ *
+ * IT GIVES UP THE FILL. A filled chip is what a computed value looks like; this
+ * one is hollow, and the dashed edge is the texture half of the rule
+ * `authority.tsx` already states -- a state that withholds authority is never
+ * carried by colour alone. Border alpha rises a little to compensate, because a
+ * dashed hairline loses about half its perimeter and reads as a smudge at 10px.
+ *
+ * IT GIVES UP THE CONFIDENCE RAMP. The 88% -> 39% luminance ladder belongs to
+ * the thing that computes confidence; a second copy of it in prose is the
+ * "drifting second source of truth" this codebase warns about everywhere else.
+ * Stated labels take the INK ramp instead, at three registers that say who is
+ * talking rather than how sure anyone is: the agent claims strength (ink 2), the
+ * agent hedges (ink 3), the agent flags trouble (the ladder's alarm hue). Every
+ * one of them sits below body ink, so the sentence outranks the label on it --
+ * which is the correct order, since the sentence is the evidence and the label
+ * is an opinion about it.
+ */
+const STATED_LABEL_SOURCE = "\\[(CONFIRMED|CORRELATED|INFERRED|VERIFY|FAILED|LOW|CONFLICT)\\]";
+
 const LABEL_STYLES: Record<string, string> = {
-  CONFIRMED: "chat-label-chip text-[hsl(var(--conf-confirmed))] border-[hsl(var(--conf-confirmed)/0.4)] bg-[hsl(var(--conf-confirmed)/0.12)]",
-  CORRELATED: "chat-label-chip text-[hsl(var(--conf-likely))] border-[hsl(var(--conf-likely)/0.4)] bg-[hsl(var(--conf-likely)/0.12)]",
-  INFERRED:  "chat-label-chip text-[hsl(var(--conf-possible))] border-[hsl(var(--conf-possible)/0.45)] bg-[hsl(var(--conf-possible)/0.12)]",
-  VERIFY:    "chat-label-chip text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid)/0.4)] bg-[hsl(var(--confidence-mid)/0.12)]",
-  FAILED:    "chat-label-chip text-destructive border-destructive/40 bg-destructive/12",
-  LOW:       "chat-label-chip text-muted-foreground border-border bg-secondary/60",
-  CONFLICT:  "chat-label-chip text-destructive border-destructive/40 bg-destructive/12",
+  // Claims of strength.
+  CONFIRMED:  "chat-label-chip text-muted-foreground border-[hsl(var(--muted-foreground)/0.4)]",
+  CORRELATED: "chat-label-chip text-muted-foreground border-[hsl(var(--muted-foreground)/0.4)]",
+  // Hedges.
+  INFERRED:   "chat-label-chip text-subtle-foreground border-[hsl(var(--subtle-foreground)/0.45)]",
+  VERIFY:     "chat-label-chip text-subtle-foreground border-[hsl(var(--subtle-foreground)/0.45)]",
+  LOW:        "chat-label-chip text-subtle-foreground border-[hsl(var(--subtle-foreground)/0.45)]",
+  // Alarms. --destructive (48% L) measured 3.90:1 against the composited
+  // transcript ground and fails AA at 10px; once the fill is gone the ink IS the
+  // chip, so both take the ladder's brighter tokens, which clear it at 5.37:1.
+  FAILED:     "chat-label-chip text-[hsl(var(--danger))] border-[hsl(var(--danger)/0.5)]",
+  CONFLICT:   "chat-label-chip text-[hsl(var(--authority-conflict))] border-[hsl(var(--authority-conflict)/0.5)]",
 };
 
+/**
+ * Hover text. Every one of these says WHO said it, because that is the fact the
+ * chip cannot carry on its own, and it points at the surface that holds the
+ * engine's answer instead of leaving the analyst to guess there is one.
+ */
+const LABEL_TITLES: Record<string, string> = {
+  CONFIRMED:  "The agent wrote this. Confidence computed from the evidence is in Evidence.",
+  CORRELATED: "The agent wrote this. Confidence computed from the evidence is in Evidence.",
+  INFERRED:   "The agent wrote this. Confidence computed from the evidence is in Evidence.",
+  VERIFY:     "The agent flagged this as needing corroboration. Evidence holds the computed state.",
+  FAILED:     "The agent reported a failure here. The Tools tab holds the call that failed.",
+  LOW:        "The agent flagged this as a weak lead. Evidence holds the computed state.",
+  CONFLICT:   "The agent reported a contradiction here. Evidence holds the computed state.",
+};
+
+/**
+ * Does this prose carry any agent-stated label? Drives the one line of footer
+ * chrome that says so out loud, since a hover title reaches neither a touch
+ * device nor a reader who never thinks to hover.
+ */
+function hasStatedLabel(text: string): boolean {
+  return new RegExp(STATED_LABEL_SOURCE).test(text);
+}
+
 function renderTextWithBadges(text: string): React.ReactNode {
-  const re = /\[(CONFIRMED|CORRELATED|INFERRED|VERIFY|FAILED|LOW|CONFLICT)\]/g;
+  // Built per call rather than shared: a module-level /g regex carries lastIndex
+  // between callers, and one .test() elsewhere would silently start the next
+  // scan mid-string.
+  const re = new RegExp(STATED_LABEL_SOURCE, "g");
   const out: React.ReactNode[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
@@ -779,7 +844,11 @@ function renderTextWithBadges(text: string): React.ReactNode {
     if (m.index > last) out.push(text.slice(last, m.index));
     const tag = m[1];
     out.push(
-      <span key={`b-${m.index}`} className={LABEL_STYLES[tag] ?? "chat-label-chip border-border text-muted-foreground"}>
+      <span
+        key={`b-${m.index}`}
+        title={LABEL_TITLES[tag]}
+        className={LABEL_STYLES[tag] ?? "chat-label-chip border-border text-muted-foreground"}
+      >
         {tag}
       </span>,
     );
@@ -1210,6 +1279,11 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             >
               <CopyIcon className="w-3 h-3" /> Copy
             </button>
+            {hasStatedLabel(prose) && (
+              <span className="ml-auto max-w-[min(100%,34ch)] text-right text-[11px] leading-snug text-faint-foreground">
+                Labels are the agent&rsquo;s wording. Computed confidence is in Evidence.
+              </span>
+            )}
           </div>
         </article>
       )}
@@ -2947,7 +3021,7 @@ function ChatWindowInner({
             />
           )}
           <div className="composer-shell p-1">
-            <div className="rounded-[11px] bg-background/60">
+            <div className="rounded-xl bg-background/60">
               <input
                 ref={fileInputRef}
                 type="file"

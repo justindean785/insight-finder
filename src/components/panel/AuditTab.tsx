@@ -327,7 +327,7 @@ function Section({
   icon: Icon, title, count, children,
 }: { icon: React.ComponentType<{ className?: string }>; title: string; count?: number; children: React.ReactNode }) {
   return (
-    <section className="rounded-lg border border-border bg-card/30 p-3 space-y-2">
+    <section className="panel p-3 space-y-2">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-micro font-semibold tracking-normal text-muted-foreground">
           <Icon className="w-3 h-3" /> {title}
