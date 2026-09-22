@@ -3021,7 +3021,7 @@ function ChatWindowInner({
             />
           )}
           <div className="composer-shell p-1">
-            <div className="rounded-[11px] bg-background/60">
+            <div className="rounded-xl bg-background/60">
               <input
                 ref={fileInputRef}
                 type="file"

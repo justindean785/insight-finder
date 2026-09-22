@@ -773,7 +773,9 @@ All colors MUST be HSL.
     font-weight: 500;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: hsl(var(--muted-foreground) / 0.8);
+    /* Ink 3 as a token, not muted-foreground dimmed to 80%. Tracking is this
+       label's one intensifier; an opacity on top of it is the second. */
+    color: hsl(var(--subtle-foreground));
   }
   /* Below the point where four columns stop fitting, collapse to value + status
      and let the rest reflow under the value. Density, not stacking. */
@@ -813,18 +815,31 @@ All colors MUST be HSL.
     .ledger-head [data-ledger-col="confidence"] { display: none; }
   }
 
-  /* Section rule — a labelled hairline that opens a group without boxing it. */
+  /* Section rule — a labelled hairline that opens a group without boxing it.
+     WRITTEN IN THE PRIMARY SANS, IN SENTENCE CASE, AND IT MATTERS WHY. This was
+     10px JetBrains Mono, 600 weight, 0.14em tracking, uppercase, at 72% ink:
+     six intensifiers stacked on one label, repeated six times on the Overview
+     alone. PRODUCT.md rules on both halves of that. "Monospace is a data face,
+     not a body face ... labels and prose stay in the primary sans so the console
+     doesn't read as terminal cosplay", and "micro-type ... not combined with
+     both heavy letter-spacing AND reduced opacity — pick at most one
+     intensifier alongside the small size."
+
+     So the heading keeps exactly one: weight. The size comes off the scale, the
+     colour off the ink ramp rather than an opacity, and the words are set the
+     way they are written. The forensic character of this product is carried by
+     the ledger, the authority ladder and the hatch — it was never carried by
+     tracking out the word "Overview". */
   .rule-label {
     display: flex;
     align-items: center;
     gap: 0.625rem;
     padding: 0.5rem 0.625rem 0.375rem 1rem;
-    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: hsl(var(--foreground) / 0.72);
+    letter-spacing: 0;
+    text-transform: none;
+    color: hsl(var(--muted-foreground));
     background: hsl(var(--film) / 0.018);
     border-bottom: 1px solid hsl(var(--border-subtle));
   }
@@ -846,6 +861,14 @@ All colors MUST be HSL.
      rgb(0,0,0) on this surface anyway, so this costs nothing visually and is
      what stops rows ghosting through it while it holds the top. */
   .ledger .rule-label {
+    /* The one place the data face is right: a group divider inside a table,
+       directly above columns of monospace values, matching `.ledger-head`
+       three rules up. Full ink, so tracking is the only intensifier. */
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: hsl(var(--foreground));
     position: sticky;
     top: var(--ledger-head-h);
     z-index: 1;
@@ -2575,6 +2598,38 @@ All colors MUST be HSL.
   border-radius: 1px;
   background: hsl(var(--authority-weak) / 0.7);
   animation: dsr-fill 0.9s cubic-bezier(0.2, 0.85, 0.3, 1) both;
+}
+
+/* ── Panel roles ────────────────────────────────────────────────────────────
+   The Overview was nine boxes with one border, one radius and one blur between
+   them — PRODUCT.md's own anti-reference ("identical card grids") and the
+   reason a page of real evidence read as a template. Two modifiers give the
+   surface a hierarchy instead of a texture.
+
+   A list does not need a box. `.rule-label` exists precisely to open a group
+   without boxing it, and three of the five sections are plain lists under a
+   heading. Dropping their frame also drops three backdrop-filters per screen,
+   which is the blur budget the brief asks for: blur marks ELEVATION, and a flat
+   list is not elevated above anything. */
+.panel-flat {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* One surface on this page asks the analyst to DO something, and it is the
+   only one that earns the second step of elevation. Elevation, not glow: a
+   halo here would be decoration, and glow in this product is reserved for
+   state. */
+.panel-primary {
+  border-color: hsl(var(--film) / 0.17);
+  box-shadow:
+    inset 0 1px 0 hsl(var(--film) / 0.11),
+    inset 1px 0 0 hsl(var(--brand) / 0.07),
+    0 22px 52px -26px hsl(0 0% 0% / 1);
 }
 
 /* ── Case bar ───────────────────────────────────────────────────────────────

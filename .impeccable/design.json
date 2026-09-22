@@ -445,7 +445,9 @@
         "name": "The Ink Ramp Rule",
         "body": "Four named ink levels, and an opacity modifier on ink is forbidden. 48 files had improvised 21 distinct values because only two levels existed.",
         "section": "typography"
-      }
+      },
+      "The Data Face Rule, in full. Monospace is for values a reader compares character by character: selectors, IDs, timestamps, hashes, counts, durations. It is not a label face. The one exception is a data table's own furniture, which sits directly on columns of monospace values. Everywhere else a label is the primary sans, in sentence case.",
+      "The One Intensifier Rule. Micro-type carries one intensifier beside its size: tracking, or uppercase, or reduced ink. Measured 2026-09-22: the section rule was carrying six at once, on six headings per screen."
     ],
     "dos": [
       "Do spend hue on the authority ladder and nothing else.",
@@ -471,7 +473,10 @@
       "Don't stack an opacity modifier on an ink token to invent a new level.",
       "Don't fill a label the agent typed in prose, or draw it from the confidence ramp. Hollow, dashed, ink ramp: the filled chip means a number was computed.",
       "Don't let a count stand without the whole it is a share of.",
-      "Don't pass a type-scale class and a text colour through cn() without the extendTailwindMerge config; text-* is ambiguous and tailwind-merge resolves it from a table that does not know this project's scale."
+      "Don't pass a type-scale class and a text colour through cn() without the extendTailwindMerge config; text-* is ambiguous and tailwind-merge resolves it from a table that does not know this project's scale.",
+      "Don't set a label in the data face. Monospace is for values; a label in mono reads as terminal cosplay.",
+      "Don't give every section on a page the same frame. A list under a heading needs no box, and nine identical boxes is the anti-reference.",
+      "Don't invent a radius between the steps: xs 4, sm 8, md 10, lg 12, surface 13, pill."
     ]
   }
 }

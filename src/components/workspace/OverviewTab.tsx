@@ -290,7 +290,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
           </section>
 
           {/* ── Needs a decision ───────────────────────────────────────── */}
-          <section className="panel overflow-hidden">
+          <section className="panel panel-primary overflow-hidden">
             <RuleLabel
               right={
                 unresolved.length > 0 ? (
@@ -325,7 +325,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
 
         <div className="grid gap-4 lg:grid-cols-3">
           {/* ── Strongest findings ─────────────────────────────────────── */}
-          <section className="panel overflow-hidden lg:col-span-2">
+          <section className="panel panel-flat overflow-hidden lg:col-span-2">
             <RuleLabel right={<span className="text-micro tabular-nums text-muted-foreground/70">{strongest.length} of {tally.verified + tally.infrastructure + tally.probable}</span>}>
               Strongest supported findings
             </RuleLabel>
@@ -346,7 +346,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
           </section>
 
           {/* ── Failed / degraded lookups ──────────────────────────────── */}
-          <section className="panel overflow-hidden">
+          <section className="panel panel-flat overflow-hidden">
             <RuleLabel
               right={
                 <button type="button" onClick={() => jump("issues")} className="inline-flex items-center gap-1 text-micro text-muted-foreground hover:text-foreground">
@@ -380,7 +380,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
         </div>
 
         {/* ── Latest evidence ──────────────────────────────────────────── */}
-        <section className="panel overflow-hidden">
+        <section className="panel panel-flat overflow-hidden">
           <RuleLabel right={<Activity className="h-3 w-3 text-muted-foreground/60" aria-hidden />}>
             Latest evidence
           </RuleLabel>

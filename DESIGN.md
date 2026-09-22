@@ -189,6 +189,10 @@ Quarantined is deliberately neutral and hatched, never a confidence hue: a quara
 
 ### Named Rules
 
+**The Data Face Rule, stated in full.** Monospace is for values a reader compares character by character: selectors, IDs, timestamps, hashes, counts, durations, the stated-label vocabulary. It is NOT a label face. The one sanctioned exception is a data table's own furniture -- `.ledger-head` and the group rule inside `.ledger` -- which sit directly on columns of monospace values. Everywhere else a label is set in the primary sans, in sentence case. PRODUCT.md names the failure this prevents: "terminal cosplay."
+
+**The One Intensifier Rule.** Micro-type may carry ONE intensifier beside its size: heavy tracking, or uppercase, or reduced ink. Not two, never three. Measured 2026-09-22: the section rule was carrying six at once (monospace, 10px, 600 weight, 0.14em tracking, uppercase, 72% ink) on six headings per screen, which is how a page of real evidence came to read as a template.
+
 **The Data Face Rule.** Monospace is a data face, not a body face. Reserve it for values a reader may need to compare character by character: selectors, IDs, timestamps, hashes, JSON. Labels and prose stay in the sans, or the console reads as terminal cosplay.
 
 **The Micro Floor Rule.** Dense labels may run below body size but never below 11px, and never combine small size with both heavy tracking and reduced opacity. Pick at most one intensifier.
@@ -214,6 +218,12 @@ Blur marks elevation and has a budget: one blur value per tier, never escalated 
 **The Glow Is State Rule.** A glow or halo must map to something real: active selection, live status, a confidence tier, an error. A glow with nothing behind it is the amateur tell. Cut it.
 
 **The Blur Budget Rule.** Backdrop blur marks elevation, not surface. One intensity per tier. If two adjacent components blur by different amounts for no structural reason, one of them is wrong.
+
+### Panel Roles
+Three, and the difference is what a surface IS, not how it is decorated.
+- **Flat** -- a list under a heading. No frame, no blur: `.rule-label` already opens a group without boxing it, and a list is not elevated above anything.
+- **Panel** -- a plotted chart or a framed reading. One border, one blur tier.
+- **Primary** -- the one surface on a page that asks the analyst to act. A second step of elevation, never a glow; glow is state.
 
 ## 5. Components
 
@@ -277,6 +287,8 @@ Blur marks elevation and has a budget: one blur value per tier, never escalated 
 - **Don't** colour a confidence numeral by its value.
 - **Don't** give a quarantined row a confidence hue. Quarantine is a linkage state, not a low score.
 - **Don't** round a data surface past 16px, or it reads as consumer software.
+- **Don't** invent a radius between the steps. The scale is xs 4 (micro-chips and inline code, 128 uses), sm 8, md 10, lg 12, surface 13, pill. A `rounded-[9px]` and a `rounded-[11px]` were the only strays and both snapped to a step.
+- **Don't** give every section on a page the same frame. Nine identical boxes is PRODUCT.md's own anti-reference, and it reads as a template whatever is inside them.
 - **Don't** let a new surface invent its own blur, radius or border alpha. That is how the six-material drift happened the first time.
 - **Don't** animate a layout property to show a data change. A confidence bar's width is data and snaps; only its authority colour eases.
 - **Don't** stack an opacity modifier on an ink token to invent a new level. Four exist; use them.
