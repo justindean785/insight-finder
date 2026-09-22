@@ -110,9 +110,54 @@ function markingLine(gate: ExportGate, generatedAt: string): string {
  */
 export function markMarkdown(markdown: string, gate: ExportGate, generatedAt: string): string {
   const line = markingLine(gate, generatedAt);
-  if (gate.mode === "report-safe") return `${line}\n\n${markdown}`;
+  const body = redactSecretsInText(markdown);
+  if (gate.mode === "report-safe") return `${line}\n\n${body}`;
   const why = gate.reasons.map((r) => `> - ${r}`).join("\n");
-  return `${line}\n${why}\n\n${markdown.trimEnd()}\n\n---\n\n${line}\n`;
+  return `${line}\n${why}\n\n${body.trimEnd()}\n\n---\n\n${line}\n`;
+}
+
+/**
+ * Export-time credential masking — independent of REVEAL_BREACH_DATA, which is
+ * a settled workbench decision (CLAUDE.md) and stays on. A document that leaves
+ * the app is a different surface: the production markdown + PDF export of
+ * 2026-09-20 printed three breach passwords in the Artifact Table, the Network
+ * section and the Timeline, because the extractor writes them into the artifact
+ * VALUE ("password='…'", "passwords a b c"). The value is masked here, on the
+ * way out, so the analyst still sees it in the workbench.
+ *
+ * Deliberately narrow: only text that announces itself as a password. A generic
+ * token regex would eat handles and hashes the analyst needs in the export.
+ */
+export const SECRET_MASK = "[redacted]";
+const PASSWORD_ASSIGN_RE = /\b(password|passwd|pwd|passcode)(s?)\s*(=|:)\s*(['"]?)([^\s'",;)\]]+)\4/gi;
+const PASSWORD_FIELD_STOP = "name|names|phone|phones|email|emails|username|usernames|ip|zip|city|state|address|extracted";
+const PASSWORDS_LIST_RE = new RegExp(
+  `\\b(passwords?)\\s+(?!(?:${PASSWORD_FIELD_STOP})\\b)([^\\s;,)]+(?:[ \\t]+(?!(?:${PASSWORD_FIELD_STOP})\\b)[^\\s;,)]+)*)`,
+  "gi",
+);
+
+export function redactSecretsInText(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(PASSWORD_ASSIGN_RE, (_m, k: string, plural: string, sep: string) => `${k}${plural}${sep}${SECRET_MASK}`)
+    // "passwords djpueo2001 pueoluv1 pueoluv@1; name …" → "passwords [redacted]; name …"
+    .replace(PASSWORDS_LIST_RE, (_m, k: string) => `${k} ${SECRET_MASK}`);
+}
+
+const SECRET_KEY_RE = /^(passwords?|passwd|pwd|passcode|extracted_password|password_hash|hash(?:es)?|plaintext)$/i;
+
+/** Deep-copy `value`, masking secret-named keys and password phrases in strings. */
+export function redactSecretsDeep<T>(value: T): T {
+  if (typeof value === "string") return redactSecretsInText(value) as T;
+  if (Array.isArray(value)) return value.map((v) => redactSecretsDeep(v)) as T;
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = SECRET_KEY_RE.test(k) ? (Array.isArray(v) ? v.map(() => SECRET_MASK) : SECRET_MASK) : redactSecretsDeep(v);
+    }
+    return out as T;
+  }
+  return value;
 }
 
 /**
@@ -127,7 +172,7 @@ export function wrapJsonExport<T>(records: T[], gate: ExportGate, generatedAt: s
       report_readiness_pct: gate.readinessPct,
       not_report_safe_because: gate.reasons,
       generated_at: generatedAt,
-      artifacts: records,
+      artifacts: redactSecretsDeep(records),
     },
     null,
     2,

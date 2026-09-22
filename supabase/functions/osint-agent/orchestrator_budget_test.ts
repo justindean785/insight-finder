@@ -16,6 +16,7 @@ import {
   approxMsgChars,
   capUserTextToBudget,
   capTotalToBudget,
+  reportBudgetCeiling,
   elidedToolResultRef,
   deadlineReached,
 } from "./orchestrator-budget.ts";
@@ -158,4 +159,129 @@ Deno.test("wall-clock deadline is the measured 180s platform ceiling; forced-fin
     true,
     "one ms past the deadline trips the StopCondition",
   );
+});
+
+// ── The hard ceiling (2026-09-19) ───────────────────────────────────────────────
+// The defect these pin, in one line: `keepRecent` was an EXEMPTION, so once the
+// protected tail alone exceeded the budget, capTotalToBudget ran out of elidable
+// messages and returned over budget reporting nothing. Measured in production:
+// 68 of 779 steps (8.7%) over, peaking at 290,961 against a 220,000 budget.
+// Every case below drives capTotalToBudget itself and asserts on what it returns.
+
+/** Count tool-call ids and tool-result ids so pairing can be checked structurally. */
+function pairing(msgs: ModelMessage[]): { calls: string[]; results: string[] } {
+  const calls: string[] = [];
+  const results: string[] = [];
+  for (const m of msgs) {
+    if (!Array.isArray(m.content)) continue;
+    for (const p of m.content as Array<Record<string, unknown>>) {
+      if (p?.type === "tool-call" && typeof p.toolCallId === "string") calls.push(p.toolCallId);
+      if (p?.type === "tool-result" && typeof p.toolCallId === "string") results.push(p.toolCallId);
+    }
+  }
+  return { calls, results };
+}
+
+Deno.test("capTotalToBudget: a protected tail that alone exceeds the budget is still brought under it", () => {
+  // Eight recent messages of ~40k each = ~320k, with RECENT_WINDOW=8 every one of
+  // them is inside the protected tail. Nothing outside it to elide.
+  const msgs = Array.from({ length: RECENT_WINDOW }, (_, i) => bigToolMessage(i, 40_000));
+  assert(
+    approxMsgChars(msgs) > TOTAL_PROMPT_CHAR_BUDGET,
+    "fixture must start over budget or it proves nothing",
+  );
+  const out = capTotalToBudget(msgs, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW);
+  assert(
+    approxMsgChars(out) <= TOTAL_PROMPT_CHAR_BUDGET,
+    `budget must be a ceiling, got ${approxMsgChars(out)} > ${TOTAL_PROMPT_CHAR_BUDGET}`,
+  );
+});
+
+Deno.test("capTotalToBudget: one message larger than the entire budget is still bounded", () => {
+  // The real shape: thread a8643383 carried a single persisted assistant message of
+  // 99,887 chars. This is the pathological version of it.
+  const msgs = [bigToolMessage(0, TOTAL_PROMPT_CHAR_BUDGET * 2)];
+  const out = capTotalToBudget(msgs, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW);
+  assert(
+    approxMsgChars(out) <= TOTAL_PROMPT_CHAR_BUDGET,
+    `single oversized message must be elided, got ${approxMsgChars(out)}`,
+  );
+  assertEquals(out.length, 1, "a message is never dropped — that would sever tool pairing");
+});
+
+Deno.test("capTotalToBudget: eliding into the recent window preserves every part and the output discriminator", () => {
+  const msgs: ModelMessage[] = [
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "calling" },
+        { type: "tool-call", toolCallId: "call_0", toolName: "tool_0", input: { q: "x" } },
+      ],
+    } as unknown as ModelMessage,
+    bigToolMessage(0, 150_000),
+    bigToolMessage(1, 150_000),
+  ];
+  const out = capTotalToBudget(msgs, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW);
+  assert(approxMsgChars(out) <= TOTAL_PROMPT_CHAR_BUDGET, "must be under budget");
+  assertEquals(out.length, msgs.length, "no message dropped");
+
+  const before = pairing(msgs);
+  const after = pairing(out);
+  assertEquals(after.calls, before.calls, "every tool-call survives");
+  assertEquals(after.results, before.results, "every tool-result survives — pairing intact");
+
+  // The AI SDK validates output against a typed union; a bare { value } aborts the run.
+  for (const m of out) {
+    if (!Array.isArray(m.content)) continue;
+    for (const p of m.content as Array<Record<string, unknown>>) {
+      if (p?.type !== "tool-result") continue;
+      const output = p.output as Record<string, unknown>;
+      assertEquals(output.type, "json", "the output discriminator must survive elision");
+      assert("value" in output, "the output must still carry a value");
+    }
+  }
+  // And the elision is the documented reference, not a silent truncation.
+  const elided = out.find((m) =>
+    Array.isArray(m.content) &&
+    (m.content as Array<Record<string, unknown>>).some((p) =>
+      p?.type === "tool-result" &&
+      typeof ((p.output as Record<string, unknown>)?.value) === "string"
+    )
+  );
+  assert(elided, "at least one tool-result was elided to a reference");
+});
+
+Deno.test("capTotalToBudget: an array already under budget is returned unchanged", () => {
+  const msgs = [bigToolMessage(0, 100), bigToolMessage(1, 100)];
+  const out = capTotalToBudget(msgs, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW);
+  assertEquals(
+    JSON.stringify(out),
+    JSON.stringify(msgs),
+    "the common path must be byte-identical — this fix changes nothing for a normal run",
+  );
+});
+
+Deno.test("capTotalToBudget: the kill switch restores the old tail-exempt behaviour", () => {
+  const msgs = Array.from({ length: RECENT_WINDOW }, (_, i) => bigToolMessage(i, 40_000));
+  const off = capTotalToBudget(msgs, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW, false);
+  assert(
+    approxMsgChars(off) > TOTAL_PROMPT_CHAR_BUDGET,
+    "with the ceiling disabled the protected tail is exempt again, exactly as before the fix",
+  );
+  const on = capTotalToBudget(msgs, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW, true);
+  assert(approxMsgChars(on) <= TOTAL_PROMPT_CHAR_BUDGET, "and ON it is a ceiling");
+});
+
+Deno.test("reportBudgetCeiling: reports the overage rather than letting it pass silently", () => {
+  const under = [bigToolMessage(0, 100)];
+  assertEquals(reportBudgetCeiling(under, TOTAL_PROMPT_CHAR_BUDGET, "test"), 0);
+
+  // Elision cannot shrink message SCAFFOLDING: enough already-minimal messages still
+  // exceed any budget. That is the honest limit of the ceiling, and it must be said
+  // out loud rather than returned quietly over budget.
+  const many = Array.from({ length: 400 }, (_, i) => bigToolMessage(i, 10));
+  const tiny = 1_000;
+  const out = capTotalToBudget(many, tiny, RECENT_WINDOW);
+  const over = reportBudgetCeiling(out, tiny, "test");
+  assert(over > 0, "an unmeetable ceiling is reported, not hidden");
 });

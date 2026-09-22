@@ -18,6 +18,7 @@ import {
   deepseekGateway, DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL, DEEPSEEK_VENDOR_HOST,
   degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
+  promptBudgetHardCeilingEnabled,
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
@@ -51,7 +52,7 @@ import { beginCycle, clearRuntime, runtimeLimits } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
-  capTotalToBudget, deadlineReached, isToolBudgetExhausted, buildIntermediateStepPlan,
+  capTotalToBudget, reportBudgetCeiling, deadlineReached, isToolBudgetExhausted, buildIntermediateStepPlan,
 } from "./orchestrator-budget.ts";
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective, shouldDeferFinalizeForCorrelate,
@@ -307,7 +308,10 @@ Deno.serve(async (req) => {
       });
       return { ...m, content } as ModelMessage;
     });
-    trimmedMessages = capTotalToBudget(trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW);
+    trimmedMessages = capTotalToBudget(
+      trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW, promptBudgetHardCeilingEnabled(),
+    );
+    reportBudgetCeiling(trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, "initial");
     // Bound individual tool-result outputs (a few giant results were holding the
     // prompt at the ~250k schema/length ceiling) and then HARD-GUARANTEE the
     // array is structurally valid for the AI SDK: every tool-result has a
@@ -954,7 +958,10 @@ Deno.serve(async (req) => {
         // Same hardening as the initial prompt: cap oversized tool results and
         // guarantee a schema-valid, tool-paired array on every in-stream step so
         // a mid-run trim can't sever a tool-call/result pair and wedge the run.
-        const budgeted = capTotalToBudget(trimmed, TOTAL_PROMPT_CHAR_BUDGET, STEP_RECENT_WINDOW);
+        const budgeted = capTotalToBudget(
+          trimmed, TOTAL_PROMPT_CHAR_BUDGET, STEP_RECENT_WINDOW, promptBudgetHardCeilingEnabled(),
+        );
+        reportBudgetCeiling(budgeted, TOTAL_PROMPT_CHAR_BUDGET, "prepare_step");
         const stepMessagesOut = sanitizeModelMessages(
           capToolResultOutputs(budgeted, MAX_TOOL_RESULT_CHARS),
         );
