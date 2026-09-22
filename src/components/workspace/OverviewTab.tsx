@@ -5,6 +5,7 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ToolEvent } from "@/hooks/useThreadToolActivity";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { useReviewStates } from "@/lib/review";
+import { Vital } from "@/components/ui/vital";
 import { authorityFor, LEDGER_SORT_RANK, AUTHORITY_LEGEND, type AuthorityState } from "@/lib/authority";
 import { AuthorityChip, AuthoritySpine, AuthorityCaveat, RuleLabel } from "@/components/ui/authority";
 import { readableSourceLabel } from "@/lib/tool-display";
@@ -52,34 +53,6 @@ const HINT = new Map(AUTHORITY_LEGEND.map((e) => [e.state, e.hint]));
 
 function jump(tab: string) {
   window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab } }));
-}
-
-/** A single instrument reading. Big number, small label, optional action. */
-function Stat({
-  icon: Icon, label, value, sub, tone, onClick, title,
-}: {
-  icon: LucideIcon; label: string; value: string | number; sub?: string;
-  tone?: string; onClick?: () => void; title?: string;
-}) {
-  const Tag = onClick ? "button" : "div";
-  return (
-    <Tag
-      {...(onClick ? { type: "button" as const, onClick } : {})}
-      title={title}
-      data-interactive={onClick ? "true" : undefined}
-      className={cn(
-        "panel stat-tile px-3 py-2.5 text-left transition-colors",
-        onClick && "hover:border-border-strong hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-      )}
-    >
-      <span className="flex items-center gap-1.5 text-eyebrow uppercase tracking-[0.12em] text-muted-foreground">
-        <Icon className={cn("h-3 w-3 shrink-0", tone)} strokeWidth={2} aria-hidden />
-        {label}
-      </span>
-      <span className={cn("mt-1.5 block font-display text-h2 font-semibold leading-none", tone ? "tabular-nums" : "stat-figure", tone)}>{value}</span>
-      {sub && <span className="mt-1 block truncate text-micro text-muted-foreground">{sub}</span>}
-    </Tag>
-  );
 }
 
 const NO_ITEMS: Artifact[] = [];
@@ -204,21 +177,21 @@ export function OverviewTab({ threadId }: { threadId: string }) {
         {/* One aligned row on desktop; two balanced columns below it, with the
             odd last tile spanning both instead of leaving an empty cell. */}
         <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-5 [&>*:last-child:nth-child(odd)]:col-span-2 lg:[&>*:last-child:nth-child(odd)]:col-span-1">
-          <Stat
+          <Vital
             icon={ShieldCheck} label="Verified" value={tally.verified}
-            tone="text-[hsl(var(--authority-verified))]"
+            of={total || null} share={total ? tally.verified / total : null} state="verified"
             sub="corroborated or analyst-confirmed"
             title={HINT.get("verified")} onClick={() => jump("artifacts")}
           />
-          <Stat
+          <Vital
             icon={AlertTriangle} label="Conflict" value={tally.conflict}
-            tone={tally.conflict > 0 ? "text-[hsl(var(--authority-conflict))]" : undefined}
+            of={total || null} share={total ? tally.conflict / total : null} state="conflict"
             sub="contradicts the case"
             title={HINT.get("conflict")} onClick={() => jump("artifacts")}
           />
-          <Stat
+          <Vital
             icon={Unlink} label="Quarantined" value={tally.quarantined}
-            tone={tally.quarantined > 0 ? "text-[hsl(var(--authority-quarantine))]" : undefined}
+            of={total || null} share={total ? tally.quarantined / total : null} state="quarantined"
             sub="linkage unproven"
             title={HINT.get("quarantined")} onClick={() => jump("artifacts")}
           />
@@ -229,11 +202,19 @@ export function OverviewTab({ threadId }: { threadId: string }) {
               for that reason, and an Overview that adds them under the word
               "failed" both overstates breakage and destroys the distinction an
               analyst uses to decide whether to re-run. This is the
-              suppressed-failure problem in a new direction. */}
-          <Stat
+              suppressed-failure problem in a new direction.
+
+              The rule reads REVIEW amber, not conflict red. Red in this product
+              means the evidence contradicts itself; a tool that did not run is
+              a gap in coverage, which is a different problem with a different
+              fix. Painting both red left the bank with two red tiles and no way
+              to tell an evidence fault from an infrastructure one. */}
+          <Vital
             icon={XCircle} label="Coverage gaps"
             value={activity.degraded > 0 ? `${activity.failed}/${activity.degraded}` : activity.failed}
-            tone={activity.failed > 0 ? "text-destructive" : activity.degraded > 0 ? "text-[hsl(var(--confidence-mid))]" : undefined}
+            of={activity.persistedTotal || null}
+            share={activity.persistedTotal ? (activity.failed + activity.degraded) / activity.persistedTotal : null}
+            state="review"
             sub={activity.degraded > 0 ? "failed / degraded" : "failed lookups"}
             title={
               `${activity.failed} failed — the lookup did not happen, so anything it would have found is missing from this case.` +
@@ -243,7 +224,9 @@ export function OverviewTab({ threadId }: { threadId: string }) {
             }
             onClick={() => jump("issues")}
           />
-          <Stat
+          {/* No rule: a duration is not a share of anything on this bank, and a
+              bar under it would have to measure something else to exist. */}
+          <Vital
             icon={Timer} label="Time in tools"
             // `Math.round(ms / 60_000)` reported 87s as "1m" — a 31% understatement,
             // and every value from 30s to 89s collapsed onto the same label while
@@ -254,7 +237,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
             // separately let it reach 60 and print "1m 60s" (119.6s did exactly
             // that), and "60s" just under the minute mark.
             value={fmtWallClock(toolMs)}
-            sub={cached > 0 ? `${cached} served from cache` : "wall-clock across the run"}
+            sub={cached > 0 ? `${cached} of ${activity.persistedTotal} served from cache` : "wall-clock across the run"}
             title="Total wall-clock across every recorded call."
             onClick={() => jump("issues")}
           />

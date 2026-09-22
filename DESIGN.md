@@ -236,6 +236,11 @@ Blur marks elevation and has a budget: one blur value per tier, never escalated 
 - **Bar:** a 1.5px track with a tier-coloured fill.
 - **Numeral:** ink, never the tier colour. The bar's length already says how big the number is; colouring the numeral too made a low score look like a failure rather than like a small measurement.
 
+### Vitals
+- **Style:** the case instrument bank. A lit `.panel` tile carrying an eyebrow, a 32px top-lit figure, its denominator in reference ink, and a 2px rule whose LENGTH is the share.
+- **Rule:** hue on the icon and the rule, never on the figure. Weight follows what the number means, so a reading at zero recedes to reference ink; a case with no contradictions should not spend the same attention as one with two.
+- **Rule:** the label row reserves two lines at every width, so five tiles put their figures on one baseline whatever their labels do.
+
 ### Stated Labels
 - **Style:** a hollow chip with a 1px dashed edge, 10px mono caps, no fill, drawn from the ink ramp at three registers: claims of strength at ink 2, hedges at ink 3, alarms at the ladder's conflict hue.
 - **Rule:** never the confidence ramp. That ladder belongs to the code that computes confidence, and a second copy of it in prose is a drifting source of truth. The chip also carries a title saying who wrote it, and the card footer says so once in text, because a hover reaches no touch device.
@@ -266,6 +271,8 @@ Blur marks elevation and has a budget: one blur value per tier, never escalated 
 - **Don't** use "glass/glow used as generic decoration rather than a deliberate material with a budget," which is the tell separating a designed forensic console from AI slop wearing a dark theme.
 - **Don't** ship "anything that renders a single-source lead with the same visual weight as a corroborated finding." This is the integrity failure mode and it outranks every aesthetic concern.
 - **Don't** use a `border-left` or `border-right` above 1px as a coloured accent on a card, list item, callout or alert. A left rule on a genuine blockquote is typography and is permitted; an accent strip on a card is not.
+- **Don't** let a count stand without the whole it is a share of. "Quarantined 9" is a crisis in a twelve-artifact case and a footnote in a five-hundred-artifact one.
+- **Don't** pass a type-scale class and a text colour through `cn()` expecting both to survive without the `extendTailwindMerge` config in `src/lib/utils.ts`. `text-*` is ambiguous and tailwind-merge resolves it from a table; the scale has to be named to it.
 - **Don't** fill a label the agent typed in prose, or draw it from the confidence ramp. Hollow, dashed, ink ramp. The filled chip means a number was computed.
 - **Don't** colour a confidence numeral by its value.
 - **Don't** give a quarantined row a confidence hue. Quarantine is a linkage state, not a low score.
