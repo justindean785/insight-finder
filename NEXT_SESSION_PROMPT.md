@@ -1,175 +1,188 @@
-# Next-session prompt — Insight Finder
+# NEXT SESSION — start here
 
-> Paste this whole file as the opening message of a fresh session. It is self-contained.
-> **Written 2026-09-20T12:00Z.** Every number is a dated measurement, not a state — re-verify.
-
----
-
-## Start here — five minutes, before anything else
-
-```bash
-git fetch origin main && git log --oneline -5 origin/main
-git fetch origin refs/heads/deploy/live:refs/heads/deploy/live   # a fresh clone lacks this ref
-git fetch --unshallow --filter=blob:none                          # the clone is shallow at depth 50
-curl -s "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1"
-```
-
-**Expect `main` = `ad4937b` or later and live edge build = `4bb19d9`.**
-
-If either moved, another session has worked this repo — read the newest `SESSION_HANDOFF_*.md`
-before anything else. That has now happened **six** times, and once produced two conflicting PRs
-for one task (#548 / #551).
-
-**Then run `list_pull_requests` and look at `draft`.** The merge queue — not the deploy — is this
-project's documented bottleneck, and right now it holds three finished PRs.
-
-Read, in order:
-
-1. **`SESSION_HANDOFF_2026-09-20_prompt-ceiling-payload-store-and-the-overlap-wedge.md`** — newest.
-   §2 is the stale-baseline correction, §4 the production wedge that is the highest-value unfixed
-   defect, §5 the `unknown` stop reason, §6 the payload-store decision, §7 the trap list,
-   §9 the ordered plan.
-2. **`CLAUDE.md`** — authoritative on deploy topology and on decisions that must not be
-   re-litigated.
-3. `SCOPE_same-thread-concurrency.md` if you are touching the overlap work;
-   `DESIGN_payload-store.md` if you are touching persistence.
+**Written 2026-09-22T11:15Z.** Supersedes the previous contents of this file.
+Take the dated state from `CLAUDE.md`'s top block, not from any handoff's own §1.
 
 ---
 
-## Verified state — 2026-09-20T12:00Z
+## 0. One-paragraph state
 
-| Axis | Value |
+`main` = **`74e98ad`** (#604). Live `osint-agent` = **`4bb19d9`**, unchanged since 2026-09-14.
+Vercel production is current. **#604 is merged and must not be deployed as-is** — it carries two
+real, unrepaired defects. Both now have fix PRs open and fully green: **#615** (Finding A) and
+**#616** (Finding B). JD has chosen **path A — fix first**, and set the sequence:
+**#615 → #616 → one combined edge deploy → prove**, with **#608 held until after** that deploy.
+Nothing is merged. Nothing is deployed. **JD has not authorized either merge.**
+
+---
+
+## 1. What is open, and what state it is in
+
+| PR | Lane | CI | State | Next action |
+|---|---|---|---|---|
+| **#615** fix #604 Finding A | edge | **fully green** | draft | merge-ready pending §3 + JD's authorization |
+| **#616** fix #604 Finding B | edge | **fully green** | draft | merge after #615 |
+| **#614** docs: CLAUDE.md corrections + audit | docs | **fully green** | draft | merge whenever; see §5 |
+| #608 positional pairing | edge | green | draft | **HOLD until after the #615+#616 deploy** |
+| #607 dead-target memory | edge | green | draft | hold — key-mismatch blocker, near-zero measured value |
+| #611 budget_exhausted | edge | green | draft | hold — no proof-of-deploy signal |
+| #609 / #610 / #612 | frontend | green | draft | parallel lane; run `npm run test:e2e` by hand first |
+| #613 lineage schema | schema | green | draft | needs 3 fixes before apply — see the audit |
+| #593 #579 #574 #516 #502 #586 #570 #567 #564 #541 | older | stale | — | see `AUDIT_2026-09-22_queue-and-deploy.md` §F/§G |
+
+"Fully green" = Edge deno test, Frontend vitest+build, Migrations psql all success; `Workspace e2e`
+skipped (push-only job, by design); Vercel preview success; `Cursor Automation` neutral (third-party,
+not a failure).
+
+---
+
+## 2. The two fixes, in one screen each
+
+### #615 — pass 2 must summarize the unconsumed tail, not destroy it
+`claude/604-fix-a-preserve-unconsumed-evidence`, head `f2c1f9d`
+
+#604's pass 2 elided **into** the recent window. Its last message, in `prepareStep`, is the tool
+result of the call that just completed — unread by the model. It was replaced with a bare
+`elidedToolResultRef()` promising *"retrieve via `memory_recall`"*, which cannot work:
+`memory_recall` reads only `agent_memory`, and **no tool in the registry reads `tool_call_cache`**.
+
+Now: pass 2 calls `summarizeToolResultValue` (selectors preserved + head snippet), **per part**,
+stopping when under budget. Pass 1 unchanged. `memory_recall` promise removed from both markers.
+New durable event `prompt_budget_tail_compacted`. `/health` detail gains `, tail=summarize`.
+
+Kill switch: existing `PROMPT_BUDGET_HARD_CEILING_DISABLED` (call-time).
+
+### #616 — measure the ceiling on the array actually sent
+`claude/604-fix-b-ceiling-measures-final-array`, head `042357a`
+
+`reportBudgetCeiling` ran **before** `sanitizeModelMessages`+`capToolResultOutputs` at both call
+sites, and both can GROW the array. Four production lines: move the call after the composition.
+
+⚠️ **Expected consequence: MORE reported overages.** That is the fix working, not a regression.
+Put this in the deploy check so nobody attributes the increase to #616.
+
+---
+
+## 3. The review JD required before merging #615 — PARTIALLY DONE
+
+JD asked for an adversarial review of `summarizeToolResultValue`'s use on three axes. **Two are
+settled; one has a gap I did not close. Do not report #615 merge-ready until §3.3 is finished.**
+
+### 3.1 Persistence / diagnostic exposure — **SETTLED, no new sink**
+
+Traced and verified:
+- `index.ts:2033` / `:2052` pass **`originalMessages: messages`** — the RAW client array, **not**
+  `trimmedMessages` and not `stepMessagesOut`. `persistFinalMessages` (`index.ts:1557`) consumes
+  `UIMessage[]` from `onFinish`, which derives from that raw array.
+- `grep -n "trimmedMessages\|stepMessagesOut" index.ts | grep -iE "console|insert|upsert|persist|log\("`
+  returns **nothing**.
+
+So the compacted array is transient and provider-bound only. **#615 adds no persistence or logging
+path.** The new `prompt_budget_tail_compacted` event carries counts and sizes only, no content.
+
+### 3.2 SDK structure, mutation, pairing — **VERIFIED by execution**
+
+Ran the real `capTotalToBudget` over six shapes (fat single result, parallel fan-out, call+result
+pair, trailing user message, bare output, primitive value):
+
+- `badDiscriminator = 0` on every shape — the `{type, value}` union is preserved in both branches.
+- deep no-mutation of the caller's input: **PASS**
+- `toolCallId` order and **part count preserved**: **PASS** (matters because #608 pairs by position)
+
+### 3.3 ⚠️ GAP — SDK acceptance is NOT actually proven. Finish this first.
+
+My harness called `convertToLanguageModelPrompt` **without `await`**, so its rejection surfaced as
+an unhandled promise instead of being caught. The `sdk=OK` readings therefore mean only "did not
+throw synchronously" and **prove nothing**. (The `MissingToolResultsError` that did surface came
+from my own fixture — 130 deliberately unpaired tool-calls — not from #615.)
+
+**To close it:** rebuild the harness with `await`, give each fixture properly paired tool-calls, and
+assert the SDK accepts pass-2 output. Script to fix:
+`/tmp/claude-0/.../scratchpad/rev615.ts` (regenerate it; /tmp may be gone).
+Run with `--allow-read --allow-env --allow-net --allow-sys --no-check --no-lock`.
+
+### 3.4 Head snippets DO carry secrets to the provider — judged in-scope, flagged
+
+Measured: `summarizeToolResultValue` on a payload whose first keys are `password` and `api_key`
+retains **both** verbatim in the head snippet. No redaction runs on this path.
+
+Honest framing, because the comparison matters:
+
+| build | what pass 2's tail sends to the provider |
 |---|---|
-| canonical `main` | `ad4937b` |
-| live edge build | `4bb19d9` (`ok: true`) |
-| `deploy/live` | `4bb19d9` |
-| edge baseline | **1885 passed / 0 failed / 6 ignored** on clean `main` |
-| frontend baseline | **2106 passed / 1 skipped / 173 files** |
-| e2e baseline | **51 passed / 2 skipped** |
+| pre-#604 | recent window **verbatim** — full secret |
+| #604 (current `main`) | bare reference — no secret, **but evidence destroyed** |
+| **#615** | summary + head snippet — **partial** secret, evidence preserved |
 
-⚠️ **CLAUDE.md's baselines are stale** (1879 / 2104 / 172 / 52). They were measured at `4bb19d9`
-and `main` has moved. Before crediting or blaming any diff for a suite-total change, **stash it and
-re-measure on clean `main`.** This is the third consecutive session where a total moved for a
-reason other than the code.
-
-### The queue — nothing proceeds until this drains
-
-| PR | head | channel | state |
-|---|---|---|---|
-| **#602** | `2bdbfe1` | frontend | green draft, `clean` — streaming throttle |
-| **#603** | `174bc70` | frontend | green draft, `clean` — readiness denominator |
-| **#604** | `9bd5587` | **edge** | green draft, `clean` — prompt budget hard ceiling |
-
-#602 and #603 ship to production on merge via Vercel. **#604 does not ship on merge** — see the
-edge recipe in CLAUDE.md, and note its proof-of-deploy key is **`checks.prompt_budget_ceiling`**.
-Only one edge PR may be in flight at a time, so #604 blocks the rest of the edge plan.
+So #615 is *more* than #604 and *less* than main's normal recent-window behaviour, which already
+sends those bytes verbatim. It is not a new exposure class. Per JD: **do not expand #615** — this
+is not a real problem, it is a disclosure. `REVEAL_BREACH_DATA` is ON and settled; do not touch it.
 
 ---
 
-## The job, in one line
+## 4. The sequence JD set — follow it exactly
 
-Get the queue merged and #604 deployed, then fix the overlap wedge — the one defect measured
-killing real runs in production.
-
----
-
-## Ordered plan
-
-| # | PR | channel | why this order |
-|---|---|---|---|
-| 0 | **merge #602, #603; merge + deploy #604** | both | nothing proceeds until the queue drains |
-| 1 | **`sanitizeModelMessages` positional pairing** | edge | stops the production wedge; small, pure, independent of the concurrency model |
-| 2 | **`budgetExhausted` at the `deriveStopReason` call site** | edge | one line; makes `stop_reason='unknown'` mean something |
-| 3 | **request-body size meter** | frontend | the before/after number the payload work needs |
-| 4 | **schema: `call_id` on `tool_usage_log` + `tool_call_payloads`** | migration | schema first, verified against the live DB, before any code reads it |
-| 5 | **payload write path + aggregate inline budget** | edge | kill switch + `/health` key + the E2E gate |
-| 6 | **drawer fetch-on-demand + `retained:false`** | frontend | — |
-
-### #1 in detail, because it is the one worth doing first
-
-`sanitizeModelMessages` pass 3 skips synthesising a placeholder when `resolved.has(toolCallId)`,
-and `resolved` is a **global** id set. The AI SDK validates **positionally**. So when an
-overlapping run delivers its result late, the array holds the same id twice — once unpaired, once
-resolved — and the real result suppresses the placeholder the earlier dangling call needs. The run
-dies with `MissingToolResultsError` before any provider call.
-
-Confirmed in production on thread `bfa55610` (2026-09-12): two invocations died in 85 ms with
-*"Tool results are missing for tool calls `01a09765…`"* — **the same tool call id both times**,
-because the client kept re-uploading the poisoned history. It heals on reload, which is why it has
-never shown up as bad DB rows.
-
-Fix: resolve ids **per position**, not globally. Tests belong in `message_sanitize_test.ts` and
-must drive `streamText` with a mock model on the reproduced array, not re-describe the function.
+1. Finish §3.3. If the SDK check passes, report **#615 merge-ready**.
+2. **Get JD's authorization.** Merge #615.
+3. Merge #616 after green CI (rebase if `main` moved).
+4. **One combined edge deploy** of `#604 + #615 + #616` — not two cycles. #616 fixes the telemetry
+   used to judge #615/#604, so they must land together.
+5. Prove it, in this order:
+   - `node scripts/stamp-build.mjs`, commit `build-info.ts`
+   - surgical mirror sync — **run `verify:deploy` from a tree actually at `origin/main`**
+     (⚠️ a drifted checkout reports `diff -rq` empty = **false green**; compare `origin/main`'s
+     blobs against the mirror instead)
+   - Lovable deploy, project `4ce11bc3-039d-4439-b293-acacca9e1e3a`, `["osint-agent"]`
+   - `/health`: `build` moves **and** `checks.prompt_budget_ceiling.detail` reads
+     `hard ceiling 220000 chars, tail=summarize` — the `tail=summarize` token is what proves #615
+     (the key alone only proves #604)
+   - smoke test:
+     `SELECT count(*) FILTER (WHERE context_chars > 220000), max(context_chars) FROM orchestrator_step_metrics WHERE created_at > '<deploy>'`
+     Baseline to beat: 68 of 864 steps over budget (7.87%), peak 290,961.
+   - then query `prompt_budget_ceiling_unmet` **using #616's corrected measurement**, expecting it
+     to read higher than before
+6. **Only then** unblock #608.
 
 ---
 
-## Decisions JD has already made — do not re-open
+## 5. Loose ends
 
-- **Option A (a payload store), not summary-only.** Reason given: Insight Finder uses raw results
-  to investigate and correct evidence, and absent drawer telemetry is not evidence that
-  recoverability has no value.
-- **The store is a TABLE (`tool_call_payloads`), not the `evidence-archive` bucket.** Driven by the
-  distribution: 4,549 displaced objects / 14.0 MB at a 120k aggregate inline budget, p50 **812
-  chars**, only 2 objects over 256 KB. Also removes an unproven dependency — that bucket holds
-  **0 objects** and `archiver.ts` has never successfully written one.
-- **PR-A (the prompt ceiling) goes first and is independent.** Shipped as #604.
-- **#602 / #603 stay untouched and unmerged until JD says otherwise.**
-- Everything in CLAUDE.md's **SETTLED** section: `REVEAL_BREACH_DATA` stays ON, `MAX_PAID_CALLS`
-  stays bounded, intent is not inferred from prose.
+- **#614** (docs) is green and can merge any time. Its new dated-state block says *"do not deploy
+  current main"* — **true today, false the moment #615+#616 deploy.** Update it in the same breath.
+- **`CLAUDE.md` conflicts**: #564, #570, #541 all conflict on the dated-state block. #564 is **not a
+  draft** and would inject a three-deploy-stale state plus a standing "do not deploy" instruction.
+- **Mirror PR #41** is still open and un-backported. Backport its two hunks here; do not merge it on
+  the mirror. Re-check `git log origin/main` in the mirror clone, not just `diff -rq`.
+- A check-in Routine (`trig_013FWgMe2D6BcWaJHw9dLtwW`) re-checks #614/#615/#616 CI. All three are
+  green now; retarget or disable it.
+- Deno 2.9.7 is installed at `/usr/local/bin/deno`. **Always `--no-lock`** — an unqualified run
+  rewrote `deno.lock` with a `@deno/installer-shell-setup` entry during this session (reverted).
 
-## Open decisions — ask, don't assume
+## 6. Measured baselines (2026-09-22, Deno 2.9.7, `--no-lock`)
 
-1. **The inline payload budget value.** 120,000 is modelled, not derived. 60k halves cost and
-   displaces 73% of payloads; 200k displaces 27%. It trades how much recent raw detail stays in the
-   transcript without a fetch — an analyst-workflow question.
-2. **Whether to change the concurrency mechanism at all**, or only fix the wedge. Overlap runs at
-   **12.2% of invocations**; the recommended model is accept-and-queue on
-   `threads.last_heartbeat_at`, but the wedge fix stands on its own either way.
+| | edge suite |
+|---|---|
+| `main` @ `74e98ad` | **1891** / 0 / 6 |
+| #615 | **1896** / 0 / 6 |
+| #616 | **1893** / 0 / 6 |
 
----
+Negative controls are real, not described: #615's new tests were run against `origin/main`'s source
+in a scratch tree — **6 fail**, including all three `pass 2` cases. #616's wiring test fails on
+`main` too. Reproduce with `git archive origin/main supabase/functions scripts | tar -x -C <dir>`,
+then copy the PR's test file in.
 
-## Traps — verified this session, all of them cost time
+## 7. Reading order
 
-1. **`orchestrator_invocations.created_at` is the telemetry insert at finish, not run start.** Use
-   `started_at` / `finished_at`.
-2. **`initial_context_chars` cannot tell you what a run saw.** It is computed *after* trimming.
-   Two runs 16 chars apart proves nothing about their histories.
-3. **The prompt is already protected.** `index.ts:244-323` truncates inbound history four ways on
-   every request, so a 605,427-char persisted payload reaches the model as ≤16,000. Persistence is
-   a **wire-and-storage** problem, not a prompt problem. Do not conflate them.
-4. **`tool_call_cache` looks like a durable payload store.** 47 MB, 12,701 rows, only 129
-   unexpired — it retains outputs only because `CACHE_SWEEP_ENABLED` is off. No `call_id`, no
-   `thread_id`. ⚠️ **Turning that sweep on deletes the only accidental copy of historical tool
-   outputs** — sequence it after the payload store, never before.
-5. **`client_errors` shows 0 `MissingToolResult`** because the error is thrown server-side.
-   Absence there is not absence.
-6. **A per-item cap never bounds a thread.** 218 tool parts × any constant is still linear. Only an
-   aggregate budget is O(1) in call count.
+1. `CLAUDE.md` top block — the dated state.
+2. `AUDIT_2026-09-22_queue-and-deploy.md` — full queue audit: source-of-truth table, the #604 gate,
+   edge order with proof keys, #613's merge≠apply≠verify split, the 17-PR queue, operator decisions.
+3. This file.
+4. `SESSION_HANDOFF_2026-09-20_prompt-ceiling-payload-store-and-the-overlap-wedge.md` — still the
+   best background on the payload store and the overlap wedge, but its §1 state is stale.
 
----
+## 8. Do not
 
-## How to work here
-
-- **Small PRs.** One behaviour change + its tests + its kill switch. Never mix frontend and edge —
-  they ship on different channels and a mixed PR can be neither cleanly deployed nor reverted.
-  Every behaviour-changing edge PR adds one new `/health` key or durable log event.
-- **Grep before you build.** CLAUDE.md's *BUILT AND UNWIRED* table exists because five separate
-  times in one session the thing a plan said to build was already built and merely disconnected.
-- **A behavioural test must DRIVE the shipped control flow, never re-describe it.** Prove it with a
-  negative control: revert the source change and show the test fails.
-- **Measure before you claim.** Every defect caught in review here was a timeline or identity
-  error that passed the full suite, typecheck, lint and build.
-- `npm run test:e2e` by hand for anything touching `src/` — PR CI does not run it.
-- Deno is not preinstalled in the web sandbox; `--no-lock` is required.
-
----
-
-## What the analyst actually feels, so the work stays anchored
-
-Two complaints drove this whole arc, and both now have measured causes:
-
-- **"It lags so bad, it stops mid-word."** Two independent causes: client-side markdown re-parse
-  per token (#602, fixed), and ~431 KB of history re-uploaded from a phone on every turn (step 3–5
-  above, not yet fixed).
-- **"We do all these upgrades and it never changes the app."** The merge queue. Three finished,
-  green, reviewed PRs are sitting in draft right now. That is step 0.
+Do not merge or deploy without JD's authorization · do not deploy #615 and #616 in separate cycles ·
+do not unblock #608 before the combined deploy is proven · do not apply #613's migration · do not
+change `REVEAL_BREACH_DATA` or broaden masking · do not change auto-run `record_artifacts` →
+`record_finding` adjudication · do not expand #615's scope.
