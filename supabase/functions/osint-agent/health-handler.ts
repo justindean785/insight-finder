@@ -358,8 +358,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     const hardCeiling = promptBudgetHardCeilingEnabled();
     r.checks.prompt_budget_ceiling = {
       ok: hardCeiling,
+      // `tail=summarize` is the proof-of-deploy token for the 2026-09-22 fix: the
+      // build that elided the unconsumed tail by bare reference cannot emit it.
+      // Read the STRATEGY, not just the key — the key alone only proves #604.
       detail: hardCeiling
-        ? `hard ceiling ${TOTAL_PROMPT_CHAR_BUDGET} chars`
+        ? `hard ceiling ${TOTAL_PROMPT_CHAR_BUDGET} chars, tail=summarize`
         : `DISABLED via PROMPT_BUDGET_HARD_CEILING_DISABLED — tail exempt above ${TOTAL_PROMPT_CHAR_BUDGET} chars`,
     };
   }
