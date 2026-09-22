@@ -311,7 +311,6 @@ Deno.serve(async (req) => {
     trimmedMessages = capTotalToBudget(
       trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW, promptBudgetHardCeilingEnabled(),
     );
-    reportBudgetCeiling(trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, "initial");
     // Bound individual tool-result outputs (a few giant results were holding the
     // prompt at the ~250k schema/length ceiling) and then HARD-GUARANTEE the
     // array is structurally valid for the AI SDK: every tool-result has a
@@ -326,6 +325,13 @@ Deno.serve(async (req) => {
     trimmedMessages = sanitizeModelMessages(
       capToolResultOutputs(trimmedMessages, MAX_TOOL_RESULT_CHARS),
     );
+    // Measure the ceiling on the FINAL array, AFTER sanitize+cap — never before.
+    // sanitizeModelMessages can GROW the array (pass 3 appends a whole tool
+    // message per unpaired tool-call) and capToolResultOutputs can grow a message
+    // too (JSON-escaping an 8k truncated string re-serializes larger), so a
+    // reading taken before them describes something that is never sent. See the
+    // matching call site in prepareStep below; they must stay in step.
+    reportBudgetCeiling(trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, "initial");
 
     // Cumulative cost tracker for this run.
     let runCostMicroUsd = 0;
@@ -961,10 +967,14 @@ Deno.serve(async (req) => {
         const budgeted = capTotalToBudget(
           trimmed, TOTAL_PROMPT_CHAR_BUDGET, STEP_RECENT_WINDOW, promptBudgetHardCeilingEnabled(),
         );
-        reportBudgetCeiling(budgeted, TOTAL_PROMPT_CHAR_BUDGET, "prepare_step");
         const stepMessagesOut = sanitizeModelMessages(
           capToolResultOutputs(budgeted, MAX_TOOL_RESULT_CHARS),
         );
+        // Measure `stepMessagesOut` — the array this step actually sends — not
+        // `budgeted`. Both sanitizeModelMessages and capToolResultOutputs run
+        // after capTotalToBudget and both can ADD chars, so measuring `budgeted`
+        // reported a size that was never on the wire.
+        reportBudgetCeiling(stepMessagesOut, TOTAL_PROMPT_CHAR_BUDGET, "prepare_step");
         // A1 instrument, per step. It must measure THE PROMPT THIS STEP ACTUALLY
         // SENDS, not the registry-wide baseline: `prepareStep` narrows the tool set
         // per branch (the persistence nudge exposes only record_artifacts, the
