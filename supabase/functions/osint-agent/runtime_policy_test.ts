@@ -1,5 +1,6 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
+  budgetCeilingFired,
   clearRuntime,
   runtimeLimits,
   startCall,
@@ -186,6 +187,79 @@ Deno.test("(4) over maxParallelTools → allow:true with waitMs>0 (queued, not f
     assertEquals(queued.allow, true);
     if (queued.allow) assertEquals(queued.waitMs > 0, true);
   } finally {
+    restoreLimits();
+  }
+});
+
+// ---- budgetCeilingFired ----------------------------------------------------
+//
+// The signal that makes `budget_exhausted` an honest stop reason. It must be
+// set ONLY by a real refusal — inferring it from a run that merely used a lot
+// of calls would put a cause in the telemetry column that nothing measured.
+
+Deno.test("budgetCeilingFired: false until a ceiling actually refuses a call", () => {
+  const threadId = "t-ceiling-clean";
+  clearRuntime(threadId);
+  try {
+    assertEquals(budgetCeilingFired(threadId), false, "unknown thread reports no refusal");
+    const d = startCall(baseInput({ threadId }));
+    assertEquals(d.allow, true);
+    assertEquals(budgetCeilingFired(threadId), false, "an ALLOWED call is not a ceiling");
+  } finally {
+    clearRuntime(threadId);
+    restoreLimits();
+  }
+});
+
+Deno.test("budgetCeilingFired: true once the paid-call cap refuses", () => {
+  const threadId = "t-ceiling-paid";
+  clearRuntime(threadId);
+  try {
+    runtimeLimits.maxPaidCallsPerRun = 1;
+    runtimeLimits.stopOnBudgetExhausted = true;
+    const first = startCall(baseInput({ threadId, now: 2_000_000 }));
+    assertEquals(first.allow, true);
+    assertEquals(budgetCeilingFired(threadId), false);
+
+    const second = startCall(baseInput({ threadId, now: 3_000_000 }));
+    assertEquals(second.allow, false, "second paid call must be refused at cap 1");
+    assertEquals(budgetCeilingFired(threadId), true, "the refusal sets the flag");
+  } finally {
+    clearRuntime(threadId);
+    restoreLimits();
+  }
+});
+
+Deno.test("budgetCeilingFired: a FREE call refused for another reason does not set it", () => {
+  // Only the three cap refusals set the flag. A free-tier call never trips the
+  // paid cap, so a thread that only ran free calls reports no ceiling.
+  const threadId = "t-ceiling-free";
+  clearRuntime(threadId);
+  try {
+    runtimeLimits.maxPaidCallsPerRun = 1;
+    runtimeLimits.stopOnBudgetExhausted = true;
+    startCall(baseInput({ threadId, costTier: "free", now: 4_000_000 }));
+    startCall(baseInput({ threadId, costTier: "free", now: 5_000_000 }));
+    assertEquals(budgetCeilingFired(threadId), false);
+  } finally {
+    clearRuntime(threadId);
+    restoreLimits();
+  }
+});
+
+Deno.test("budgetCeilingFired: clearRuntime resets it", () => {
+  const threadId = "t-ceiling-reset";
+  clearRuntime(threadId);
+  try {
+    runtimeLimits.maxPaidCallsPerRun = 1;
+    runtimeLimits.stopOnBudgetExhausted = true;
+    startCall(baseInput({ threadId, now: 6_000_000 }));
+    startCall(baseInput({ threadId, now: 7_000_000 }));
+    assertEquals(budgetCeilingFired(threadId), true);
+    clearRuntime(threadId);
+    assertEquals(budgetCeilingFired(threadId), false, "a cleared thread reports no refusal");
+  } finally {
+    clearRuntime(threadId);
     restoreLimits();
   }
 });

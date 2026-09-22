@@ -48,7 +48,7 @@ import { wrapToolsWithCache } from "./cache.ts";
 import { paidBudgetTier } from "./cache.ts";
 import { costForTool } from "./costs.ts";
 import { priorSpendEvent, summarizePriorSpend } from "./lib/run-budget.ts";
-import { beginCycle, clearRuntime, runtimeLimits } from "./runtime-policy.ts";
+import { beginCycle, budgetCeilingFired, clearRuntime, runtimeLimits } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
@@ -1516,6 +1516,7 @@ Deno.serve(async (req) => {
           hadStreamError: true,
           creditsMicroUsd: runCostMicroUsd,
           errorMessage: msg,
+          budgetExhausted: budgetCeilingFired(threadId),
         });
         // A terminal stream error means onFinish never fires, so without this the
         // thread row stays "active" forever (UI stuck on "running"). Write the
@@ -2010,6 +2011,7 @@ Deno.serve(async (req) => {
           hadStreamError: false,
           creditsMicroUsd: runCostMicroUsd,
           errorMessage: null,
+          budgetExhausted: budgetCeilingFired(threadId),
         });
         heartbeat?.stop();
         releaseRunState();

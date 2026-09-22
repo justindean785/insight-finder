@@ -198,6 +198,10 @@ export interface InvocationRowInput {
   finalContextChars: number | null;
   creditsMicroUsd: number | null;
   errorMessage: string | null;
+  /** True only when a budget ceiling demonstrably refused a call during this
+   *  invocation (runtime-policy's `budgetCeilingFired`). Optional so existing
+   *  callers keep the honest default of "not observed". */
+  budgetExhausted?: boolean;
 }
 
 /** Build the exact row shape inserted into orchestrator_invocations. Pure, same
@@ -268,6 +272,10 @@ export interface InvocationFinishInput {
   hadStreamError: boolean;
   creditsMicroUsd: number | null;
   errorMessage: string | null;
+  /** True only when a budget ceiling demonstrably refused a call during this
+   *  invocation (runtime-policy's `budgetCeilingFired`). Optional so existing
+   *  callers keep the honest default of "not observed". */
+  budgetExhausted?: boolean;
 }
 
 export interface InvocationTelemetryRecorder {
@@ -424,6 +432,7 @@ export function createInvocationTelemetry(input: CreateInvocationTelemetryInput)
           hadStreamError: finishInput.hadStreamError,
           finalizeStarted: finishInput.finalizeStarted,
           lastFinishReason,
+          budgetExhausted: finishInput.budgetExhausted,
         });
         flushParentThenSteps(
           buildInvocationRow({

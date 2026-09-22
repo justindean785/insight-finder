@@ -120,6 +120,10 @@ interface RuntimeThreadState {
   lastStartAt: number;
   findings: string[];
   plan: ExecutionCyclePlan | null;
+  /** Set the moment a budget ceiling ACTUALLY refuses a call. Never inferred —
+   *  this is the only thing that makes `budget_exhausted` an honest stop reason
+   *  rather than a guess from `finishReason: "tool-calls"`. */
+  budgetCeilingFired: boolean;
 }
 
 const THREADS = new Map<string, RuntimeThreadState>();
@@ -280,6 +284,7 @@ function getThread(threadId: string): RuntimeThreadState {
       lastStartAt: 0,
       findings: [],
       plan: null,
+      budgetCeilingFired: false,
     };
     THREADS.set(threadId, state);
   }
@@ -442,12 +447,15 @@ export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
   const sameToolCount = state.toolCounts.get(input.toolName) ?? 0;
   if (runtimeLimits.stopOnBudgetExhausted && !essential) {
     if (Number.isFinite(runtimeLimits.maxTotalToolCallsPerRun) && state.totalCalls >= runtimeLimits.maxTotalToolCallsPerRun) {
+      state.budgetCeilingFired = true;
       return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal run cap reached (${runtimeLimits.maxTotalToolCallsPerRun} calls this investigation) — internal throttle, not a provider limit` };
     }
     if (Number.isFinite(runtimeLimits.maxPaidCallsPerRun) && input.costTier !== "free" && state.paidCalls >= runtimeLimits.maxPaidCallsPerRun) {
+      state.budgetCeilingFired = true;
       return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal paid-call cap reached (${runtimeLimits.maxPaidCallsPerRun} this run) — internal throttle, not a provider limit` };
     }
     if (Number.isFinite(runtimeLimits.maxSameToolCallsPerRun) && sameToolCount >= runtimeLimits.maxSameToolCallsPerRun) {
+      state.budgetCeilingFired = true;
       return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal per-tool cap reached (${input.toolName} ran ${runtimeLimits.maxSameToolCallsPerRun}× this run) — vary the selector or choose another pivot; internal throttle, not a provider limit` };
     }
   }
@@ -475,6 +483,17 @@ export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
   state.familyCalls.add(input.familyKey);
   state.lastStartAt = scheduledStartAt;
   return { allow: true, stage: state.stage, cycleId: state.cycleId, waitMs };
+}
+
+/**
+ * Did a budget ceiling refuse a call on this thread's current runtime state?
+ *
+ * Read by the telemetry recorder so `stop_reason` can say `budget_exhausted`
+ * only when a ceiling demonstrably fired. Returns false for an unknown thread,
+ * which is the honest answer: no refusal was observed.
+ */
+export function budgetCeilingFired(threadId: string): boolean {
+  return THREADS.get(threadId)?.budgetCeilingFired === true;
 }
 
 export function finishCall(threadId: string, toolName: string): void {
