@@ -193,18 +193,51 @@ export function buildConfidenceProfile(input: {
   };
 
   // ── Report readiness (verified / corroborated share) ─────────────────
-  const reportSafe = artifacts.filter((a) => {
+  // THE DENOMINATOR IS ROWS THAT COULD EVER BE REPORT-SAFE, not every row.
+  //
+  // Dividing by `total` made the score FALL every time the analyst or the engine
+  // correctly ruled something out. An excluded row can never enter the numerator,
+  // so each exclusion only ever grew the denominator: a more thorough run scored
+  // worse, and rejecting a false positive — the single most valuable thing an
+  // analyst does — actively lowered report readiness. Measured on a live
+  // 88-artifact phone case, 2026-09-19: 12 analyst rejections, 2 bulk-corpus
+  // quarantines and an excluded_collision all sat in the denominator with no path
+  // to the numerator, pinning readiness at 16%.
+  //
+  // `live` is the set the Corroboration axis above ALREADY divides by, so this
+  // makes readiness consistent with its sibling rather than inventing a new rule:
+  // `isConflicted` covers collisions, ACTIVE quarantine (via isClusterIneligible),
+  // `false_positive` and breach kinds. Analyst rejections are dropped on top,
+  // because `labelForArtifact` returns FAILED for "dismissed"/"wrong" — they are
+  // unreachable from REPORT_SAFE_LABELS by construction, so counting them scores
+  // the analyst's own adjudication as a deficiency.
+  //
+  // The numerator is computed over the SAME set, so the value stays a real share.
+  // This raises the number; it does NOT lower the bar — REPORT_READY_MIN_READINESS
+  // and REPORT_SAFE_LABELS are untouched, and a run whose remaining evidence is all
+  // unverified still scores 0. The excluded count is surfaced in `reason` so the
+  // denominator change is visible to the analyst rather than silently flattering.
+  const reportEligible = live.filter((a) => {
+    const r = rev(a);
+    return r !== "dismissed" && r !== "wrong";
+  });
+  const eligibleCount = reportEligible.length;
+  const excludedCount = total - eligibleCount;
+  const reportSafe = reportEligible.filter((a) => {
     const r = rev(a);
     if (r === "confirmed" || r === "key") return true;
     return REPORT_SAFE_LABELS.has(labelForArtifact(a, r));
   }).length;
-  const readinessValue = total ? clamp((reportSafe / total) * 100) : 0;
+  const readinessValue = eligibleCount ? clamp((reportSafe / eligibleCount) * 100) : 0;
   const readiness: ConfidenceDimension = {
     key: "readiness",
     label: "Report readiness",
     value: readinessValue,
-    sufficient: total >= 1,
-    reason: total ? `${reportSafe} of ${total} findings verified or corroborated (report-safe)` : "No findings to report yet",
+    sufficient: eligibleCount >= 1,
+    reason: eligibleCount
+      ? `${reportSafe} of ${eligibleCount} reportable finding${eligibleCount === 1 ? "" : "s"} verified or corroborated (report-safe)`
+        + (excludedCount ? `; ${excludedCount} excluded row${excludedCount === 1 ? "" : "s"} not counted` : "")
+      : "No reportable findings yet",
   };
 
   const dimensions = [identity, selectors, corroboration, diversity, recency, conflictFree, readiness];
