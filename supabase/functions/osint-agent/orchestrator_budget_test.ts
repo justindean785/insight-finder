@@ -285,3 +285,70 @@ Deno.test("reportBudgetCeiling: reports the overage rather than letting it pass 
   const over = reportBudgetCeiling(out, tiny, "test");
   assert(over > 0, "an unmeetable ceiling is reported, not hidden");
 });
+
+// ---- 2026-09-22: the ceiling must measure the FINAL outbound array ----------
+//
+// #604 added reportBudgetCeiling but called it BEFORE sanitizeModelMessages and
+// capToolResultOutputs at both index.ts call sites, while the array actually
+// handed to streamText is the one those two produce. Both can ADD chars, so
+// `prompt_budget_ceiling_unmet` described an array that is never sent — an
+// instrument reporting something other than what it observed, which is the
+// failure mode this repo keeps hitting.
+
+Deno.test("premise: sanitizeModelMessages GROWS an array with an unpaired tool-call", async () => {
+  const { sanitizeModelMessages } = await import("./message-sanitize.ts");
+  // An assistant tool-call with no matching tool-result. Pass 3 synthesizes a
+  // placeholder tool message for it — a whole new message, appended.
+  const msgs = [
+    { role: "user", content: [{ type: "text", text: "go" }] },
+    {
+      role: "assistant",
+      content: [{ type: "tool-call", toolCallId: "orphan_1", toolName: "breach_check", input: { q: "x" } }],
+    },
+  ] as unknown as ModelMessage[];
+
+  const before = approxMsgChars(msgs);
+  const after = approxMsgChars(sanitizeModelMessages(msgs));
+  assert(
+    after > before,
+    `sanitize must be able to grow the array (before ${before}, after ${after}) — ` +
+      "this is why the ceiling cannot be measured before it",
+  );
+});
+
+Deno.test("wiring: reportBudgetCeiling is called AFTER sanitize at BOTH index.ts call sites", async () => {
+  // Source-level wiring check, in the reviews_wiring_test.ts idiom: the defect is
+  // an ORDER of statements, which no pure-function test can observe. Requires
+  // --allow-read (already in the documented test:edge command).
+  const src = await Deno.readTextFile(new URL("./index.ts", import.meta.url));
+
+  // --- initial prompt ---
+  const initialSanitize = src.indexOf("trimmedMessages = sanitizeModelMessages(");
+  const initialReport = src.indexOf('reportBudgetCeiling(trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, "initial")');
+  assert(initialSanitize > 0, "initial-prompt sanitize call site not found — test needs updating");
+  assert(initialReport > 0, "initial-prompt reportBudgetCeiling call site not found");
+  assert(
+    initialReport > initialSanitize,
+    "initial: reportBudgetCeiling must run AFTER sanitizeModelMessages, or it measures " +
+      "an array that is never sent",
+  );
+
+  // --- prepareStep ---
+  const stepSanitize = src.indexOf("const stepMessagesOut = sanitizeModelMessages(");
+  const stepReport = src.indexOf('reportBudgetCeiling(stepMessagesOut, TOTAL_PROMPT_CHAR_BUDGET, "prepare_step")');
+  assert(stepSanitize > 0, "prepare_step sanitize call site not found — test needs updating");
+  assert(
+    stepReport > 0,
+    "prepare_step must report on stepMessagesOut (the array it sends), not on `budgeted`",
+  );
+  assert(
+    stepReport > stepSanitize,
+    "prepare_step: reportBudgetCeiling must run AFTER sanitizeModelMessages",
+  );
+
+  // And the pre-sanitize array must not be what gets measured.
+  assert(
+    !src.includes("reportBudgetCeiling(budgeted,"),
+    "reportBudgetCeiling must not measure `budgeted` — that is the pre-sanitize array",
+  );
+});
