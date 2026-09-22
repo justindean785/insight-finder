@@ -203,3 +203,34 @@ describe("aggregateToolHealth — honest per-tool rollup (Issue #1)", () => {
     }
   });
 });
+
+describe("aggregateToolHealth — repeated failure on one case is attention-worthy", () => {
+  const at = (tool: string, outcome: string | null, error_msg: string | null, status_code: number | null, ok: boolean | null, created_at: string) =>
+    ({ tool_name: tool, outcome, error_msg, status_code, ok, created_at });
+
+  it("three cancelled attempts with no data back flag the tool, whatever the category", () => {
+    // Production 2026-09-20: socialfetch_web_read aborted 7× on one YouTube
+    // channel and Health showed "Cancelled 3 · Needs attention 0".
+    const { attention, rows } = aggregateToolHealth([
+      at("socialfetch_web_read", "failed", "AbortError: The signal has been aborted", null, false, "2026-09-20T11:58:43Z"),
+      at("socialfetch_web_read", "failed", "AbortError: The signal has been aborted", null, false, "2026-09-20T11:59:13Z"),
+      at("socialfetch_web_read", "failed", "AbortError: The signal has been aborted", null, false, "2026-09-20T11:59:39Z"),
+    ]);
+    expect(attention.map((r) => r.toolName)).toEqual(["socialfetch_web_read"]);
+    expect(rows[0].lastIssue?.message).toMatch(/3 attempts on this case, none returned data/);
+  });
+
+  it("two attempts, or one success among them, do not trip it", () => {
+    const two = aggregateToolHealth([
+      at("socialfetch_web_read", "failed", "AbortError: The signal has been aborted", null, false, "2026-09-20T11:58:43Z"),
+      at("socialfetch_web_read", "failed", "AbortError: The signal has been aborted", null, false, "2026-09-20T11:59:13Z"),
+    ]);
+    expect(two.attention).toHaveLength(0);
+    const mixed = aggregateToolHealth([
+      at("jina_reader_scrape", "failed", "jina_reader_scrape exceeded 12000ms tool timeout", null, false, "2026-09-20T11:58:43Z"),
+      at("jina_reader_scrape", "failed", "jina_reader_scrape exceeded 12000ms tool timeout", null, false, "2026-09-20T11:59:13Z"),
+      at("jina_reader_scrape", "empty", "no usable result", 200, true, "2026-09-20T11:59:39Z"),
+    ]);
+    expect(mixed.attention).toHaveLength(0);
+  });
+});
