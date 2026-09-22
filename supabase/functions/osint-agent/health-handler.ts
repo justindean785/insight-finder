@@ -13,6 +13,7 @@ import {
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL,
   ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY, OPENADAPTER_API_KEY, OPENADAPTER_BASE_URL,
+  promptBudgetHardCeilingEnabled,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
@@ -22,6 +23,7 @@ import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./
 import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
+import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -346,6 +348,21 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // reported on every probe — and its PRESENCE is the behavioural proof that the build
   // with versioned cache keys is the one running (see lib/tool-cache-version.ts).
   r.checks.tool_cache_version = describeToolCacheVersions();
+  // Is the prompt char budget a CEILING, or only a target the recent-window tail is
+  // exempt from? Pure, no DB. Its PRESENCE is the behavioural proof that the build
+  // carrying the second elision pass is the one running — the BUILD_MARKER is a
+  // static string the running code echoes about itself and can never prove a bundle.
+  // `ok` tracks the kill switch: false means the ceiling has been turned OFF and long
+  // threads can ride over budget again, which is a state worth seeing at a glance.
+  {
+    const hardCeiling = promptBudgetHardCeilingEnabled();
+    r.checks.prompt_budget_ceiling = {
+      ok: hardCeiling,
+      detail: hardCeiling
+        ? `hard ceiling ${TOTAL_PROMPT_CHAR_BUDGET} chars`
+        : `DISABLED via PROMPT_BUDGET_HARD_CEILING_DISABLED — tail exempt above ${TOTAL_PROMPT_CHAR_BUDGET} chars`,
+    };
+  }
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure

@@ -335,16 +335,74 @@ export function capUserTextToBudget(
 }
 
 /**
+ * Elide one message's oversized tool-result outputs and text parts in place.
+ * Shared by both passes of capTotalToBudget so the recent-window pass cannot
+ * drift from the older-message pass — in particular so BOTH preserve the
+ * tool-result output discriminator and neither ever removes a part.
+ * Returns the message unchanged (same object) when nothing was elidable.
+ */
+function elideMessageParts(m: ModelMessage): ModelMessage {
+  if ((m.role !== "tool" && m.role !== "assistant") || !Array.isArray(m.content)) return m;
+  m.content = (m.content as TrimPart[]).map((part: TrimPart) => {
+    if (part?.type === "tool-result" && part.output != null && JSON.stringify(part.output).length > 80) {
+      // Preserve the tool-result output's discriminator. The AI SDK validates each
+      // output against a typed union ({ type:'json'|'text'|…, value }); a bare
+      // { value } (no `type`) fails the ModelMessage[] schema and aborts the whole
+      // run. Spread the original output (keeps `type`) and only swap `value` for a
+      // reference+summary pointing at the persisted artifact.
+      const originalValue = part.output && typeof part.output === "object" && "value" in part.output
+        ? (part.output as { value: unknown }).value
+        : part.output;
+      const ref = elidedToolResultRef(part.toolName, originalValue);
+      const nextOutput = part.output && typeof part.output === "object" && "value" in part.output
+        ? { ...(part.output as Record<string, unknown>), value: ref }
+        : ref;
+      return { ...part, output: nextOutput };
+    }
+    if (part?.type === "text" && typeof part.text === "string" && part.text.length > 200) {
+      return { ...part, text: part.text.slice(0, 200) + " …[elided]" };
+    }
+    return part;
+  }) as unknown as typeof m.content;
+  return m;
+}
+
+/**
  * Bound the total serialized size of a ModelMessage[] by eliding the tool-result
  * OUTPUTS of the oldest messages (outside the keepRecent window) first, replacing
  * each with elidedToolResultRef(). NEVER drops a message (so every tool-call keeps
- * its matching tool-result and we can't trip MissingToolResults) and never touches
- * the last `keepRecent` messages. Returns a new array; does not mutate the input.
+ * its matching tool-result and we can't trip MissingToolResults). Returns a new
+ * array; does not mutate the input.
+ *
+ * ⚠️ `keepRecent` is a PRIORITY, not an exemption — this is the 2026-09-19 fix.
+ * The first pass elides only messages before the last `keepRecent`, exactly as
+ * before. But when the protected tail ALONE exceeds `budget`, the old code ran out
+ * of elidable messages and returned over budget reporting nothing: measured on
+ * thread a8643383, one persisted assistant message was 99,887 chars — 45% of the
+ * whole 220,000 budget in a single protected message — and production carried
+ * 68 of 779 steps (8.7%) over budget, peaking at 290,961 chars against a meter
+ * (`approxPromptChars`) that is itself a documented undercount. So a second pass
+ * now continues INTO the recent window, still oldest-first, stopping the instant
+ * the array is under budget: the newest messages are elided last and only if
+ * nothing else will do. A trailing `user` message is untouched either way — both
+ * passes only ever transform `tool`/`assistant` roles.
+ *
+ * `hardCeiling=false` restores the pre-fix behaviour (first pass only). Call sites
+ * pass `promptBudgetHardCeilingEnabled()`, read from the env at call time, so the
+ * switch takes effect on the running build without a deploy.
+ *
+ * This bounds what elision can bound. It is NOT a guarantee that the result is
+ * under budget for every input: a long enough array of already-elided messages
+ * (each reference is ~150 chars) can still exceed it, and tool-call metadata,
+ * tool INPUTS and assistant text are not elidable to zero. Callers that need to
+ * know use `reportBudgetCeiling`, which says so out loud rather than letting the
+ * array go out silently over.
  */
 export function capTotalToBudget(
   msgs: ModelMessage[],
   budget: number,
   keepRecent: number,
+  hardCeiling = true,
 ): ModelMessage[] {
   msgs = capUserTextToBudget(msgs);
   // O(n), not O(n^2): serialize each message's length ONCE and keep a running
@@ -356,36 +414,53 @@ export function capTotalToBudget(
   if (total <= budget) return msgs;
   const out: ModelMessage[] = msgs.map((m) => ({ ...m }));
   const cutoff = Math.max(0, out.length - keepRecent);
-  for (let i = 0; i < cutoff; i++) {
-    if (total <= budget) break;
-    const m = out[i];
-    if ((m.role !== "tool" && m.role !== "assistant") || !Array.isArray(m.content)) continue;
-    m.content = (m.content as TrimPart[]).map((part: TrimPart) => {
-      if (part?.type === "tool-result" && part.output != null && JSON.stringify(part.output).length > 80) {
-        // Preserve the tool-result output's discriminator. The AI SDK validates each
-        // output against a typed union ({ type:'json'|'text'|…, value }); a bare
-        // { value } (no `type`) fails the ModelMessage[] schema and aborts the whole
-        // run. Spread the original output (keeps `type`) and only swap `value` for a
-        // reference+summary pointing at the persisted artifact.
-        const originalValue = part.output && typeof part.output === "object" && "value" in part.output
-          ? (part.output as { value: unknown }).value
-          : part.output;
-        const ref = elidedToolResultRef(part.toolName, originalValue);
-        const nextOutput = part.output && typeof part.output === "object" && "value" in part.output
-          ? { ...(part.output as Record<string, unknown>), value: ref }
-          : ref;
-        return { ...part, output: nextOutput };
-      }
-      if (part?.type === "text" && typeof part.text === "string" && part.text.length > 200) {
-        return { ...part, text: part.text.slice(0, 200) + " …[elided]" };
-      }
-      return part;
-    }) as unknown as typeof m.content;
-    // Reprice only the message we just elided and fold the delta into the
-    // running total (subtract its old serialized length, add the new one).
-    const newLen = JSON.stringify(m).length;
+  // Reprice only the message we just elided and fold the delta into the
+  // running total (subtract its old serialized length, add the new one).
+  const elideAt = (i: number) => {
+    elideMessageParts(out[i]);
+    const newLen = JSON.stringify(out[i]).length;
     total += newLen - lengths[i];
     lengths[i] = newLen;
+  };
+  // Pass 1 — everything outside the recent window, oldest first (unchanged).
+  for (let i = 0; i < cutoff; i++) {
+    if (total <= budget) break;
+    elideAt(i);
+  }
+  // Pass 2 — the recent window itself, still oldest first, and only as far as
+  // it takes to get under budget. Without this the protected tail is an
+  // exemption rather than a priority and the budget is not a ceiling at all.
+  if (hardCeiling) {
+    for (let i = cutoff; i < out.length; i++) {
+      if (total <= budget) break;
+      elideAt(i);
+    }
   }
   return out;
+}
+
+/**
+ * Say out loud when a prepared array is still over budget after `capTotalToBudget`
+ * has done everything elision can do. The budget's whole purpose is to be a
+ * ceiling; an array that exceeds it and says nothing is the failure mode this
+ * repo keeps hitting — an instrument reporting something other than what it
+ * observed. Returns the overage in chars (0 when within budget) so a caller can
+ * assert on it; emits one structured warn when positive.
+ */
+export function reportBudgetCeiling(
+  msgs: ModelMessage[],
+  budget: number,
+  where: string,
+): number {
+  const over = approxMsgChars(msgs) - budget;
+  if (over > 0) {
+    console.warn(JSON.stringify({
+      event: "prompt_budget_ceiling_unmet",
+      where,
+      budget,
+      over_chars: over,
+      messages: msgs.length,
+    }));
+  }
+  return Math.max(0, over);
 }
