@@ -1523,7 +1523,13 @@ All colors MUST be HSL.
   transform-origin: left center;
   background: hsl(var(--foreground) / 0.55);
   animation: confidence-grow 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
-  transition: width 180ms ease, background-color 220ms ease;
+  /* `width` is the DATA binding, not a state, so it snaps. It used to carry a
+     180ms transition, which animated a layout property on every value change
+     and also implied the number was moving under the analyst rather than being
+     replaced. The entrance motion is the scaleX keyframe above, which is a
+     compositor property; colour still eases because the AUTHORITY changing is
+     a real state change. */
+  transition: background-color 220ms ease;
 }
 .confidence-fill[data-authority="verified"] { background: hsl(var(--authority-verified)); }
 .confidence-fill[data-authority="review"]   { background: hsl(var(--authority-review)); }
@@ -2596,4 +2602,49 @@ All colors MUST be HSL.
 @media (prefers-reduced-motion: reduce) {
   .ws-panel-enter { animation: none; }
   .case-live-dot { animation: none; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   GRADIENT TEXT-CLIP FALLBACKS
+   Operator decision 2026-09-22: the two top-lit text treatments stay. `h1, h2`
+   (@layer base) and `.stat-figure` (@layer utilities) both paint a gradient and
+   set `color: transparent`, which is a sanctioned exception recorded in
+   DESIGN.md.
+
+   What is NOT sanctioned is the failure mode it carries: transparent ink is
+   INVISIBLE anywhere the background does not paint. Forced-colours mode drops
+   background-image, print drops it by default in several engines, and a browser
+   without background-clip:text never had it. In all three the heading does not
+   degrade, it disappears.
+
+   These rules are deliberately UNLAYERED: unlayered styles beat every cascade
+   layer, so they override both origins without editing either. `.dsr-masthead`
+   already opts out of the clip and inherits these harmlessly.
+   ══════════════════════════════════════════════════════════════════════════ */
+@supports not ((background-clip: text) or (-webkit-background-clip: text)) {
+  h1, h2, .stat-figure {
+    background: none;
+    color: hsl(var(--foreground));
+    filter: none;
+  }
+}
+@media (forced-colors: active) {
+  h1, h2, .stat-figure {
+    background: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+    color: CanvasText;
+    filter: none;
+    text-shadow: none;
+  }
+}
+@media print {
+  h1, h2, .stat-figure {
+    background: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+    color: #000;
+    filter: none;
+    text-shadow: none;
+  }
 }

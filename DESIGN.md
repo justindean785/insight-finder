@@ -185,6 +185,8 @@ Quarantined is deliberately neutral and hatched, never a confidence hue: a quara
 
 **The Micro Floor Rule.** Dense labels may run below body size but never below 11px, and never combine small size with both heavy tracking and reduced opacity. Pick at most one intensifier.
 
+**The Visible Ink Rule.** Two treatments are permitted to paint a gradient and clip it to text: the `h1, h2` top-lit ramp and the `.stat-figure` headline numerals. This is a sanctioned exception, decided 2026-09-22, and the only one. It carries a hard condition: a gradient may never be the sole reason text is visible. Both set `color: transparent`, so unlayered fallbacks restore solid ink under `forced-colors: active`, under `print`, and where `background-clip: text` is unsupported. Any new clipped-text treatment ships with the same three fallbacks or it does not ship.
+
 ## 4. Elevation
 
 Depth is light on a void, not a grey ramp. Surfaces are separated by a translucent film, a specular cap where light would catch the top edge, and a single contained shadow. Because the ground is true black, a pane is legible as an object even at 5% film alpha.
@@ -242,6 +244,7 @@ Blur marks elevation and has a budget: one blur value per tier, never escalated 
 - **Do** use the shared `.panel` material for any new surface. It replaced six near-identical materials and exists so the workspace reads as one instrument.
 - **Do** keep monospace for values a reader compares character by character.
 - **Do** give every animation a `prefers-reduced-motion` alternative.
+- **Do** ship the three fallbacks (`forced-colors`, `print`, `@supports not`) with any text that relies on `background-clip: text`. Transparent ink that never repaints is invisible text, not a subtle heading.
 
 ### Don't:
 - **Don't** build "generic SaaS dashboards (gradient hero metrics, identical card grids, purple-glow marketing shells)."
@@ -253,6 +256,7 @@ Blur marks elevation and has a budget: one blur value per tier, never escalated 
 - **Don't** give a quarantined row a confidence hue. Quarantine is a linkage state, not a low score.
 - **Don't** round a data surface past 16px, or it reads as consumer software.
 - **Don't** let a new surface invent its own blur, radius or border alpha. That is how the six-material drift happened the first time.
+- **Don't** animate a layout property to show a data change. A confidence bar's width is data and snaps; only its authority colour eases.
 
 <!-- Audit trail: contrast measured 2026-09-22 against the live harness across every
      rendered text node: 0 failures at WCAG AA, placeholder text at 6.41:1. -->

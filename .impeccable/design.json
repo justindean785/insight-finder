@@ -249,6 +249,11 @@
         "name": "blur-pane",
         "value": "blur(26px) saturate(170%)",
         "purpose": "One blur value per elevation tier. Never escalated per component."
+      },
+      {
+        "name": "data-change",
+        "value": "none",
+        "purpose": "A data value snaps. Only state changes ease. A confidence bar's width is data; its authority colour is state."
       }
     ],
     "breakpoints": [
@@ -370,6 +375,11 @@
         "name": "The Blur Budget Rule",
         "body": "Backdrop blur marks elevation, not surface. One intensity per tier.",
         "section": "elevation"
+      },
+      {
+        "name": "The Visible Ink Rule",
+        "body": "A gradient may never be the sole reason text is visible. The two sanctioned background-clip:text treatments ship with forced-colors, print and @supports fallbacks restoring solid ink.",
+        "section": "typography"
       }
     ],
     "dos": [
@@ -379,7 +389,8 @@
       "Do measure contrast through the composited glass, not each layer alone.",
       "Do use the shared .panel material for any new surface.",
       "Do keep monospace for values a reader compares character by character.",
-      "Do give every animation a prefers-reduced-motion alternative."
+      "Do give every animation a prefers-reduced-motion alternative.",
+      "Do ship forced-colors, print and @supports fallbacks with any text relying on background-clip: text."
     ],
     "donts": [
       "Don't build generic SaaS dashboards (gradient hero metrics, identical card grids, purple-glow marketing shells).",
@@ -390,7 +401,8 @@
       "Don't colour a confidence numeral by its value.",
       "Don't give a quarantined row a confidence hue.",
       "Don't round a data surface past 16px.",
-      "Don't let a new surface invent its own blur, radius or border alpha."
+      "Don't let a new surface invent its own blur, radius or border alpha.",
+      "Don't animate a layout property to show a data change."
     ]
   }
 }
