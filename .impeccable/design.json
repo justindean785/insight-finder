@@ -339,6 +339,20 @@
       "css": ".ds-conf{display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',ui-monospace,monospace}.ds-conf-track{position:relative;height:6px;flex:1;min-width:120px;border-radius:3px;overflow:hidden;background:hsl(var(--surface-3))}.ds-conf-fill{position:absolute;inset:0 auto 0 0;border-radius:3px;background:hsl(var(--authority-verified))}.ds-conf-num{font-size:.75rem;font-variant-numeric:tabular-nums;color:hsl(var(--foreground))}"
     },
     {
+      "name": "Stated Label",
+      "kind": "chip",
+      "refersTo": "stated-label",
+      "description": "A verdict the agent typed into its own prose. Hollow and dashed so it can never be mistaken for the filled chip that means a number was computed, and drawn from the ink ramp rather than the confidence ramp, which belongs to the code that calculates confidence.",
+      "html": "<p class=\"ds-stated-demo\"><span class=\"ds-stated ds-stated-claim\">CONFIRMED</span> Corporate email verified across two independent origins.<br><span class=\"ds-stated ds-stated-hedge\">VERIFY</span> Location rests on a single broker record.<br><span class=\"ds-stated ds-stated-alarm\">CONFLICT</span> Two registrants named for the same domain.</p>",
+      "css": ".ds-stated-demo{font:400 15px/1.65 'IBM Plex Sans',system-ui,sans-serif;color:hsl(213 40% 95%);margin:0}.ds-stated{display:inline-flex;align-items:center;vertical-align:middle;margin-right:4px;padding:1px 6px;border-radius:4px;border:1px dashed;background:transparent;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;font-weight:600;letter-spacing:.04em;line-height:1.3;text-transform:uppercase}.ds-stated-claim{color:hsl(214 22% 81%);border-color:hsl(214 22% 81%/.4)}.ds-stated-hedge{color:hsl(214 15% 62%);border-color:hsl(214 15% 62%/.45)}.ds-stated-alarm{color:hsl(352 84% 61%);border-color:hsl(352 84% 61%/.5)}",
+      "notes": [
+        "The fill is the tell. A computed confidence renders as a chip filled with its own tier at about 10 percent; this one is hollow, so the two are never confused even on the same line carrying the same word.",
+        "Three registers, none of them a confidence scale: claims of strength at ink 2, hedges at ink 3, alarms at the ladder's conflict hue. Every one sits below body ink, so the sentence outranks the opinion about it.",
+        "Contrast through the composited transcript glass: ink 2 at 12.19:1, ink 3 at 7.02:1, alarm at 5.37:1. The previous alarm token measured 3.90:1 and failed AA at 10px.",
+        "Each chip carries a title naming who wrote it, and the card footer repeats it in text, because a hover title reaches no touch device."
+      ]
+    },
+    {
       "name": "Primary Button",
       "kind": "button",
       "refersTo": "button-primary",
@@ -371,6 +385,7 @@
         "body": "Hue belongs to authority, not to magnitude. The authority ladder is the only scale permitted to spend colour on a verdict.",
         "section": "colors"
       },
+      "The Stated Is Not Measured Rule. A verdict the agent typed and a verdict the engine computed must never look alike. The computed one is filled and carries an icon and a number; the stated one is hollow, dashed, on the ink ramp, and quieter than its own sentence. Measured 2026-09-22: a transcript published \"Confirmed (95)\" while the engine held zero finding rows and a maximum confidence of 65, and the two were painted identically.",
       {
         "name": "The One Meaning Rule",
         "body": "One meaning per token. Aliasing across roles is how the ladder previously became the confidence ramp wearing a hat.",
@@ -438,7 +453,8 @@
       "Don't round a data surface past 16px.",
       "Don't let a new surface invent its own blur, radius or border alpha.",
       "Don't animate a layout property to show a data change.",
-      "Don't stack an opacity modifier on an ink token to invent a new level."
+      "Don't stack an opacity modifier on an ink token to invent a new level.",
+      "Don't fill a label the agent typed in prose, or draw it from the confidence ramp. Hollow, dashed, ink ramp: the filled chip means a number was computed."
     ]
   }
 }

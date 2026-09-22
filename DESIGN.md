@@ -160,6 +160,8 @@ Quarantined is deliberately neutral and hatched, never a confidence hue: a quara
 
 **The Authority Rule.** Hue belongs to authority, not to magnitude. The authority ladder is the only scale permitted to spend colour on a verdict. A confidence numeral renders in ink, always, because the bar beside it already says how big the number is.
 
+**The Stated Is Not Measured Rule.** A verdict the agent typed and a verdict the engine computed must never look alike. The computed one is a filled chip carrying an icon and a number. The stated one is hollow, dashed, drawn from the ink ramp, and quieter than the sentence it sits in. The fill is the tell: it belongs to a value something actually calculated, and filling a stated label back in erases the only difference between a measurement and an opinion. Measured on a real run, 2026-09-22: the transcript published "Confirmed (95)" while the engine held zero finding rows and a maximum confidence of 65, and the two were painted identically.
+
 **The One Meaning Rule.** One meaning per token. Aliasing across roles is how this system previously ended up with an authority ladder that was secretly the confidence ramp wearing a hat.
 
 **The Light Source Rule.** Indigo is a light source, not a fill. It appears as a rim, a bloom, a 1px edge, an active state. The moment it becomes a large painted area it stops meaning "look here" and starts meaning nothing.
@@ -234,6 +236,10 @@ Blur marks elevation and has a budget: one blur value per tier, never escalated 
 - **Bar:** a 1.5px track with a tier-coloured fill.
 - **Numeral:** ink, never the tier colour. The bar's length already says how big the number is; colouring the numeral too made a low score look like a failure rather than like a small measurement.
 
+### Stated Labels
+- **Style:** a hollow chip with a 1px dashed edge, 10px mono caps, no fill, drawn from the ink ramp at three registers: claims of strength at ink 2, hedges at ink 3, alarms at the ladder's conflict hue.
+- **Rule:** never the confidence ramp. That ladder belongs to the code that computes confidence, and a second copy of it in prose is a drifting source of truth. The chip also carries a title saying who wrote it, and the card footer says so once in text, because a hover reaches no touch device.
+
 ### Inputs
 - **Style:** surface-1 ground, 12px radius, film hairline.
 - **Focus:** the indigo ring at full strength. A focus ring is the single most "is this a real product" detail on a dark UI.
@@ -260,6 +266,7 @@ Blur marks elevation and has a budget: one blur value per tier, never escalated 
 - **Don't** use "glass/glow used as generic decoration rather than a deliberate material with a budget," which is the tell separating a designed forensic console from AI slop wearing a dark theme.
 - **Don't** ship "anything that renders a single-source lead with the same visual weight as a corroborated finding." This is the integrity failure mode and it outranks every aesthetic concern.
 - **Don't** use a `border-left` or `border-right` above 1px as a coloured accent on a card, list item, callout or alert. A left rule on a genuine blockquote is typography and is permitted; an accent strip on a card is not.
+- **Don't** fill a label the agent typed in prose, or draw it from the confidence ramp. Hollow, dashed, ink ramp. The filled chip means a number was computed.
 - **Don't** colour a confidence numeral by its value.
 - **Don't** give a quarantined row a confidence hue. Quarantine is a linkage state, not a low score.
 - **Don't** round a data surface past 16px, or it reads as consumer software.

@@ -2164,6 +2164,14 @@ All colors MUST be HSL.
   white-space: pre;
   scrollbar-width: thin;
 }
+/* A verdict word the AGENT typed in prose, not one the engine computed.
+   THE FILL IS THE TELL. A computed confidence renders through ui/confidence.tsx
+   as a chip filled with its own tier at ~10%; this one is hollow, so the two are
+   never mistaken for each other even when they sit on the same line and carry
+   the same word. The dashed edge is the texture half of authority.tsx's rule
+   that a state withholding authority is never carried by colour alone.
+   Keep it hollow. Filling it back in erases the only difference between a
+   measurement and a sentence. See LABEL_STYLES in ChatWindow.tsx. */
 .chat-label-chip {
   display: inline-flex;
   align-items: center;
@@ -2171,7 +2179,8 @@ All colors MUST be HSL.
   margin-right: 4px;
   padding: 1px 6px;
   border-radius: 4px;
-  border: 1px solid;
+  border: 1px dashed;
+  background: transparent;
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 10px;
   font-weight: 600;
