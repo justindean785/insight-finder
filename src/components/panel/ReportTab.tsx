@@ -56,12 +56,20 @@ const REPORT_TYPES_SOON = ["LE / Court", "OSINT Technical", "Lead Brief"];
 
 type ExportFormat = "copy-md" | "md" | "pdf" | "matrix" | "json";
 
+// ⚠️ These labels must say what the format ACTUALLY produces. Masking is not
+// uniform across formats: the markdown and JSON paths run through
+// `markMarkdown` / `wrapJsonExport`, which apply redactSecretsInText /
+// redactSecretsDeep, while PDF (and Ctrl+P) render CaseReport straight from raw
+// artifacts and mask nothing. "Raw JSON" named a MASKED output — an instrument
+// describing itself wrongly, which is the failure mode this repo keeps paying
+// for. Whether the asymmetry itself should stay is an operator decision under
+// the standing REVEAL_BREACH_DATA preference; these labels only make it visible.
 const FORMAT_LABEL: Record<ExportFormat, string> = {
-  "copy-md": "Copy markdown",
-  md: "Markdown (.md)",
-  pdf: "PDF (print)",
+  "copy-md": "Copy markdown · secrets masked",
+  md: "Markdown (.md) · secrets masked",
+  pdf: "PDF (print) · UNMASKED",
   matrix: "Evidence matrix",
-  json: "Raw JSON",
+  json: "JSON · secrets masked",
 };
 
 export function ReportTab({
@@ -448,7 +456,7 @@ export function ReportTab({
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setPending(null)}>Cancel</Button>
             <Button size="sm" disabled={!ack} onClick={confirmPending}>
-              {pending ? (isDraft ? `Export draft · ${FORMAT_LABEL[pending]}` : FORMAT_LABEL[pending] === "Raw JSON" ? "Copy JSON" : FORMAT_LABEL[pending]) : "Export"}
+              {pending ? (isDraft ? `Export draft · ${FORMAT_LABEL[pending]}` : pending === "json" ? "Copy JSON" : FORMAT_LABEL[pending]) : "Export"}
             </Button>
           </DialogFooter>
         </DialogContent>

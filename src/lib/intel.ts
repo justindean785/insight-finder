@@ -2195,6 +2195,60 @@ export function recordMateKey(raw: string): string | null {
   return h ? `parent:${h}` : null;
 }
 
+/**
+ * Metadata keys that describe HOW a row was obtained, not what it contains.
+ * They are excluded from the corroboration scan below — `queried_selector` is
+ * itself stamped into metadata, so scanning it would make the check a no-op.
+ */
+const PROVENANCE_META_KEYS: ReadonlySet<string> = new Set([
+  "queried_selector",
+  "parent_selector",
+  "parent",
+  "parent_seed",
+  "seed",
+  "auto_persist_source",
+  "via",
+  "tool",
+  "source",
+]);
+
+/**
+ * Does the returned record ITSELF name the selector it was looked up on?
+ *
+ * ⚠️ Query provenance alone is NOT linkage. A lookup on A@example.com can return
+ * a row that is about an unrelated B@example.com — a broker mis-hit, a shared
+ * breach dump, a fuzzy provider match. Publishing `parent:A` for that row unions
+ * B's cluster into A's on nothing but "this came back from that query", and
+ * because both are well-formed emails the shape gate in `recordMateKey` cannot
+ * see it. Two identities with no NAME rows then merge silently, since the
+ * collision detector only splits on conflicting names.
+ *
+ * So the record-mate key is published only when the row's own content names the
+ * selector — its value, or one of its non-provenance metadata fields.
+ */
+export function recordCorroboratesSelector(
+  value: string,
+  metadata: Record<string, unknown> | null | undefined,
+  selector: string,
+): boolean {
+  const needle = selector.trim().toLowerCase();
+  if (!needle) return false;
+  if (value.trim().toLowerCase().includes(needle)) return true;
+  const meta = metadata ?? {};
+  for (const [k, v] of Object.entries(meta)) {
+    if (PROVENANCE_META_KEYS.has(k)) continue;
+    if (typeof v === "string" && v.trim().toLowerCase().includes(needle)) return true;
+    // One level of nesting: providers commonly nest the matched record.
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) {
+        if (PROVENANCE_META_KEYS.has(k2)) continue;
+        if (typeof v2 === "string" && v2.trim().toLowerCase().includes(needle)) return true;
+      }
+    }
+  }
+  return false;
+}
+
 function normalizePersonName(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -2278,9 +2332,17 @@ export function buildIdentityClusters(
     // record-mates and union under the same weakest signal as `parent`. Gated on
     // shape, not kind: a selector with whitespace is a person name (the 19-identity
     // name-only harvest), and name equality is never linkage (T1-2 §8).
-    const queriedKey = recordMateKey(String(meta.queried_selector ?? ""));
-    if (queriedKey && queriedKey !== `parent:${parent}`) {
-      hits.push({ key: queriedKey, signal: "SHARED_INFRASTRUCTURE", raw: String(meta.queried_selector), platform });
+    // ⚠️ Gated on CORROBORATION, not merely on the stamp being present: a lookup
+    // on A can return a row about an unrelated B, and unioning on provenance
+    // alone puts two people in one identity cluster. See
+    // recordCorroboratesSelector.
+    const queriedRaw = String(meta.queried_selector ?? "");
+    const queriedKey = recordMateKey(queriedRaw);
+    if (
+      queriedKey && queriedKey !== `parent:${parent}` &&
+      recordCorroboratesSelector(v, meta, queriedRaw)
+    ) {
+      hits.push({ key: queriedKey, signal: "SHARED_INFRASTRUCTURE", raw: queriedRaw, platform });
     }
     // …and the selector's OWN row publishes the same key, so the email/phone/
     // username artifact and the rows a lookup on it yielded land together. Still

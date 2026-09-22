@@ -126,3 +126,70 @@ describe("buildIdentityClusters — queried_selector as a record-mate key", () =
     expect(clusters.find((x) => ids(x).has("a") && ids(x).has("b"))).toBeFalsy();
   });
 });
+
+/**
+ * ⚠️ Query provenance is NOT linkage.
+ *
+ * A row stamped `queried_selector: A` published `parent:A`, and that same row —
+ * if its own value is an email — also published `parent:B`. One row carried both
+ * keys, so a lookup on A that returned a record about an unrelated B unioned the
+ * two identities' clusters. Both are well-formed emails, so the shape gate in
+ * recordMateKey cannot see it, and the collision detector only splits on
+ * conflicting NAME rows — two emails with no name rows merged silently.
+ *
+ * Proven from the code path, not from an observed mismerge: a read-only
+ * aggregate found zero different-email rows among 268 active queried-selector
+ * rows in production. The counterexample below is the one the old tests missed.
+ */
+describe("queried_selector unions only when the record corroborates the selector", () => {
+  it("MATCHING: a row that names the queried selector still joins its cluster", () => {
+    const seed = mk({ id: "seed", kind: "email", value: "a@example.com" });
+    const hit = mk({
+      id: "hit",
+      kind: "breach_exposure",
+      value: "Breach exposure: a@example.com (oathnet_db)",
+      metadata: { queried_selector: "a@example.com" },
+      source: "oathnet_lookup",
+    });
+    const report = buildIdentityClusters([seed, hit], "a@example.com");
+    const together = report.clusters.find((c) => ids(c).has("seed") && ids(c).has("hit"));
+    expect(together, "a corroborated record-mate must still union").toBeTruthy();
+  });
+
+  it("UNRELATED: a lookup on A returning a record about B does NOT merge A and B", () => {
+    const a = mk({ id: "a", kind: "email", value: "a@example.com" });
+    const b = mk({ id: "b", kind: "email", value: "b@example.com" });
+    // The broker answered the query about A with a row that is entirely about B.
+    const stray = mk({
+      id: "stray",
+      kind: "email",
+      value: "b@example.com",
+      metadata: { queried_selector: "a@example.com" },
+      source: "indicia_person",
+    });
+    const report = buildIdentityClusters([a, b, stray], "a@example.com");
+    const merged = report.clusters.find((c) => ids(c).has("a") && ids(c).has("b"));
+    expect(merged, "A and B must NOT share a cluster on query provenance alone").toBeFalsy();
+  });
+
+  it("UNRELATED: provenance metadata alone never counts as corroboration", () => {
+    // Every auto-persisted row carries queried_selector IN metadata, so a naive
+    // metadata scan would match itself and re-open the hole.
+    const a = mk({ id: "a", kind: "email", value: "a@example.com" });
+    const stray = mk({
+      id: "stray",
+      kind: "email",
+      value: "b@example.com",
+      metadata: {
+        queried_selector: "a@example.com",
+        parent_selector: "a@example.com",
+        via: "a@example.com",
+        tool: "indicia_person",
+      },
+      source: "indicia_person",
+    });
+    const report = buildIdentityClusters([a, stray], "a@example.com");
+    const merged = report.clusters.find((c) => ids(c).has("a") && ids(c).has("stray"));
+    expect(merged, "provenance fields must be excluded from the corroboration scan").toBeFalsy();
+  });
+});
