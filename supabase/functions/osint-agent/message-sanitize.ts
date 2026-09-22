@@ -19,9 +19,11 @@
  * Once one malformed message is in history every subsequent cycle re-includes
  * it and re-fails identically → the run WEDGES until an analyst stops it.
  *
- * These helpers are PURE (no I/O, no SDK calls) so they can be unit-tested
- * against the real `modelMessageSchema`, and are applied immediately before
- * EVERY model call (the initial streamText prompt and every prepareStep).
+ * These helpers are PURE apart from ONE structured `console.warn`
+ * (`sanitize_positional_pair_repair`, emitted only when a repair actually
+ * happens) — no other I/O, no SDK calls — so they can be unit-tested against
+ * the real `modelMessageSchema`, and are applied immediately before EVERY
+ * model call (the initial streamText prompt and every prepareStep).
  *
  * They are resilience-only: they never touch evidence ranking, confidence, or
  * any integrity logic — they only repair/drop structurally invalid messages so
@@ -181,9 +183,9 @@ export function sanitizeModelMessages(input: ModelMessage[]): ModelMessage[] {
     }
   }
 
-  // Pass 2 — repair/drop each message and remember which tool-call ids already
-  // have a tool-result so we don't synthesize duplicates.
-  const resolved = new Set<string>();
+  // Pass 2 — repair/drop each message. Pairing is settled in pass 3, which
+  // resolves per POSITION. A global "already resolved" set here is exactly what
+  // let a duplicate tool-call id go unpaired (see pass 3), so there isn't one.
   const cleaned: ModelMessage[] = [];
   for (const raw of input) {
     const m = raw as AnyMsg;
@@ -206,7 +208,6 @@ export function sanitizeModelMessages(input: ModelMessage[]): ModelMessage[] {
       if (p.type === "tool-result") {
         // Drop a tool-result with no matching assistant tool-call (orphan).
         if (typeof p.toolCallId !== "string" || !callIds.has(p.toolCallId)) continue;
-        resolved.add(p.toolCallId);
         parts.push({ ...p, output: normalizeToolOutput(p.output) });
         continue;
       }
@@ -226,30 +227,83 @@ export function sanitizeModelMessages(input: ModelMessage[]): ModelMessage[] {
     cleaned.push({ ...m, content: parts } as ModelMessage);
   }
 
-  // Pass 3 — enforce pairing: for every assistant message that issues a
-  // tool-call whose result never appeared, synthesize a minimal placeholder
-  // tool-result immediately after it, so the assistant tool-call is never left
-  // dangling (which would trip MissingToolResultsError).
-  const out: ModelMessage[] = [];
+  // Pass 3 — enforce pairing POSITIONALLY: for every assistant message that
+  // issues a tool-call not answered by the tool message(s) DIRECTLY following
+  // it, synthesize a minimal placeholder tool-result there, so no assistant
+  // tool-call is ever left dangling (which would trip MissingToolResultsError).
+  //
+  // ⚠️ Resolve per POSITION, never by id globally. The AI SDK validates that
+  // each assistant tool-call is answered in the messages that FOLLOW it — not
+  // merely that the id appears somewhere in the array. A tool-call id can occur
+  // in TWO assistant messages when two runs overlap on one thread (measured at
+  // 12.2% of invocations; production thread bfa55610 on 2026-09-12 died twice in
+  // 85 ms on the same id). A global `resolved` set was satisfied by whichever
+  // occurrence carried the real result and synthesized nothing for the other,
+  // so the earlier duplicate went out unpaired and the run died before any
+  // provider call. Keying on position cannot make that mistake.
+  // Every id answered ANYWHERE — used only to classify a repair for the log
+  // below, never to decide pairing. Deciding pairing from this is the defect.
+  const resolvedAnywhere = new Set<string>();
   for (const msg of cleaned) {
+    const m = msg as AnyMsg;
+    if (m?.role !== "tool" || !Array.isArray(m.content)) continue;
+    for (const p of m.content as AnyPart[]) {
+      if (p?.type === "tool-result" && typeof p.toolCallId === "string") resolvedAnywhere.add(p.toolCallId);
+    }
+  }
+  let overlapRepairs = 0;
+
+  const out: ModelMessage[] = [];
+  for (let i = 0; i < cleaned.length; i++) {
+    const msg = cleaned[i];
     out.push(msg);
     const m = msg as AnyMsg;
     if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
-    const missing: AnyPart[] = [];
-    for (const p of m.content as AnyPart[]) {
-      if (p?.type === "tool-call" && typeof p.toolCallId === "string" && !resolved.has(p.toolCallId)) {
-        resolved.add(p.toolCallId);
-        missing.push({
-          type: "tool-result",
-          toolCallId: p.toolCallId,
-          toolName: typeof p.toolName === "string" ? p.toolName : "unknown",
-          output: { type: "text", value: DROPPED_RESULT_PLACEHOLDER },
-        });
+
+    // The adjacent tool block — every consecutive `tool` message immediately
+    // after this assistant message. Those, and only those, can pair its calls.
+    const answeredHere = new Set<string>();
+    for (let j = i + 1; j < cleaned.length; j++) {
+      const next = cleaned[j] as AnyMsg;
+      if (next?.role !== "tool" || !Array.isArray(next.content)) break;
+      for (const p of next.content as AnyPart[]) {
+        if (p?.type === "tool-result" && typeof p.toolCallId === "string") answeredHere.add(p.toolCallId);
       }
+    }
+
+    const missing: AnyPart[] = [];
+    // Guards a duplicate id WITHIN one assistant message: one call needs one
+    // result, and emitting two placeholders for it would be invalid in itself.
+    const synthesized = new Set<string>();
+    for (const p of m.content as AnyPart[]) {
+      if (p?.type !== "tool-call" || typeof p.toolCallId !== "string") continue;
+      if (answeredHere.has(p.toolCallId) || synthesized.has(p.toolCallId)) continue;
+      synthesized.add(p.toolCallId);
+      // An id answered SOMEWHERE ELSE in the array but not here is the overlap
+      // wedge: the old global set treated that as resolved and left this call
+      // unpaired. Count it so the rate is measurable in production.
+      if (resolvedAnywhere.has(p.toolCallId)) overlapRepairs++;
+      missing.push({
+        type: "tool-result",
+        toolCallId: p.toolCallId,
+        toolName: typeof p.toolName === "string" ? p.toolName : "unknown",
+        output: { type: "text", value: DROPPED_RESULT_PLACEHOLDER },
+      });
     }
     if (missing.length > 0) {
       out.push({ role: "tool", content: missing } as unknown as ModelMessage);
     }
+  }
+
+  // Durable signal: this build repairs a pairing the previous one shipped
+  // broken, so the event is also the proof that this bundle is deployed. Only
+  // emitted when a repair actually happened — a quiet log means no overlap.
+  if (overlapRepairs > 0) {
+    console.warn(JSON.stringify({
+      event: "sanitize_positional_pair_repair",
+      repaired_calls: overlapRepairs,
+      messages: cleaned.length,
+    }));
   }
 
   return out;

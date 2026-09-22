@@ -167,3 +167,113 @@ Deno.test("FIX: a well-formed paired conversation is left structurally intact", 
   assertSchemaValid(out, "good preserved");
   assertEquals(out.length, 4);
 });
+
+// ---------------------------------------------------------------------------
+// THE OVERLAP WEDGE — a tool-call id repeated across two assistant messages.
+//
+// Two runs overlapping on one thread (12.2% of invocations) can persist the
+// SAME toolCallId in two separate assistant messages. The AI SDK validates
+// pairing POSITIONALLY: each assistant tool-call must be answered by the tool
+// message(s) directly following it. Production thread bfa55610 (2026-09-12)
+// died twice in 85 ms on one repeated id, before any provider call.
+// ---------------------------------------------------------------------------
+
+/**
+ * Asserts pairing the way the SDK does — per POSITION. For every assistant
+ * message, every tool-call it issues must be answered by a tool-result in the
+ * run of `tool` messages immediately following it. An id answered only
+ * somewhere else in the array does NOT satisfy this (that was the defect).
+ */
+function assertPairedPositionally(msgs: ModelMessage[], label: string) {
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i] as { role?: string; content?: unknown };
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    const answered = new Set<string>();
+    for (let j = i + 1; j < msgs.length; j++) {
+      const n = msgs[j] as { role?: string; content?: unknown };
+      if (n.role !== "tool" || !Array.isArray(n.content)) break;
+      for (const p of n.content as Array<{ type?: string; toolCallId?: string }>) {
+        if (p?.type === "tool-result" && typeof p.toolCallId === "string") answered.add(p.toolCallId);
+      }
+    }
+    for (const p of m.content as Array<{ type?: string; toolCallId?: string }>) {
+      if (p?.type !== "tool-call" || typeof p.toolCallId !== "string") continue;
+      assert(
+        answered.has(p.toolCallId),
+        `${label}: assistant message[${i}] tool-call ${p.toolCallId} is unpaired at its own position`,
+      );
+    }
+  }
+}
+
+/** The shape an overlapping run persists: one id, two assistant messages, one real result (on the SECOND). */
+function overlapWedgeInput(): ModelMessage[] {
+  return [
+    { role: "user", content: "seed" },
+    // First run issues the call…
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "dup_1", toolName: "username_sweep", input: { q: "a" } }] },
+    // …the second, overlapping run re-issues the SAME id…
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "dup_1", toolName: "username_sweep", input: { q: "a" } }] },
+    // …and only the later one is answered.
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "dup_1", toolName: "username_sweep", output: { type: "json", value: { ok: true } } }] },
+  ] as unknown as ModelMessage[];
+}
+
+Deno.test("REPRO: a tool-call id repeated across two assistant messages is unpaired at the FIRST position", () => {
+  const wedged = overlapWedgeInput();
+  // Every message is individually schema-valid — which is why this reached the
+  // SDK's pairing check rather than being rejected as malformed.
+  assertSchemaValid(wedged, "overlap wedge input");
+  let threw = false;
+  try {
+    assertPairedPositionally(wedged, "raw");
+  } catch {
+    threw = true;
+  }
+  assert(threw, "the raw overlap shape should be positionally unpaired — that is the production failure");
+});
+
+Deno.test("FIX: the repeated tool-call id is paired at BOTH positions", () => {
+  const out = sanitizeModelMessages(overlapWedgeInput());
+  assertSchemaValid(out, "overlap wedge sanitized");
+  assertPairedPositionally(out, "sanitized");
+  // The real result is preserved, not replaced by a placeholder.
+  const realResults = out.filter((m) =>
+    (m as { role?: string }).role === "tool" &&
+    ((m as { content?: unknown }).content as Array<{ output?: { value?: unknown } }>)
+      .some((p) => p?.output?.value !== undefined && typeof p.output.value === "object")
+  );
+  assertEquals(realResults.length, 1, "the genuine tool-result must survive");
+});
+
+Deno.test("FIX: a duplicate id WITHIN one assistant message gets exactly one placeholder", () => {
+  const msgs = [
+    { role: "user", content: "seed" },
+    {
+      role: "assistant",
+      content: [
+        { type: "tool-call", toolCallId: "same", toolName: "foo", input: {} },
+        { type: "tool-call", toolCallId: "same", toolName: "foo", input: {} },
+      ],
+    },
+  ] as unknown as ModelMessage[];
+  const out = sanitizeModelMessages(msgs);
+  assertSchemaValid(out, "intra-message duplicate");
+  assertPairedPositionally(out, "intra-message duplicate");
+  const toolMsgs = out.filter((m) => (m as { role?: string }).role === "tool");
+  assertEquals(toolMsgs.length, 1, "one synthesized tool message");
+  assertEquals((toolMsgs[0].content as unknown[]).length, 1, "one placeholder for the repeated id");
+});
+
+Deno.test("FIX: an already-answered call never gains a spurious placeholder", () => {
+  const msgs = [
+    { role: "user", content: "seed" },
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "c1", toolName: "foo", input: {} }] },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "c1", toolName: "foo", output: { type: "json", value: { ok: true } } }] },
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "c2", toolName: "bar", input: {} }] },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "c2", toolName: "bar", output: { type: "json", value: { ok: true } } }] },
+  ] as unknown as ModelMessage[];
+  const out = sanitizeModelMessages(msgs);
+  assertPairedPositionally(out, "no spurious");
+  assertEquals(out.length, 5, "nothing added to an already-paired conversation");
+});
