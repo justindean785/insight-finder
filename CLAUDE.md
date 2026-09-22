@@ -13,7 +13,48 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-09-20T12:00Z.** `main` = **`ad4937b`**. Live `osint-agent` build =
+> **Dated state — 2026-09-22T10:00Z.** `main` = **`74e98ad`** (#604). Live `osint-agent` build =
+> **`4bb19d9`** — UNCHANGED since 2026-09-14. `deploy/live` → `4bb19d9`; mirror `898a3a3`, no
+> Lovable drift; Vercel production is CURRENT at `74e98ad` (#602/#603/#606 live).
+>
+> ⛔ **#604 IS MERGED AND MUST NOT BE DEPLOYED AS-IS.** Its two post-merge review findings are
+> REAL, UNREPAIRED and ON BY DEFAULT — the review (two threads, one P1 one P2, both still open)
+> landed **6m16s AFTER the squash merge**, so nothing in the pipeline ever adjudicated it. No
+> repair commit exists; **no open PR touches `orchestrator-budget.ts`.**
+> - **Finding A — compaction destroys unconsumed evidence.** `capTotalToBudget` pass 2
+>   (`orchestrator-budget.ts:434`) is `for (let i = cutoff; i < out.length; i++)` — no tail guard,
+>   and the budget check breaks per MESSAGE not per PART, so it reaches the just-completed
+>   `role:"tool"` message the model has not read. `elidedToolResultRef` (`:301`) returns a bare
+>   string promising *"retrieve via `memory_recall`"*, but `memory_recall` reads only
+>   `agent_memory` and `grep tool_call_cache tool-registry.ts` returns **zero hits** — no tool can
+>   retrieve a raw tool result. The real trigger is the **non-elidable tool-call INPUT floor**
+>   (`elideMessageParts` transforms only `tool-result`/`text` parts): driven on the real module
+>   with production-shaped input (130 calls, 2,000-char inputs, 2-way fan-out) it destroyed 2/2
+>   fresh results and STILL ended at 343,307 chars against the 220,000 budget.
+> - **Finding B — the ceiling measures an array that is never sent.** `reportBudgetCeiling` runs
+>   at `index.ts:314` and `:964`, BEFORE `sanitizeModelMessages` at `:326`/`:965` — and pass 3
+>   (`message-sanitize.ts:250-252`) PUSHES a new `{role:"tool"}` message per unpaired tool-call.
+>   What is sent is `stepMessagesOut` (`:1088`/`:1126`/`:1148`), not what was measured.
+> - **Tests do NOT cover either finding.** Two tests read as if they cover A; instrumented against
+>   the real module, **pass 2 never executes in either** (`orchestrator_budget_test.ts:75`, `:212`).
+> - **Options:** fix first (two small edge PRs, sequenced against #608 which rewrites the same
+>   sanitizer pass) · or set `PROMPT_BUDGET_HARD_CEILING_DISABLED=true` in Supabase settings
+>   BEFORE deploying (read at call time, so pass 2 never runs — but that ships the feature off and
+>   makes `checks.prompt_budget_ceiling` read `ok:false`) · or revert.
+>
+> ⚠️ **#604 is step 1 of the edge lane BY CONSTRUCTION, not by dependency.** #607/#608/#611 are all
+> branched from `74e98ad`, so their trees physically contain #604's five files — you cannot sync
+> any of them to the mirror without shipping #604. There are NO true code dependencies among the
+> four and all six orderings merge clean (#611 proven independent by a clean cherry-pick onto
+> `4bb19d9`). **#608 and #611 have NO usable proof-of-deploy key** — that is a finding, not a
+> detail. Full audit: the 2026-09-22 queue audit.
+>
+> ⚠️ **A hard gate run from a drifted checkout is a FALSE GREEN.** If `HEAD` sits below
+> `origin/main`, `diff -rq` reports EMPTY for every function dir. Compare `origin/main`'s blobs
+> against the mirror instead: today exactly **5** files differ (`env.ts`, `health-handler.ts`,
+> `index.ts`, `orchestrator-budget.ts`, `orchestrator_budget_test.ts`) — #604's, and only #604's.
+>
+> **Previous dated state — 2026-09-20T12:00Z.** `main` = **`ad4937b`**. Live `osint-agent` build =
 > **`4bb19d9`** — UNCHANGED; nothing merged and nothing deployed on 2026-09-19.
 > ⚠️ **Three finished, green, mergeable PRs are sitting in DRAFT** — #602 and #603 (frontend,
 > ship on merge) and **#604 (edge, does NOT ship on merge)**. #604's proof-of-deploy key is
@@ -28,8 +69,19 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 > GLOBALLY while the AI SDK validates POSITIONALLY, so an overlapping run that delivers its result
 > late leaves the earlier duplicate call unpaired and the run dies with `MissingToolResultsError`
 > before any provider call. Reproduced end to end AND observed in production (thread `bfa55610`,
-> 2026-09-12: two invocations dead in 85 ms with the SAME tool call id). Overlap runs at **12.2%
-> of invocations**. Fix = resolve per POSITION. Detail: the 2026-09-20 handoff §4.
+> 2026-09-12: two invocations dead in 80/85 ms). Fix = resolve per POSITION. Detail: the
+> 2026-09-20 handoff §4.
+>
+> ⚠️ **CORRECTED 2026-09-22 — two numbers in the line above were wrong.** (1) Those two `bfa55610`
+> invocations name **TWO DISTINCT tool call ids** sharing an 8-char prefix, not one repeated id,
+> and all 19 persisted tool parts in that thread have distinct ids — so the duplicate-id story is
+> UNEVIDENCED in the durable store and can only live in the client-posted array. (2) Overlap is
+> **18.7%** of invocations (25 of 134 by `created_at - duration_ms`), not 12.2%; no window
+> reproduces 12.2% and the figure has no derivation anywhere. The defect #608 fixes is real, but
+> the failing ordering is **result-after-the-FIRST occurrence** (and result-before-its-call, and
+> result-separated-from-its-call-by-a-user-turn) — the AI SDK's check is a running `Set` flushed
+> at `user`/`system` boundaries and at end-of-walk, NOT per-assistant-positional. #608's own
+> committed repro fixture does **not** throw under the real SDK rule.
 >
 > **`stop_reason='unknown'` is explained** and is not a failure: `budgetExhausted` is never passed
 > by `deriveStopReason`'s only call site (`telemetry.ts:423`), so `budget_exhausted` is
@@ -111,7 +163,21 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 > assignment(s)"}`. **The next build's proof key must be a key that build introduces** — the
 > marker alone can never prove a bundle.
 >
-> ⚠️ **`github_code_search` is genuinely 401 and JD's fix did NOT take** — measured against
+> ✅ **SUPERSEDED 2026-09-22 — `github_code_search` HAS RECOVERED. JD's fix took.** Live
+> `checks.credentials` now lists it under **`recovered`**, alongside `jina_reader_scrape` and
+> `wayback_cdx_search`. The paragraph below is kept only as the record of what was true on
+> 2026-09-13; do not act on it. The current refusals are `deepfind_email_breach`, `reddit_user`,
+> `deepfind_disposable_email` and `deepfind_telegram_channel` — and `refusing` means *the most
+> recent event was a failure*, NOT that the credential is dead. `reddit_user` 403s because Reddit
+> blocks datacenter IPs (expected, permanent, not a credential problem). The list also drifts
+> between probes because the window is a rolling 7 days. **Read `checks.tools` and
+> `checks.credentials` as two different instruments:** the tools line is a PRESENCE test
+> (`has(env.X_API_KEY)`) and says a secret is *set*; `checks.credentials` says whether it *works*.
+> "17/20 optional tool APIs configured" is not a coverage failure — three optional tools have no
+> key set. See "A 403 is not a dead credential" at the bottom of this file.
+>
+> ⚠️ ~~**`github_code_search` is genuinely 401 and JD's fix did NOT take**~~ (TRUE ON 2026-09-13,
+> FALSE NOW) — measured against
 > `tool_usage_log`, not inferred. Every call in the 21-day window failed `github 401`,
 > **including 2026-09-12T20:53Z**, hours after the token was reported fixed; there is not one
 > `ok` row in the window. The secret the code reads is `GITHUB_API_TOKEN`, falling back to
@@ -613,7 +679,7 @@ That is the real answer to "we do all these upgrades and it never changes the ap
 | `circuit.applyBaselineDisables(threadId)` (`circuit.ts:634`) | an **explicitly empty hook**, already called once per thread, kept for a persisted skip list |
 | `capabilities.seedTypes` | the gate is **fully enforced** at `capabilities.ts:184` — and no tool declares it, AND `index.ts:441` passes `null` as the seed type, so it can never fire ⚠️ |
 | Evidence board "Leads drawer" | **already shipped** (#543). Default filter is `analyst`, hiding weak/quarantined/excluded, with Leads and Excluded chips. `STATUS_FILTER_GROUPS` warns that a kind-based filter beside the authority states would be "a second, drifting source of truth" — do not add one |
-| **finding synthesis** (`finding-synthesis.ts`, `finding-synthesis-sweep.ts`, `lib/finding-row.ts`) | **complete, deployed, and switched OFF** behind `FINDING_SYNTHESIS_ENABLED` / `_BACKFILL_ENABLED` / `_DRY_RUN`. Runs in the HEALTH SWEEP — a separate request — so it is structurally incapable of failing finalize. Its header measures the gap it closes: **9,615 artifacts / 181 threads / 13 `kind='finding'` rows in the product's lifetime**, because `workflow_prompt.ts:34` makes `record_finding` advisory and the model almost never calls it (the `@wopdell` run: 87 tool calls, **zero**). ⚠️ Prerequisite before any flag flips: confirm migration `20260907000000` (`artifacts_synthesis_cluster_uniq`) is applied **against the live DB** — the sweep is an unlocked read-then-write fired every 60s |
+| **finding synthesis** (`finding-synthesis.ts`, `finding-synthesis-sweep.ts`, `lib/finding-row.ts`) | **complete, deployed, and switched OFF** behind `FINDING_SYNTHESIS_ENABLED` / `_BACKFILL_ENABLED` / `_DRY_RUN`. Runs in the HEALTH SWEEP — a separate request — so it is structurally incapable of failing finalize. Its header measures the gap it closes: **9,615 artifacts / 181 threads / 13 `kind='finding'` rows in the product's lifetime**, because `workflow_prompt.ts:34` makes `record_finding` advisory and the model almost never calls it (the `@wopdell` run: 87 tool calls, **zero**). ⛔ **ANSWERED 2026-09-22: migration `20260907000000` (`artifacts_synthesis_cluster_uniq`) is NOT APPLIED** — `to_regclass('public.artifacts_synthesis_cluster_uniq')` → `null`; `public.artifacts` carries only `artifacts_pkey`, `artifacts_thread_created_idx`, `idx_artifacts_subject`, `idx_artifacts_thread`. **Do not flip any synthesis flag.** The sweep is an unlocked read-then-write and the index that protects it does not exist. ⚠️ And `pg_cron` **is not installed** (`pg_extension` → 0), so the "fired every 60s" host this feature assumes does not exist either — both cron-scheduled migrations are dead letters |
 | `SweepSite.confirm` | the documented lever for a platform whose not-found page echoes the handle — **and unreachable until #594**, since no site configured it. Populating it honestly needs a KNOWN-REAL profile per platform, which is why #594 encodes the measured NEGATIVE (`echoUnsafe`) instead |
 
 ### ⚠️ Do NOT populate `seedTypes` to shrink the tool-schema payload
@@ -626,6 +692,35 @@ The real duplication is that `catalog.ts` exists to hold when-to-use guidance an
 fetched once, while each tool's `description` still carries paragraphs of the same prose
 on every step. Cut there instead — and only after `prompt_size_step` reports the real
 number, not an estimate.
+
+### ⛔ The chain-of-custody coverage meter is structurally incapable of reporting (2026-09-22)
+
+**"1 / 1000" is a broken instrument, not a finding — stop quoting it as one.** Both terms are
+artifacts.
+
+- **The numerator is pinned at the constant 1.** All eight `append_evidence` call sites hardcode
+  `_artifact_id: null` (`auto-persist-findings.ts:1623`, `tool-registry.ts:5374/:5606/:5637`,
+  `tools/recording.ts:241/:368/:400`, `cache.ts:1857`), so `evidence_log.artifact_id` is NULL in
+  **11,540 of 11,540** production rows — and `AnalysisTab.tsx:107` builds the numerator as
+  `new Set(rows.map(r => r.artifact_id)).size`, which collapses to the single `null` element. It
+  reads 1 for any account with ≥1 evidence row, forever, regardless of real coverage.
+- **The denominator** is an unfiltered row count of the newest artifacts page — quarantined and
+  analyst-rejected rows included — never intersected with the numerator set (`:86` vs `:89`, two
+  different orderings, combined at `:302` with no join). Its exact value of 1000 is **UNVERIFIED**:
+  the code asks for 5,000 and the owner account holds 12,579 artifacts, so 1000 is consistent with
+  a PostgREST `db-max-rows` clamp, which this file already documents as unreadable from SQL.
+- **True coverage by the surrogate join** (`thread_id, kind, value`) is **9,753 / 12,859 = 75.8%**.
+  By the definition the UI's own detail string claims — "artifacts with at least one evidence_log
+  entry" — it is **0 / 12,859**. Custody records exist for three quarters of artifacts and the
+  surface cannot see them.
+
+**Fix shape:** pass the real artifact id the caller already holds at the eight write sites (an
+EDGE PR, so it queues behind #604's deploy), and intersect the two sets in `AnalysisTab.tsx:302`
+rather than dividing unrelated populations. Backfill is a separate, explicit decision — 11,540
+historical rows can be matched on `thread_id+kind+value` at 75.8%, or left NULL and disclosed.
+⚠️ This is NOT the same gap as the missing call-to-artifact lineage below: that one joins
+`tool_usage_log` → `artifacts`, this one joins `evidence_log` → `artifacts`. Do not fold this into
+#613 — it is cheaper and separate.
 
 ### Instruments that were lying — #587 shipped in `c87c07b` 2026-09-13
 
@@ -667,7 +762,7 @@ cap has to come from production, not from an estimate.
   string: a ~185 KB URL against a ~24 KB gateway cap. It now chunks at
   `CACHE_SWEEP_DELETE_CHUNK = 300` and a chunk fault returns, so `deleted` reports only what
   was actually removed. ⚠️ **`CACHE_SWEEP_ENABLED` is still OFF** — the chunking landed
-  first so that flipping the switch is a separate, reversible decision. ⚠️ **And it must be sequenced AFTER the payload store, never before:** measured 2026-09-19, `tool_call_cache` is the largest table at 47 MB / 12,701 rows back to 2026-06-25 with only 129 unexpired, so it is currently the only — accidental — copy of historical tool outputs. Draining it destroys them. Before tuning TTLs,
+  first so that flipping the switch is a separate, reversible decision. ⚠️ **And it must be sequenced AFTER the payload store, never before:** re-measured 2026-09-22, `tool_call_cache` is the largest table at 48 MB / 12,780 rows back to 2026-06-25 with only **43** unexpired (the 47 MB / 12,701 / 129 figures were 2026-09-19 — note the unexpired count is FALLING fast), so it is currently the only — accidental — copy of historical tool outputs. Draining it destroys them. Before tuning TTLs,
   measure **key-miss vs expiry**: L2 is keyed on full-param `input_hash`, which may be the
   real reason for the 1.6% hit rate.
 
@@ -677,10 +772,22 @@ A meter nobody can read a week later is not a meter. Checked against the live DB
 
 | Store | Retention as measured | Holds |
 |---|---|---|
-| `tool_usage_log` | **15,136 rows back to 2026-06-08** — three months | every tool call: `outcome`, `status_code`, `cached`, cost. **Durable.** |
+| `tool_usage_log` | **16,068 rows back to 2026-06-08** — three months (re-measured 2026-09-22; the 15,136 figure was 2026-09-13) | every tool call: `outcome`, `status_code`, `cached`, cost. **Durable.** |
 | `evidence_log` / `artifacts` / `threads` | back to 2026-06-08 / 07-05 / 07-05 | case data. Durable. |
 | `orchestrator_invocations` / `orchestrator_step_metrics` | **only 2026-09-11 onward** (58 / 350 rows) | per-invocation and per-step timing + context |
 | `prompt_size_initial` / `prompt_size_step` / `run_budget_prior` | **nothing — `console.log` only** | the honest prompt terms and prior spend |
+
+### ⛔ The migration ledger is evidence of NOTHING, in both directions (measured 2026-09-22)
+
+`supabase_migrations.schema_migrations` holds **41 rows, newest `20260825024640`**, against **50
+migration files** on `origin/main`. But the gap runs both ways: **24 committed migrations have no
+ledger row** (most of which ARE applied — e.g. `20260908000000_orchestrator_telemetry.sql`, live
+since ~2026-09-11), and **15 ledger rows have no committed file** (schema applied to production
+that exists nowhere in git). So the ledger can neither confirm nor deny that a migration is live.
+
+**Object existence is the only acceptable proof** — `to_regclass`, `information_schema.columns`,
+`pg_index`, `pg_class.relrowsecurity`. Never read the ledger as an applied-state instrument, and
+never collapse MERGED into APPLIED: a merged migration file changes nothing in the database.
 
 **The two-day floor on the orchestrator tables is NOT a purge — do not report it as one.**
 There is no `pg_cron`, no trigger on either table, and every other table holds months. They
@@ -733,9 +840,12 @@ just `diff -rq`.
 **Measured 2026-09-13 against the live DB.** `artifacts` columns are exactly
 `id, thread_id, user_id, kind, value, confidence, source, metadata, created_at, cluster_id,
 subject_id`. **There is no join key to `tool_usage_log`.** The closest thing is `metadata.tool`,
-present on **714 of 1,868** recent artifacts — **38%**, and only on auto-persisted rows
-(`auto_persist_source` and `via` carry the identical count; anything from `record_finding` /
-`record_artifacts` has nothing). It stores a tool **name**, not a call id, so it cannot say which
+present on **4,373 of 12,859** artifacts — **34.0%** (re-measured 2026-09-22 across the whole
+table; the "714 of 1,868 — 38%" figure was a 2026-09-13 recent-rows sample and is stale). ⚠️ The
+three supposedly-identical proxy keys have since DIVERGED: `metadata.tool` is 4,373 while
+`auto_persist_source` and `via` are both 4,606, so the old "identical count" claim no longer
+holds. Still only on auto-persisted rows (anything from `record_finding` / `record_artifacts` has
+nothing). It stores a tool **name**, not a call id, so it cannot say which
 of 74 `minimax_correlate` calls produced a row and cannot be joined at all.
 
 **Consequence:** you can measure how often a tool returned HTTP 200, and how many artifacts exist —
@@ -755,8 +865,11 @@ path behind a kill switch with a new `/health` key. Full detail:
 ### ⛔ Memory IS learning — the RETRIEVAL is what is broken (measured 2026-09-14)
 
 Do not rebuild the memory layer, and do not accept "it never learns" at face value. Measured against
-the live DB: **1,395 `agent_memory` rows back to 2026-05-27, 517 of them `kind='lesson'`, 246 of
-those about tool reliability.** It captures exactly the right things —
+the live DB (re-measured 2026-09-22; the 1,395 / 517 figures were 2026-09-14): **1,451
+`agent_memory` rows back to 2026-05-27, 545 of them `kind='lesson'`.** ⚠️ **Zero of those 545 are
+tool-keyed** (`subject ILIKE 'tool:%'` → 0), and 545 lessons carry **539 distinct subjects** —
+roughly one subject per lesson, so subject-only recall can never aggregate a tool lesson across
+cases. That is the gap below, quantified. It captures exactly the right things —
 
 > *"rapidapi_breach_search returned 0 hits for this email while breach_check (leakcheck) returned 21"*
 > *"Instagram profile could not be scraped (HTTP 451 block + SocialFetch not_found)"*
