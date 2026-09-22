@@ -1485,6 +1485,25 @@ function ChatWindowInner({
 
   const { messages, sendMessage, status, error, setMessages, stop, clearError } = useChat({
     id: threadId,
+    // Coalesce streamed updates into ONE render per 80ms. `useChat` swaps the
+    // streaming message object on every token delta. `messagePropsEqual` compares
+    // `prev.m === next.m`, so settled messages are already skipped — but the LIVE
+    // message re-renders every delta, and `MarkdownBlock` is memoized on `content`,
+    // which changes every token too. So the growing message re-parses its whole
+    // body through ReactMarkdown + remarkGfm once per token: O(n^2) over the
+    // message, on the phone's main thread. That is what makes text stop mid-word
+    // and then arrive in a burst.
+    //
+    // Measured 2026-09-19 over 663 production steps (orchestrator_step_metrics):
+    // generation runs at ~13ms/output token (~77 tok/s), so an unthrottled run
+    // asks mobile Safari for ~77 full re-parses per second. At 80ms that is ~12
+    // renders/sec — still below the ~100ms gap a reader perceives as a pause.
+    //
+    // Presentation-only: the SDK applies every delta to its own store regardless,
+    // no token is dropped, and the settled message is byte-identical. Do not
+    // "simplify" this to a debounce — a debounce can starve a fast stream of
+    // updates entirely; a throttle guarantees a render every 80ms.
+    experimental_throttle: 80,
     messages: initial,
     transport,
     onError: async (e) => {
