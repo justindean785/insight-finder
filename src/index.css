@@ -705,6 +705,7 @@ All colors MUST be HSL.
      up down the whole board — the single biggest scanning win available. */
   .ledger {
     --ledger-cols: minmax(0, 1fr) 9.5rem 8.5rem 4.5rem;
+    --ledger-head-h: 1.75rem;
     border-top: 1px solid hsl(var(--border-subtle));
   }
   .ledger-row {
@@ -732,6 +733,10 @@ All colors MUST be HSL.
     position: sticky;
     top: 0;
     z-index: 2;
+    /* Declared, not measured, because the group rule below pins itself to the
+       underside of this strip. A head that grows without telling anyone leaves
+       a gap the rows scroll through. */
+    min-height: var(--ledger-head-h);
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
     display: grid;
@@ -799,6 +804,31 @@ All colors MUST be HSL.
     color: hsl(var(--foreground) / 0.72);
     background: hsl(var(--film) / 0.018);
     border-bottom: 1px solid hsl(var(--border-subtle));
+  }
+
+  /* IN THE LEDGER the group rule pins itself under the column head. Measured on
+     a 55-artifact case: 2,935px of rows in a 787px viewport, nine category
+     groups, and only the column head was pinned — so anyone reading the middle
+     of the list could see four columns of numbers and not which category they
+     belonged to. The head already proved the mechanism twenty lines up; this is
+     the second tier of the same chrome, so it reuses the head's ground and blur
+     rather than inventing an intensity, and sits at z-index 1 so it slides
+     UNDER the head instead of over it.
+
+     Scoped to `.ledger` on purpose. `.rule-label` is shared with Overview,
+     where there is no column head to pin beneath and `--ledger-head-h` does not
+     exist.
+
+     The ground has to be opaque: unstuck, the label's film wash composites to
+     rgb(0,0,0) on this surface anyway, so this costs nothing visually and is
+     what stops rows ghosting through it while it holds the top. */
+  .ledger .rule-label {
+    position: sticky;
+    top: var(--ledger-head-h);
+    z-index: 1;
+    background: hsl(0 0% 0% / 0.86);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
   }
 
   /* Technical value — always selectable, never truncated without a title. */
@@ -1645,6 +1675,17 @@ All colors MUST be HSL.
   gap: var(--density-row-gap);
   font-size: var(--density-font);
   line-height: var(--density-line);
+}
+/* Density owns a row's VERTICAL rhythm. It must never own the horizontal inset.
+   The column head, the group rule and the row are all written to open at 1rem so
+   the grid lines up, and the symmetric padding above was quietly pulling the
+   row's left edge to 0.75rem — 4px out of step with the two chrome strips
+   directly above it, on every case, for a preference nobody can even set
+   (`useDensity` exists, is complete, and has zero consumers). Measured
+   2026-09-22: head 16px, group rule 16px, row 12px. */
+.ledger-row[data-density-row] {
+  padding-left: 1rem !important;
+  padding-right: 0.625rem !important;
 }
 [data-density-card] {
   padding: var(--density-card-py) var(--density-card-px) !important;
