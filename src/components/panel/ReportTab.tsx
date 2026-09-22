@@ -56,20 +56,30 @@ const REPORT_TYPES_SOON = ["LE / Court", "OSINT Technical", "Lead Brief"];
 
 type ExportFormat = "copy-md" | "md" | "pdf" | "matrix" | "json";
 
-// ⚠️ These labels must say what the format ACTUALLY produces. Masking is not
-// uniform across formats: the markdown and JSON paths run through
-// `markMarkdown` / `wrapJsonExport`, which apply redactSecretsInText /
-// redactSecretsDeep, while PDF (and Ctrl+P) render CaseReport straight from raw
-// artifacts and mask nothing. "Raw JSON" named a MASKED output — an instrument
-// describing itself wrongly, which is the failure mode this repo keeps paying
-// for. Whether the asymmetry itself should stay is an operator decision under
-// the standing REVEAL_BREACH_DATA preference; these labels only make it visible.
+// ⚠️ These labels must say what the format ACTUALLY produces, and must not
+// over-claim. Two things are true at once:
+//
+//  1. Masking is not uniform by FORMAT. Markdown and JSON run through
+//     `markMarkdown` / `wrapJsonExport` → redactSecretsInText /
+//     redactSecretsDeep. PDF and Ctrl+P render CaseReport straight from raw
+//     artifacts and mask nothing.
+//  2. Masking is narrow in SCOPE. `SECRET_KEY_RE` and the password regexes
+//     cover passwords, passcodes and hashes — nothing else. SSNs, DOBs and
+//     partial card numbers pass through every format untouched. Verified on a
+//     production export (2026-09-22): a 9-digit SSN from an NPD breach row
+//     survived the JSON path intact.
+//
+// So "secrets masked" would be a lie in the other direction — the exact failure
+// the old "Raw JSON" label committed. Say PASSWORDS, which is what is true.
+// Whether either the format asymmetry or the narrow scope should change is an
+// operator decision under the standing REVEAL_BREACH_DATA preference; these
+// labels only make the current behaviour legible.
 const FORMAT_LABEL: Record<ExportFormat, string> = {
-  "copy-md": "Copy markdown · secrets masked",
-  md: "Markdown (.md) · secrets masked",
-  pdf: "PDF (print) · UNMASKED",
+  "copy-md": "Copy markdown · passwords masked",
+  md: "Markdown (.md) · passwords masked",
+  pdf: "PDF (print) · nothing masked",
   matrix: "Evidence matrix",
-  json: "JSON · secrets masked",
+  json: "JSON · passwords masked",
 };
 
 export function ReportTab({
