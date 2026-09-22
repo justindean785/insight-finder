@@ -7,12 +7,17 @@
 // "YouTube continues to time out (3 attempts now)" while nothing durable said so.
 //
 // `tool_usage_log` IS durable (three months, CLAUDE.md), so this reads the case's
-// own failed rows once per run and refuses the (tool, selector) pairs that already
-// failed DEAD_TARGET_FLOOR+ times. Same idea as `run_budget_prior` — a prior built
-// from the log — but this one gates.
+// own attempt history once per run and refuses the (tool, selector) pairs that have
+// failed DEAD_TARGET_FLOOR+ times SINCE THAT PAIR LAST SUCCEEDED. Same idea as
+// `run_budget_prior` — a prior built from the log — but this one gates.
 //
 // Design rules, shared with the two dispatch boundaries beside it:
 //   • key by tool AND normalised selector, never by value alone;
+//   • a later success CLEARS the streak — see buildDeadTargets. The gate is about
+//     what is failing now, never about what once failed;
+//   • it sits AFTER every cache layer, so a free replay is always served: a dead
+//     target costs nothing to answer from cache, and refusing one would throw away
+//     a result the run already paid for;
 //   • the refusal is a legible governance SKIP (it never ran, nothing is charged,
 //     `outcome` = skipped via SKIP_RE in tool-outcome.ts), with a constant message
 //     so caller-controlled text can never be regex-matched into anything else;
@@ -31,6 +36,22 @@ export const DEAD_TARGET_REFUSAL_ERROR =
 
 export const DEAD_TARGET_REFUSAL_MARKER = "dead_target_memory";
 
+// ---- Paging for the history read (cache.ts loadDeadTargets) --------------------
+// An unbounded PostgREST select returns at most `db-max-rows` with NO error, so the
+// read MUST page. The ceiling is a safety bound, not an expected size: the biggest
+// production case measured 130 calls in one invocation over ~12 invocations, so
+// 10,000 rows is roughly an order of magnitude of headroom. Hitting it means
+// something is wrong, and the loader fails OPEN and says so.
+/** Rows per page. */
+export const DEAD_TARGET_PAGE = 500;
+/** Pages before the loader gives up and fails open. */
+export const DEAD_TARGET_MAX_PAGES = 20;
+/**
+ * Outcomes worth reading. `skipped` rows are excluded at the DB — they neither
+ * count nor reset, and on a long case they are the bulk of the table.
+ */
+export const DEAD_TARGET_READ_OUTCOMES = ["failed", "ok", "empty"] as const;
+
 export function deadTargetMemoryEnabled(): boolean {
   return (Deno.env.get("DEAD_TARGET_MEMORY_DISABLED") ?? "").trim().toLowerCase() !== "true";
 }
@@ -44,12 +65,40 @@ export type UsageRow = {
   tool_name?: unknown;
   outcome?: unknown;
   input_json?: unknown;
+  created_at?: unknown;
 };
 
 /**
- * Count FAILED attempts per (tool, selector). `normalizedSelectorOf` is injected
- * (the wrapper passes its own detectSelectorType/Value + circuit.normalizeSelector
- * composition) so the key is computed by the same functions dispatch uses.
+ * Outcomes that RESET a pair's failure streak. Both mean the call really ran and
+ * the provider answered: `ok` returned a record, `empty` returned a clean negative
+ * ("no usable result" / "not found"). Either one proves the target is reachable,
+ * so the streak that preceded it is history, not evidence.
+ *
+ * `skipped` is deliberately in neither set — a governance refusal never ran, so it
+ * is not a failure and it is not proof of reach. Counting our OWN refusals here
+ * would also make the gate self-amplifying.
+ */
+const RESET_OUTCOMES: ReadonlySet<string> = new Set(["ok", "empty"]);
+
+/**
+ * Count failures per (tool, selector) SINCE THAT PAIR'S MOST RECENT SUCCESS.
+ *
+ * ⚠️ This is the whole correctness of the gate, and the first cut got it wrong:
+ * it counted every `failed` row in the case, so a pair that failed twice on
+ * Monday and succeeded on Tuesday stayed refused forever. A dead target is a
+ * pair that is failing NOW, so the streak is read from the last proof of reach
+ * forward — failure → failure → success leaves a live target, and the two
+ * failures after a later success are what make it dead again.
+ *
+ * Rows are sorted by `created_at` here rather than trusted from the caller: the
+ * reset semantics are order-dependent, and a silently unordered page would
+ * invert the answer. Equal or missing timestamps keep their input order
+ * (Array.prototype.sort is stable), so a caller that already ordered its read
+ * loses nothing.
+ *
+ * `normalizedSelectorOf` is injected (the wrapper passes its own
+ * detectSelectorType/Value + circuit.normalizeSelector composition) so the key is
+ * computed by the same functions dispatch uses.
  *
  * Rows the wrapper wrote carry the tool input under `input_json.input` (the
  * refusal/skip shape) or as the input itself (the live-call shape); both are read.
@@ -58,9 +107,16 @@ export function buildDeadTargets(
   rows: readonly UsageRow[],
   normalizedSelectorOf: (input: Record<string, unknown>) => string,
 ): Map<string, number> {
+  const ordered = rows
+    .map((row, index) => ({ row, index, at: timeOf(row.created_at) }))
+    .sort((a, b) => (a.at === b.at ? a.index - b.index : a.at - b.at));
+
   const out = new Map<string, number>();
-  for (const r of rows) {
-    if (r.outcome !== "failed") continue;
+  for (const { row: r } of ordered) {
+    const outcome = typeof r.outcome === "string" ? r.outcome : "";
+    const failed = outcome === "failed";
+    const reset = RESET_OUTCOMES.has(outcome);
+    if (!failed && !reset) continue;
     const tool = typeof r.tool_name === "string" ? r.tool_name.trim() : "";
     if (!tool) continue;
     const input = unwrapInput(r.input_json);
@@ -68,9 +124,17 @@ export function buildDeadTargets(
     const sel = normalizedSelectorOf(input);
     if (!sel) continue;
     const k = deadTargetKey(tool, sel);
-    out.set(k, (out.get(k) ?? 0) + 1);
+    if (reset) out.set(k, 0);
+    else out.set(k, (out.get(k) ?? 0) + 1);
   }
   return out;
+}
+
+/** Sortable epoch ms. An absent or unparseable timestamp sorts first, keeping input order. */
+function timeOf(v: unknown): number {
+  if (typeof v !== "string" || !v) return 0;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : 0;
 }
 
 function unwrapInput(v: unknown): Record<string, unknown> | null {

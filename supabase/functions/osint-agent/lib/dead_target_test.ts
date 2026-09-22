@@ -10,19 +10,68 @@ const normalize = (s: string) => s.trim().toLowerCase();
 const selOf = (i: Record<string, unknown>) => normalize(String(i.url ?? i.username ?? i.email ?? i.value ?? ""));
 
 const YT = "https://youtube.com/@lildee808_first";
+const at = (h: number) => new Date(Date.UTC(2026, 8, 20, h, 0, 0)).toISOString();
 
 Deno.test("counts FAILED rows per tool+selector, reading both input_json shapes", () => {
   const map = buildDeadTargets([
-    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: YT } },
-    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { input: { url: YT.toUpperCase() } } },
-    { tool_name: "socialfetch_web_read", outcome: "ok", input_json: { url: YT } },
-    { tool_name: "socialfetch_web_read", outcome: "skipped", input_json: { url: YT } },
-    { tool_name: "jina_reader_scrape", outcome: "failed", input_json: { url: YT } },
-    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: "https://youtube.com/@other" } },
+    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: YT }, created_at: at(0) },
+    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { input: { url: YT.toUpperCase() } }, created_at: at(1) },
+    { tool_name: "socialfetch_web_read", outcome: "skipped", input_json: { url: YT }, created_at: at(2) },
+    { tool_name: "jina_reader_scrape", outcome: "failed", input_json: { url: YT }, created_at: at(3) },
+    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: "https://youtube.com/@other" }, created_at: at(4) },
   ], selOf);
   assertEquals(deadTargetCount(map, "socialfetch_web_read", normalize(YT)), 2);
   assertEquals(deadTargetCount(map, "jina_reader_scrape", normalize(YT)), 1);
   assertEquals(deadTargetCount(map, "socialfetch_web_read", "https://youtube.com/@other"), 1);
+});
+
+Deno.test("a later SUCCESS clears the streak — failure → failure → success is not dead", () => {
+  const map = buildDeadTargets([
+    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: YT }, created_at: at(0) },
+    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: YT }, created_at: at(1) },
+    { tool_name: "socialfetch_web_read", outcome: "ok", input_json: { url: YT }, created_at: at(2) },
+  ], selOf);
+  assertEquals(deadTargetCount(map, "socialfetch_web_read", normalize(YT)), 0);
+  assert(!isDeadTarget(map, "socialfetch_web_read", normalize(YT)));
+});
+
+Deno.test("`empty` also clears: a clean negative proves the target is reachable", () => {
+  const map = buildDeadTargets([
+    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: YT }, created_at: at(0) },
+    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: YT }, created_at: at(1) },
+    { tool_name: "socialfetch_web_read", outcome: "empty", input_json: { url: YT }, created_at: at(2) },
+  ], selOf);
+  assertEquals(deadTargetCount(map, "socialfetch_web_read", normalize(YT)), 0);
+});
+
+Deno.test("the streak is counted FROM the last success, so it can go dead again", () => {
+  const map = buildDeadTargets([
+    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: YT }, created_at: at(0) },
+    { tool_name: "socialfetch_web_read", outcome: "ok", input_json: { url: YT }, created_at: at(1) },
+    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: YT }, created_at: at(2) },
+    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: YT }, created_at: at(3) },
+  ], selOf);
+  assertEquals(deadTargetCount(map, "socialfetch_web_read", normalize(YT)), 2);
+  assert(isDeadTarget(map, "socialfetch_web_read", normalize(YT)));
+});
+
+Deno.test("`skipped` neither counts nor clears — our own refusals cannot amplify the gate", () => {
+  const map = buildDeadTargets([
+    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: YT }, created_at: at(0) },
+    { tool_name: "socialfetch_web_read", outcome: "skipped", input_json: { url: YT }, created_at: at(1) },
+    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: YT }, created_at: at(2) },
+    { tool_name: "socialfetch_web_read", outcome: "skipped", input_json: { url: YT }, created_at: at(3) },
+  ], selOf);
+  assertEquals(deadTargetCount(map, "socialfetch_web_read", normalize(YT)), 2);
+});
+
+Deno.test("rows are sorted by created_at, so an unordered page cannot invert the answer", () => {
+  const newestFirst = buildDeadTargets([
+    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: YT }, created_at: at(3) },
+    { tool_name: "socialfetch_web_read", outcome: "failed", input_json: { url: YT }, created_at: at(2) },
+    { tool_name: "socialfetch_web_read", outcome: "ok", input_json: { url: YT }, created_at: at(1) },
+  ], selOf);
+  assertEquals(deadTargetCount(newestFirst, "socialfetch_web_read", normalize(YT)), 2);
 });
 
 Deno.test("the floor is per (tool, selector): a different tool on the same target is not dead", () => {

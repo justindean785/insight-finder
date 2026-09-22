@@ -1479,9 +1479,16 @@ Deno.serve(async (req) => {
       // investigation to keep running server-side, persist its artifacts as
       // they come in, and save the final assistant message via onFinish.
       onError: async ({ error }) => {
-        // Reason-phrase plus the provider's body/status when the SDK carried them,
-        // so a fallback "Bad Request" is diagnosable from the ledger.
-        const msg = describeStreamError(error);
+        // Reason-phrase plus the provider's STATUS and enum-like error code, so a
+        // fallback "Bad Request" is diagnosable from the ledger. The raw body is
+        // deliberately NOT included — it is persisted text and a 4xx body echoes the
+        // request, which here is the investigation. `STREAM_ERROR_BODY_DETAIL=true`
+        // opts in for a debugging session; read at call time, so it binds with no
+        // deploy and cannot be left on by accident in a build.
+        const msg = describeStreamError(
+          error,
+          (Deno.env.get("STREAM_ERROR_BODY_DETAIL") ?? "").trim().toLowerCase() === "true",
+        );
         const errName = error instanceof Error ? error.name : "";
         const isCtxOverflow =
           /context window|context length|2013|invalid params.*context|exceeds limit/i.test(msg);
