@@ -371,7 +371,7 @@ export function ReportTab({
           {profile && <ConfidenceRadar artifacts={artifacts} seedValue={seed.value} reviews={reviews} profile={profile} />}
         </div>
         {/* No inner scroll: the report flows in the page's single scroll container. */}
-        <div className="rounded-lg border border-border-subtle bg-surface-1 px-4 py-5">
+        <div className="panel px-4 py-5">
           <CaseReport
             seedValue={seed.value}
             seedType={seed.type}

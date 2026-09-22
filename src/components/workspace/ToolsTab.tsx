@@ -367,7 +367,7 @@ function ActivityLog({
       {ordered.length === 0 ? (
         <EmptyState icon={Activity} title="No visible tools match this filter" hint="Try a different status filter." />
       ) : (
-        <ul className="rounded-xl border border-border-subtle bg-surface-1 divide-y divide-border-subtle/60 overflow-hidden">
+        <ul className="panel divide-y divide-border-subtle/60 overflow-hidden">
           {ordered.map((e) => (
             <li key={e.id}>
               {e.reason ? (
