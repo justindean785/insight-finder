@@ -44,7 +44,7 @@ All colors MUST be HSL.
        register used 0% lightness with a warm surface ramp above it; the cast
        is now cold, which is what makes cream anywhere on screen read as a bug
        rather than as a choice. */
-    --background: 221 44% 4%;
+    --background: 0 0% 0%;
     --foreground: 213 40% 95%;       /* #EDF1F8 — cold platinum ink */
 
     --card: 221 40% 6.5%;
@@ -188,21 +188,21 @@ All colors MUST be HSL.
        reads recessed if it is not lighter than what surrounds it. The recess
        comes from the inner shadow and the film above it.
        Strictly monotonic in lightness: 4 → 6 → 8.5 → 12.5 → 17.5. */
-    --surface-0: 221 44% 4%;
-    --surface-1: 222 40% 6%;
-    --surface-2: 221 36% 8.5%;
-    --surface-3: 220 32% 12.5%;   /* selected / hover */
-    --surface-4: 219 29% 17.5%;
+    --surface-0: 0 0% 0%;
+    --surface-1: 222 54% 7%;
+    --surface-2: 221 50% 9.5%;
+    --surface-3: 220 45% 13.5%;   /* selected / hover */
+    --surface-4: 219 41% 18.5%;
 
     /* Border ramp, strictly monotonic: 11 → 18 → 29. */
-    --border: 219 27% 18%;
-    --border-subtle: 220 30% 11%;
-    --border-strong: 217 25% 29%;
+    --border: 219 34% 20%;
+    --border-subtle: 220 38% 13%;
+    --border-strong: 217 32% 31%;
     --input: 222 36% 8%;
     /* Focus is the signal blue at full strength. A focus ring is the single
        most "is this a real product" detail on a dark UI, and it was a warm
        grey that disappeared into every border it landed next to. */
-    --ring: 213 96% 62%;
+    --ring: 246 92% 66%;
 
     /* ── Film ──────────────────────────────────────────────────────────────
        THE single most load-bearing token in this file.
@@ -235,7 +235,7 @@ All colors MUST be HSL.
 
        Spend it as a rim, an edge, a bloom or an active state. Never as a
        large fill (rule 3). */
-    --brand: 213 96% 62%;
+    --brand: 246 92% 66%;
     --brand-deep: 224 82% 44%;
 
     /* Intel tokens — ~79 var() uses across the app.
@@ -245,7 +245,7 @@ All colors MUST be HSL.
        blue is the evidence axis (what a source asserts), violet the inference
        axis (what the system concluded). */
     --intel-blue: 213 96% 64%;
-    --intel-violet: 266 90% 70%;
+    --intel-violet: 278 88% 72%;
 
     /* ── Entity-kind palette (Graph tab) ───────────────────────────────────
        The documented EXCEPTION to "hue belongs to authority".
@@ -341,18 +341,18 @@ All colors MUST be HSL.
     z-index: 0;
     background:
       /* Signal bloom, top-left — the light the room is lit by. */
-      radial-gradient(62% 46% at 4% -8%, hsl(var(--brand) / 0.10) 0%, transparent 66%),
-      radial-gradient(86% 58% at 16% -10%, hsl(var(--film) / 0.045) 0%, transparent 62%),
-      radial-gradient(130% 84% at 50% -14%, hsl(var(--film) / 0.022) 0%, transparent 58%),
+      radial-gradient(62% 46% at 4% -8%, hsl(var(--brand) / 0.17) 0%, transparent 66%),
+      radial-gradient(86% 58% at 16% -10%, hsl(var(--film) / 0.07) 0%, transparent 62%),
+      radial-gradient(130% 84% at 50% -14%, hsl(var(--film) / 0.032) 0%, transparent 58%),
       /* Inference bloom, far corner. */
-      radial-gradient(58% 44% at 102% 106%, hsl(var(--intel-violet) / 0.075) 0%, transparent 64%),
-      radial-gradient(74% 52% at 96% 98%, hsl(var(--brand) / 0.045) 0%, transparent 60%),
+      radial-gradient(58% 44% at 102% 106%, hsl(var(--intel-violet) / 0.13) 0%, transparent 64%),
+      radial-gradient(74% 52% at 96% 98%, hsl(var(--brand) / 0.075) 0%, transparent 60%),
       radial-gradient(92% 72% at 100% 100%, hsl(0 0% 0% / 0.55) 0%, transparent 64%),
       /* Blueprint — 176px major rules over a 44px minor grid, both at the
          threshold of visibility. Two scales is what separates "engineering
          drawing" from "graph paper". */
-      linear-gradient(hsl(var(--film) / 0.026) 1px, transparent 1px),
-      linear-gradient(90deg, hsl(var(--film) / 0.026) 1px, transparent 1px),
+      linear-gradient(hsl(var(--film) / 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--film) / 0.04) 1px, transparent 1px),
       linear-gradient(hsl(var(--film) / 0.013) 1px, transparent 1px),
       linear-gradient(90deg, hsl(var(--film) / 0.013) 1px, transparent 1px),
       linear-gradient(180deg, transparent 54%, hsl(0 0% 0% / 0.45) 100%);
@@ -478,7 +478,7 @@ All colors MUST be HSL.
      surface read as consumer software; the corner should be a machined edge. */
   .panel {
     position: relative;
-    border-radius: 10px;
+    border-radius: 13px;
     /* Smoked glass: a translucent film over the ground, a rim brightest along
        the top edge where light would catch, and a specular inner hairline.
 
@@ -490,20 +490,40 @@ All colors MUST be HSL.
        going transparent where panels overlap. Held deliberately low: this class
        is the workspace's densest surface and it sits behind 11px mono. */
     background:
+      /* Sheen: the room light crossing the pane, off-axis so it reads as a
+         reflection rather than as a gradient someone applied to a box. */
+      linear-gradient(
+        118deg,
+        hsl(var(--film) / 0.07) 0%,
+        hsl(var(--film) / 0.012) 38%,
+        transparent 62%
+      ),
       linear-gradient(
         180deg,
-        hsl(var(--film) / 0.055) 0%,
-        hsl(var(--film) / 0.024) 46%,
-        hsl(var(--film) / 0.014) 100%
+        hsl(var(--film) / 0.115) 0%,
+        hsl(var(--film) / 0.045) 46%,
+        hsl(var(--film) / 0.022) 100%
       ),
-      hsl(var(--surface-1) / 0.5);
-    backdrop-filter: blur(18px) saturate(115%);
-    -webkit-backdrop-filter: blur(18px) saturate(115%);
-    border: 1px solid hsl(var(--film) / 0.085);
-    border-top-color: hsl(var(--film) / 0.15);
+      /* The tint itself. Two stops so the pane is colder at its foot, which is
+         what stops a large panel reading as one flat sheet of plastic. */
+      linear-gradient(
+        180deg,
+        hsl(var(--surface-2) / 0.46) 0%,
+        hsl(var(--surface-1) / 0.56) 100%
+      );
+    backdrop-filter: blur(26px) saturate(170%);
+    -webkit-backdrop-filter: blur(26px) saturate(170%);
+    border: 1px solid hsl(var(--film) / 0.1);
+    border-top-color: hsl(var(--film) / 0.2);
     box-shadow:
-      inset 0 1px 0 hsl(var(--film) / 0.06),
-      0 10px 30px -20px hsl(0 0% 0% / 0.95);
+      /* Specular cap, then a refracted edge: blue at the evidence end, violet
+         at the inference end. The same two axes the room is lit by, read at
+         the rim where a real pane of glass would bend the light. Hairline
+         only — the moment it is a visible band it is decoration. */
+      inset 0 1px 0 hsl(var(--film) / 0.085),
+      inset 1px 0 0 hsl(var(--brand) / 0.05),
+      inset -1px 0 0 hsl(var(--intel-violet) / 0.05),
+      0 14px 38px -22px hsl(0 0% 0% / 0.98);
   }
   /* Raised — for panels that float above the workspace (drawers, popovers,
      the Overview's lead tiles). One inner top hairline + one contained shadow. */
@@ -1631,38 +1651,75 @@ All colors MUST be HSL.
 .chat-card {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid hsl(var(--film) / 0.09);
-  border-radius: 10px;
+  border: 1px solid hsl(var(--film) / 0.1);
+  border-top-color: hsl(var(--film) / 0.2);
+  border-radius: 13px;
   background:
-    linear-gradient(180deg, hsl(var(--surface-2) / 0.6) 0%, hsl(var(--surface-1) / 0.45) 100%);
+    linear-gradient(
+      118deg,
+      hsl(var(--film) / 0.06) 0%,
+      hsl(var(--film) / 0.01) 38%,
+      transparent 62%
+    ),
+    linear-gradient(
+      180deg,
+      hsl(var(--film) / 0.075) 0%,
+      hsl(var(--film) / 0.03) 46%,
+      hsl(var(--film) / 0.016) 100%
+    ),
+    linear-gradient(180deg, hsl(var(--surface-2) / 0.46) 0%, hsl(var(--surface-1) / 0.56) 100%);
+  backdrop-filter: blur(26px) saturate(170%);
+  -webkit-backdrop-filter: blur(26px) saturate(170%);
   box-shadow:
-    inset 0 1px 0 hsl(var(--film) / 0.045),
-    0 12px 32px -28px hsl(0 0% 0% / 0.85);
+    inset 0 1px 0 hsl(var(--film) / 0.085),
+    inset 1px 0 0 hsl(var(--brand) / 0.045),
+    inset -1px 0 0 hsl(var(--intel-violet) / 0.045),
+    0 14px 38px -24px hsl(0 0% 0% / 0.98);
 }
 
 .chat-card {
   position: relative;
   overflow: hidden;
 }
-/* Speaker identity rail. The agent's output, the analyst's own words and the
+/* Speaker identity. The agent's output, the analyst's own words and the
    machine's tool traffic are three different kinds of claim; a transcript that
    styles them identically forces you to read every line to find out who is
-   talking. 2px, left edge, keyed to the same accents the rest of the app uses. */
+   talking. That need is real — the MECHANISM changed.
+
+   This was a 2px left rail. PRODUCT.md bans border-left accent strips outright
+   ("a generic-template tell, not forensic precision") and names the three
+   replacements: a full border, a background tint, or a leading icon/dot. It is
+   now a tint: light entering the card at its head, in the speaker's own hue.
+   It reads on every card, including the three-in-seven that carry no header
+   row and so could not host a dot. */
 .chat-card[data-speaker]::before {
   content: "";
   position: absolute;
-  inset: 0 auto 0 0;
-  width: 2px;
-  background: hsl(var(--intel-blue) / 0.55);
+  inset: 0 0 auto 0;
+  height: 72px;
+  pointer-events: none;
+  background: linear-gradient(180deg, hsl(var(--intel-blue) / 0.1) 0%, transparent 100%);
 }
 /* Speaker is its OWN axis. These used to borrow --conf-likely / --conf-possible,
    so neutralising confidence would have greyed out speaker identification on the
    app's primary tab. See the --speaker-* tokens in :root. */
-.chat-card[data-speaker="analyst"]::before { background: hsl(var(--speaker-analyst) / 0.4); }
-.chat-card[data-speaker="agent"]::before    { background: hsl(var(--speaker-agent) / 0.45); }
-.chat-card[data-speaker="tool"]::before     { background: hsl(var(--speaker-tool) / 0.55); }
-.chat-card[data-speaker="failed"]::before   { background: hsl(var(--speaker-failed)); }
-.chat-card[data-speaker="system"]::before   { background: hsl(var(--speaker-system) / 0.6); }
+.chat-card[data-speaker="analyst"]::before {
+  background: linear-gradient(180deg, hsl(var(--speaker-analyst) / 0.13) 0%, transparent 100%);
+}
+.chat-card[data-speaker="agent"]::before {
+  background: linear-gradient(180deg, hsl(var(--speaker-agent) / 0.12) 0%, transparent 100%);
+}
+.chat-card[data-speaker="tool"]::before {
+  background: linear-gradient(180deg, hsl(var(--speaker-tool) / 0.11) 0%, transparent 100%);
+}
+/* Failure is the one speaker allowed to raise its voice: a run that died is
+   the thing you must not scroll past. Still a wash, still no stripe. */
+.chat-card[data-speaker="failed"]::before {
+  background: linear-gradient(180deg, hsl(var(--speaker-failed) / 0.2) 0%, transparent 100%);
+}
+.chat-card[data-speaker="system"]::before {
+  background: linear-gradient(180deg, hsl(var(--speaker-system) / 0.1) 0%, transparent 100%);
+}
 
 .chat-card__header {
   display: flex;
