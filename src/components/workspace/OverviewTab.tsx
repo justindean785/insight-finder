@@ -5,6 +5,7 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ToolEvent } from "@/hooks/useThreadToolActivity";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { useReviewStates } from "@/lib/review";
+import { isProseValue } from "@/lib/evidence-bands";
 import { authorityFor, LEDGER_SORT_RANK, AUTHORITY_LEGEND, type AuthorityState } from "@/lib/authority";
 import { AuthorityChip, AuthoritySpine, AuthorityCaveat, RuleLabel } from "@/components/ui/authority";
 import { readableSourceLabel } from "@/lib/tool-display";
@@ -100,6 +101,40 @@ function RunStrip({
         </span>
       ))}
     </button>
+  );
+}
+
+/**
+ * An artifact's value, set the way the evidence ledger already sets it.
+ *
+ * `value` holds two different kinds of thing. A SELECTOR is compared character
+ * by character, so it belongs in the data face on one line, truncated -- you
+ * read the head of an address to recognise it. A FINDING is a sentence the
+ * extractor wrote into the same column ("CONTRADICTION: 1110 Sample Ave is NOT
+ * linked to James Harker. The reverse-address lookup returned 31 records and
+ * the ..."), and truncating that to forty monospace characters is how the most
+ * important row on the page went unread.
+ *
+ * `ArtifactRow` settled this in the ledger and these three lists never adopted
+ * it, so Overview truncated every kind alike -- most visibly once Latest
+ * evidence moved to half width. Same predicate, same two modes, so a row reads
+ * the same on both surfaces.
+ */
+function ArtifactValue({ value, className }: { value: string; className?: string }) {
+  const prose = isProseValue(value);
+  return (
+    <span
+      title={value}
+      className={cn(
+        "min-w-0 text-foreground",
+        prose
+          ? "text-[12.5px] leading-[1.45] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden"
+          : "mono-value truncate text-data",
+        className,
+      )}
+    >
+      {value}
+    </span>
   );
 }
 
@@ -247,8 +282,8 @@ export function OverviewTab({ threadId }: { threadId: string }) {
               {unresolved.map(({ a, v }) => (
                 <li key={a.id} className="relative border-b border-border-subtle px-3 py-2 pl-4 last:border-b-0">
                   <AuthoritySpine state={v.state} />
-                  <div className="flex items-center gap-2">
-                    <span className="mono-value min-w-0 flex-1 truncate text-data text-foreground/95" title={a.value}>{a.value}</span>
+                  <div className="flex items-start gap-2">
+                    <ArtifactValue value={a.value} className="flex-1" />
                     <AuthorityChip view={v} />
                   </div>
                   <AuthorityCaveat view={v} className="mt-1" />
@@ -330,9 +365,9 @@ export function OverviewTab({ threadId }: { threadId: string }) {
             ) : (
               <ul>
                 {strongest.map(({ a, v }) => (
-                  <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto_3rem] items-center gap-2 border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
+                  <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto_3rem] items-start gap-2 border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
                     <AuthoritySpine state={v.state} />
-                    <span className="mono-value min-w-0 truncate text-data text-foreground/95" title={a.value}>{a.value}</span>
+                    <ArtifactValue value={a.value} />
                     <AuthorityChip view={v} />
                     <span className="text-right text-data font-semibold tabular-nums text-foreground/80">{effectiveConfidence(a) ?? "—"}</span>
                   </li>
@@ -388,9 +423,9 @@ export function OverviewTab({ threadId }: { threadId: string }) {
                 {recent.map((a: Artifact) => {
                   const v = authorityFor(a, review.get(a.id));
                   return (
-                    <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
+                    <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto_auto] items-start gap-2 border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
                       <AuthoritySpine state={v.state} />
-                      <span className="mono-value min-w-0 truncate text-data text-foreground/90" title={a.value}>{a.value}</span>
+                      <ArtifactValue value={a.value} />
                       <AuthorityChip view={v} />
                       <span className="shrink-0 text-eyebrow tabular-nums text-muted-foreground/70">{timeAgo(a.created_at)}</span>
                     </li>
