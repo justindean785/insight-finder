@@ -56,6 +56,7 @@ import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy a
 import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
 import { humanizeSelector } from "@/lib/humanize-selector";
+import { measureRequestBody, reportRequestBodySize } from "@/lib/request-size";
 import {
   isTerminalThreadUpdate,
   mergePersistedChatMessages,
@@ -1495,6 +1496,11 @@ function ChatWindowInner({
     api: FUNCTIONS_URL,
     body: { threadId },
     fetch: async (url: RequestInfo | URL, init?: RequestInit) => {
+      // Measure what the PHONE uploads, before anything server-side trims it.
+      // `useChat` sends the whole messages array every turn and that array is
+      // unbounded — the edge function's budget applies after upload, so no
+      // existing meter can see this. Measurement only; never alters the request.
+      reportRequestBodySize(measureRequestBody(init?.body), threadId);
       const { data } = await supabase.auth.getSession();
       const headers = new Headers(init?.headers);
       if (data.session) headers.set("Authorization", `Bearer ${data.session.access_token}`);
