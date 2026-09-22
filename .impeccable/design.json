@@ -183,6 +183,36 @@
           "#CCD0D6",
           "#F1F2F4"
         ]
+      },
+      "ink-subtle": {
+        "role": "neutral",
+        "displayName": "Tertiary Ink",
+        "canonical": "hsl(214 15% 62%)",
+        "tonalRamp": [
+          "#232831",
+          "#3A4250",
+          "#515B6D",
+          "#68758B",
+          "#8794A6",
+          "#A8B3C1",
+          "#C9D1DA",
+          "#EAEEF3"
+        ]
+      },
+      "ink-faint": {
+        "role": "neutral",
+        "displayName": "Reference Ink",
+        "canonical": "hsl(215 12% 50%)",
+        "tonalRamp": [
+          "#232730",
+          "#383E49",
+          "#4D5462",
+          "#626B7B",
+          "#7A8492",
+          "#9BA3AE",
+          "#BEC4CC",
+          "#E1E4E9"
+        ]
       }
     },
     "typographyMeta": {
@@ -380,6 +410,11 @@
         "name": "The Visible Ink Rule",
         "body": "A gradient may never be the sole reason text is visible. The two sanctioned background-clip:text treatments ship with forced-colors, print and @supports fallbacks restoring solid ink.",
         "section": "typography"
+      },
+      {
+        "name": "The Ink Ramp Rule",
+        "body": "Four named ink levels, and an opacity modifier on ink is forbidden. 48 files had improvised 21 distinct values because only two levels existed.",
+        "section": "typography"
       }
     ],
     "dos": [
@@ -402,7 +437,8 @@
       "Don't give a quarantined row a confidence hue.",
       "Don't round a data surface past 16px.",
       "Don't let a new surface invent its own blur, radius or border alpha.",
-      "Don't animate a layout property to show a data change."
+      "Don't animate a layout property to show a data change.",
+      "Don't stack an opacity modifier on an ink token to invent a new level."
     ]
   }
 }

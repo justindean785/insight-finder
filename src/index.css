@@ -73,6 +73,20 @@ All colors MUST be HSL.
        UP, not down. At /0.6 on --surface-2 it measures 4.8:1. Do not lower it. */
     --muted-foreground: 214 22% 81%;
 
+    /* ── Ink ramp, levels 3 and 4 ──────────────────────────────────────────
+       The system shipped with exactly TWO named ink levels, and the product
+       needed four, so 48 files improvised the rest: 242 occurrences of 21
+       distinct opacity modifiers (`text-muted-foreground/70`, `/60`, `/55`,
+       `/45` ...). That is a second, drifting source of truth for the single
+       thing an analyst does most, which is read.
+
+       Both levels below are AA-safe on the two grounds they can land on, so
+       neither is a trap: ink 3 reads 7.54 on black and 6.92 on surface-1;
+       ink 4 reads 5.02 and 4.61. A token that quietly fails AA is worse than
+       no token, because someone will reach for it in good faith. */
+    --subtle-foreground: 214 15% 62%;   /* ink 3 — tertiary: source labels, timestamps */
+    --faint-foreground: 215 12% 50%;    /* ink 4 — reference: counts, units, inert chrome */
+
     /* Accent — an ELEVATED SLATE, not a hue.
        This is the shadcn menu/hover ground (`hover:bg-accent`), used only by
        the ui/ primitives. It used to be near-white, so every dropdown row and

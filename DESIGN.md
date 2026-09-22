@@ -9,6 +9,8 @@ colors:
   surface-4: "#1C2943"
   ink: "#EDF2F7"
   ink-muted: "#C4CDD9"
+  ink-subtle: "#909CAD"
+  ink-faint: "#677383"
   film: "#EBF6FF"
   indigo-signal: "#6859F8"
   indigo-deep: "#3017D3"
@@ -141,7 +143,11 @@ A cold palette on a black ground, where every hue is spoken for and none is deco
 ### Neutral
 - **Ground** (#000000): the page. True black, so a pane reads as an object rather than as a slightly different grey.
 - **Surface 1 through 4** (#080E1B, #0C1424, #131D32, #1C2943): a strictly monotonic ramp used as pane tint, hover, and selection. Never as a border.
-- **Ink** (#EDF2F7) and **Ink Muted** (#C4CDD9): cold platinum. Measured at 4.5:1 or better against every surface in the ramp.
+- **The ink ramp**, four levels, cold platinum throughout. Every level is AA-safe on both grounds it can land on (true black and surface-1), so none of them is a trap:
+  - **Ink 1 / Primary** (#EDF2F7): values, headings, anything the analyst is reading for content. 18.62 on black.
+  - **Ink 2 / Secondary** (#C4CDD9): supporting copy and descriptions. 13.09 on black.
+  - **Ink 3 / Tertiary** (#909CAD): source labels, timestamps, column heads. 7.54 on black, 6.92 on a pane.
+  - **Ink 4 / Reference** (#677383): counts, units, inert chrome. 5.02 on black, 4.61 on a pane.
 - **Hairline / Subtle / Strong** (#222E44, #151D2E, #364968): the border ramp, strictly monotonic.
 
 ### The Authority Ladder
@@ -184,6 +190,8 @@ Quarantined is deliberately neutral and hatched, never a confidence hue: a quara
 **The Data Face Rule.** Monospace is a data face, not a body face. Reserve it for values a reader may need to compare character by character: selectors, IDs, timestamps, hashes, JSON. Labels and prose stay in the sans, or the console reads as terminal cosplay.
 
 **The Micro Floor Rule.** Dense labels may run below body size but never below 11px, and never combine small size with both heavy tracking and reduced opacity. Pick at most one intensifier.
+
+**The Ink Ramp Rule.** Four named levels, and an opacity modifier on ink is forbidden. The system shipped with two levels while the product needed four, so 48 files improvised the difference: 242 occurrences of 21 distinct values (`text-muted-foreground/70`, `/60`, `/55`, `/45`). That is a second, drifting source of truth for the one thing an analyst does constantly, which is read. Reach for `text-subtle-foreground` or `text-faint-foreground`, never `text-muted-foreground/60`.
 
 **The Visible Ink Rule.** Two treatments are permitted to paint a gradient and clip it to text: the `h1, h2` top-lit ramp and the `.stat-figure` headline numerals. This is a sanctioned exception, decided 2026-09-22, and the only one. It carries a hard condition: a gradient may never be the sole reason text is visible. Both set `color: transparent`, so unlayered fallbacks restore solid ink under `forced-colors: active`, under `print`, and where `background-clip: text` is unsupported. Any new clipped-text treatment ships with the same three fallbacks or it does not ship.
 
@@ -257,6 +265,7 @@ Blur marks elevation and has a budget: one blur value per tier, never escalated 
 - **Don't** round a data surface past 16px, or it reads as consumer software.
 - **Don't** let a new surface invent its own blur, radius or border alpha. That is how the six-material drift happened the first time.
 - **Don't** animate a layout property to show a data change. A confidence bar's width is data and snaps; only its authority colour eases.
+- **Don't** stack an opacity modifier on an ink token to invent a new level. Four exist; use them.
 
 <!-- Audit trail: contrast measured 2026-09-22 against the live harness across every
      rendered text node: 0 failures at WCAG AA, placeholder text at 6.41:1. -->
