@@ -13,6 +13,52 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
+> **Dated state — 2026-09-22T16:00Z.** `main` = **`325daad`** (#617, squash, frontend-only).
+> Live `osint-agent` build = **`4bb19d9`** — UNCHANGED, and correctly so: #617 touches ZERO
+> files under `supabase/functions/`, so there was no stamp, no mirror sync and no Lovable
+> deploy to run. The edge channel is exactly where the 09-20 block left it.
+>
+> **The frontend DID ship, and was verified the hard way.** Vercel production deployment
+> `dpl_BhatGqZjQNjQnCi3xuci2bUei51Z`, `state: READY`, `target: production`,
+> `githubCommitSha: 325daad`. A green Vercel check on a PR is a PREVIEW (`target: null`) and
+> proves nothing, so the check that counts was done on the live alias: fetch
+> `insight-finder-sandy.vercel.app`, pull its stylesheet, and look for keys only the new code
+> introduces — `stat-rule`, `panel-flat`, `panel-primary`, `case-mark`, `subtle-foreground`,
+> `faint-foreground`, all present, and `.chat-label-chip` carrying `border:1px dashed`.
+> **This is the frontend equivalent of `/health`'s behavioural proof key, and it works.** Use
+> it; the JS bundle hash is NOT usable for this (Vercel builds independently, so a local
+> build's hash never matches and a mismatch means nothing).
+>
+> **⚠️ Re-measured baselines. The three figures in the 09-20 block below are STALE, and that
+> block's `main` = `ad4937b` was already stale before #617 — the real tip was `48acc71`.**
+> On `main` at `325daad`: frontend **2178 passed / 1 skipped / 181 files** (`npx vitest run`;
+> CI's own Frontend job agrees on 181), edge **1898 passed / 0 failed / 6 ignored** (CI, and
+> unchanged by #617 since it touches no edge file — the 1885 → 1898 move came from #615/#616),
+> e2e **51 passed / 2 skipped**, unchanged.
+>
+> ⚠️ **`npx tsc --noEmit` IS NOT THIS PROJECT'S TYPECHECK and will tell you everything is
+> fine when it is not.** Bare, it resolves the root `tsconfig.json` and checks nothing: it
+> returned exit 0 on a file containing an outright JSX syntax error, which `eslint` then
+> caught. The real command is **`npm run typecheck`**
+> (`tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json`). Every
+> "typecheck clean" claim in this repo's history that used the bare form is worth nothing.
+>
+> ⚠️ **A green check board on this repo currently has NO review behind it.** `Devin Review`
+> passes while reporting *"Full review skipped: trial expired and no credits remaining"*, and
+> `Cursor Automation` reports `skipping`. Since II's §2.1 records that every defect caught in
+> review here was a timeline or identity error that passed the full suite, typecheck, lint and
+> build, treat green as "CI found nothing", never as "reviewed".
+>
+> ⚠️ **`npm run test:e2e` cannot run in a fresh worktree until the pinned browser is
+> installed.** It had NEVER run in this one: all 53 specs failed with
+> `browserType.launch: Executable doesn't exist`. `npx playwright install chromium` fixes it
+> (~94 MB). Worse, the failure is easy to miss — `npm run test:e2e | tail -25; echo $?`
+> reports TAIL's exit code, not Playwright's, so the run looks green. Redirect to a file and
+> read the real status.
+>
+> **The merge queue is still the bottleneck, and it got worse:** **13 of 18 open PRs are
+> DRAFT.** #617 was opened READY on purpose for that reason.
+
 > **Dated state — 2026-09-20T12:00Z.** `main` = **`ad4937b`**. Live `osint-agent` build =
 > **`4bb19d9`** — UNCHANGED; nothing merged and nothing deployed on 2026-09-19.
 > ⚠️ **Three finished, green, mergeable PRs are sitting in DRAFT** — #602 and #603 (frontend,
@@ -614,6 +660,7 @@ That is the real answer to "we do all these upgrades and it never changes the ap
 | `capabilities.seedTypes` | the gate is **fully enforced** at `capabilities.ts:184` — and no tool declares it, AND `index.ts:441` passes `null` as the seed type, so it can never fire ⚠️ |
 | Evidence board "Leads drawer" | **already shipped** (#543). Default filter is `analyst`, hiding weak/quarantined/excluded, with Leads and Excluded chips. `STATUS_FILTER_GROUPS` warns that a kind-based filter beside the authority states would be "a second, drifting source of truth" — do not add one |
 | **finding synthesis** (`finding-synthesis.ts`, `finding-synthesis-sweep.ts`, `lib/finding-row.ts`) | **complete, deployed, and switched OFF** behind `FINDING_SYNTHESIS_ENABLED` / `_BACKFILL_ENABLED` / `_DRY_RUN`. Runs in the HEALTH SWEEP — a separate request — so it is structurally incapable of failing finalize. Its header measures the gap it closes: **9,615 artifacts / 181 threads / 13 `kind='finding'` rows in the product's lifetime**, because `workflow_prompt.ts:34` makes `record_finding` advisory and the model almost never calls it (the `@wopdell` run: 87 tool calls, **zero**). ⚠️ Prerequisite before any flag flips: confirm migration `20260907000000` (`artifacts_synthesis_cluster_uniq`) is applied **against the live DB** — the sweep is an unlocked read-then-write fired every 60s |
+| `useDensity` (`src/hooks/useDensity.ts`) | complete, persists to `localStorage`, applies `<html data-density>`, and has **ZERO consumers** — no control anywhere sets it. Worse, its CSS is not inert while dark: `[data-density-row]` sets symmetric `padding: … !important` UNLAYERED, so it beat `.ledger-row`'s own rule and pulled the evidence ledger's left inset from 1rem to 0.75rem while the column head and group rule stayed at 1rem. Fixed in #617 by giving the ledger back its horizontal inset; density still owns the vertical rhythm. Wiring a control is still unbuilt, and it is a global preference, so decide WHERE it lives (command palette is the cheap answer) before building one |
 | `SweepSite.confirm` | the documented lever for a platform whose not-found page echoes the handle — **and unreachable until #594**, since no site configured it. Populating it honestly needs a KNOWN-REAL profile per platform, which is why #594 encodes the measured NEGATIVE (`echoUnsafe`) instead |
 
 ### ⚠️ Do NOT populate `seedTypes` to shrink the tool-schema payload
