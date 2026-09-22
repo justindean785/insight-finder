@@ -246,10 +246,12 @@ Three, and the difference is what a surface IS, not how it is decorated.
 - **Bar:** a 1.5px track with a tier-coloured fill.
 - **Numeral:** ink, never the tier colour. The bar's length already says how big the number is; colouring the numeral too made a low score look like a failure rather than like a small measurement.
 
-### Vitals
-- **Style:** the case instrument bank. A lit `.panel` tile carrying an eyebrow, a 32px top-lit figure, its denominator in reference ink, and a 2px rule whose LENGTH is the share.
-- **Rule:** hue on the icon and the rule, never on the figure. Weight follows what the number means, so a reading at zero recedes to reference ink; a case with no contradictions should not spend the same attention as one with two.
-- **Rule:** the label row reserves two lines at every width, so five tiles put their figures on one baseline whatever their labels do.
+### Metric Cards
+- **Style:** a lit `.panel` tile carrying an eyebrow, a 28px top-lit figure, its denominator in reference ink, and a 2px rule whose LENGTH is the share.
+- **Rule:** hue on the icon and the rule, never on the figure. Weight follows what the number means, so a reading at zero recedes to reference ink.
+- **Rule:** the label row reserves two lines at every width, so a bank puts every figure on one baseline whatever its labels do.
+- **Rule:** one metric component. `MetricCard` is it. A second copy on another surface is how two banks of the same readings came to look like different objects.
+- **Rule:** a bank earns its place only where its readings are not already stated better elsewhere. Three of the Overview's five tiles duplicated the case bar AND the authority distribution; they became one line of run figures instead.
 
 ### Stated Labels
 - **Style:** a hollow chip with a 1px dashed edge, 10px mono caps, no fill, drawn from the ink ramp at three registers: claims of strength at ink 2, hedges at ink 3, alarms at the ladder's conflict hue.
