@@ -1,0 +1,396 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-22T12:22:46.244956+00:00",
+  "title": "Design System: Insight Finder",
+  "extensions": {
+    "colorMeta": {
+      "ground": {
+        "role": "neutral",
+        "displayName": "Void Black",
+        "canonical": "hsl(0 0% 0%)",
+        "tonalRamp": [
+          "#262626",
+          "#404040",
+          "#595959",
+          "#737373",
+          "#8C8C8C",
+          "#ADADAD",
+          "#D1D1D1",
+          "#F2F2F2"
+        ]
+      },
+      "surface-1": {
+        "role": "neutral",
+        "displayName": "Pane Tint",
+        "canonical": "hsl(222 54% 7%)",
+        "tonalRamp": [
+          "#121E3B",
+          "#1D3262",
+          "#294689",
+          "#355AB1",
+          "#4E73CA",
+          "#819CD9",
+          "#B8C7EA",
+          "#EBEFF9"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Cold Platinum",
+        "canonical": "hsl(213 40% 95%)",
+        "tonalRamp": [
+          "#172536",
+          "#263D59",
+          "#36567D",
+          "#456EA1",
+          "#5E88BA",
+          "#8DAACE",
+          "#BFCFE3",
+          "#EDF2F7"
+        ]
+      },
+      "ink-muted": {
+        "role": "neutral",
+        "displayName": "Dimmed Platinum",
+        "canonical": "hsl(214 22% 81%)",
+        "tonalRamp": [
+          "#1E252F",
+          "#323E4E",
+          "#46576D",
+          "#5A6F8C",
+          "#7389A5",
+          "#9BABBF",
+          "#C7D0DB",
+          "#EFF2F5"
+        ]
+      },
+      "film": {
+        "role": "tertiary",
+        "displayName": "Film",
+        "canonical": "hsl(205 100% 96%)",
+        "tonalRamp": [
+          "#002D4D",
+          "#004A80",
+          "#0068B2",
+          "#0086E6",
+          "#1A9FFF",
+          "#5CBBFF",
+          "#A3D9FF",
+          "#E5F4FF"
+        ]
+      },
+      "indigo-signal": {
+        "role": "primary",
+        "displayName": "Indigo Signal",
+        "canonical": "hsl(246 92% 66%)",
+        "tonalRamp": [
+          "#0A0349",
+          "#11057A",
+          "#1807AB",
+          "#1E09DC",
+          "#3823F6",
+          "#7162F8",
+          "#AFA7FB",
+          "#E9E7FE"
+        ]
+      },
+      "indigo-deep": {
+        "role": "primary",
+        "displayName": "Indigo Deep",
+        "canonical": "hsl(248 80% 46%)",
+        "tonalRamp": [
+          "#100845",
+          "#1A0D73",
+          "#2512A1",
+          "#2F17CF",
+          "#4930E8",
+          "#7E6CEF",
+          "#B6ACF6",
+          "#EBE8FC"
+        ]
+      },
+      "inference-violet": {
+        "role": "secondary",
+        "displayName": "Inference Violet",
+        "canonical": "hsl(278 88% 72%)",
+        "tonalRamp": [
+          "#2F0548",
+          "#4F0878",
+          "#6E0BA8",
+          "#8E0ED8",
+          "#A727F1",
+          "#C166F5",
+          "#DCA9F9",
+          "#F5E7FD"
+        ]
+      },
+      "authority-verified": {
+        "role": "tertiary",
+        "displayName": "Corroborated Green",
+        "canonical": "hsl(152 62% 46%)",
+        "tonalRamp": [
+          "#0F3E28",
+          "#186742",
+          "#22915D",
+          "#2CBA77",
+          "#45D391",
+          "#7BE0B1",
+          "#B5EED3",
+          "#EAFAF3"
+        ]
+      },
+      "authority-review": {
+        "role": "tertiary",
+        "displayName": "Needs Review Amber",
+        "canonical": "hsl(38 92% 58%)",
+        "tonalRamp": [
+          "#493003",
+          "#7A4F05",
+          "#AB6F07",
+          "#DC8F09",
+          "#F6A823",
+          "#F8C162",
+          "#FBDCA7",
+          "#FEF5E7"
+        ]
+      },
+      "authority-conflict": {
+        "role": "tertiary",
+        "displayName": "Contested Red",
+        "canonical": "hsl(352 84% 61%)",
+        "tonalRamp": [
+          "#46060F",
+          "#750A18",
+          "#A40E22",
+          "#D3122C",
+          "#ED2C46",
+          "#F2697B",
+          "#F8ABB5",
+          "#FDE8EA"
+        ]
+      },
+      "authority-quarantine": {
+        "role": "neutral",
+        "displayName": "Unproven Grey",
+        "canonical": "hsl(215 11% 62%)",
+        "tonalRamp": [
+          "#22262A",
+          "#393F47",
+          "#4F5863",
+          "#66717F",
+          "#808A99",
+          "#A4ACB6",
+          "#CCD0D6",
+          "#F1F2F4"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display (Sora)",
+        "purpose": "Case titles and top-level section headings only."
+      },
+      "body": {
+        "displayName": "Body (IBM Plex Sans)",
+        "purpose": "Transcript prose, capped 65-75ch."
+      },
+      "data": {
+        "displayName": "Data (JetBrains Mono)",
+        "purpose": "Selectors, IDs, hashes, timestamps, table cells. Never prose."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Uppercase badges and column heads, four words maximum."
+      },
+      "figure": {
+        "displayName": "Figure (Newsreader)",
+        "purpose": "Case mastheads and headline numerals."
+      }
+    },
+    "shadows": [
+      {
+        "name": "pane",
+        "value": "inset 0 1px 0 hsl(var(--film)/0.085), 0 14px 38px -22px hsl(0 0% 0%/0.98)",
+        "purpose": "Resting surface: one specular cap, one contained shadow."
+      },
+      {
+        "name": "raised",
+        "value": "inset 0 1px 0 hsl(var(--film)/0.075), 0 18px 44px -26px hsl(0 0% 0%/0.95)",
+        "purpose": "Drawers, popovers, floating tiles."
+      },
+      {
+        "name": "refracted-rim",
+        "value": "inset 1px 0 0 hsl(var(--brand)/0.05), inset -1px 0 0 hsl(var(--intel-violet)/0.05)",
+        "purpose": "The two axes read at the pane edge where glass would bend light. Hairline only."
+      },
+      {
+        "name": "focus-ring",
+        "value": "0 0 0 2px hsl(var(--ring)), 0 0 0 4px hsl(var(--background))",
+        "purpose": "Restores a visible ring wherever outline:none is set."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out-quint",
+        "value": "cubic-bezier(0.22, 1, 0.36, 1)",
+        "purpose": "Default deceleration for state changes. No bounce, no elastic."
+      },
+      {
+        "name": "duration-state",
+        "value": "150ms",
+        "purpose": "Hover, focus, active feedback."
+      },
+      {
+        "name": "duration-reveal",
+        "value": "220ms",
+        "purpose": "Content arrival and meter growth."
+      },
+      {
+        "name": "blur-pane",
+        "value": "blur(26px) saturate(170%)",
+        "purpose": "One blur value per elevation tier. Never escalated per component."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "640px"
+      },
+      {
+        "name": "md",
+        "value": "768px"
+      },
+      {
+        "name": "lg",
+        "value": "1024px"
+      },
+      {
+        "name": "xl",
+        "value": "1280px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Pane",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "THE shared surface. Any new workspace surface uses this, not a new material.",
+      "html": "<div class=\"ds-pane\"><div class=\"ds-pane-title\">Evidence</div><div class=\"ds-pane-body\">55 artifacts across 18 tools.</div></div>",
+      "css": ".ds-pane{position:relative;border-radius:13px;background:linear-gradient(118deg,hsl(var(--film)/0.07) 0%,hsl(var(--film)/0.012) 38%,transparent 62%),linear-gradient(180deg,hsl(var(--film)/0.115) 0%,hsl(var(--film)/0.045) 46%,hsl(var(--film)/0.022) 100%),linear-gradient(180deg,hsl(var(--surface-2)/0.46) 0%,hsl(var(--surface-1)/0.56) 100%);backdrop-filter:blur(26px) saturate(170%);border:1px solid hsl(var(--film)/0.1);border-top-color:hsl(var(--film)/0.2);box-shadow:inset 0 1px 0 hsl(var(--film)/0.085),inset 1px 0 0 hsl(var(--brand)/0.05),inset -1px 0 0 hsl(var(--intel-violet)/0.05),0 14px 38px -22px hsl(0 0% 0%/0.98);padding:14px;color:hsl(var(--foreground));font-family:'IBM Plex Sans',system-ui,sans-serif}.ds-pane-title{font-size:.625rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:hsl(var(--muted-foreground));margin-bottom:8px}.ds-pane-body{font-size:.875rem;line-height:1.6}"
+    },
+    {
+      "name": "Transcript Card",
+      "kind": "custom",
+      "refersTo": "chat-card",
+      "description": "A turn in the transcript. Speaker identity is a head wash, never a side rail.",
+      "html": "<article class=\"ds-turn\" data-speaker=\"agent\"><header class=\"ds-turn-head\"><span class=\"ds-dot\"></span>AGENT<time class=\"ds-turn-time\">08:16 PM</time></header><div class=\"ds-turn-body\">Starting TRIAGE on the email selector.</div></article>",
+      "css": ".ds-turn{position:relative;overflow:hidden;border-radius:13px;border:1px solid hsl(var(--film)/0.1);border-top-color:hsl(var(--film)/0.2);background:linear-gradient(180deg,hsl(var(--film)/0.075) 0%,hsl(var(--film)/0.03) 46%,hsl(var(--film)/0.016) 100%),linear-gradient(180deg,hsl(var(--surface-2)/0.46) 0%,hsl(var(--surface-1)/0.56) 100%);backdrop-filter:blur(26px) saturate(170%);box-shadow:inset 0 1px 0 hsl(var(--film)/0.085),0 14px 38px -24px hsl(0 0% 0%/0.98);color:hsl(var(--foreground));font-family:'IBM Plex Sans',system-ui,sans-serif}.ds-turn::before{content:'';position:absolute;inset:0 0 auto 0;height:72px;pointer-events:none;background:linear-gradient(180deg,hsl(var(--speaker-agent)/0.12) 0%,transparent 100%)}.ds-turn-head{position:relative;display:flex;align-items:center;gap:8px;min-height:36px;padding:0 14px;border-bottom:1px solid hsl(var(--film)/0.06);font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:hsl(var(--muted-foreground))}.ds-dot{width:6px;height:6px;border-radius:50%;background:hsl(var(--speaker-agent))}.ds-turn-time{margin-left:auto;font-family:'JetBrains Mono',ui-monospace,monospace;letter-spacing:0}.ds-turn-body{position:relative;padding:14px;font-size:.875rem;line-height:1.6}"
+    },
+    {
+      "name": "Authority Chip",
+      "kind": "chip",
+      "refersTo": "authority-chip",
+      "description": "The ladder made visible. Colour plus icon plus word, always all three.",
+      "html": "<span class=\"ds-chip ds-chip-verified\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z\"/><path d=\"m9 12 2 2 4-4\"/></svg>Verified</span> <span class=\"ds-chip ds-chip-quarantine\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"m18.84 12.25 1.72-1.71a5 5 0 0 0-7.07-7.07l-1.71 1.71\"/><path d=\"m5.17 11.75-1.71 1.71a5 5 0 0 0 7.07 7.07l1.71-1.71\"/><line x1=\"8\" y1=\"2\" x2=\"8\" y2=\"5\"/><line x1=\"2\" y1=\"8\" x2=\"5\" y2=\"8\"/></svg>Quarantined</span>",
+      "css": ".ds-chip{display:inline-flex;align-items:center;gap:4px;border:1px solid;border-radius:8px;padding:1px 6px;font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}.ds-chip-verified{color:hsl(var(--authority-verified));border-color:hsl(var(--authority-verified)/.35);background:hsl(var(--authority-verified)/.1)}.ds-chip-quarantine{color:hsl(var(--authority-quarantine));border-color:hsl(var(--authority-quarantine)/.45);background:repeating-linear-gradient(135deg,hsl(var(--authority-quarantine)/.13) 0 3px,transparent 3px 6px)}"
+    },
+    {
+      "name": "Confidence Meter",
+      "kind": "custom",
+      "refersTo": "confidence",
+      "description": "Bar carries the tier colour; the numeral stays ink. Length says how big, hue says how trusted.",
+      "html": "<div class=\"ds-conf\"><div class=\"ds-conf-track\"><span class=\"ds-conf-fill\" style=\"width:88%\"></span></div><span class=\"ds-conf-num\">88%</span></div>",
+      "css": ".ds-conf{display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',ui-monospace,monospace}.ds-conf-track{position:relative;height:6px;flex:1;min-width:120px;border-radius:3px;overflow:hidden;background:hsl(var(--surface-3))}.ds-conf-fill{position:absolute;inset:0 auto 0 0;border-radius:3px;background:hsl(var(--authority-verified))}.ds-conf-num{font-size:.75rem;font-variant-numeric:tabular-nums;color:hsl(var(--foreground))}"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Ink ground, black text. Deliberately not the accent: a saturated fill is the cheapest object on a dark UI.",
+      "html": "<button class=\"ds-btn\">Start investigation</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 14px;border:none;border-radius:10px;background:hsl(var(--primary));color:hsl(var(--primary-foreground));font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:.875rem;font-weight:500;cursor:pointer;transition:background 150ms cubic-bezier(.22,1,.36,1),transform 150ms cubic-bezier(.22,1,.36,1)}.ds-btn:hover{background:hsl(var(--primary)/.9)}.ds-btn:active{transform:scale(.985)}.ds-btn:focus-visible{outline:none;box-shadow:0 0 0 2px hsl(var(--ring)),0 0 0 4px hsl(var(--background))}"
+    },
+    {
+      "name": "Composer",
+      "kind": "input",
+      "refersTo": "input-composer",
+      "description": "The one control permitted to glow. Indigo ring at full strength when it holds the caret.",
+      "html": "<div class=\"ds-composer\"><label class=\"ds-composer-label\">Investigation request</label><input class=\"ds-composer-input\" placeholder=\"e.g. analyst@example.com, who controls this mailbox?\"></div>",
+      "css": ".ds-composer{border-radius:12px;border:1px solid hsl(var(--brand)/.55);background:hsl(var(--surface-1)/.6);backdrop-filter:blur(22px) saturate(150%);padding:12px 14px;box-shadow:0 0 0 1px hsl(var(--brand)/.12),0 0 28px -14px hsl(var(--brand)/.55)}.ds-composer-label{display:block;font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:.75rem;color:hsl(var(--muted-foreground));margin-bottom:6px}.ds-composer-input{width:100%;border:none;background:transparent;color:hsl(var(--foreground));font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:.875rem;outline:none}.ds-composer-input::placeholder{color:hsl(var(--muted-foreground)/.8)}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Cold Room",
+    "overview": "The product is an operations room at night. A true black ground, cold platinum ink, and one electric indigo that means LIVE, LINKED or ACTIVE. Depth never comes from lighter greys; it comes from light, as translucent films and low-alpha blooms stacked on a void. The system serves a single obligation stated in PRODUCT.md: the interface must never make unverified data look confirmed. Colour is spent on authority, never on magnitude. This is a forensic instrument panel, not a hacker movie prop.",
+    "keyCharacteristics": [
+      "True black ground with tinted translucent panes floating on it",
+      "One indigo accent, used for state and never as a large painted fill",
+      "An eight-state authority ladder carrying colour plus icon plus word",
+      "Density without strain: an 11px reading floor, tabular numerals everywhere",
+      "Machined corners (13px on shared surfaces), never consumer rounding"
+    ],
+    "rules": [
+      {
+        "name": "The Authority Rule",
+        "body": "Hue belongs to authority, not to magnitude. The authority ladder is the only scale permitted to spend colour on a verdict.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Meaning Rule",
+        "body": "One meaning per token. Aliasing across roles is how the ladder previously became the confidence ramp wearing a hat.",
+        "section": "colors"
+      },
+      {
+        "name": "The Light Source Rule",
+        "body": "Indigo is a light source, not a fill. As soon as it becomes a large painted area it stops meaning look here.",
+        "section": "colors"
+      },
+      {
+        "name": "The Two Axes Rule",
+        "body": "Indigo is evidence, violet is inference. Nothing else may claim either hue.",
+        "section": "colors"
+      },
+      {
+        "name": "The Data Face Rule",
+        "body": "Monospace is a data face, not a body face. Labels and prose stay in the sans.",
+        "section": "typography"
+      },
+      {
+        "name": "The Micro Floor Rule",
+        "body": "Never below 11px, and never small size plus heavy tracking plus reduced opacity together.",
+        "section": "typography"
+      },
+      {
+        "name": "The Glow Is State Rule",
+        "body": "A glow must map to something real. A glow with nothing behind it is the amateur tell.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Blur Budget Rule",
+        "body": "Backdrop blur marks elevation, not surface. One intensity per tier.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do spend hue on the authority ladder and nothing else.",
+      "Do render every state with colour plus an icon plus a word.",
+      "Do keep the indigo as a rim, an edge, a bloom or an active state.",
+      "Do measure contrast through the composited glass, not each layer alone.",
+      "Do use the shared .panel material for any new surface.",
+      "Do keep monospace for values a reader compares character by character.",
+      "Do give every animation a prefers-reduced-motion alternative."
+    ],
+    "donts": [
+      "Don't build generic SaaS dashboards (gradient hero metrics, identical card grids, purple-glow marketing shells).",
+      "Don't reach for Hollywood hacker cliche: neon-green matrix rain, glitch effects, scanline overlays, skull iconography, decorative typing animations.",
+      "Don't use glass/glow as generic decoration rather than a deliberate material with a budget.",
+      "Don't render a single-source lead with the same visual weight as a corroborated finding.",
+      "Don't use a border-left or border-right above 1px as a coloured accent on a card, list item, callout or alert.",
+      "Don't colour a confidence numeral by its value.",
+      "Don't give a quarantined row a confidence hue.",
+      "Don't round a data surface past 16px.",
+      "Don't let a new surface invent its own blur, radius or border alpha."
+    ]
+  }
+}

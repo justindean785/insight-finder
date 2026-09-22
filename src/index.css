@@ -60,7 +60,7 @@ All colors MUST be HSL.
     --primary-foreground: 222 55% 6%;
     /* The glow IS blue. Halos, the scan sweep, live dots — the light the room
        is lit by. Was cream, which is why nothing ever looked electric. */
-    --primary-glow: 213 100% 66%;
+    --primary-glow: 246 96% 70%;
 
     --secondary: 221 34% 9%;
     --secondary-foreground: 213 38% 94%;
@@ -236,7 +236,7 @@ All colors MUST be HSL.
        Spend it as a rim, an edge, a bloom or an active state. Never as a
        large fill (rule 3). */
     --brand: 246 92% 66%;
-    --brand-deep: 224 82% 44%;
+    --brand-deep: 248 80% 46%;
 
     /* Intel tokens — ~79 var() uses across the app.
        These were BOTH literally `39 26% 88%` — two differently-named tokens
@@ -296,14 +296,14 @@ All colors MUST be HSL.
     /* The rail sits at page level; its separation is a border and a film, not
        a darker fill — there is nothing darker than the page. --sidebar-background
        therefore holds the same triple as --background, deliberately. */
-    --sidebar-background: 221 44% 4%;
+    --sidebar-background: 0 0% 0%;
     --sidebar-foreground: 214 19% 74%;
-    --sidebar-primary: 213 96% 62%;
+    --sidebar-primary: 246 92% 66%;
     --sidebar-primary-foreground: 222 55% 6%;
-    --sidebar-accent: 220 32% 11.5%;
+    --sidebar-accent: 220 45% 13.5%;
     --sidebar-accent-foreground: 212 40% 95%;
-    --sidebar-border: 220 29% 12%;
-    --sidebar-ring: 213 96% 62%;
+    --sidebar-border: 220 38% 13%;
+    --sidebar-ring: 246 92% 66%;
   }
 }
 
