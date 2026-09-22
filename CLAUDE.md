@@ -13,10 +13,34 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-09-22T16:00Z.** `main` = **`325daad`** (#617, squash, frontend-only).
-> Live `osint-agent` build = **`4bb19d9`** — UNCHANGED, and correctly so: #617 touches ZERO
-> files under `supabase/functions/`, so there was no stamp, no mirror sync and no Lovable
-> deploy to run. The edge channel is exactly where the 09-20 block left it.
+> **Dated state — 2026-09-22T16:30Z.** `main` = **`3b905b4`**. Live `osint-agent` build =
+> **`325daad`** — **DEPLOYED AND VERIFIED at 16:29Z.** `deploy/live` → `325daad`, ledger row
+> `3b905b4` with **zero problems and zero warnings**, `verify:deploy` **VERIFIED** with
+> `mirror tree -> equal` (`b83660e70bcf`), mirror `main` = `8aa6c1b`. Bytes unverified, as
+> always — read the scope line, not the green word.
+>
+> **This shipped the prompt char budget chain: #604 (`74e98ad`), #615 (`151b664`), #616
+> (`48acc71`).** Proof of deploy is the behavioural key, not the SHA:
+> **`checks.prompt_budget_ceiling`** = `{ok, "hard ceiling 220000 chars, tail=summarize"}`.
+> Read `tail=summarize` specifically — it proves **#615** is in the bundle, because the
+> pre-#615 code referenced the tail instead of summarizing it. A marker can never prove that.
+>
+> ⚠️ **The 2026-09-22 audit in #614 says "#604 is merged and must not be deployed as-is."
+> That verdict is STALE and was already stale when it was written down.** #614 was opened at
+> 10:51Z recording two unrepaired findings; **#615 merged 11:33Z and #616 merged 11:50Z**,
+> against exactly those two findings, in exactly the files they named, both with tests, and
+> #616's wiring test is negative-control verified (it fails against pre-fix `index.ts`). Do
+> not let #614 merge carrying that instruction — it would write a false deploy blocker into
+> this file, which is the same failure mode #614's own body warns about for #564.
+>
+> **The one-commit offset bit, as it always does, and the ordering that avoided it is worth
+> copying.** The stamp (#619) had to merge while `main` was at `325daad` so its parent IS the
+> marker; #618 (docs) was deliberately held behind it. Had the docs merged first the gate
+> would have reported a false `marker_offset_mismatch`. Sequence stamp → sync → gate → deploy
+> → ledger, and hold every unrelated PR until the stamp lands.
+>
+> **#617 itself needed no edge cycle at all** — it touches ZERO files under
+> `supabase/functions/`, which is why the edge sat at `4bb19d9` until this deploy.
 >
 > **The frontend DID ship, and was verified the hard way.** Vercel production deployment
 > `dpl_BhatGqZjQNjQnCi3xuci2bUei51Z`, `state: READY`, `target: production`,
