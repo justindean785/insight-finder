@@ -1,8 +1,9 @@
 // record-name-quarantine — the write-path linkage gate for MODEL-AUTHORED rows.
 //
-// Canonical case: speedrvce (thread ba53080a, 2026-09-23). The seed was a
-// username; a name-only breach lookup quarantined "Ahmad Thomas"; the model then
-// recorded a Silicon Valley CEO, a Senate aide and a CalMatters profile for that
+// Canonical case: a username-seed production case (2026-09-23), SANITIZED —
+// every handle, person and organisation is fictional. The seed was a
+// username; a name-only breach lookup quarantined "Jordan Vale"; the model then
+// recorded a chamber-of-commerce CEO, a Senate aide and a civic directory profile for that
 // SAME name through record_artifacts, all at full subject authority.
 //
 // PART 1 pins the pure rule. PART 2 DRIVES the shipped record_artifacts path
@@ -18,7 +19,7 @@ import { buildTools, type ToolContext } from "./tool-registry.ts";
 
 const QUARANTINED_ECHO = {
   kind: "name",
-  value: "Ahmad Thomas",
+  value: "Jordan Vale",
   metadata: { subject_unlinked: true, subject_unlinked_reason: "echo of a name-only query" },
 };
 
@@ -27,35 +28,35 @@ const QUARANTINED_ECHO = {
 Deno.test("record-name-quarantine: a row naming a quarantined person inherits the quarantine", () => {
   const names = quarantinedPersonNames([QUARANTINED_ECHO]);
   for (const v of [
-    "Ahmad Thomas - SVLG CEO",
-    "Ahmad R. Thomas - LegiStorm congressional staff record",
-    "CalMatters Digital Democracy profile - Ahmad Thomas - Advocate (2025)",
+    "Jordan Vale - Midvale Chamber CEO",
+    "Jordan R. Vale - legislative staff directory record",
+    "Civic directory profile - Jordan Vale - Advocate (2025)",
   ]) {
-    const got = inheritedNameQuarantine(v, names, "speedrvce");
+    const got = inheritedNameQuarantine(v, names, "quietfalcon77");
     assert(got, v);
     assertEquals(got!.subject_unlinked, true);
-    assertEquals(got!.unproven_linkage_parent, "name:ahmad thomas");
+    assertEquals(got!.unproven_linkage_parent, "name:jordan vale");
     assert(String(got!.subject_unlinked_reason).includes("echo of a name-only query"));
   }
 });
 
 Deno.test("record-name-quarantine: unrelated rows and partial-name rows are untouched", () => {
   const names = quarantinedPersonNames([QUARANTINED_ECHO]);
-  assertEquals(inheritedNameQuarantine("https://x.com/speedrvce", names, "speedrvce"), null);
+  assertEquals(inheritedNameQuarantine("https://x.com/quietfalcon77", names, "quietfalcon77"), null);
   // Surname-only and first-name-only mentions are NOT the quarantined name.
-  assertEquals(inheritedNameQuarantine("Haley Thomas", names, "speedrvce"), null);
-  assertEquals(inheritedNameQuarantine("Ahmad Jamal", names, "speedrvce"), null);
+  assertEquals(inheritedNameQuarantine("Casey Vale", names, "quietfalcon77"), null);
+  assertEquals(inheritedNameQuarantine("Jordan Blake", names, "quietfalcon77"), null);
 });
 
 Deno.test("record-name-quarantine: a name the SEED links is exempt (name-seeded investigation)", () => {
   const names = quarantinedPersonNames([QUARANTINED_ECHO]);
-  assertEquals(inheritedNameQuarantine("Ahmad Thomas - SVLG CEO", names, "Ahmad Thomas"), null);
+  assertEquals(inheritedNameQuarantine("Jordan Vale - Midvale Chamber CEO", names, "Jordan Vale"), null);
 });
 
 Deno.test("record-name-quarantine: a RELEASED or non-person or single-token parent taints nothing", () => {
   assertEquals(quarantinedPersonNames([{ ...QUARANTINED_ECHO, metadata: { subject_unlinked: true, linkage_confirmed: true } }]).length, 0);
   assertEquals(quarantinedPersonNames([{ ...QUARANTINED_ECHO, kind: "breach_exposure" }]).length, 0);
-  assertEquals(quarantinedPersonNames([{ ...QUARANTINED_ECHO, value: "Ahmad" }]).length, 0);
+  assertEquals(quarantinedPersonNames([{ ...QUARANTINED_ECHO, value: "Jordan" }]).length, 0);
   assertEquals(quarantinedPersonNames([{ ...QUARANTINED_ECHO, metadata: { subject_unlinked: "true" } }]).length, 0);
 });
 
@@ -128,11 +129,11 @@ async function record(threadRows: Array<Record<string, unknown>>, value: string,
   return { out, meta: (row?.metadata ?? {}) as Record<string, unknown>, row };
 }
 
-Deno.test("record_artifacts: the SVLG CEO row is written WITH the inherited quarantine", async () => {
-  const { out, meta, row } = await record([QUARANTINED_ECHO], "Ahmad Thomas - SVLG CEO");
+Deno.test("record_artifacts: the Midvale Chamber CEO row is written WITH the inherited quarantine", async () => {
+  const { out, meta, row } = await record([QUARANTINED_ECHO], "Jordan Vale - Midvale Chamber CEO");
   assert(row, "row must still be written — quarantine is disclosure, not deletion");
   assertEquals(meta.subject_unlinked, true);
-  assertEquals(meta.unproven_linkage_parent, "name:ahmad thomas");
+  assertEquals(meta.unproven_linkage_parent, "name:jordan vale");
   assertEquals(out.name_quarantined, 1);
 });
 
@@ -144,7 +145,7 @@ Deno.test("record_artifacts: the model cannot pre-release its own tainted row", 
   } as unknown as ToolContext;
   const { tools } = buildTools(ctx);
   await (tools as Record<string, { execute: (i: unknown, o: unknown) => Promise<unknown> }>).record_artifacts.execute(
-    { artifacts: [{ kind: "name", value: "Ahmad Thomas - SVLG CEO", source: "minimax_web_search", metadata: { linkage_confirmed: true } }] },
+    { artifacts: [{ kind: "name", value: "Jordan Vale - Midvale Chamber CEO", source: "minimax_web_search", metadata: { linkage_confirmed: true } }] },
     {},
   );
   const meta = (mock.inserted[0]?.metadata ?? {}) as Record<string, unknown>;
@@ -153,7 +154,7 @@ Deno.test("record_artifacts: the model cannot pre-release its own tainted row", 
 });
 
 Deno.test("record_artifacts: control — with no quarantined name on the thread, the row keeps authority", async () => {
-  const { out, meta, row } = await record([], "Ahmad Thomas - SVLG CEO");
+  const { out, meta, row } = await record([], "Jordan Vale - Midvale Chamber CEO");
   assert(row);
   assertEquals(meta.subject_unlinked, undefined);
   assertEquals(out.name_quarantined, undefined);
@@ -162,7 +163,7 @@ Deno.test("record_artifacts: control — with no quarantined name on the thread,
 Deno.test("record_artifacts: kill switch RECORD_NAME_QUARANTINE_DISABLED restores the old write", async () => {
   Deno.env.set("RECORD_NAME_QUARANTINE_DISABLED", "true");
   try {
-    const { meta } = await record([QUARANTINED_ECHO], "Ahmad Thomas - SVLG CEO");
+    const { meta } = await record([QUARANTINED_ECHO], "Jordan Vale - Midvale Chamber CEO");
     assertEquals(meta.subject_unlinked, undefined);
   } finally {
     Deno.env.delete("RECORD_NAME_QUARANTINE_DISABLED");
@@ -186,7 +187,7 @@ function toolsFor(threadRows: Array<Record<string, unknown>>, extra: Partial<Too
 Deno.test("record_artifact (singular shim): the same value is quarantined — no bypass by tool spelling", async () => {
   const { mock, tools } = toolsFor([QUARANTINED_ECHO]);
   const out = await tools.record_artifact.execute(
-    { kind: "name", value: "Ahmad Thomas - SVLG CEO", source: "minimax_web_search", confidence: 85 },
+    { kind: "name", value: "Jordan Vale - Midvale Chamber CEO", source: "minimax_web_search", confidence: 85 },
     {},
   ) as Record<string, unknown>;
   const meta = (mock.inserted[0]?.metadata ?? {}) as Record<string, unknown>;
@@ -198,11 +199,11 @@ Deno.test("record_artifacts: a quarantine extracted THIS request binds before it
   // The DB has no quarantined row yet (the detached insert has not landed).
   const { mock, tools, built } = toolsFor([]);
   built.noteQuarantinedFindings([
-    { kind: "name", value: "Ahmad Thomas", context: { subject_unlinked: true, subject_unlinked_reason: "echo of a name-only query" } },
+    { kind: "name", value: "Jordan Vale", context: { subject_unlinked: true, subject_unlinked_reason: "echo of a name-only query" } },
     { kind: "email", value: "unrelated@example.com", context: {} },
   ]);
   await tools.record_artifacts.execute(
-    { artifacts: [{ kind: "name", value: "Ahmad Thomas - SVLG CEO", source: "minimax_web_search" }] },
+    { artifacts: [{ kind: "name", value: "Jordan Vale - Midvale Chamber CEO", source: "minimax_web_search" }] },
     {},
   );
   const meta = (mock.inserted[0]?.metadata ?? {}) as Record<string, unknown>;
@@ -210,9 +211,9 @@ Deno.test("record_artifacts: a quarantine extracted THIS request binds before it
 });
 
 Deno.test("record_artifacts: the REQUEST's person seed exempts its own name (not only triage_seed state)", async () => {
-  const { mock, tools } = toolsFor([QUARANTINED_ECHO], { getSubjectSeedName: () => "ahmad thomas" });
+  const { mock, tools } = toolsFor([QUARANTINED_ECHO], { getSubjectSeedName: () => "jordan vale" });
   await tools.record_artifacts.execute(
-    { artifacts: [{ kind: "name", value: "Ahmad Thomas - SVLG CEO", source: "minimax_web_search" }] },
+    { artifacts: [{ kind: "name", value: "Jordan Vale - Midvale Chamber CEO", source: "minimax_web_search" }] },
     {},
   );
   const meta = (mock.inserted[0]?.metadata ?? {}) as Record<string, unknown>;

@@ -1,18 +1,19 @@
 /**
  * record-name-quarantine — the write-path linkage gate for MODEL-AUTHORED rows.
  *
- * ## The hole this closes (speedrvce, thread ba53080a, 2026-09-23)
+ * ## The hole this closes (a username-seed production case, 2026-09-23 — SANITIZED:
+ * every handle, person and organisation below is fictional; the shape is real)
  *
- * Seed: the username `speedrvce`. A name-only breach lookup on "Ahmad Thomas"
+ * Seed: the username `quietfalcon77`. A name-only breach lookup on "Jordan Vale"
  * came back with 47 same-name identities, and `auto-persist-findings` correctly
  * quarantined its echo (`subject_unlinked`: "harvested from a name-only query").
  * The model then web-searched that SAME name and wrote what it found itself,
  * through `record_artifacts`:
  *
- *   85  name          Ahmad Thomas - SVLG CEO
- *   75  legal_record  Ahmad R. Thomas - LegiStorm congressional staff record
- *   70  source_person Ahmad R. Thomas - CEO, Silicon Valley Leadership Group
- *   70  social_profile CalMatters Digital Democracy profile - Ahmad Thomas
+ *   85  name          Jordan Vale - Midvale Chamber CEO
+ *   75  legal_record  Jordan R. Vale - legislative staff directory record
+ *   70  source_person Jordan R. Vale - CEO, Midvale Chamber of Commerce
+ *   70  social_profile Civic directory profile - Jordan Vale
  *
  * None of them carried `subject_unlinked`. The auto-persist gate keys on QUERY
  * SHAPE and never sees these rows; `record_artifacts`' own collision gate fires
@@ -62,8 +63,8 @@ export function recordNameQuarantineEnabled(
 
 /**
  * Person names this thread has ACTIVELY quarantined. A name must carry at least
- * two tokens of two or more characters — a bare first name ("Ahmad") would taint
- * every row that mentions anyone called Ahmad, which is the over-reach this gate
+ * two tokens of two or more characters — a bare first name ("Jordan") would taint
+ * every row that mentions anyone called Jordan, which is the over-reach this gate
  * must not have.
  */
 export function quarantinedPersonNames(rows: readonly ThreadRow[] | null | undefined): QuarantinedName[] {
