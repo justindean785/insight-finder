@@ -84,15 +84,15 @@ describe("audit adapter — honest source collapsing", () => {
     expect(findings.some((f) => f.effectiveCount < f.declaredCount)).toBe(true);
   });
 
-  it("names collapsed sources by what the analyst sees, not by artifact UUID (speedrvce report)", () => {
-    const ids = ["9acb82f4-af6a-489f-b75b-1ab34141308e", "27a8ace9-a1f1-4007-9d5f-527e75d8f172"];
+  it("names collapsed sources by what the analyst sees, not by artifact UUID (username-seed case report)", () => {
+    const ids = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
     const arts = [
-      art({ id: ids[0], source: "username_sweep", value: "speedrvce" }),
-      art({ id: ids[1], source: "username_sweep", value: "https://www.roblox.com/user.aspx?username=ahmadthomad" }),
+      art({ id: ids[0], source: "username_sweep", value: "quietfalcon77" }),
+      art({ id: ids[1], source: "username_sweep", value: "https://www.roblox.com/user.aspx?username=jordanvael" }),
     ];
     const f = checkIndependence(artifactsToSources(arts)).find((x) => x.message.includes("share origin"));
     expect(f).toBeDefined();
-    expect(f!.message).toContain('"speedrvce"');
+    expect(f!.message).toContain('"quietfalcon77"');
     expect(f!.message).toContain('share origin "username_sweep"');
     for (const id of ids) expect(f!.message).not.toContain(id);
     // The machine-readable ids are still carried for every consumer that keys on them.

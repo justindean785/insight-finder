@@ -208,7 +208,7 @@ export function isClusterIneligible(a: AuthorityInput): boolean {
  * Same two exclusions `pickBestIdentity` applies to the Identity panel (#8):
  * no active quarantine / collision flag, and no analyst rejection. Those
  * surfaces sat beside the gated one in the same report and read the raw
- * artifact list, so on the `speedrvce` case (2026-09-23) the Subject Profile
+ * artifact list, so on a username-seed case (2026-09-23) the Subject Profile
  * named a quarantined name-only breach echo as the subject, the 85% "Analyst
  * confidence" came from a row the analyst had REJECTED, and a rejected handle
  * was listed as an alias — while the gated Identity panel on the same page
@@ -221,7 +221,7 @@ export function isSubjectAuthorityEligible(a: AuthorityInput & { id?: string }, 
 }
 
 /**
- * A row recording that a lookup found NOTHING ("speedrvce - no breach hits").
+ * A row recording that a lookup found NOTHING ("quietfalcon77 - no breach hits").
  * Mirrors the edge's `NULL_RESULT_RE` (`lib/artifact-hygiene.ts`). Used only to
  * keep negatives out of COUNTS that assert exposure: "Subject appears in N
  * breach corpora" must not count the corpora that said the subject is absent.
@@ -243,7 +243,7 @@ const escapeRe = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /**
  * PURE null result only, same rule as the edge's `nullResultResidue`: after
  * removing the zero phrase, the tool name, the leading "<selector> - " and
- * connective filler, nothing of substance may remain. "speedrvce - no breach
+ * connective filler, nothing of substance may remain. "quietfalcon77 - no breach
  * hits" is null; "Canva breach found; no records of password exposure" is a
  * real hit that happens to contain a zero phrase, and must still count.
  */
