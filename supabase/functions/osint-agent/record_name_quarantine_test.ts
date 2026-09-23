@@ -168,3 +168,62 @@ Deno.test("record_artifacts: kill switch RECORD_NAME_QUARANTINE_DISABLED restore
     Deno.env.delete("RECORD_NAME_QUARANTINE_DISABLED");
   }
 });
+
+// ── Codex review on #621: the three bypasses ─────────────────────────────────
+
+function toolsFor(threadRows: Array<Record<string, unknown>>, extra: Partial<ToolContext> = {}) {
+  const mock = makeMock(threadRows);
+  const ctx = {
+    supabase: mock.supabase, supabaseAdmin: mock.supabase, userId: "u", threadId: "t",
+    archiveEnabled: false, detectedSeedType: "username", messages: [], manualOverrideSelector: null,
+    ...extra,
+  } as unknown as ToolContext;
+  const built = buildTools(ctx);
+  const tools = built.tools as Record<string, { execute: (i: unknown, o: unknown) => Promise<unknown> }>;
+  return { mock, tools, built };
+}
+
+Deno.test("record_artifact (singular shim): the same value is quarantined — no bypass by tool spelling", async () => {
+  const { mock, tools } = toolsFor([QUARANTINED_ECHO]);
+  const out = await tools.record_artifact.execute(
+    { kind: "name", value: "Ahmad Thomas - SVLG CEO", source: "minimax_web_search", confidence: 85 },
+    {},
+  ) as Record<string, unknown>;
+  const meta = (mock.inserted[0]?.metadata ?? {}) as Record<string, unknown>;
+  assertEquals(meta.subject_unlinked, true);
+  assertEquals(out.name_quarantined, 1);
+});
+
+Deno.test("record_artifacts: a quarantine extracted THIS request binds before its auto-persist insert lands", async () => {
+  // The DB has no quarantined row yet (the detached insert has not landed).
+  const { mock, tools, built } = toolsFor([]);
+  built.noteQuarantinedFindings([
+    { kind: "name", value: "Ahmad Thomas", context: { subject_unlinked: true, subject_unlinked_reason: "echo of a name-only query" } },
+    { kind: "email", value: "unrelated@example.com", context: {} },
+  ]);
+  await tools.record_artifacts.execute(
+    { artifacts: [{ kind: "name", value: "Ahmad Thomas - SVLG CEO", source: "minimax_web_search" }] },
+    {},
+  );
+  const meta = (mock.inserted[0]?.metadata ?? {}) as Record<string, unknown>;
+  assertEquals(meta.subject_unlinked, true);
+});
+
+Deno.test("record_artifacts: the REQUEST's person seed exempts its own name (not only triage_seed state)", async () => {
+  const { mock, tools } = toolsFor([QUARANTINED_ECHO], { getSubjectSeedName: () => "ahmad thomas" });
+  await tools.record_artifacts.execute(
+    { artifacts: [{ kind: "name", value: "Ahmad Thomas - SVLG CEO", source: "minimax_web_search" }] },
+    {},
+  );
+  const meta = (mock.inserted[0]?.metadata ?? {}) as Record<string, unknown>;
+  assertEquals(meta.subject_unlinked, undefined);
+});
+
+Deno.test("index.ts wiring: quarantines are noted SYNCHRONOUSLY before the detached auto-persist, and the person seed is passed", async () => {
+  const src = await Deno.readTextFile(new URL("./index.ts", import.meta.url));
+  const noted = src.indexOf("noteQuarantinedFindings(stepFindings)");
+  const detached = src.indexOf("const autoPersistTask = (async () =>");
+  assert(noted > 0, "onStepFinish must call noteQuarantinedFindings(stepFindings)");
+  assert(detached > noted, "the note must precede the detached auto-persist task");
+  assert(src.includes("getSubjectSeedName: () => subjectSeedName"), "buildTools must receive the request's person seed");
+});

@@ -27,7 +27,7 @@ import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
 import { collisionPeerSignal, type CollisionPeer } from "./lib/quarantine.ts";
 import { loadRefusedArtifacts, type QuarantineRow } from "./lib/dispatch-quarantine.ts";
-import { inheritedNameQuarantine, quarantinedPersonNames, recordNameQuarantineEnabled, type QuarantinedName } from "./lib/record-name-quarantine.ts";
+import { inheritedNameQuarantine, quarantinedPersonNames, recordNameQuarantineEnabled, type QuarantinedName, type ThreadRow } from "./lib/record-name-quarantine.ts";
 import {
   isQueuedPlaceholder,
   stripStatusAssertions,
@@ -164,6 +164,11 @@ export interface ToolContext {
   detectedSeedType: string;
   messages: UIMessage[];
   manualOverrideSelector: string | null;
+  /** The request's PERSON seed, normalized ("" when not a person seed). A getter
+   *  because index.ts derives it after buildTools is called; tools only execute
+   *  later. `triageState.seed` cannot stand in for it: triage_seed accepts only
+   *  email/username. Optional so existing callers and tests keep working. */
+  getSubjectSeedName?: () => string;
 }
 
 // Hosts that reliably return 451/403 THROUGH r.jina.ai — scraping them is a
@@ -464,6 +469,55 @@ export function normalizeSocialPlatform(platform: unknown): string {
 
 export function buildTools(ctx: ToolContext) {
   const { supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector } = ctx;
+
+  // ── record-name-quarantine: request-local state + one loader for BOTH writers ──
+  // Quarantined findings extracted in THIS request, noted synchronously by
+  // index.ts's onStepFinish BEFORE the detached auto-persist write lands. Without
+  // it, a record_artifacts call in the very next step races that insert, reads no
+  // quarantined name, and writes the same-name rows at full authority.
+  const pendingQuarantineRows: ThreadRow[] = [];
+  const noteQuarantinedFindings = (
+    findings: ReadonlyArray<{ kind: string; value: string; context?: Record<string, unknown> }>,
+  ): void => {
+    for (const f of findings ?? []) {
+      if (f?.context?.subject_unlinked === true) {
+        pendingQuarantineRows.push({ kind: f.kind, value: f.value, metadata: f.context });
+      }
+    }
+  };
+  /** The seed the exemption compares against: the request's person seed first. */
+  const quarantineSeed = (): string | null => {
+    const person = ctx.getSubjectSeedName?.() ?? "";
+    return person || triageState.seed || null;
+  };
+  /** Thread + pending quarantined person names. Fails OPEN on a read error: an
+   *  authority stamp must not turn a DB blip into stamping every row. */
+  const loadQuarantinedNames = async (): Promise<QuarantinedName[]> => {
+    let rows: ThreadRow[] = [];
+    try {
+      const res = await loadRefusedArtifacts(
+        async (from, to) => {
+          const { data, count, error } = await supabase
+            .from("artifacts")
+            .select("kind,value,metadata", { count: "exact" })
+            .eq("thread_id", threadId)
+            .in("kind", ["name", "person", "source_person"])
+            .order("created_at", { ascending: true })
+            .order("id", { ascending: true })
+            .range(from, to);
+          return { data: (data ?? null) as QuarantineRow[] | null, count, error };
+        },
+        () => "",
+      );
+      rows = res.rows;
+      if (!res.complete) {
+        console.warn(JSON.stringify({ event: "record_name_quarantine_read_incomplete", thread_id: threadId, rows: res.rows.length, reason: res.reason }));
+      }
+    } catch (e) {
+      console.warn(JSON.stringify({ event: "record_name_quarantine_read_failed", thread_id: threadId, error: String(e).slice(0, 200) }));
+    }
+    return quarantinedPersonNames([...rows, ...pendingQuarantineRows]);
+  };
 
   const tools = {
     list_tools: tool({
@@ -4966,36 +5020,12 @@ export function buildTools(ctx: ToolContext) {
           await loadThreadArtifactIdentities(supabase, threadId, triageState.seed ?? null);
         // Write-path linkage gate for MODEL-AUTHORED rows (lib/record-name-quarantine.ts):
         // a row naming a person this thread has ACTIVELY quarantined inherits that
-        // quarantine. Read completely (paged by rows returned, like the dispatch
-        // guard); a failed read fails OPEN with a warning — this is an authority
-        // stamp, and a DB blip must not stamp every row in the batch.
+        // quarantine. `loadQuarantinedNames` reads the thread completely and merges
+        // quarantines extracted earlier in THIS request (see its definition).
         let quarantinedNames: QuarantinedName[] = [];
         let nameQuarantineStamped = 0;
         const nameQuarantineOn = recordNameQuarantineEnabled();
-        if (nameQuarantineOn) {
-          try {
-            const res = await loadRefusedArtifacts(
-              async (from, to) => {
-                const { data, count, error } = await supabase
-                  .from("artifacts")
-                  .select("kind,value,metadata", { count: "exact" })
-                  .eq("thread_id", threadId)
-                  .in("kind", ["name", "person", "source_person"])
-                  .order("created_at", { ascending: true })
-                  .order("id", { ascending: true })
-                  .range(from, to);
-                return { data: (data ?? null) as QuarantineRow[] | null, count, error };
-              },
-              () => "",
-            );
-            quarantinedNames = quarantinedPersonNames(res.rows);
-            if (!res.complete) {
-              console.warn(JSON.stringify({ event: "record_name_quarantine_read_incomplete", thread_id: threadId, rows: res.rows.length, reason: res.reason }));
-            }
-          } catch (e) {
-            console.warn(JSON.stringify({ event: "record_name_quarantine_read_failed", thread_id: threadId, error: String(e).slice(0, 200) }));
-          }
-        }
+        if (nameQuarantineOn) quarantinedNames = await loadQuarantinedNames();
         /** Confidence differences on rows declined as thread-wide duplicates.
          *  DISCLOSED, never applied — see the note at the rejection site. */
         const confidenceDeltasSuppressed: Array<{
@@ -5140,7 +5170,7 @@ export function buildTools(ctx: ToolContext) {
             ...dateSanity.metaPatch,
           };
           if (nameQuarantineOn && !collisionExcluded) {
-            const inherited = inheritedNameQuarantine(v.value, quarantinedNames, triageState.seed ?? null);
+            const inherited = inheritedNameQuarantine(v.value, quarantinedNames, quarantineSeed());
             if (inherited) {
               Object.assign(meta, inherited);
               // Release is an ANALYST decision (src/lib/quarantine-release.ts). The
@@ -5592,7 +5622,19 @@ export function buildTools(ctx: ToolContext) {
           ...(listingAgent ? { contact_type: "real_estate_listing_agent" } : {}),
           ...(bioName ? { bio_cross_link: true } : {}),
           ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
-        };
+        } as Record<string, unknown>;
+        // Same write-path linkage gate as record_artifacts: this shim is a full
+        // duplicate implementation and is advertised in the catalog, so gating only
+        // the plural tool would leave the bypass one spelling away.
+        let singleNameQuarantined = false;
+        if (!collisionExcluded && recordNameQuarantineEnabled()) {
+          const inherited = inheritedNameQuarantine(v.value, await loadQuarantinedNames(), quarantineSeed());
+          if (inherited) {
+            Object.assign(enrichedMeta, inherited);
+            delete enrichedMeta.linkage_confirmed;
+            singleNameQuarantined = true;
+          }
+        }
         // THREAD-WIDE dedup, same gate as record_artifacts (2026-08-28). This
         // shim is a full duplicate implementation, not a delegation, and it is
         // advertised in the catalog — so deduping only the plural tool would
@@ -5668,7 +5710,20 @@ export function buildTools(ctx: ToolContext) {
           _content_snapshot: JSON.stringify(meta).slice(0, 1500),
           _metadata: meta,
         }).then(() => {}, (e: unknown) => console.warn("[record_artifact] append_evidence:", e));
-        return { ok: true, kind: row.kind, value: row.value, ...(minor ? { minor_safety_flag: true } : {}) };
+        return {
+          ok: true,
+          kind: row.kind,
+          value: row.value,
+          ...(minor ? { minor_safety_flag: true } : {}),
+          ...(singleNameQuarantined
+            ? {
+                name_quarantined: 1,
+                name_quarantine_note:
+                  "This row names a person this investigation has NOT linked to the subject (a quarantined same-name identity). " +
+                  "It was recorded with subject_unlinked and carries no subject authority.",
+              }
+            : {}),
+        };
       },
     }),
     record_evidence: tool({
@@ -6240,5 +6295,5 @@ export function buildTools(ctx: ToolContext) {
     },
   });
 
-  return { tools, availableToolsForAudit };
+  return { tools, availableToolsForAudit, noteQuarantinedFindings };
 }
