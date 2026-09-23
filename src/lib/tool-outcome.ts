@@ -90,13 +90,6 @@ const SKIP_RE =
 const EMPTY_RE = /no usable result|no record found|not found\b|no results?\b/i;
 const CANCEL_RE = /\babort(?:ed|error)?\b|signal (?:has been|was) aborted|\bcancell?ed\b/i;
 const TIMEOUT_RE = /\btimed?\s?out\b|exceeded\s+\d+\s?ms|_timeout\b|\btimeout\b/i;
-
-/** A bare abort from the investigation's OUTER budget (not a per-tool timeout,
- *  which carries an explicit "exceeded Nms" / "timed out" phrase). Exported so
- *  the Activity feed classifies it the same way Health does. */
-export function isRunCancellation(msg: string): boolean {
-  return CANCEL_RE.test(msg) && !TIMEOUT_RE.test(msg);
-}
 const RATELIMIT_RE = /\brate[\s-]?limit/i;
 const CONFIG_RE = /invalid (?:or unauthorized )?(?:api )?key|unauthorized key|api[\s-]?key|missing[\s_-]?key|not configured|no api key|payment required|insufficient (?:credit|balance)|quota exceeded/i;
 const DENIED_RE = /\bforbidden\b|access denied/i;
@@ -152,7 +145,7 @@ export function classifyDetailedOutcome(
   // Cancellation vs. timeout: a bare AbortError = the outer investigation budget
   // aborting an in-flight call (not the provider's fault). A per-tool timeout has
   // an explicit "exceeded Nms" / "timed out" phrase.
-  if (msg && isRunCancellation(msg)) return "cancelled";
+  if (msg && CANCEL_RE.test(msg) && !TIMEOUT_RE.test(msg)) return "cancelled";
   if (msg && TIMEOUT_RE.test(msg)) return "timeout";
 
   if (code === 429 || (msg && RATELIMIT_RE.test(msg))) return "rate_limited";

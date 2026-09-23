@@ -3,7 +3,6 @@ import { supabase } from "@/integrations/supabase/client";
 import { deriveToolReason, type ToolTone, type ToolStatus } from "@/lib/tool-run";
 import { toolDisplayName, toolActionLabel } from "@/lib/tool-display";
 import { chargedMicroUsd as effectiveCharge } from "@/lib/runCost";
-import { isRunCancellation } from "@/lib/tool-outcome";
 
 /**
  * Best-effort short reason for a non-OK tool event, for the Activity feed.
@@ -171,12 +170,6 @@ export function classifyActivityRow(
   if (GATED_RE.test(err)) return { tone: "skip", status: "gated" };
   if (DEGRADED_RE.test(err)) return { tone: "skip", status: "degraded" };
   if (oc === "skipped") return { tone: "skip", status: "skipped" };
-  // The outer run budget aborting an in-flight call ("AbortError: The signal
-  // has been aborted") is not the tool's fault. Health files it as Cancelled
-  // under Skipped (tool-outcome.ts); without this, the same two speedrvce
-  // socialfetch_web_read rows read FAILED here and as red coverage gaps on
-  // Overview, while Health said "Needs attention 2" for the jina 422s only.
-  if (isRunCancellation(err)) return { tone: "skip", status: "skipped" };
 
   // Nothing matched: a genuine fault. This is what "Needs attention" means.
   return { tone: "error", status: "failed" };
