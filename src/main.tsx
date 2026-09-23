@@ -7,9 +7,14 @@ import {
   type CapturedError,
 } from "./lib/telemetry";
 import { supabase } from "./integrations/supabase/client";
+import { installStaleChunkReload } from "./lib/stale-chunk-reload";
 
 // Catch uncaught errors + unhandled promise rejections before first render.
 installGlobalHandlers();
+
+// A tab that outlived a deploy reloads once instead of hitting the error screen
+// when it opens a lazy tab whose chunk the new build no longer serves.
+installStaleChunkReload();
 
 // Remote error capture (Option B: Supabase table, no new dependency — see #67).
 // Fire-and-forget: never blocks startup, never throws, never recurses into the
