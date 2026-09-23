@@ -130,3 +130,16 @@ describe("audit verdict roll-up", () => {
     }
   });
 });
+
+describe("audit source labels — minor safety", () => {
+  it("a minor-flagged row never lends its value to a guardrail message", () => {
+    const arts = [
+      art({ id: "m1", source: "username_sweep", value: "kid_handle_2011", metadata: { possible_minor: true } }),
+      art({ id: "m2", source: "username_sweep", value: "other" }),
+    ];
+    const f = checkIndependence(artifactsToSources(arts)).find((x) => x.message.includes("share origin"));
+    expect(f).toBeDefined();
+    expect(f!.message).not.toContain("kid_handle_2011");
+    expect(f!.message).toContain("minor-safety redacted");
+  });
+});

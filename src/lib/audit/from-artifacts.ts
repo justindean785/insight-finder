@@ -87,10 +87,17 @@ export function originOf(a: Artifact): string | undefined {
 
 /** One Source per artifact; computeEffectiveSourceCount/checkIndependence then
  *  collapse by origin (corpus/provider), mirror-pool, and aggregator host. */
+function isMinorFlagged(a: Artifact): boolean {
+  const m = meta(a);
+  return m.possible_minor === true || m.minor_warning === true || String(m.flag ?? "").toUpperCase() === "MINOR_SAFETY_FLAG";
+}
+
 export function artifactsToSources(artifacts: Artifact[]): Source[] {
   return artifacts.map((a) => ({
     id: a.id,
-    label: str(a.value),
+    // Message label only. A minor-flagged row never lends its value to a
+    // guardrail line (minor-safety is absolute, whatever the reveal setting).
+    label: isMinorFlagged(a) ? "(minor-safety redacted)" : str(a.value),
     type: classifySourceType(a),
     origin: originOf(a),
     url: urlOf(a),

@@ -243,8 +243,17 @@ export function isNullResultValue(value: unknown, source?: string | null): boole
   NULL_RESULT_RE.lastIndex = 0;
   if (!NULL_RESULT_RE.test(raw)) return false;
   let s = raw.toLowerCase();
+  // Strip a leading "<selector> - " ONLY when it looks like a selector: at most
+  // three tokens and no result noun. "Canva breach - no records of passwords"
+  // keeps "canva", so a real hit is never read as a null result.
   const sep = s.match(/^(.+?)\s+[-–—]\s+/);
-  if (sep) s = s.slice(sep[0].length);
+  if (sep) {
+    const head = sep[1].trim();
+    NULL_RESULT_NOUN_RE.lastIndex = 0;
+    const selectorLike = head.split(/\s+/).length <= 3 && !NULL_RESULT_NOUN_RE.test(head);
+    NULL_RESULT_NOUN_RE.lastIndex = 0;
+    if (selectorLike) s = s.slice(sep[0].length);
+  }
   s = s.replace(NULL_RESULT_RE, " ");
   const tool = (source ?? "").trim().toLowerCase();
   if (tool) s = s.split(tool).join(" ");

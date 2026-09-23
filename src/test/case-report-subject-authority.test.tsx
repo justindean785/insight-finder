@@ -212,6 +212,8 @@ describe("isNullResultValue — pure null results only (mirrors edge nullResultR
     ["0 results", null, true],
     ["Canva breach found; no records of password exposure", null, false],
     ["speedrvce@example.com - Canva", null, false],
+    ["LinkedIn exposed email and phone - 0 hits", null, false],
+    ["Adobe - no hits", null, true],
   ])("%s → %s", (value, source, expected) => {
     expect(isNullResultValue(value, source)).toBe(expected);
   });
