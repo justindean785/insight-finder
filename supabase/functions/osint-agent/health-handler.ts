@@ -23,6 +23,7 @@ import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./
 import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
+import { recordNameQuarantineEnabled } from "./lib/record-name-quarantine.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 
 /**
@@ -364,6 +365,20 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       detail: hardCeiling
         ? `hard ceiling ${TOTAL_PROMPT_CHAR_BUDGET} chars, tail=summarize`
         : `DISABLED via PROMPT_BUDGET_HARD_CEILING_DISABLED — tail exempt above ${TOTAL_PROMPT_CHAR_BUDGET} chars`,
+    };
+  }
+
+  // Does record_artifacts inherit an active same-name quarantine onto the rows the
+  // MODEL writes (lib/record-name-quarantine.ts)? Pure, no DB. Its PRESENCE is the
+  // behavioural proof that the build carrying that gate is the one running; `ok`
+  // tracks the kill switch so a disabled gate is visible at a glance.
+  {
+    const on = recordNameQuarantineEnabled();
+    r.checks.record_name_quarantine = {
+      ok: on,
+      detail: on
+        ? "record_artifacts inherits active person-name quarantine"
+        : "DISABLED via RECORD_NAME_QUARANTINE_DISABLED — model-authored rows can name unlinked persons at full authority",
     };
   }
 

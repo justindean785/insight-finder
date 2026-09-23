@@ -26,6 +26,8 @@ import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDom
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
 import { collisionPeerSignal, type CollisionPeer } from "./lib/quarantine.ts";
+import { loadRefusedArtifacts, type QuarantineRow } from "./lib/dispatch-quarantine.ts";
+import { inheritedNameQuarantine, quarantinedPersonNames, recordNameQuarantineEnabled, type QuarantinedName } from "./lib/record-name-quarantine.ts";
 import {
   isQueuedPlaceholder,
   stripStatusAssertions,
@@ -4962,6 +4964,38 @@ export function buildTools(ctx: ToolContext) {
         // row the thread already has.
         const { keys: priorByKey, truncated: threadDedupPartial } =
           await loadThreadArtifactIdentities(supabase, threadId, triageState.seed ?? null);
+        // Write-path linkage gate for MODEL-AUTHORED rows (lib/record-name-quarantine.ts):
+        // a row naming a person this thread has ACTIVELY quarantined inherits that
+        // quarantine. Read completely (paged by rows returned, like the dispatch
+        // guard); a failed read fails OPEN with a warning — this is an authority
+        // stamp, and a DB blip must not stamp every row in the batch.
+        let quarantinedNames: QuarantinedName[] = [];
+        let nameQuarantineStamped = 0;
+        const nameQuarantineOn = recordNameQuarantineEnabled();
+        if (nameQuarantineOn) {
+          try {
+            const res = await loadRefusedArtifacts(
+              async (from, to) => {
+                const { data, count, error } = await supabase
+                  .from("artifacts")
+                  .select("kind,value,metadata", { count: "exact" })
+                  .eq("thread_id", threadId)
+                  .in("kind", ["name", "person", "source_person"])
+                  .order("created_at", { ascending: true })
+                  .order("id", { ascending: true })
+                  .range(from, to);
+                return { data: (data ?? null) as QuarantineRow[] | null, count, error };
+              },
+              () => "",
+            );
+            quarantinedNames = quarantinedPersonNames(res.rows);
+            if (!res.complete) {
+              console.warn(JSON.stringify({ event: "record_name_quarantine_read_incomplete", thread_id: threadId, rows: res.rows.length, reason: res.reason }));
+            }
+          } catch (e) {
+            console.warn(JSON.stringify({ event: "record_name_quarantine_read_failed", thread_id: threadId, error: String(e).slice(0, 200) }));
+          }
+        }
         /** Confidence differences on rows declined as thread-wide duplicates.
          *  DISCLOSED, never applied — see the note at the rejection site. */
         const confidenceDeltasSuppressed: Array<{
@@ -5105,6 +5139,16 @@ export function buildTools(ctx: ToolContext) {
             // Spread LAST so a corrected `note` overrides the model-supplied one.
             ...dateSanity.metaPatch,
           };
+          if (nameQuarantineOn && !collisionExcluded) {
+            const inherited = inheritedNameQuarantine(v.value, quarantinedNames, triageState.seed ?? null);
+            if (inherited) {
+              Object.assign(meta, inherited);
+              // Release is an ANALYST decision (src/lib/quarantine-release.ts). The
+              // model cannot pre-release its own row by writing the flag.
+              delete meta.linkage_confirmed;
+              nameQuarantineStamped++;
+            }
+          }
           // One observation is identified only by its authority-bearing surface.
           // Model-authored metadata labels remain persisted for disclosure, but
           // cannot manufacture another observation row or corroboration.
@@ -5424,6 +5468,16 @@ export function buildTools(ctx: ToolContext) {
           // A dedup gate that quietly stopped deduping would be worse than one
           // that says so: a partial scan means a duplicate may have been let in.
           ...(threadDedupPartial ? { thread_dedup_partial: true } : {}),
+          // Told, not hidden: the model must not re-assert these as the subject's.
+          ...(nameQuarantineStamped > 0
+            ? {
+                name_quarantined: nameQuarantineStamped,
+                name_quarantine_note:
+                  "Some rows name a person this investigation has NOT linked to the subject (a quarantined same-name identity). " +
+                  "They were recorded with subject_unlinked and carry no subject authority. Do not describe them as the subject; " +
+                  "link the name with an independent selector (shared handle, email, photo, location) before relying on it.",
+              }
+            : {}),
           ...(memory_hits.length > 0
             ? {
                 memory_hits,
