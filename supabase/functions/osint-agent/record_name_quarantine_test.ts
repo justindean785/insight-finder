@@ -48,6 +48,21 @@ Deno.test("record-name-quarantine: unrelated rows and partial-name rows are unto
   assertEquals(inheritedNameQuarantine("Jordan Blake", names, "quietfalcon77"), null);
 });
 
+Deno.test("record-name-quarantine: accented and unaccented spellings are the same name", () => {
+  const names = quarantinedPersonNames([{ ...QUARANTINED_ECHO, value: "José García" }]);
+  assert(inheritedNameQuarantine("Jose Garcia - Midvale Chamber CEO", names, "quietfalcon77"));
+  assert(inheritedNameQuarantine("José García - Midvale Chamber CEO", names, "quietfalcon77"));
+});
+
+Deno.test("record-name-quarantine: name words must sit together, not be scattered across other names", () => {
+  const names = quarantinedPersonNames([QUARANTINED_ECHO]);
+  // Middle initial and surname-first still match.
+  assert(inheritedNameQuarantine("Jordan R. Vale - staff record", names, "quietfalcon77"));
+  assert(inheritedNameQuarantine("Vale, Jordan - staff record", names, "quietfalcon77"));
+  // Two different people who merely share the words do not.
+  assertEquals(inheritedNameQuarantine("Jordan Smith met Mary Vale at the event", names, "quietfalcon77"), null);
+});
+
 Deno.test("record-name-quarantine: a name the SEED links is exempt (name-seeded investigation)", () => {
   const names = quarantinedPersonNames([QUARANTINED_ECHO]);
   assertEquals(inheritedNameQuarantine("Jordan Vale - Midvale Chamber CEO", names, "Jordan Vale"), null);

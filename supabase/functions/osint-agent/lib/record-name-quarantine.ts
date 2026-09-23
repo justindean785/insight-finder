@@ -47,11 +47,36 @@ export type ThreadRow = { kind?: unknown; value?: unknown; metadata?: unknown };
 
 export type QuarantinedName = { tokens: string[]; value: string; reason: string | null };
 
+/** Accent-folded, Unicode-aware tokens: "José García" and "Jose Garcia" are the
+ *  same name here. An ASCII-only split shredded accented names into fragments
+ *  that never matched their unaccented spelling. */
 function tokens(s: string): string[] {
   return String(s ?? "")
+    .normalize("NFKD")
+    .replace(/\p{M}+/gu, "")
     .toLowerCase()
-    .split(/[^a-z0-9]+/i)
+    .split(/[^\p{L}\p{N}]+/u)
     .filter((t) => t.length > 0);
+}
+
+/**
+ * Do all name tokens appear CLOSE TOGETHER in the value — within a window of
+ * (name length + 1) tokens, in any order? That admits a middle initial ("Jordan
+ * R. Vale") and surname-first ("Vale, Jordan"), but not two different people
+ * whose names merely share the words ("Jordan Smith met Mary Vale").
+ */
+function nameAppearsIn(valueTokens: string[], name: string[]): boolean {
+  const need = new Set(name);
+  const maxSpan = name.length + 1;
+  for (let i = 0; i < valueTokens.length; i++) {
+    if (!need.has(valueTokens[i])) continue;
+    const seen = new Set<string>();
+    for (let j = i; j < valueTokens.length && j - i < maxSpan; j++) {
+      if (need.has(valueTokens[j])) seen.add(valueTokens[j]);
+      if (seen.size === need.size) return true;
+    }
+  }
+  return false;
 }
 
 /** Kill switch, read at CALL TIME so it takes effect on the running build. */
@@ -107,9 +132,9 @@ export function inheritedNameQuarantine(
   seed: string | null | undefined,
 ): Record<string, unknown> | null {
   if (!quarantined.length) return null;
-  const have = new Set(tokens(value));
+  const have = tokens(value);
   for (const q of quarantined) {
-    if (!q.tokens.every((t) => have.has(t))) continue;
+    if (!nameAppearsIn(have, q.tokens)) continue;
     if (seedLinks(seed, q)) continue;
     const because = q.reason ? ` — that name was quarantined because: ${q.reason}` : "";
     return {
