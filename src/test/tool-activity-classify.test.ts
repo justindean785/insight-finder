@@ -29,4 +29,19 @@ describe("classifyActivityRow (#22 — tool_usage_log → activity)", () => {
     expect(classifyActivityRow(null, true, null).status).toBe("succeeded");
     expect(classifyActivityRow(null, false, "boom").status).toBe("failed");
   });
+
+  it("an outer-budget abort is Skipped (Cancelled), not Failed — same as Health (speedrvce)", () => {
+    const r = classifyActivityRow("failed", false, "AbortError: The signal has been aborted");
+    expect(r.status).toBe("skipped");
+    expect(r.tone).toBe("skip");
+  });
+
+  it("a per-tool timeout is still NOT treated as a run cancellation", () => {
+    const r = classifyActivityRow("failed", false, "gemini_deep_dork exceeded 20000ms tool timeout");
+    expect(r.status).toBe("degraded");
+  });
+
+  it("a genuine provider fault still reads Failed", () => {
+    expect(classifyActivityRow("failed", false, "jina 422").status).toBe("failed");
+  });
 });

@@ -90,6 +90,7 @@ export function originOf(a: Artifact): string | undefined {
 export function artifactsToSources(artifacts: Artifact[]): Source[] {
   return artifacts.map((a) => ({
     id: a.id,
+    label: str(a.value),
     type: classifySourceType(a),
     origin: originOf(a),
     url: urlOf(a),
