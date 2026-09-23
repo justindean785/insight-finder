@@ -70,6 +70,7 @@ Deno.test("record-name-quarantine: kill switch is ON by default and read at call
 
 function makeMock(threadRows: Array<Record<string, unknown>>) {
   const inserted: Array<Record<string, unknown>> = [];
+  const evidence: Array<Record<string, unknown>> = [];
   const supabase = {
     from(_table: string) {
       // Only the name-quarantine read filters `.in("kind", …)`; every other read
@@ -100,11 +101,12 @@ function makeMock(threadRows: Array<Record<string, unknown>>) {
         update: () => builder,
       };
     },
-    rpc() {
+    rpc(name: string, args: Record<string, unknown>) {
+      if (name === "append_evidence") evidence.push(args);
       return Promise.resolve({ data: [{ id: "ev1", seq: 1, chain_hash: "h" }], error: null });
     },
   };
-  return { supabase, inserted };
+  return { supabase, inserted, evidence };
 }
 
 async function record(threadRows: Array<Record<string, unknown>>, value: string, kind = "name") {
@@ -193,6 +195,11 @@ Deno.test("record_artifact (singular shim): the same value is quarantined — no
   const meta = (mock.inserted[0]?.metadata ?? {}) as Record<string, unknown>;
   assertEquals(meta.subject_unlinked, true);
   assertEquals(out.name_quarantined, 1);
+  // The chain-of-custody append carries the SAME post-quarantine metadata.
+  await new Promise((r) => setTimeout(r, 0));
+  const ev = mock.evidence.find((e) => e._value === "Jordan Vale - Midvale Chamber CEO");
+  assert(ev, "append_evidence must be called for the recorded row");
+  assertEquals((ev!._metadata as Record<string, unknown>).subject_unlinked, true);
 });
 
 Deno.test("record_artifacts: a quarantine extracted THIS request binds before its auto-persist insert lands", async () => {
