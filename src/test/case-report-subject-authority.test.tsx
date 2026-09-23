@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { render, cleanup } from "@testing-library/react";
 import { CaseReport } from "@/components/panel/CaseReport";
+import { isNullResultValue } from "@/lib/report-hygiene";
 
 /**
  * The speedrvce case (thread ba53080a, 2026-09-23). The Identity panel is gated by
@@ -163,5 +164,55 @@ describe("CaseReport subject surfaces honour quarantine + analyst rejection", ()
       />,
     );
     expect(profileCell(container, "Aliases / handles")).toContain("ahmadthomad");
+  });
+
+  it("a legacy metadata.false_positive row (no review row) is excluded like a rejection", () => {
+    const legacy = art({ id: "legacy-fp", kind: "username", value: "legacyfp", confidence: 45, metadata: { false_positive: true } });
+    const { container } = render(
+      <CaseReport seedValue="speedrvce" seedType="username" artifacts={[...fixture(true), legacy] as never}
+        reviews={REVIEWS as never} messages={[]} reportType="full" />,
+    );
+    expect(profileCell(container, "Aliases / handles")).not.toContain("legacyfp");
+  });
+
+  it("a real hit that merely CONTAINS a zero phrase still counts toward breach corpora", () => {
+    const real = [
+      "speedrvce@example.com - Canva breach found; no records of password exposure",
+      "speedrvce@example.com - Wattpad",
+      "speedrvce@example.com - MyFitnessPal",
+    ].map((v, i) => art({ id: `mixed-${i}`, kind: "breach_exposure", value: v, confidence: 60 }));
+    const { container } = render(
+      <CaseReport seedValue="speedrvce" seedType="username" artifacts={[...fixture(true), ...real] as never}
+        reviews={REVIEWS as never} messages={[]} reportType="full" />,
+    );
+    expect(container.textContent ?? "").toContain("Subject appears in 3 distinct breach corpora");
+  });
+
+  it("a rejected namesake's name/phone/DOB does not assert the subject's PII triad or raise risk", () => {
+    const namesake = [
+      art({ id: "ns-name", kind: "name", value: "Ahmad R Thomas", confidence: 40 }),
+      art({ id: "ns-phone", kind: "phone", value: "+15555550123", confidence: 40 }),
+      art({ id: "ns-dob", kind: "dob", value: "1979-03-25", confidence: 40 }),
+    ];
+    const rejected = { ...REVIEWS, "ns-name": "wrong", "ns-phone": "wrong", "ns-dob": "wrong" };
+    const { container } = render(
+      <CaseReport seedValue="speedrvce" seedType="username" artifacts={[...fixture(true), ...namesake] as never}
+        reviews={rejected as never} messages={[]} reportType="full" />,
+    );
+    const text = container.textContent ?? "";
+    expect(text).not.toContain("Full PII triad");
+    expect(text).toMatch(/Risk LevelLOW/);
+  });
+});
+
+describe("isNullResultValue — pure null results only (mirrors edge nullResultResidue)", () => {
+  it.each([
+    ["speedrvce - no breach hits", "breach_check", true],
+    ["ahmad thomad - no breach hits", null, true],
+    ["0 results", null, true],
+    ["Canva breach found; no records of password exposure", null, false],
+    ["speedrvce@example.com - Canva", null, false],
+  ])("%s → %s", (value, source, expected) => {
+    expect(isNullResultValue(value, source)).toBe(expected);
   });
 });

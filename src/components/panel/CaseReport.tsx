@@ -79,7 +79,7 @@ const forSubject = (reviews: Reviews, a: Artifact): boolean => isSubjectAuthorit
 /** Breach rows that actually put the SUBJECT in a corpus: authority-eligible,
  *  and not a "no breach hits" negative. Feeds counts that assert exposure. */
 const subjectBreaches = (artifacts: Artifact[], reviews: Reviews): Artifact[] =>
-  artifacts.filter((a) => isBreachKind(a.kind) && forSubject(reviews, a) && !isNullResultValue(a.value));
+  artifacts.filter((a) => isBreachKind(a.kind) && forSubject(reviews, a) && !isNullResultValue(a.value, a.source));
 // THE report's number, and it is now the same number as every other surface's.
 // This used to be `review ? adjustedConfidence(a, review) : a.confidence`, so the
 // report agreed with the Evidence BOARD on an unreviewed row and with the
@@ -341,7 +341,10 @@ function buildHunterNotes(artifacts: Artifact[], seedValue: string | null, revie
   for (const w of cluster.warnings.slice(0, 3)) notes.push({ text: w });
 
   const breaches = subjectBreaches(artifacts, reviews);
-  const passwords = artifacts.filter((a) => a.kind.toLowerCase() === "password");
+  // Every input below asserts something ABOUT THE SUBJECT, so a rejected or
+  // quarantined namesake row must not feed any of them.
+  const subject = artifacts.filter((a) => forSubject(reviews, a));
+  const passwords = subject.filter((a) => a.kind.toLowerCase() === "password");
   if (breaches.length >= 3) {
     notes.push({
       text: `Subject appears in ${breaches.length} distinct breach corpora. Assume credential exposure is broad and that any reused password is in attacker hands.`,
@@ -356,16 +359,16 @@ function buildHunterNotes(artifacts: Artifact[], seedValue: string | null, revie
   }
 
   const FIN = /(robinhood|coinbase|gatehub|kraken|gemini|binance|paypal|venmo|cashapp|wise|fidelity|schwab|chase|wells.?fargo|amex|amextax)/i;
-  const financial = artifacts.filter((a) => FIN.test(a.value) || FIN.test(String(a.metadata?.site ?? "")));
+  const financial = subject.filter((a) => FIN.test(a.value) || FIN.test(String(a.metadata?.site ?? "")));
   if (financial.length >= 2) {
     notes.push({
       text: `Multiple financial accounts tied to the same identity — credential-stuffing risk against either is high. Owner should be assumed at material financial risk.`,
     });
   }
 
-  const hasName = artifacts.some((a) => ["name", "person"].includes(a.kind.toLowerCase()));
-  const hasPhone = artifacts.some((a) => a.kind.toLowerCase() === "phone");
-  const hasDob = artifacts.some((a) => a.kind.toLowerCase() === "dob");
+  const hasName = subject.some((a) => ["name", "person"].includes(a.kind.toLowerCase()));
+  const hasPhone = subject.some((a) => a.kind.toLowerCase() === "phone");
+  const hasDob = subject.some((a) => a.kind.toLowerCase() === "dob");
   if (hasName && hasPhone && hasDob) {
     notes.push({
       text: `Full PII triad (name + phone + DOB) is present. This enables SIM-swap, voice-phishing, and KBA bypass against banks and brokers.`,
@@ -406,15 +409,17 @@ function computeRisk(artifacts: Artifact[], reviews?: Reviews): { level: RiskLev
   let score = 0;
 
   const breaches = subjectBreaches(artifacts, reviews).length;
-  const passwords = artifacts.filter((a) => a.kind.toLowerCase() === "password").length;
-  const hasName = artifacts.some((a) => ["name", "person"].includes(a.kind.toLowerCase()));
-  const hasPhone = artifacts.some((a) => a.kind.toLowerCase() === "phone");
-  const hasDob = artifacts.some((a) => a.kind.toLowerCase() === "dob");
+  // Same gate as the Hunter's Note: a namesake must not raise the SUBJECT's risk.
+  const subject = artifacts.filter((a) => forSubject(reviews, a));
+  const passwords = subject.filter((a) => a.kind.toLowerCase() === "password").length;
+  const hasName = subject.some((a) => ["name", "person"].includes(a.kind.toLowerCase()));
+  const hasPhone = subject.some((a) => a.kind.toLowerCase() === "phone");
+  const hasDob = subject.some((a) => a.kind.toLowerCase() === "dob");
   const FIN = /(robinhood|coinbase|gatehub|kraken|gemini|binance|paypal|venmo|cashapp|fidelity|schwab|chase|wells.?fargo|amex)/i;
   const ADULT = /(meetmindful|passionsnetwork|adultfriendfinder|ashleymadison|onlyfans|fansly)/i;
 
-  const financial = artifacts.filter((a) => FIN.test(a.value) || FIN.test(String(a.metadata?.site ?? ""))).length;
-  const adult = artifacts.filter((a) => ADULT.test(a.value) || ADULT.test(String(a.metadata?.site ?? ""))).length;
+  const financial = subject.filter((a) => FIN.test(a.value) || FIN.test(String(a.metadata?.site ?? ""))).length;
+  const adult = subject.filter((a) => ADULT.test(a.value) || ADULT.test(String(a.metadata?.site ?? ""))).length;
 
   if (breaches >= 1) score += 1;
   if (breaches >= 3) score += 1;

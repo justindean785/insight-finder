@@ -12,6 +12,7 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { isUsernameSweepSource, labelForArtifact, KIND_TO_PIVOT, type ConfLabel, type ReviewAdjustment } from "@/lib/intel";
 import { effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { isRejectedReview } from "@/lib/review";
+import { isRejectedArtifact } from "@/lib/analyst-decisions";
 import { isQuarantined } from "@/lib/quarantine";
 
 // ---------------------------------------------------------------------------
@@ -213,8 +214,10 @@ export function isClusterIneligible(a: AuthorityInput): boolean {
  * was listed as an alias — while the gated Identity panel on the same page
  * named somebody else. The row keeps its place in every evidence table.
  */
-export function isSubjectAuthorityEligible(a: AuthorityInput, review?: string | null): boolean {
-  return !isClusterIneligible(a) && !isRejectedReview(review);
+export function isSubjectAuthorityEligible(a: AuthorityInput & { id?: string }, review?: string | null): boolean {
+  // `isRejectedArtifact`, not `isRejectedReview`: the canonical predicate also
+  // honours the legacy `metadata.false_positive` flag, which has no review row.
+  return !isClusterIneligible(a) && !isRejectedArtifact({ id: a.id ?? "", metadata: a.metadata }, review);
 }
 
 /**
@@ -223,9 +226,30 @@ export function isSubjectAuthorityEligible(a: AuthorityInput, review?: string | 
  * keep negatives out of COUNTS that assert exposure: "Subject appears in N
  * breach corpora" must not count the corpora that said the subject is absent.
  */
-const NULL_RESULT_RE = /\b(?:0|no|zero)\s+(?:hit|breach|result|record|paste|match|exposure)s?\b/i;
-export function isNullResultValue(value: unknown): boolean {
-  return NULL_RESULT_RE.test(String(value ?? ""));
+const NULL_RESULT_RE = /\b(?:0|no|zero)\s+(?:hit|breach|result|record|paste|match|exposure)s?\b/gi;
+const NULL_RESULT_NOUN_RE = /\b(?:hits?|breach(?:es)?|results?|records?|pastes?|match(?:es)?|exposures?)\b/g;
+const NULL_RESULT_FILLER_RE =
+  /\b(?:for|on|in|of|the|a|an|from|found|returned|via|with|and|to|at|by|any|were|was|there|this|that|query|lookup|search|check|against|across)\b/g;
+
+/**
+ * PURE null result only, same rule as the edge's `nullResultResidue`: after
+ * removing the zero phrase, the tool name, the leading "<selector> - " and
+ * connective filler, nothing of substance may remain. "speedrvce - no breach
+ * hits" is null; "Canva breach found; no records of password exposure" is a
+ * real hit that happens to contain a zero phrase, and must still count.
+ */
+export function isNullResultValue(value: unknown, source?: string | null): boolean {
+  const raw = String(value ?? "");
+  NULL_RESULT_RE.lastIndex = 0;
+  if (!NULL_RESULT_RE.test(raw)) return false;
+  let s = raw.toLowerCase();
+  const sep = s.match(/^(.+?)\s+[-–—]\s+/);
+  if (sep) s = s.slice(sep[0].length);
+  s = s.replace(NULL_RESULT_RE, " ");
+  const tool = (source ?? "").trim().toLowerCase();
+  if (tool) s = s.split(tool).join(" ");
+  s = s.replace(NULL_RESULT_NOUN_RE, " ").replace(NULL_RESULT_FILLER_RE, " ");
+  return s.replace(/[^a-z0-9]+/g, " ").trim() === "";
 }
 
 // ---------------------------------------------------------------------------
