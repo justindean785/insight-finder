@@ -239,8 +239,10 @@ Deno.serve(async (req) => {
       console.warn("[credits] pre-gate check failed (allowing run):", e);
     }
 
-    const { tools, availableToolsForAudit } = buildTools({
+    const { tools, availableToolsForAudit, noteQuarantinedFindings } = buildTools({
       supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector,
+      // Getter: `subjectSeedName` is derived below. Tools only execute after it is set.
+      getSubjectSeedName: () => subjectSeedName,
     });
 
     const modelMessages = await convertToModelMessages(messages);
@@ -1321,6 +1323,10 @@ Deno.serve(async (req) => {
           const stepFindings = stepToolResults.length > 0
             ? extractStepFindings(stepToolResults, subjectSeedName, { escalated })
             : [];
+          // SYNCHRONOUSLY, before the detached auto-persist below: record_artifacts'
+          // name-quarantine gate must see a name quarantined in THIS step even when
+          // the model records the same-name rows before that insert lands.
+          noteQuarantinedFindings(stepFindings);
           // PRE-NUDGE BUFFER. The gate above can only open AFTER the nudge fires,
           // and the nudge fires only after several unrecorded fan-out steps — so
           // everything the run found before that point was denied by the denylist
