@@ -226,10 +226,19 @@ export function isSubjectAuthorityEligible(a: AuthorityInput & { id?: string }, 
  * keep negatives out of COUNTS that assert exposure: "Subject appears in N
  * breach corpora" must not count the corpora that said the subject is absent.
  */
-const NULL_RESULT_RE = /\b(?:0|no|zero)\s+(?:hit|breach|result|record|paste|match|exposure)s?\b/gi;
-const NULL_RESULT_NOUN_RE = /\b(?:hits?|breach(?:es)?|results?|records?|pastes?|match(?:es)?|exposures?)\b/g;
+// Result nouns, with their REAL plurals ("breaches", "matches"): the edge's
+// `(?:…)s?` misses those, and a "no breaches found" row must still read as null.
+const NULL_NOUN = "(?:hits?|breach(?:es)?|results?|records?|pastes?|match(?:es)?|exposures?)";
+// Non-global twins for .test(): a /g regex carries lastIndex across calls, so a
+// shared one used with .test() is order-dependent. Only .replace() gets /g.
+const NULL_PHRASE_TEST = new RegExp(`\\b(?:0|no|zero)\\s+${NULL_NOUN}\\b`, "i");
+const NULL_PHRASE_ALL = new RegExp(`\\b(?:0|no|zero)\\s+${NULL_NOUN}\\b`, "gi");
+const NULL_NOUN_TEST = new RegExp(`\\b${NULL_NOUN}\\b`, "i");
+const NULL_NOUN_ALL = new RegExp(`\\b${NULL_NOUN}\\b`, "gi");
 const NULL_RESULT_FILLER_RE =
   /\b(?:for|on|in|of|the|a|an|from|found|returned|via|with|and|to|at|by|any|were|was|there|this|that|query|lookup|search|check|against|across)\b/g;
+
+const escapeRe = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * PURE null result only, same rule as the edge's `nullResultResidue`: after
@@ -240,24 +249,22 @@ const NULL_RESULT_FILLER_RE =
  */
 export function isNullResultValue(value: unknown, source?: string | null): boolean {
   const raw = String(value ?? "");
-  NULL_RESULT_RE.lastIndex = 0;
-  if (!NULL_RESULT_RE.test(raw)) return false;
+  if (!NULL_PHRASE_TEST.test(raw)) return false;
   let s = raw.toLowerCase();
   // Strip a leading "<selector> - " ONLY when it looks like a selector: at most
-  // three tokens and no result noun. "Canva breach - no records of passwords"
-  // keeps "canva", so a real hit is never read as a null result.
+  // three tokens and no result noun. "LinkedIn exposed email and phone - 0 hits"
+  // keeps its substance, so a real hit is never read as a null result.
   const sep = s.match(/^(.+?)\s+[-–—]\s+/);
   if (sep) {
     const head = sep[1].trim();
-    NULL_RESULT_NOUN_RE.lastIndex = 0;
-    const selectorLike = head.split(/\s+/).length <= 3 && !NULL_RESULT_NOUN_RE.test(head);
-    NULL_RESULT_NOUN_RE.lastIndex = 0;
-    if (selectorLike) s = s.slice(sep[0].length);
+    if (head.split(/\s+/).length <= 3 && !NULL_NOUN_TEST.test(head)) s = s.slice(sep[0].length);
   }
-  s = s.replace(NULL_RESULT_RE, " ");
+  s = s.replace(NULL_PHRASE_ALL, " ");
+  // Tool name removed as a WHOLE WORD only, so a short source label can never
+  // delete characters from inside other words.
   const tool = (source ?? "").trim().toLowerCase();
-  if (tool) s = s.split(tool).join(" ");
-  s = s.replace(NULL_RESULT_NOUN_RE, " ").replace(NULL_RESULT_FILLER_RE, " ");
+  if (tool.length >= 3) s = s.replace(new RegExp(`(^|[^a-z0-9_])${escapeRe(tool)}(?=$|[^a-z0-9_])`, "g"), "$1 ");
+  s = s.replace(NULL_NOUN_ALL, " ").replace(NULL_RESULT_FILLER_RE, " ");
   return s.replace(/[^a-z0-9]+/g, " ").trim() === "";
 }
 
