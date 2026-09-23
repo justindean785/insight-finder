@@ -75,6 +75,12 @@ Deno.test("record-name-quarantine: a RELEASED or non-person or single-token pare
   assertEquals(quarantinedPersonNames([{ ...QUARANTINED_ECHO, metadata: { subject_unlinked: "true" } }]).length, 0);
 });
 
+Deno.test("record-name-quarantine: a repeated word is ONE token, so 'Jordan Jordan' cannot taint every Jordan", () => {
+  const names = quarantinedPersonNames([{ ...QUARANTINED_ECHO, value: "Jordan Jordan" }]);
+  assertEquals(names.length, 0);
+  assertEquals(inheritedNameQuarantine("Jordan Smith - Riverbend council", names, null), null);
+});
+
 Deno.test("record-name-quarantine: kill switch is ON by default and read at call time", () => {
   assert(recordNameQuarantineEnabled(() => undefined));
   assert(!recordNameQuarantineEnabled(() => "true"));

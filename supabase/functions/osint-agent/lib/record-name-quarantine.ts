@@ -88,7 +88,7 @@ export function recordNameQuarantineEnabled(
 
 /**
  * Person names this thread has ACTIVELY quarantined. A name must carry at least
- * two tokens of two or more characters — a bare first name ("Jordan") would taint
+ * two DISTINCT tokens of two or more characters — a bare first name ("Jordan") would taint
  * every row that mentions anyone called Jordan, which is the over-reach this gate
  * must not have.
  */
@@ -103,7 +103,9 @@ export function quarantinedPersonNames(rows: readonly ThreadRow[] | null | undef
       | null;
     if (meta?.subject_unlinked !== true || meta?.linkage_confirmed === true) continue;
     const value = typeof row.value === "string" ? row.value.trim() : "";
-    const t = tokens(value).filter((x) => x.length >= 2);
+    // DISTINCT tokens: "Jordan Jordan" is one word, and matching it would taint
+    // every row that mentions anyone called Jordan.
+    const t = [...new Set(tokens(value).filter((x) => x.length >= 2))];
     if (t.length < 2) continue;
     const key = [...t].sort().join(" ");
     if (seen.has(key)) continue;
