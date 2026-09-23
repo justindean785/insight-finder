@@ -147,4 +147,21 @@ describe("CaseReport subject surfaces honour quarantine + analyst rejection", ()
     );
     expect(container.textContent ?? "").toContain("Subject appears in 3 distinct breach corpora");
   });
+
+  it("clean twin: a rejected row does not suppress the SAME value observed cleanly by another source", () => {
+    // Rejection binds to the row the analyst judged, never to the value. An
+    // independent, unrejected observation of the same handle keeps its authority.
+    const twin = art({ id: "clean-twin", kind: "username", value: "ahmadthomad", confidence: 45 });
+    const { container } = render(
+      <CaseReport
+        seedValue="speedrvce"
+        seedType="username"
+        artifacts={[...fixture(true), twin] as never}
+        reviews={REVIEWS as never}
+        messages={[]}
+        reportType="full"
+      />,
+    );
+    expect(profileCell(container, "Aliases / handles")).toContain("ahmadthomad");
+  });
 });
