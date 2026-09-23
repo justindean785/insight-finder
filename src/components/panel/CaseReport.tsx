@@ -38,7 +38,7 @@ import {
   type ConfLabel,
   type ReviewAdjustment,
 } from "@/lib/intel";
-import { formatArtifactDisplayValue, buildIdentityRows, isClusterIneligible, type IdentityRow } from "@/lib/report-hygiene";
+import { formatArtifactDisplayValue, buildIdentityRows, isClusterIneligible, isNullResultValue, isSubjectAuthorityEligible, type IdentityRow } from "@/lib/report-hygiene";
 import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
@@ -74,6 +74,12 @@ export type ReportType = "full" | "brief";
  */
 type Reviews = Record<string, ReviewAdjustment> | undefined;
 const revOf = (reviews: Reviews, a: Artifact): ReviewAdjustment => reviews?.[a.id];
+/** May this row speak for the subject? See `isSubjectAuthorityEligible`. */
+const forSubject = (reviews: Reviews, a: Artifact): boolean => isSubjectAuthorityEligible(a, revOf(reviews, a));
+/** Breach rows that actually put the SUBJECT in a corpus: authority-eligible,
+ *  and not a "no breach hits" negative. Feeds counts that assert exposure. */
+const subjectBreaches = (artifacts: Artifact[], reviews: Reviews): Artifact[] =>
+  artifacts.filter((a) => isBreachKind(a.kind) && forSubject(reviews, a) && !isNullResultValue(a.value));
 // THE report's number, and it is now the same number as every other surface's.
 // This used to be `review ? adjustedConfidence(a, review) : a.confidence`, so the
 // report agreed with the Evidence BOARD on an unreviewed row and with the
@@ -334,7 +340,7 @@ function buildHunterNotes(artifacts: Artifact[], seedValue: string | null, revie
   const cluster = buildIdentityClusters(artifacts, seedValue, reviews);
   for (const w of cluster.warnings.slice(0, 3)) notes.push({ text: w });
 
-  const breaches = artifacts.filter((a) => isBreachKind(a.kind));
+  const breaches = subjectBreaches(artifacts, reviews);
   const passwords = artifacts.filter((a) => a.kind.toLowerCase() === "password");
   if (breaches.length >= 3) {
     notes.push({
@@ -395,11 +401,11 @@ function buildUnknowns(artifacts: Artifact[]): string[] {
 
 type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 
-function computeRisk(artifacts: Artifact[]): { level: RiskLevel; risks: string[] } {
+function computeRisk(artifacts: Artifact[], reviews?: Reviews): { level: RiskLevel; risks: string[] } {
   const risks: string[] = [];
   let score = 0;
 
-  const breaches = artifacts.filter((a) => isBreachKind(a.kind)).length;
+  const breaches = subjectBreaches(artifacts, reviews).length;
   const passwords = artifacts.filter((a) => a.kind.toLowerCase() === "password").length;
   const hasName = artifacts.some((a) => ["name", "person"].includes(a.kind.toLowerCase()));
   const hasPhone = artifacts.some((a) => a.kind.toLowerCase() === "phone");
@@ -685,10 +691,13 @@ function topByConfidence(artifacts: Artifact[], kinds: string[], reviews?: Revie
   // this keeps the narrative builders consistent so a capitalized/undefined
   // `kind` never silently drops a row (or throws into the ErrorBoundary).
   const set = new Set(kinds.map((k) => k.toLowerCase()));
-  // Same rule as the identity pickers: a rejected row is not a candidate to
-  // become the subject's headline Name/Email/Phone/Address.
+  // Same rule as the identity pickers (`pickBestIdentity`): neither a rejected
+  // row nor a quarantined/collision row may become the subject's headline
+  // Name/Email/Phone/Address. Rejection alone let a quarantined name-only
+  // breach echo headline the Subject Profile while the gated Identity panel on
+  // the same page named a different person.
   const pool = artifacts.filter(
-    (a) => set.has(String(a.kind ?? "").toLowerCase()) && !isRejectedReview(revOf(reviews, a)),
+    (a) => set.has(String(a.kind ?? "").toLowerCase()) && forSubject(reviews, a),
   );
   if (!pool.length) return null;
   return pool.slice().sort((a, b) => (confOf(reviews, b) ?? 0) - (confOf(reviews, a) ?? 0))[0];
@@ -729,12 +738,15 @@ const FOOTPRINT_NON_TLD = new Set([
 ]);
 // Exported for unit testing (pure presentation helper — no component state).
 // eslint-disable-next-line react-refresh/only-export-components
-export function buildProfileLinks(artifacts: Artifact[]): FootprintLink[] {
+export function buildProfileLinks(artifacts: Artifact[], reviews?: Reviews): FootprintLink[] {
   const out: FootprintLink[] = [];
   const seen = new Set<string>();
   for (const a of artifacts) {
     const kind = String(a.kind ?? "").toLowerCase();
     if (!FOOTPRINT_KINDS.has(kind)) continue;
+    // "Digital Footprint" sits under the Subject Profile and reads as the
+    // subject's; a rejected or quarantined handle is not.
+    if (!forSubject(reviews, a)) continue;
     const value = String(a.value ?? "").trim();
     if (!value) continue;
     const m = (a.metadata ?? {}) as Record<string, unknown>;
@@ -763,11 +775,11 @@ export function buildProfileLinks(artifacts: Artifact[]): FootprintLink[] {
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
-export function buildAliases(artifacts: Artifact[]): string[] {
+export function buildAliases(artifacts: Artifact[], reviews?: Reviews): string[] {
   const set = new Set<string>();
   for (const a of artifacts) {
     const kind = String(a.kind ?? "").toLowerCase();
-    if (kind === "username" || kind === "handle") {
+    if ((kind === "username" || kind === "handle") && forSubject(reviews, a)) {
       const v = String(a.value ?? "").trim();
       if (v) set.add(v);
     }
@@ -951,7 +963,10 @@ function MaskedValue({ label, value }: RevealField) {
 /** Strongest identity-bearing artifact confidence — the reasoned read, distinct
  *  from the strict ≥2-independent-class auto-corroboration count. */
 function analystConfidence(artifacts: Artifact[], reviews?: Reviews): number {
-  const pool = artifacts.filter((a) => ["name", "email", "phone", "address"].includes(a.kind));
+  // Identity-bearing FOR THE SUBJECT: an analyst-rejected namesake at 85 was
+  // headlining "Analyst confidence 85% · HIGH" on a case whose only names were
+  // rejected or quarantined.
+  const pool = artifacts.filter((a) => ["name", "email", "phone", "address"].includes(a.kind) && forSubject(reviews, a));
   return pool.reduce((mx, a) => Math.max(mx, confOf(reviews, a) ?? 0), 0);
 }
 
@@ -981,8 +996,8 @@ export function CaseReport({
 }) {
   const display = useMemo(() => extractDisplaySeed(seedValue, seedType), [seedValue, seedType]);
   const subjectProfile = useMemo(() => buildSubjectProfile(artifacts, reviews), [artifacts, reviews]);
-  const profileLinks = useMemo(() => buildProfileLinks(artifacts), [artifacts]);
-  const aliases = useMemo(() => buildAliases(artifacts), [artifacts]);
+  const profileLinks = useMemo(() => buildProfileLinks(artifacts, reviews), [artifacts, reviews]);
+  const aliases = useMemo(() => buildAliases(artifacts, reviews), [artifacts, reviews]);
   const breachRows = useMemo(() => buildBreachExposure(artifacts), [artifacts]);
   const analystConf = useMemo(() => analystConfidence(artifacts, reviews), [artifacts, reviews]);
   const narrative = useMemo(() => {
@@ -994,7 +1009,7 @@ export function CaseReport({
   const registrations = useMemo(() => buildRegistrationRows(artifacts, reviews), [artifacts, reviews]);
   const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue, reviews), [artifacts, seedValue, reviews]);
   const unknowns = useMemo(() => buildUnknowns(artifacts), [artifacts]);
-  const risk = useMemo(() => computeRisk(artifacts), [artifacts]);
+  const risk = useMemo(() => computeRisk(artifacts, reviews), [artifacts, reviews]);
   const radar = useMemo(() => buildAnalyticRadar(artifacts, risk.level, reviews), [artifacts, risk.level, reviews]);
   const groupDistribution = useMemo(() => buildGroupDistribution(artifacts), [artifacts]);
   const sourceDistribution = useMemo(() => buildSourceDistribution(artifacts), [artifacts]);

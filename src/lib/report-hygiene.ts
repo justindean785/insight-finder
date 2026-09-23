@@ -199,6 +199,35 @@ export function isClusterIneligible(a: AuthorityInput): boolean {
   return isCollisionArtifact(a) || isQuarantined(a.metadata);
 }
 
+/**
+ * May this row speak FOR THE SUBJECT on a report surface — the Subject Profile,
+ * aliases, digital footprint, the "Analyst confidence" headline, the breach
+ * count behind the Hunter's Note and the risk level?
+ *
+ * Same two exclusions `pickBestIdentity` applies to the Identity panel (#8):
+ * no active quarantine / collision flag, and no analyst rejection. Those
+ * surfaces sat beside the gated one in the same report and read the raw
+ * artifact list, so on the `speedrvce` case (2026-09-23) the Subject Profile
+ * named a quarantined name-only breach echo as the subject, the 85% "Analyst
+ * confidence" came from a row the analyst had REJECTED, and a rejected handle
+ * was listed as an alias — while the gated Identity panel on the same page
+ * named somebody else. The row keeps its place in every evidence table.
+ */
+export function isSubjectAuthorityEligible(a: AuthorityInput, review?: string | null): boolean {
+  return !isClusterIneligible(a) && !isRejectedReview(review);
+}
+
+/**
+ * A row recording that a lookup found NOTHING ("speedrvce - no breach hits").
+ * Mirrors the edge's `NULL_RESULT_RE` (`lib/artifact-hygiene.ts`). Used only to
+ * keep negatives out of COUNTS that assert exposure: "Subject appears in N
+ * breach corpora" must not count the corpora that said the subject is absent.
+ */
+const NULL_RESULT_RE = /\b(?:0|no|zero)\s+(?:hit|breach|result|record|paste|match|exposure)s?\b/i;
+export function isNullResultValue(value: unknown): boolean {
+  return NULL_RESULT_RE.test(String(value ?? ""));
+}
+
 // ---------------------------------------------------------------------------
 // #7 — Reserved / fictional phone numbers (e.g. NANPA 555-01xx). The backend
 // already flags them with metadata.reserved_number; render-level we mark them
