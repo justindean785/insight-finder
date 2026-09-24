@@ -30,6 +30,11 @@ const USERNAME_RE = /@[a-z0-9_.-]{2,40}\b/i;
 const URL_RE = /\bhttps?:\/\/[^\s)]+/i;
 const DOMAIN_RE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b/i;
 const PHONE_RE = /\b(?:\+?1[-.\s]*)?(?:\(?\d{3}\)?[-.\s]*)\d{3}[-.\s]*\d{4}\b/;
+const PHONE_RE_G = new RegExp(PHONE_RE.source, "g");
+/** A calendar date — digit-and-dash shaped, so detectSeed() reads it as a phone. */
+const DATE_RE = /^(?:\d{4}[-./]\d{1,2}[-./]\d{1,2}|\d{1,2}[-./]\d{1,2}[-./]\d{2,4})$/;
+/** Words that make a bare, unseparated digit run read as a phone number. */
+const PHONE_CONTEXT_RE = /\b(?:phone|tel|telephone|cell|cellphone|mobile|landline|sms|whatsapp|caller)\b/i;
 const STREET_RE = /\b\d{1,6}\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,5}\s(?:St|Street|Ave|Avenue|Rd|Road|Dr|Drive|Ln|Lane|Blvd|Boulevard|Ct|Court|Way|Place|Pl|Pkwy|Parkway)\b[^.;]*/i;
 const WALLET_RE = /\b(?:0x[a-f0-9]{40}|[13][a-km-zA-HJ-NP-Z1-9]{25,34}|bc1[a-z0-9]{20,})\b/i;
 const SECRET_RE = /\b(password|passcode|plaintext|secret|token|cookie|session|ssid|credential|hash|2fa|otp|cvv|ssn)\b/i;
@@ -61,13 +66,56 @@ function stripTrailingPunctuation(value: string): string {
   return value.replace(/[),.;:]+$/, "").trim();
 }
 
+/**
+ * Whether a phone-shaped value in `label` is plausibly a phone number and not
+ * an id or a date. Measured case (2026-09-24): a scheme-less Apple Music link
+ * produced a HIGH-priority "Check phone association <track id>" card for the
+ * 10-digit catalogue id in its path — URL_RE needs `https?://`, so PHONE_RE
+ * was the first pattern to claim the digits.
+ *
+ *  - never when the digits sit inside a path/query token (`/`, `=`, `#`, `?`);
+ *  - never a date ("2023-02-02"), which detectSeed() otherwise calls a phone;
+ *  - a NANP-shaped number (`+1…`, or 10 / 1+10 digits with no `+`) must have
+ *    an area code and exchange starting 2–9, so `123…` / `180…` are not US
+ *    numbers. Other lengths (7-digit local, national formats abroad) and
+ *    non-`+1` international numbers keep their previous treatment;
+ *  - a bare, unseparated digit run also needs the line to SAY phone. A
+ *    formatted number ("925-642-7442", "(916) 555-0142") carries that signal
+ *    in its own punctuation; a catalogue id carries none.
+ */
+export function isPlausiblePhone(value: string, label: string): boolean {
+  const trimmed = value.trim();
+  const tokenHoldingValue = label.split(/\s+/).find((token) => token.includes(trimmed));
+  if (tokenHoldingValue && /[/=#?]/.test(tokenHoldingValue)) return false;
+  if (DATE_RE.test(trimmed)) return false;
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length < 7 || digits.length > 15) return false;
+  const nanpShaped = trimmed.startsWith("+1") ||
+    (!trimmed.startsWith("+") && (digits.length === 10 || (digits.length === 11 && digits.startsWith("1"))));
+  if (nanpShaped) {
+    const national = digits.length === 11 ? digits.slice(1) : digits;
+    if (!/^[2-9]\d{2}[2-9]\d{6}$/.test(national)) return false;
+  }
+  const bare = /^\+?\d+$/.test(trimmed);
+  return !bare || PHONE_CONTEXT_RE.test(label);
+}
+
+function firstPlausiblePhone(label: string): string | undefined {
+  for (const match of label.matchAll(PHONE_RE_G)) {
+    // `\b` cannot sit before "(", so "(916) 555-0199" matches as "916) 555-0199".
+    const value = label[(match.index ?? 0) - 1] === "(" && /^\d{3}\)/.test(match[0]) ? `(${match[0]}` : match[0];
+    if (isPlausiblePhone(value, label)) return value;
+  }
+  return undefined;
+}
+
 function extractTarget(label: string): string {
   const directIdentifier =
     label.match(EMAIL_RE)?.[0] ??
     label.match(IPV4_RE)?.[0] ??
     label.match(URL_RE)?.[0] ??
     label.match(USERNAME_RE)?.[0] ??
-    label.match(PHONE_RE)?.[0] ??
+    firstPlausiblePhone(label) ??
     label.match(STREET_RE)?.[0] ??
     label.match(WALLET_RE)?.[0] ??
     label.match(DOMAIN_RE)?.[0];
@@ -204,6 +252,11 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
     seen.add(key);
     const split = splitReason(line);
     const type = pivotType(value);
+    // detectSeed() calls any 7+ char run of digits and dashes a phone, so an id
+    // or a date that reached `value` through the action-clause fallback
+    // ("Check 4155550142 — listing id", "Check 2023-02-02 — join date") would
+    // still become a phone pivot. Not a runnable selector — drop it.
+    if (type === "phone" && !isPlausiblePhone(value, line)) continue;
     // Report-recommended domains that are OSINT source infrastructure
     // (linkedin.com, bizfileonline.sos.ca.gov, opencorporates.com…) bypass
     // buildPivots' filter, so drop them here too — they are never actionable
