@@ -632,8 +632,12 @@ list, §7 the ordered plan) →
 promotion-quarantine switch, §3 the trap list of four instruments that lied) →
 `…_2026-09-13_instrument-truth-and-the-lineage-prerequisite.md` →
 `…_2026-09-14_sweep-false-positives-and-the-memory-retrieval-gap.md` →
-**`SESSION_HANDOFF_2026-09-20_prompt-ceiling-payload-store-and-the-overlap-wedge.md` (newest —
-read this one first)**. Its §2 is the stale-baseline correction, §4 the production overlap wedge
+`SESSION_HANDOFF_2026-09-20_prompt-ceiling-payload-store-and-the-overlap-wedge.md` →
+**`SESSION_HANDOFF_2026-09-24_namesake-leakage-deploy-in-flight-and-the-three-logic-layers.md` (newest —
+read this one first)**. ⚠️ Its §1 records the #621 edge deploy as IN FLIGHT and UNVERIFIED — finish
+it (`/health` → `ca3aeae` + `checks.record_name_quarantine`) before any other edge work. §3 is the
+measured three-layer logic failure (engine / narration / pivots), §4 the settled rulings, §5 the trap list.
+The 09-20 handoff: Its §2 is the stale-baseline correction, §4 the production overlap wedge
 (the highest-value unfixed defect), §5 the `unknown` stop reason, §6 the payload-store decision
 and why the store is a TABLE not the archive bucket, §7 the trap list, §9 the ordered plan.
 The 09-14 handoff. Its §2 is the sweep bug that was manufacturing evidence, §4 the
