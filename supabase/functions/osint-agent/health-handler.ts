@@ -18,6 +18,7 @@ import {
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
+import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
 import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
@@ -384,7 +385,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
 
   // SSRF guard coverage (safety.ts isPrivateHost). Its PRESENCE proves the build
   // that also blocks the IPv6 forms of internal addresses is live.
-  r.checks.ssrf_guard = { ok: true, detail: "ipv4 private+cgnat; ipv6 loopback/mapped/nat64/ula/link-local/multicast" };
+  r.checks.ssrf_guard = { ok: true, detail: ssrfGuardHealthDetail(ssrfGuardLegacy()) };
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure

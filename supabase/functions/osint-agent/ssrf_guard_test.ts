@@ -3,7 +3,9 @@
 // IPv4-mapped IPv6, CGNAT, IPv6 ULA and link-local addresses reached fetch().
 // Hosts are passed exactly as `new URL(...).hostname` produces them.
 import { assert, assertEquals, assertThrows } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { assertSafeUrl, isPrivateHost } from "./safety.ts";
+import {
+  assertSafeUrl, isPrivateHost, SSRF_GUARD_LEGACY_ENV, ssrfGuardHealthDetail, ssrfGuardLegacy,
+} from "./safety.ts";
 
 const host = (u: string) => new URL(u).hostname;
 
@@ -27,6 +29,7 @@ Deno.test("SSRF: blocks CGNAT, the unspecified address, IPv6 ULA, link-local and
   for (const u of [
     "http://100.64.0.1/", "http://100.127.255.254/",
     "http://[::]/", "http://[fc00::1]/", "http://[fd12:3456::1]/", "http://[fe80::1]/", "http://[febf::1]/",
+    "http://[fec0::1]/", "http://[feff::1]/",
     "http://[ff02::1]/",
   ]) assert(isPrivateHost(host(u)), `${u} → ${host(u)}`);
 });
@@ -42,7 +45,27 @@ Deno.test("SSRF: assertSafeUrl refuses a mapped-IPv6 metadata URL", () => {
   assertThrows(() => assertSafeUrl("http://[::ffff:169.254.169.254]/latest/meta-data/"), Error, "blocked");
 });
 
-Deno.test("health: checks.ssrf_guard reports the IPv6-aware guard", async () => {
+Deno.test("SSRF kill switch: legacy mode restores the old checker exactly", () => {
+  // Newly blocked forms pass again under legacy; the old blocks still hold.
+  for (const u of ["http://[::ffff:127.0.0.1]/", "http://100.64.0.1/", "http://[fc00::1]/", "http://[fec0::1]/"]) {
+    assert(isPrivateHost(host(u), false), `new: ${u}`);
+    assertEquals(isPrivateHost(host(u), true), false, `legacy: ${u}`);
+  }
+  for (const u of ["http://127.0.0.1/", "http://169.254.169.254/", "http://[::1]/", "http://localhost/"]) {
+    assert(isPrivateHost(host(u), true), `legacy still blocks ${u}`);
+  }
+});
+
+Deno.test("SSRF kill switch: read from env, default OFF, only an explicit 'true' enables it", () => {
+  const env = (v: string | undefined) => (k: string) => (k === SSRF_GUARD_LEGACY_ENV ? v : undefined);
+  assertEquals(ssrfGuardLegacy(env(undefined)), false);
+  assertEquals(ssrfGuardLegacy(env("1")), false);
+  assertEquals(ssrfGuardLegacy(env(" TRUE ")), true);
+  assert(ssrfGuardHealthDetail(true).includes(SSRF_GUARD_LEGACY_ENV));
+  assert(ssrfGuardHealthDetail(false).includes("site-local"));
+});
+
+Deno.test("health: checks.ssrf_guard reports the checker actually in force", async () => {
   const src = await Deno.readTextFile(new URL("./health-handler.ts", import.meta.url));
-  assert(src.includes("r.checks.ssrf_guard = { ok: true,"));
+  assert(src.includes("r.checks.ssrf_guard = { ok: true, detail: ssrfGuardHealthDetail(ssrfGuardLegacy()) };"));
 });

@@ -226,7 +226,29 @@ export function sanitizeToolOutput<T>(input: T, maxStr = 2000, depth = 0): T {
 // (IPv4-mapped, NAT64, ULA, link-local) so the edge function cannot be turned
 // into a scanner of internal infra. Literal hosts only: a public name that
 // RESOLVES to a private address (DNS rebinding) is not caught here.
-export function isPrivateHost(hostname: string): boolean {
+//
+// Kill switch, read at CALL TIME: SSRF_GUARD_LEGACY=true restores the pre-2026-09-24
+// checker (literal IPv4 private ranges + ::1 only) with no deploy, in case the wider
+// classification refuses a legitimate target.
+export const SSRF_GUARD_LEGACY_ENV = "SSRF_GUARD_LEGACY";
+
+export function ssrfGuardLegacy(
+  // safety.ts is also imported by the frontend vitest suite, where `Deno` is absent.
+  env: (k: string) => string | undefined = (k) =>
+    (globalThis as { Deno?: { env: { get(k: string): string | undefined } } }).Deno?.env.get(k),
+): boolean {
+  return (env(SSRF_GUARD_LEGACY_ENV) ?? "").trim().toLowerCase() === "true";
+}
+
+/** `/health` detail for `checks.ssrf_guard`: names the checker actually in force. */
+export function ssrfGuardHealthDetail(legacy: boolean): string {
+  return legacy
+    ? `LEGACY via ${SSRF_GUARD_LEGACY_ENV} (ipv4 private + ::1 only)`
+    : "ipv4 private+cgnat; ipv6 loopback/mapped/nat64/ula/link-local/site-local/multicast";
+}
+
+export function isPrivateHost(hostname: string, legacy: boolean = ssrfGuardLegacy()): boolean {
+  if (legacy) return isPrivateHostLegacy(hostname);
   let h = hostname.toLowerCase().replace(/\.$/, "");
   if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".internal")) return true;
   // `new URL().hostname` keeps IPv6 literals bracketed ("[::1]").
@@ -234,6 +256,25 @@ export function isPrivateHost(hostname: string): boolean {
   const v4 = parseIPv4(h);
   if (v4) return isPrivateIPv4(v4);
   if (h.includes(":")) return isPrivateIPv6(h);
+  return false;
+}
+
+// The checker as it stood before 2026-09-24, kept verbatim for the kill switch.
+function isPrivateHostLegacy(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".internal")) return true;
+  if (h === "::1" || h.startsWith("[::1")) return true;
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (a === 10) return true;
+    if (a === 127) return true;
+    if (a === 0) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a >= 224) return true;
+  }
   return false;
 }
 
@@ -275,6 +316,7 @@ function isPrivateIPv6(h: string): boolean {
   const first = parseInt(h.split(":")[0] || "0", 16);
   if ((first & 0xfe00) === 0xfc00) return true; // ULA fc00::/7
   if ((first & 0xffc0) === 0xfe80) return true; // link-local fe80::/10
+  if ((first & 0xffc0) === 0xfec0) return true; // site-local fec0::/10 (deprecated, still routable on some networks)
   if ((first & 0xff00) === 0xff00) return true; // multicast ff00::/8
   return false;
 }
