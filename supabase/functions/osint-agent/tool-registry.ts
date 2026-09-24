@@ -485,11 +485,11 @@ export function buildTools(ctx: ToolContext) {
       }
     }
   };
-  /** The seed the exemption compares against: the request's person seed first. */
-  const quarantineSeed = (): string | null => {
-    const person = ctx.getSubjectSeedName?.() ?? "";
-    return person || triageState.seed || null;
-  };
+  /** The seed the exemption compares against: the request's PERSON seed, or none.
+   *  Never triageState.seed: that is whatever email/username the model passed to
+   *  triage_seed, and tokens() splits "jordan.vale@…" into the name "Jordan Vale",
+   *  so a namesake escaped. The auto-persist gate exempts a person seed only. */
+  const quarantineSeed = (): string | null => ctx.getSubjectSeedName?.() || null;
   /** Thread + pending quarantined person names. Fails OPEN on a read error: an
    *  authority stamp must not turn a DB blip into stamping every row. */
   const loadQuarantinedNames = async (): Promise<QuarantinedName[]> => {
