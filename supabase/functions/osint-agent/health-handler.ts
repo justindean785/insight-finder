@@ -26,6 +26,7 @@ import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSw
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
 import { recordNameQuarantineEnabled } from "./lib/record-name-quarantine.ts";
 import { geminiPreflightPivotEnabled, preflightPivotHealthDetail } from "./lib/preflight-pivot.ts";
+import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 
 /**
@@ -379,7 +380,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     r.checks.record_name_quarantine = {
       ok: on,
       detail: on
-        ? "record_artifacts inherits active person-name quarantine"
+        ? "record_artifacts inherits active person-name quarantine; exempt=person-seed-only"
         : "DISABLED via RECORD_NAME_QUARANTINE_DISABLED — model-authored rows can name unlinked persons at full authority",
     };
   }
@@ -389,6 +390,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // that the build gating that pivot is live. `ok` is true either way: both settings
   // are deliberate operator choices, and the detail names which one is in force.
   r.checks.preflight_pivot = { ok: true, detail: preflightPivotHealthDetail(geminiPreflightPivotEnabled()) };
+
+  // Which rule marks a clustered artifact CONTRADICTED (lib/cluster.ts)? Pure. Its
+  // PRESENCE proves the build with the explicit-signal rule is live.
+  r.checks.cluster_contradiction_rule = legacyNeedsReviewContradiction()
+    ? { ok: true, detail: "LEGACY via CLUSTER_LEGACY_NEEDS_REVIEW_CONTRADICTION — needs_review counts as contradicted" }
+    : { ok: true, detail: "explicit signals only; group-keyed contradicted cluster ids" };
 
   // SSRF guard coverage (safety.ts isPrivateHost). Its PRESENCE proves the build
   // that also blocks the IPv6 forms of internal addresses is live.

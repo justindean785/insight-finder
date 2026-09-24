@@ -16,6 +16,7 @@ import {
   recordNameQuarantineEnabled,
 } from "./lib/record-name-quarantine.ts";
 import { buildTools, type ToolContext } from "./tool-registry.ts";
+import { triageState } from "./guard.ts";
 
 const QUARANTINED_ECHO = {
   kind: "name",
@@ -255,4 +256,40 @@ Deno.test("index.ts wiring: quarantines are noted SYNCHRONOUSLY before the detac
   assert(noted > 0, "onStepFinish must call noteQuarantinedFindings(stepFindings)");
   assert(detached > noted, "the note must precede the detached auto-persist task");
   assert(src.includes("getSubjectSeedName: () => subjectSeedName"), "buildTools must receive the request's person seed");
+});
+
+// ── The exemption is the PERSON seed only (audit 2026-09-24, F-5) ───────────
+//
+// quarantineSeed() used to fall back to triageState.seed — whatever email or
+// username the MODEL passed to triage_seed. tokens() splits on punctuation, so a
+// seed like "jordan.vale@example.com" or "jordan_vale" "linked" the quarantined
+// name "Jordan Vale", and a namesake written through record_artifacts escaped.
+// The header promises the exemption works "exactly as the auto-persist gate",
+// which exempts a person seed only and fails closed otherwise. triageState is
+// also module-global, shared across requests in a warm isolate.
+
+for (const seed of ["jordan.vale@example.com", "jordan_vale"]) {
+  Deno.test(`record_artifacts: a triage_seed of "${seed}" does NOT exempt a quarantined name`, async () => {
+    const prev = triageState.seed;
+    triageState.seed = seed;
+    try {
+      const { mock, tools } = toolsFor([QUARANTINED_ECHO]);
+      await tools.record_artifacts.execute(
+        { artifacts: [{ kind: "name", value: "Jordan Vale - Midvale Chamber CEO", source: "minimax_web_search" }] },
+        {},
+      );
+      const meta = (mock.inserted[0]?.metadata ?? {}) as Record<string, unknown>;
+      assertEquals(meta.subject_unlinked, true);
+    } finally {
+      triageState.seed = prev;
+    }
+  });
+}
+
+
+Deno.test("health: the proof key names the person-seed-only exemption (proves this bundle is live)", async () => {
+  const src = await Deno.readTextFile(new URL("./health-handler.ts", import.meta.url));
+  assert(src.includes('"record_artifacts inherits active person-name quarantine; exempt=person-seed-only"'));
+  const reg = await Deno.readTextFile(new URL("./tool-registry.ts", import.meta.url));
+  assert(!/quarantineSeed[\s\S]{0,200}triageState\.seed \|\|/.test(reg), "quarantineSeed must not fall back to triageState.seed");
 });
