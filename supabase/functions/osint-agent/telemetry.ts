@@ -31,6 +31,7 @@
  * `CacheDb` pattern) so tests can pass a fake without a real Supabase client.
  */
 
+import { redactErrorMessage } from "./lib/redact-error.ts";
 import type { ModelMessage } from "npm:ai@6";
 import { approxMsgChars } from "./orchestrator-budget.ts";
 import { registerBackground } from "./incremental-persist.ts";
@@ -40,18 +41,6 @@ const MAX_TOOL_NAMES = 40;
 const MAX_TOOL_NAME_CHARS = 64;
 const MAX_ERROR_CHARS = 500;
 const MAX_ID_CHARS = 128;
-
-/** Same redaction the tool-usage logger applies (cache.ts), duplicated here rather
- *  than imported: it is a tiny, self-contained defensive helper and cache.ts does
- *  not export its copy. Strips anything that looks like a live credential before
- *  an error string reaches a telemetry row. */
-function redactSecrets(input: string): string {
-  return input
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-    .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
-    .replace(/xai-[A-Za-z0-9._-]+/g, "xai-[REDACTED]")
-    .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
-}
 
 function capId(v: string | null | undefined): string | null {
   if (typeof v !== "string" || !v) return null;
@@ -204,7 +193,7 @@ export interface InvocationRowInput {
  *  fail-safe-to-null contract as buildStepMetricRow. */
 export function buildInvocationRow(input: InvocationRowInput): Record<string, unknown> {
   const errorMessage = input.errorMessage
-    ? redactSecrets(input.errorMessage).slice(0, MAX_ERROR_CHARS)
+    ? redactErrorMessage(input.errorMessage).slice(0, MAX_ERROR_CHARS)
     : null;
   return {
     id: input.invocationId,
