@@ -83,6 +83,8 @@ import {
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
+import { redactErrorMessage } from "./lib/redact-error.ts";
+import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
 // Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
@@ -1522,7 +1524,9 @@ Deno.serve(async (req) => {
             // never let the (now correctly-false) overflow flag mask it.
             message_schema_invalid: isSchemaError,
             error_name: errName,
-            message: msg.slice(0, 600),
+            // Redacted: a provider error can echo our key, and this line is kept in
+            // the edge logs (lib/redact-error.ts).
+            message: redactErrorMessage(msg).slice(0, 600),
           }),
         );
         invocationTelemetry.finish({
@@ -1987,7 +1991,10 @@ Deno.serve(async (req) => {
               record_artifact_calls: recordCalls,
               tool_calls: toolCalls,
               in_memory_artifacts: routingGuard.artifactsTotal,
-              seed: seedValueRaw.slice(0, 120),
+              // The seed's KIND and length, never its text: this is a log line, and the
+              // seed is a person's selector. thread_id recovers it from the DB.
+              seed_kind: detectSeedServer(seedValueRaw)?.kind ?? "unknown",
+              seed_chars: seedValueRaw.length,
               // ran lookups but never recorded → almost certainly the record gap,
               // not a genuinely empty case.
               findings_likely: toolCalls > 3 && recordCalls === 0,
@@ -2077,12 +2084,7 @@ Deno.serve(async (req) => {
         }
         const friendly = classifyStreamProviderError(m, name);
         if (friendly) return friendly;
-        const redacted = m
-          .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-          .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
-          .replace(/xai-[A-Za-z0-9._-]+/g, "xai-[REDACTED]")
-          .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
-        return redacted.slice(0, 300) || "Provider stream error";
+        return redactErrorMessage(m).slice(0, 300) || "Provider stream error";
       },
       onFinish: persistFinalMessages,
     });
@@ -2091,12 +2093,8 @@ Deno.serve(async (req) => {
     releaseRunState();
     // setupRequest throws Response objects for 401/403/400 — return them directly
     if (e instanceof Response) return e;
-    console.error("osint-agent error", e);
-    const message = e instanceof Error ? e.message : String(e);
-    return new Response(JSON.stringify({ error: "Internal Server Error", code: "ORCHESTRATOR_FAULT", detail: message }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    // Redacted before it is logged or returned (lib/orchestrator-fault.ts).
+    return orchestratorFaultResponse(e, corsHeaders);
   }
 
 });

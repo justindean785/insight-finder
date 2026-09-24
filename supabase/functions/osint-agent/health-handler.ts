@@ -18,6 +18,7 @@ import {
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
+import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
 import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
@@ -388,6 +389,14 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.cluster_contradiction_rule = legacyNeedsReviewContradiction()
     ? { ok: true, detail: "LEGACY via CLUSTER_LEGACY_NEEDS_REVIEW_CONTRADICTION — needs_review counts as contradicted" }
     : { ok: true, detail: "explicit signals only; group-keyed contradicted cluster ids" };
+
+  // SSRF guard coverage (safety.ts isPrivateHost). Its PRESENCE proves the build
+  // that also blocks the IPv6 forms of internal addresses is live.
+  r.checks.ssrf_guard = { ok: true, detail: ssrfGuardHealthDetail(ssrfGuardLegacy()) };
+
+  // Error hygiene (lib/redact-error.ts). Its PRESENCE proves the build that redacts
+  // the catch-all 500 detail and keeps the seed text out of the log is live.
+  r.checks.error_redaction = { ok: true, detail: "500 detail and fault/stream logs redacted (configured keys + shapes); seed text not logged" };
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure
