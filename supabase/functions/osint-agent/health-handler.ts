@@ -377,7 +377,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     r.checks.record_name_quarantine = {
       ok: on,
       detail: on
-        ? "record_artifacts inherits active person-name quarantine"
+        ? "record_artifacts inherits active person-name quarantine; exempt=person-seed-only"
         : "DISABLED via RECORD_NAME_QUARANTINE_DISABLED — model-authored rows can name unlinked persons at full authority",
     };
   }
