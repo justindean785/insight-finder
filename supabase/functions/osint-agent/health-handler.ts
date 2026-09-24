@@ -384,7 +384,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
 
   // Error hygiene (lib/redact-error.ts). Its PRESENCE proves the build that redacts
   // the catch-all 500 detail and keeps the seed text out of the log is live.
-  r.checks.error_redaction = { ok: true, detail: "500 detail redacted; seed text not logged" };
+  r.checks.error_redaction = { ok: true, detail: "500 detail and fault/stream logs redacted (configured keys + shapes); seed text not logged" };
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure

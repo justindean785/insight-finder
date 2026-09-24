@@ -84,6 +84,7 @@ import {
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
 import { redactErrorMessage } from "./lib/redact-error.ts";
+import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
 // Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
@@ -1523,7 +1524,9 @@ Deno.serve(async (req) => {
             // never let the (now correctly-false) overflow flag mask it.
             message_schema_invalid: isSchemaError,
             error_name: errName,
-            message: msg.slice(0, 600),
+            // Redacted: a provider error can echo our key, and this line is kept in
+            // the edge logs (lib/redact-error.ts).
+            message: redactErrorMessage(msg).slice(0, 600),
           }),
         );
         invocationTelemetry.finish({
@@ -2090,14 +2093,8 @@ Deno.serve(async (req) => {
     releaseRunState();
     // setupRequest throws Response objects for 401/403/400 — return them directly
     if (e instanceof Response) return e;
-    console.error("osint-agent error", e);
-    // Redacted exactly as the stream onError path is: a provider error can echo its key.
-    const message = redactErrorMessage(e instanceof Error ? e.message : String(e)).slice(0, 300) ||
-      "The investigation engine hit an internal error. Retry the message.";
-    return new Response(JSON.stringify({ error: "Internal Server Error", code: "ORCHESTRATOR_FAULT", detail: message }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    // Redacted before it is logged or returned (lib/orchestrator-fault.ts).
+    return orchestratorFaultResponse(e, corsHeaders);
   }
 
 });
