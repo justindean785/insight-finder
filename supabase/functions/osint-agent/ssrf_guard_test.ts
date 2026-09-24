@@ -34,6 +34,17 @@ Deno.test("SSRF: blocks CGNAT, the unspecified address, IPv6 ULA, link-local and
   ]) assert(isPrivateHost(host(u)), `${u} → ${host(u)}`);
 });
 
+Deno.test("SSRF: blocks IPv4-compatible IPv6 (::/96), e.g. ::127.0.0.1 and ::169.254.169.254", () => {
+  for (const u of ["http://[::127.0.0.1]/", "http://[::a9fe:a9fe]/", "http://[::10.0.0.1]/"]) {
+    assert(isPrivateHost(host(u), false), `${u} → ${host(u)}`);
+  }
+});
+
+Deno.test("SSRF kill switch: an unreadable env fails safe to the new guard instead of throwing", () => {
+  const denied = (_k: string): string | undefined => { throw new Error("NotCapable: Requires env access"); };
+  assertEquals(ssrfGuardLegacy(denied), false);
+});
+
 Deno.test("SSRF: public hosts and addresses stay allowed", () => {
   for (const u of [
     "https://example.com/", "https://1.1.1.1/", "https://100.63.255.255/", "https://100.128.0.1/",

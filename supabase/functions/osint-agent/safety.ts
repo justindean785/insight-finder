@@ -237,7 +237,13 @@ export function ssrfGuardLegacy(
   env: (k: string) => string | undefined = (k) =>
     (globalThis as { Deno?: { env: { get(k: string): string | undefined } } }).Deno?.env.get(k),
 ): boolean {
-  return (env(SSRF_GUARD_LEGACY_ENV) ?? "").trim().toLowerCase() === "true";
+  // An unreadable env (no --allow-env: Deno throws NotCapable) must not break every
+  // URL check; it fails safe to the NEW guard.
+  try {
+    return (env(SSRF_GUARD_LEGACY_ENV) ?? "").trim().toLowerCase() === "true";
+  } catch {
+    return false;
+  }
 }
 
 /** `/health` detail for `checks.ssrf_guard`: names the checker actually in force. */
@@ -313,6 +319,10 @@ function isPrivateIPv6(h: string): boolean {
     }
     return true; // unparseable embedded form: refuse rather than guess
   }
+  // IPv4-compatible ::a.b.c.d (::/96, deprecated; the parser rewrites it to
+  // "::7f00:1"). Nothing public lives there, so refuse the whole range rather than
+  // guess how a stack routes it.
+  if (/^::[0-9a-f]{1,4}(?::[0-9a-f]{1,4})?$/.test(h)) return true;
   const first = parseInt(h.split(":")[0] || "0", 16);
   if ((first & 0xfe00) === 0xfc00) return true; // ULA fc00::/7
   if ((first & 0xffc0) === 0xfe80) return true; // link-local fe80::/10
