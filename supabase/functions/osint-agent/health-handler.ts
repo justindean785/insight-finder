@@ -18,6 +18,7 @@ import {
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
+import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
 import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
@@ -388,6 +389,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // that the build gating that pivot is live. `ok` is true either way: both settings
   // are deliberate operator choices, and the detail names which one is in force.
   r.checks.preflight_pivot = { ok: true, detail: preflightPivotHealthDetail(geminiPreflightPivotEnabled()) };
+
+  // SSRF guard coverage (safety.ts isPrivateHost). Its PRESENCE proves the build
+  // that also blocks the IPv6 forms of internal addresses is live.
+  r.checks.ssrf_guard = { ok: true, detail: ssrfGuardHealthDetail(ssrfGuardLegacy()) };
 
   // Error hygiene (lib/redact-error.ts). Its PRESENCE proves the build that redacts
   // the catch-all 500 detail and keeps the seed text out of the log is live.
