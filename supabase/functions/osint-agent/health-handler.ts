@@ -24,6 +24,7 @@ import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-c
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
 import { recordNameQuarantineEnabled } from "./lib/record-name-quarantine.ts";
+import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 
 /**
@@ -381,6 +382,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
         : "DISABLED via RECORD_NAME_QUARANTINE_DISABLED — model-authored rows can name unlinked persons at full authority",
     };
   }
+
+  // Which rule marks a clustered artifact CONTRADICTED (lib/cluster.ts)? Pure. Its
+  // PRESENCE proves the build with the explicit-signal rule is live.
+  r.checks.cluster_contradiction_rule = legacyNeedsReviewContradiction()
+    ? { ok: true, detail: "LEGACY via CLUSTER_LEGACY_NEEDS_REVIEW_CONTRADICTION — needs_review counts as contradicted" }
+    : { ok: true, detail: "explicit signals only; group-keyed contradicted cluster ids" };
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure
