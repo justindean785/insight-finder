@@ -222,24 +222,60 @@ export function sanitizeToolOutput<T>(input: T, maxStr = 2000, depth = 0): T {
 
 // ---- SSRF guard ---------------------------------------------------------------
 // SSRF guard for any tool that fetches a user/LLM-supplied URL. Blocks
-// loopback, link-local (cloud metadata!), and RFC1918 private ranges so the
-// edge function cannot be turned into a scanner of internal infra.
+// loopback, link-local (cloud metadata!), RFC1918, CGNAT and their IPv6 forms
+// (IPv4-mapped, NAT64, ULA, link-local) so the edge function cannot be turned
+// into a scanner of internal infra. Literal hosts only: a public name that
+// RESOLVES to a private address (DNS rebinding) is not caught here.
 export function isPrivateHost(hostname: string): boolean {
-  const h = hostname.toLowerCase();
+  let h = hostname.toLowerCase().replace(/\.$/, "");
   if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".internal")) return true;
-  if (h === "::1" || h.startsWith("[::1")) return true;
-  // IPv4
+  // `new URL().hostname` keeps IPv6 literals bracketed ("[::1]").
+  if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1);
+  const v4 = parseIPv4(h);
+  if (v4) return isPrivateIPv4(v4);
+  if (h.includes(":")) return isPrivateIPv6(h);
+  return false;
+}
+
+function parseIPv4(h: string): number[] | null {
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (m) {
-    const [a, b] = [Number(m[1]), Number(m[2])];
-    if (a === 10) return true;
-    if (a === 127) return true;
-    if (a === 0) return true;
-    if (a === 169 && b === 254) return true; // link-local + cloud metadata
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a >= 224) return true; // multicast / reserved
+  if (!m) return null;
+  const o = m.slice(1).map(Number);
+  return o.every((n) => n <= 255) ? o : null;
+}
+
+function isPrivateIPv4([a, b]: number[]): boolean {
+  if (a === 10 || a === 127 || a === 0) return true;
+  if (a === 169 && b === 254) return true; // link-local + cloud metadata
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64/10
+  if (a >= 224) return true; // multicast / reserved
+  return false;
+}
+
+/** IPv6 literals, as the URL parser normalises them (lower-case, compressed; an
+ *  embedded IPv4 is rewritten to hex: "::ffff:127.0.0.1" → "::ffff:7f00:1"). */
+function isPrivateIPv6(h: string): boolean {
+  if (h === "::" || h === "::1") return true;
+  // IPv4 embedded in IPv6: mapped (::ffff:0:0/96) and NAT64 (64:ff9b::/96) are
+  // routed to the IPv4 address itself, so judge that address.
+  const embedded = h.match(/^(?:::ffff:|64:ff9b::)(.+)$/);
+  if (embedded) {
+    const tail = embedded[1];
+    const dotted = parseIPv4(tail);
+    if (dotted) return isPrivateIPv4(dotted);
+    const hex = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (hex) {
+      const hi = parseInt(hex[1], 16), lo = parseInt(hex[2], 16);
+      return isPrivateIPv4([hi >> 8, hi & 255, lo >> 8, lo & 255]);
+    }
+    return true; // unparseable embedded form: refuse rather than guess
   }
+  const first = parseInt(h.split(":")[0] || "0", 16);
+  if ((first & 0xfe00) === 0xfc00) return true; // ULA fc00::/7
+  if ((first & 0xffc0) === 0xfe80) return true; // link-local fe80::/10
+  if ((first & 0xff00) === 0xff00) return true; // multicast ff00::/8
   return false;
 }
 
