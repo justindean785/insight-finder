@@ -4,6 +4,7 @@
  * All 77 tools flow through wrapToolsWithCache().
  */
 
+import { redactErrorMessage } from "./lib/redact-error.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import type { Tool } from "npm:ai@6";
 import { hashInput, normalizeForHash, sanitizeToolOutput, stripNulCharacters, TOOL_CACHE_LRU } from "./safety.ts";
@@ -836,14 +837,9 @@ export function wrapToolsWithCache(
     }
     return false;
   };
-  // Strip anything that looks like an API credential before it lands in
-  // tool_usage_log.error_msg or edge logs. Covers Bearer tokens, OpenAI-style
-  // sk- keys, and Google AIza keys.
-  const redactSecrets = (input: string): string =>
-    input
-      .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-      .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
-      .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
+  // Credentials are stripped by the shared lib/redact-error.ts before an error
+  // lands in tool_usage_log.error_msg or edge logs.
+  const redactSecrets = redactErrorMessage;
   // Pull a human-readable error message + status code out of a tool result
   // so failed calls leave a durable trace in tool_usage_log.
   const extractToolError = (
