@@ -24,6 +24,7 @@ import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-c
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
 import { recordNameQuarantineEnabled } from "./lib/record-name-quarantine.ts";
+import { geminiPreflightPivotEnabled, preflightPivotHealthDetail } from "./lib/preflight-pivot.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 
 /**
@@ -381,6 +382,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
         : "DISABLED via RECORD_NAME_QUARANTINE_DISABLED — model-authored rows can name unlinked persons at full authority",
     };
   }
+
+  // May a failed DeepSeek preflight pivot the run to gemini-direct
+  // (lib/preflight-pivot.ts)? Pure, no network. Its PRESENCE is the behavioural proof
+  // that the build gating that pivot is live. `ok` is true either way: both settings
+  // are deliberate operator choices, and the detail names which one is in force.
+  r.checks.preflight_pivot = { ok: true, detail: preflightPivotHealthDetail(geminiPreflightPivotEnabled()) };
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure

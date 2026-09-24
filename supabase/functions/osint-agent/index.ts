@@ -83,6 +83,7 @@ import {
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
+import { geminiPreflightPivotEnabled, shouldPivotOnPreflight } from "./lib/preflight-pivot.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
 // Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
@@ -729,11 +730,22 @@ Deno.serve(async (req) => {
       // Explicit HTTP failure (status >= 400, incl. an invalid/renamed model id
       // → 400/404) pivots the run; a bare timeout (status 0) does not — same
       // ambiguity policy as the MiniMax preflight.
-      if (!lastDeepseekProbe.ok && lastDeepseekProbe.status >= 400) {
+      // …and a pivot to gemini-direct additionally needs GEMINI_PREFLIGHT_PIVOT_ENABLED:
+      // it finished 0 of 16 runs, so pivoting turned a preflight error into a dead run
+      // (lib/preflight-pivot.ts). Without it the run keeps DeepSeek.
+      if (shouldPivotOnPreflight(lastDeepseekProbe, fallbackTarget, geminiPreflightPivotEnabled())) {
         useFallback = true;
         console.warn(
-          `[orchestrator] deepseek preflight failed after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts (status=${lastDeepseekProbe.status}) → Gemini fallback for thread ${threadId}`,
+          `[orchestrator] deepseek preflight failed after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts (status=${lastDeepseekProbe.status}) → ${fallbackTarget.label} for thread ${threadId}`,
         );
+      } else if (!lastDeepseekProbe.ok && lastDeepseekProbe.status >= 400) {
+        console.warn(JSON.stringify({
+          event: "preflight_pivot_suppressed",
+          thread_id: threadId,
+          status: lastDeepseekProbe.status,
+          fallback: fallbackTarget.provider,
+          reason: "gemini-direct pivot disabled; keeping DeepSeek primary",
+        }));
       } else if (!lastDeepseekProbe.ok) {
         console.info(
           `[orchestrator] deepseek preflight ambiguous (status=${lastDeepseekProbe.status}) after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts — keeping DeepSeek primary for thread ${threadId}`,
