@@ -192,15 +192,16 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
       <main className="relative z-10 flex h-full min-w-0 flex-1 flex-col">
         <div key="chrome" className="shrink-0">
           {isMobile ? (
-            <>
-              <header className="flex items-end gap-1.5 border-b border-white/[0.07] bg-surface-0 px-1.5 pt-1">
-                <button onClick={() => setMLeft(true)} className="mb-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors duration-fast hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Open cases">
-                  <PanelLeftOpen className="h-4 w-4 text-foreground/80" aria-hidden />
-                </button>
-                <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} loading={!hydrated} variant="inline" />
-              </header>
-              <MobileCaseStrip onNew={createNew} creating={creating} />
-            </>
+            // Phone: ONE header row — the cases drawer, then which case this is
+            // and its state. Section navigation lives in the bottom tab bar
+            // (below the content), where the thumb is; "New investigation"
+            // lives in the cases drawer, not as the loudest control on a case.
+            <header className="flex items-center gap-0.5 border-b border-border-subtle bg-card pl-1 pt-[env(safe-area-inset-top)]">
+              <button onClick={() => setMLeft(true)} className="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors duration-fast hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Open cases">
+                <PanelLeftOpen className="h-[18px] w-[18px] text-foreground/80" aria-hidden />
+              </button>
+              <MobileCaseStrip />
+            </header>
           ) : (
             <>
               <WorkspaceHeader threadId={threadId} />
@@ -211,6 +212,15 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
         </div>
 
         {content}
+
+        {/* Phone: section navigation at the bottom. Rendered AFTER {content}
+            and keyed, so {content} keeps its key and the ChatWindow inside it
+            is never remounted when the breakpoint flips. */}
+        {isMobile && (
+          <div key="bottom-nav" className="shrink-0">
+            <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} loading={!hydrated} variant="inline" />
+          </div>
+        )}
       </main>
 
       {/* Mobile: cases live in an off-canvas overlay (does not affect layout flow). */}

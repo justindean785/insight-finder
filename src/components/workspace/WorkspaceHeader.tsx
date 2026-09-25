@@ -301,13 +301,13 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
  * Mobile previously showed NO run state at all, so an interrupted run was
  * invisible on a phone. Same snapshot, same figures as desktop.
  */
-export function MobileCaseStrip({ onNew, creating = false }: { onNew: () => void; creating?: boolean }) {
+export function MobileCaseStrip() {
   const { snapshot } = useCaseSnapshot();
   const display = snapshot?.seed.value
     ? extractDisplaySeed(snapshot.seed.value, snapshot.seed.type)
     : { selector: "", kind: "other" as SeedKind, title: snapshot?.hydrated ? "New investigation" : "" };
   return (
-    <div className="flex min-h-12 items-center gap-2 border-b border-white/[0.07] bg-surface-1 py-1.5 pl-3 pr-1.5">
+    <div className="flex min-h-14 min-w-0 flex-1 items-center gap-2 py-1.5 pr-1.5">
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
           {display.title
@@ -320,15 +320,7 @@ export function MobileCaseStrip({ onNew, creating = false }: { onNew: () => void
         </div>
       </div>
       <CaseSyncStatus compact className="shrink-0 [&>span:first-child]:hidden min-[420px]:[&>span:first-child]:inline-flex" />
-      <button
-        type="button"
-        onClick={onNew}
-        disabled={creating}
-        aria-label="Start a new investigation"
-        className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-white/10 bg-white text-black transition-colors duration-fast hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
-      >
-        <Plus className="h-4 w-4" aria-hidden />
-      </button>
     </div>
   );
 }
+
