@@ -514,6 +514,123 @@ All colors MUST be HSL.
     box-shadow: inset 0 1px 0 hsl(var(--film) / 0.04);
   }
 
+  /* ── Tab rule: THE tab grammar ────────────────────────────────────────────
+     The product carried three tab styles: icon + sans segmented keys on the
+     case workspace, filled mono-caps capsules on Intelligence, and pill toggles
+     on the Graph toolbar. One strip now serves all three. Sentence-case sans
+     (labels are not data, DESIGN.md "Data Face Rule"), a count in the data
+     face, and the active key marked by a 2px accent rule on the strip's own
+     hairline. No pill, no fill, no icon: the word is the control.
+     Selection is read from `aria-selected` (role="tab") or `aria-pressed`
+     (toggle buttons), so the style cannot disagree with what a screen reader
+     announces. */
+  .tab-rule {
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+    border-bottom: 1px solid hsl(var(--border-subtle));
+  }
+  .tab-rule-item {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    flex-shrink: 0;
+    height: 40px;
+    padding: 0 12px;
+    margin-bottom: -1px;
+    font-size: 13.5px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    color: hsl(var(--muted-foreground));
+    border-bottom: 2px solid transparent;
+    transition: color 120ms var(--ease-standard, ease), border-color 120ms var(--ease-standard, ease);
+  }
+  .tab-rule-item:hover {
+    color: hsl(var(--foreground));
+    border-bottom-color: hsl(var(--border-strong));
+  }
+  .tab-rule-item:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: -2px;
+  }
+  .tab-rule-item[aria-selected="true"],
+  .tab-rule-item[aria-pressed="true"] {
+    color: hsl(var(--foreground));
+    border-bottom-color: hsl(var(--brand));
+  }
+  .tab-rule-item[aria-disabled="true"],
+  .tab-rule-item:disabled {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+  /* The count beside a tab label: data, so the data face; ink 4 at rest. */
+  .tab-rule-count {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    color: hsl(var(--faint-foreground));
+  }
+  .tab-rule-item[aria-selected="true"] .tab-rule-count,
+  .tab-rule-item[aria-pressed="true"] .tab-rule-count {
+    color: hsl(var(--muted-foreground));
+  }
+  /* Compact variant for sub-toolbars sitting under a primary strip. */
+  .tab-rule--sub .tab-rule-item {
+    height: 34px;
+    padding: 0 10px;
+    font-size: 13px;
+  }
+
+  /* ── Hairline grid ────────────────────────────────────────────────────────
+     Cells separated by 1px rules rather than boxed as separate cards: the grid
+     IS the border. The gap shows the rule colour through; every cell paints the
+     card ground. Used for stat strips, where five outlined capsules in a row
+     read as five objects competing, and a single ruled strip reads as one
+     instrument with five readings. */
+  .hairline-grid {
+    display: grid;
+    gap: 1px;
+    overflow: hidden;
+    border-radius: 8px;
+    border: 1px solid hsl(var(--border-subtle));
+    background: hsl(var(--border-subtle));
+  }
+  .hairline-grid > * {
+    background: hsl(var(--card));
+    min-width: 0;
+  }
+
+  /* ── Status line ──────────────────────────────────────────────────────────
+     A one-line readout: `38 calls · 2 failed · 2 degraded`. Values in the data
+     face at ink 1; units and labels in the sans at ink 3. A state word carries
+     its own colour through a data-tone attribute, never colour alone: the word
+     is always printed. Use it where a panel would otherwise spend 200px of
+     height to say one sentence. */
+  .status-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 14px;
+    row-gap: 4px;
+    font-size: 12.5px;
+    color: hsl(var(--subtle-foreground));
+  }
+  .status-line > * {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 5px;
+    white-space: nowrap;
+  }
+  .status-line .status-value {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    color: hsl(var(--foreground));
+  }
+  /* Single-source / needs-review count: the authority ladder's review rung. */
+  .status-line [data-tone="review"] .status-value { color: hsl(var(--authority-review)); }
+
   /* ── Instrument tile ──────────────────────────────────────────────────────
      The stat readings at the head of Overview, Tools and Evidence. These are
      the first objects an analyst looks at on three of the six tabs, and they
