@@ -31,7 +31,7 @@ import { authorityFor } from "@/lib/authority";
 import { SubTabs } from "@/components/ui/compact-controls";
 import { timeAgo } from "@/lib/time";
 import { EmptyState } from "@/components/panel/EmptyState";
-import { Activity, AlertTriangle, List, Share2, Sparkles, Waypoints, X } from "lucide-react";
+import { Activity, AlertTriangle, Share2, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { captureError } from "@/lib/telemetry";
 
@@ -60,10 +60,15 @@ const GROUP_COLOR: Record<Group, string> = {
 // How each edge class is drawn. The WHY ("reason") rides in edge.data and is
 // surfaced in the detail panel + as a native title tooltip — never invented:
 // every edge comes from buildEntityGraph's shared-selector analysis.
+// Edges are hairlines in ink: the line's PATTERN says what it claims (solid =
+// identity, dashed = co-location), and the accent is spent only on the
+// selected node's own lines, the one active thing on the canvas. They used to
+// be 1-3px lines in the identity and infrastructure kind hues, which painted
+// the relationship layer louder than the entities it connects.
 const EDGE_STYLE: Record<EdgeType, { stroke: string; dashed: boolean; baseOpacity: number }> = {
-  identity: { stroke: "hsl(var(--kind-identity))", dashed: false, baseOpacity: 0.55 },
-  "shared-infra": { stroke: "hsl(var(--kind-infrastructure))", dashed: true, baseOpacity: 0.4 },
-  "seed-discovery": { stroke: "hsl(var(--foreground))", dashed: false, baseOpacity: 0.14 },
+  identity: { stroke: "hsl(var(--foreground))", dashed: false, baseOpacity: 0.42 },
+  "shared-infra": { stroke: "hsl(var(--foreground))", dashed: true, baseOpacity: 0.3 },
+  "seed-discovery": { stroke: "hsl(var(--foreground))", dashed: false, baseOpacity: 0.12 },
 };
 const EDGE_LABEL: Record<EdgeType, string> = {
   identity: "Identity link",
@@ -136,14 +141,14 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
     return (
       <div
         className={cn(
-          "flex flex-col items-center gap-0.5 rounded-xl border px-3.5 py-2 text-center shadow-[0_0_28px_-6px_hsl(var(--info)/0.8)]",
-          "border-[hsl(var(--info))] bg-[hsl(var(--info))] text-black",
-          selected && "ring-2 ring-foreground ring-offset-2 ring-offset-background",
+          "flex flex-col items-center gap-0.5 rounded-[4px] border px-3.5 py-2 text-center",
+          "border-primary bg-primary text-primary-foreground",
+          selected && "ring-2 ring-[hsl(var(--brand))] ring-offset-2 ring-offset-background",
         )}
       >
         <Handle type="target" position={Position.Top} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
         <span className="font-mono text-micro font-bold leading-none">{data.label}</span>
-        <span className="font-mono text-micro uppercase tracking-[0.16em] opacity-70">{data.kind} · seed</span>
+        <span className="text-micro opacity-70">{data.kind} · seed</span>
         <Handle type="source" position={Position.Bottom} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
       </div>
     );
@@ -151,16 +156,15 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
   return (
     <div
       className={cn(
-        "group flex items-center gap-1.5 rounded-lg border bg-surface-1/90 px-2.5 py-1.5 backdrop-blur-sm transition-shadow",
-        "border-white/10 shadow-[0_8px_24px_-16px_rgba(0,0,0,0.9)]",
+        "group flex items-center gap-1.5 rounded-[4px] border bg-background px-2 py-1 transition-colors",
+        "border-border hover:border-border-strong",
         data.conflict && "border-[hsl(var(--danger)/0.55)]",
-        selected && "ring-2 ring-foreground",
+        selected && "border-[hsl(var(--brand))] ring-1 ring-[hsl(var(--brand))]",
       )}
-      style={{ boxShadow: selected ? `0 0 0 1px ${color}, 0 10px 30px -16px ${color}` : undefined }}
       title={`${data.kind}: ${data.value} · confidence ${data.confidence}`}
     >
       <Handle type="target" position={Position.Top} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
-      <span className="h-2 w-2 shrink-0 rounded-[3px]" style={{ backgroundColor: color }} />
+      <span className="h-1.5 w-1.5 shrink-0 rounded-[1px]" style={{ backgroundColor: color }} />
       {/* Hard width cap. Without it a single archive URL renders a ~700px chip,
           which no layout spacing can plan around — one long node shoved four
           neighbours underneath itself.
@@ -180,7 +184,7 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
         )}
       </span>
       {data.confidence > 0 && (
-        <span className="font-mono text-micro tabular-nums text-muted-foreground/90">{data.confidence}</span>
+        <span className="font-mono text-micro tabular-nums text-subtle-foreground">{data.confidence}</span>
       )}
       <Handle type="source" position={Position.Bottom} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
     </div>
@@ -246,8 +250,8 @@ function toRfEdges(graph: EntityGraph, hidden: Set<Group>, selected: string | nu
       const s = EDGE_STYLE[e.type];
       const incident = selected != null && (e.source === selected || e.target === selected);
       const dimmed = selected != null && !incident;
-      const stroke = e.bridge ? "hsl(var(--warning))" : s.stroke;
-      const width = (e.bridge ? 2 : 1) + e.strength * 2;
+      const stroke = e.bridge ? "hsl(var(--warning))" : incident ? "hsl(var(--brand))" : s.stroke;
+      const width = (e.bridge ? 1.5 : 1) + e.strength * 0.75;
       return {
         id: e.id,
         source: e.source,
@@ -256,7 +260,7 @@ function toRfEdges(graph: EntityGraph, hidden: Set<Group>, selected: string | nu
         data: { reason: e.reason, kind: e.type, bridge: e.bridge },
         style: {
           stroke,
-          strokeWidth: incident ? width + 0.8 : width,
+          strokeWidth: incident ? width + 0.5 : width,
           strokeDasharray: s.dashed ? "5 6" : undefined,
           opacity: dimmed ? 0.06 : incident ? 0.95 : s.baseOpacity,
         },
@@ -439,27 +443,25 @@ export function GraphTab({ threadId }: { threadId: string }) {
     <div className="h-full flex flex-col min-h-0 bg-surface-0">
       {/* One toolbar: view mode, layers, category filters — then the run's
           warnings, in full. */}
-      <div className="shrink-0 border-b border-white/[0.08] px-2.5 py-2 sm:px-4">
+      <div className="shrink-0 border-b border-border-subtle px-2.5 pb-2 pt-1 sm:px-4">
         <div className="flex flex-wrap items-center gap-2">
           <SubTabs<"graph" | "list">
             label="Graph view"
-            options={[{ key: "graph", label: "Graph", icon: Waypoints }, { key: "list", label: "List", icon: List }]}
+            options={[{ key: "graph", label: "Graph" }, { key: "list", label: "List" }]}
             active={mode}
             onChange={setMode}
           />
-          <span aria-hidden className="hidden h-5 w-px bg-white/[0.08] sm:block" />
+          <span aria-hidden className="hidden h-4 w-px bg-border sm:block" />
+          <div className="tab-rule tab-rule--sub border-b-0">
           {isolatedCount > 0 && (
             <button
               type="button"
               onClick={() => setShowIsolated((v) => !v)}
               aria-pressed={showIsolated}
               title="Entities found in this run that share no selector with anything else. Found together is not related."
-              className={cn(
-                "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-data font-medium transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11",
-                showIsolated ? "bg-surface-3 text-foreground shadow-e1" : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
-              )}
+              className="tab-rule-item [@media(pointer:coarse)]:h-11"
             >
-              Isolated leads <span className="font-mono tabular-nums text-muted-foreground">{isolatedCount}</span>
+              Isolated leads <span className="tab-rule-count">{isolatedCount}</span>
             </button>
           )}
           {graph.stats.nodeCount > 1 && mode === "graph" && (
@@ -468,14 +470,12 @@ export function GraphTab({ threadId }: { threadId: string }) {
               onClick={() => setShowDiscovery((v) => !v)}
               aria-pressed={showDiscovery}
               title="Draw every 'discovered in run' line. Provenance only — not a relationship."
-              className={cn(
-                "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-data font-medium transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11",
-                showDiscovery ? "bg-surface-3 text-foreground shadow-e1" : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
-              )}
+              className="tab-rule-item [@media(pointer:coarse)]:h-11"
             >
               Discovery lines
             </button>
           )}
+          </div>
           <div className="ml-auto flex items-center gap-1">
             <AuthorityLegend />
           </div>
@@ -497,14 +497,14 @@ export function GraphTab({ threadId }: { threadId: string }) {
                 onClick={() => toggleGroup(g)}
                 aria-pressed={!off}
                 className={cn(
-                  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-data font-medium transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-10",
+                  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-[4px] border px-2 text-data font-medium transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-10",
                   off
                     ? "border-transparent text-muted-foreground/55 line-through hover:text-muted-foreground"
-                    : "border-white/10 bg-surface-1/80 text-foreground",
+                    : "border-border bg-background text-foreground hover:border-border-strong",
                 )}
                 title={off ? `Show ${GROUP_LABEL[g]}` : `Hide ${GROUP_LABEL[g]}`}
               >
-                <span className="h-2 w-2 rounded-[2px]" style={{ backgroundColor: GROUP_COLOR[g], opacity: off ? 0.4 : 1 }} />
+                <span className="h-1.5 w-1.5 rounded-[1px]" style={{ backgroundColor: GROUP_COLOR[g], opacity: off ? 0.4 : 1 }} />
                 {GROUP_LABEL[g]}
                 <span className="font-mono tabular-nums text-muted-foreground">{groupCounts.get(g)}</span>
               </button>
@@ -514,8 +514,8 @@ export function GraphTab({ threadId }: { threadId: string }) {
         {graph.warnings.length > 0 && (
           <ul className="mt-2 space-y-1">
             {graph.warnings.map((w) => (
-              <li key={w} className="flex items-start gap-1.5 text-[13px] leading-snug text-[hsl(var(--warning))]">
-                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+              <li key={w} className="flex items-start gap-1.5 text-[12.5px] leading-snug text-muted-foreground">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[hsl(var(--warning))]" aria-label="Warning" />
                 <span className="min-w-0">{w}</span>
               </li>
             ))}
@@ -549,27 +549,33 @@ export function GraphTab({ threadId }: { threadId: string }) {
           nodesConnectable={false}
           elementsSelectable
           proOptions={{ hideAttribution: false }}
-          className="bg-[radial-gradient(circle_at_50%_40%,hsl(var(--surface-1)/0.62),transparent_72%)]"
+          className="[&_.react-flow\_\_background]:[mask-image:radial-gradient(ellipse_at_50%_45%,#000_45%,transparent_85%)]"
         >
-          <Background variant={BackgroundVariant.Dots} gap={26} size={1} color="hsl(var(--foreground) / 0.10)" />
-          <Controls showInteractive={false} className="!rounded-lg !border !border-white/10 !bg-surface-1/90 !shadow-lg [&_button]:!border-white/10 [&_button]:!bg-transparent [&_button]:!text-foreground" />
+          <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="hsl(var(--foreground) / 0.14)" />
+          <Controls showInteractive={false} className="!rounded-md !border !border-border !bg-background !shadow-none [&_button]:!border-border [&_button]:!bg-transparent [&_button]:!text-foreground" />
           <MiniMap
             // Hidden under 900px: in a browser side panel (~758px) it covered
             // real nodes and bought nothing a pan gesture does not.
             pannable
             zoomable
-            className="!hidden min-[900px]:!block !rounded-lg !border !border-white/10 !bg-surface-0/90"
-            maskColor="hsl(var(--background) / 0.6)"
+            // Greyscale entities under a 1px viewport outline: the minimap
+            // answers "where am I on the canvas", and kind hues at this size
+            // were unreadable bars that only competed with the real legend.
+            className="!hidden min-[900px]:!block !rounded-md !border !border-border !bg-background"
+            maskColor="hsl(var(--background) / 0.72)"
+            maskStrokeColor="hsl(var(--foreground) / 0.55)"
+            maskStrokeWidth={1}
+            nodeBorderRadius={2}
             nodeColor={(n) => {
               const d = n.data as EntityNodeData;
-              return d?.isSeed ? "hsl(var(--info))" : d?.conflict ? "hsl(var(--danger))" : GROUP_COLOR[d?.group ?? "other"];
+              return d?.isSeed ? "hsl(var(--foreground))" : d?.conflict ? "hsl(var(--danger))" : "hsl(var(--foreground) / 0.35)";
             }}
           />
         </ReactFlow>
 
         {graph.stats.realEdgeCount === 0 && (
           <div className="pointer-events-none absolute inset-0 z-[5] grid place-items-center p-4">
-            <div className="max-w-md rounded-xl border border-white/10 bg-[linear-gradient(160deg,hsl(var(--film)/0.1),hsl(var(--film)/0.025)_55%)] px-4 py-3 text-center shadow-[0_20px_60px_-36px_rgba(0,0,0,0.95)] backdrop-blur-xl">
+            <div className="panel panel-raised max-w-md px-4 py-3 text-center">
               <div className="inline-flex items-center gap-1.5 text-micro font-semibold tracking-normal text-[hsl(var(--warning))]">
                 <AlertTriangle className="h-3.5 w-3.5" />
                 No durable links yet
@@ -585,14 +591,14 @@ export function GraphTab({ threadId }: { threadId: string }) {
         )}
 
         {selectedNode && (
-          <div className="absolute top-3 right-3 z-10 w-[min(22rem,calc(100%-1.5rem))] rounded-2xl border border-white/12 bg-[linear-gradient(160deg,hsl(var(--film)/0.09),hsl(var(--film)/0.03)_48%,hsl(var(--film)/0.015))] p-3 shadow-[0_30px_100px_-42px_rgba(0,0,0,0.96)] backdrop-blur-xl">
+          <div className="panel panel-raised absolute top-3 right-3 z-10 w-[min(22rem,calc(100%-1.5rem))] p-3">
             <div className="flex items-start justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
                 <span
                   className="h-2.5 w-2.5 shrink-0 rounded-[2px]"
-                  style={{ backgroundColor: selectedNode.conflict ? "hsl(var(--danger))" : selectedNode.isSeed ? "hsl(var(--info))" : GROUP_COLOR[selectedNode.group] }}
+                  style={{ backgroundColor: selectedNode.conflict ? "hsl(var(--danger))" : selectedNode.isSeed ? "hsl(var(--foreground))" : GROUP_COLOR[selectedNode.group] }}
                 />
-                <span className="truncate text-eyebrow uppercase tracking-[0.14em] text-muted-foreground">
+                <span className="truncate text-micro text-subtle-foreground">
                   {selectedNode.kind} · {selectedNode.isSeed ? "seed" : GROUP_LABEL[selectedNode.group]}
                 </span>
               </div>
@@ -632,7 +638,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
               ) : (
                 <ul className="mt-1.5 space-y-1.5">
                   {connections.filter((c) => c.type !== "seed-discovery").slice(0, 8).map((c) => (
-                    <li key={c.id} className="rounded-lg border border-white/8 bg-white/[0.03] p-2">
+                    <li key={c.id} className="rounded-[4px] border border-border-subtle bg-background p-2">
                       <div className="flex items-center gap-1.5">
                         {c.bridge && <Sparkles className="h-3 w-3 shrink-0 text-[hsl(var(--warning))]" aria-hidden />}
                         <span className="truncate font-mono text-data text-foreground/90">{shorten(c.otherLabel, 28)}</span>
