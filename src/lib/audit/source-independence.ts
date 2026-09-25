@@ -23,6 +23,10 @@ export interface Source {
   id: string;
   type: SourceType;
   origin?: string; // upstream dataset, e.g. "MyDriveSure-2019", "Zynga-2019"
+  /** What an analyst recognises this source by (the artifact's value). Used only
+   *  in finding MESSAGES; `id` stays the machine key in `sources[]`. Without it
+   *  the report printed rows of raw UUIDs no reader can act on. */
+  label?: string;
   url?: string;
   retrievedAt: string; // ISO
   confidence: number; // 0–100
@@ -63,6 +67,27 @@ const SECONDARY_AGGREGATORS = new Set([
   "haveibeenpwned.com",
 ]);
 
+const LABEL_MAX = 48;
+const LABELS_SHOWN = 4;
+
+/** Human-readable list for a finding message: labels (truncated, capped at
+ *  four with a "+N more" tail), falling back to the id when a source has none. */
+function describeSources(group: Source[]): string {
+  const names = group.map((g) => {
+    const l = (g.label ?? "").replace(/\s+/g, " ").trim();
+    if (!l) return g.id;
+    return `"${l.length > LABEL_MAX ? `${l.slice(0, LABEL_MAX - 1)}…` : l}"`;
+  });
+  const shown = names.slice(0, LABELS_SHOWN).join(", ");
+  return names.length > LABELS_SHOWN ? `${shown}, +${names.length - LABELS_SHOWN} more` : shown;
+}
+
+/** `src:` is an internal namespace for provider origins; `breach:` is kept
+ *  because it tells the reader the collapse is by breach corpus. */
+function displayOrigin(origin: string): string {
+  return origin.startsWith("src:") ? origin.slice(4) : origin;
+}
+
 export function checkIndependence(sources: Source[]): IndependenceFinding[] {
   const findings: IndependenceFinding[] = [];
 
@@ -78,7 +103,7 @@ export function checkIndependence(sources: Source[]): IndependenceFinding[] {
       findings.push({
         severity: "warn",
         message:
-          `Sources [${group.map((g) => g.id).join(", ")}] share origin "${origin}". ` +
+          `Sources [${describeSources(group)}] share origin "${displayOrigin(origin)}". ` +
           `Treat as ONE source, not ${group.length}.`,
         sources: group.map((g) => g.id),
         effectiveCount: 1,

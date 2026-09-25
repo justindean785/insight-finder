@@ -5,6 +5,7 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ToolEvent } from "@/hooks/useThreadToolActivity";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { useReviewStates } from "@/lib/review";
+import { isProseValue } from "@/lib/evidence-bands";
 import { authorityFor, LEDGER_SORT_RANK, AUTHORITY_LEGEND, type AuthorityState } from "@/lib/authority";
 import { AuthorityChip, AuthoritySpine, AuthorityCaveat, RuleLabel } from "@/components/ui/authority";
 import { readableSourceLabel } from "@/lib/tool-display";
@@ -54,31 +55,86 @@ function jump(tab: string) {
   window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab } }));
 }
 
-/** A single instrument reading. Big number, small label, optional action. */
-function Stat({
-  icon: Icon, label, value, sub, tone, onClick, title,
+/**
+ * The run, in one line.
+ *
+ * This replaced a bank of five tiles, and the reason is worth keeping. Three of
+ * them counted verified, conflict and quarantined artifacts -- figures the case
+ * bar already carries in its own strip AND that the authority distribution
+ * below states far better, with all eight states and each one's share of the
+ * case. One screen, three copies of the same three numbers, and the page opened
+ * on the least useful of them.
+ *
+ * What survives is the other axis: what the run itself cost. Those figures
+ * appear nowhere else on the page, they fit on one line, and a line is the
+ * right weight for context that sits under the decision it informs.
+ *
+ * A figure at zero recedes to reference ink rather than vanishing -- "0 failed"
+ * is a real reading and the analyst should be able to see the run was clean.
+ */
+function RunStrip({
+  calls, failed, degraded, cached, wall, onJump,
 }: {
-  icon: LucideIcon; label: string; value: string | number; sub?: string;
-  tone?: string; onClick?: () => void; title?: string;
+  calls: number; failed: number; degraded: number; cached: number;
+  wall: string; onJump: () => void;
 }) {
-  const Tag = onClick ? "button" : "div";
+  const figures: { value: string | number; label: string; tone?: string; dim?: boolean }[] = [
+    { value: calls, label: calls === 1 ? "call" : "calls", dim: calls === 0 },
+    { value: failed, label: "failed", tone: failed > 0 ? "text-[hsl(var(--danger))]" : undefined, dim: failed === 0 },
+    { value: degraded, label: "degraded", tone: degraded > 0 ? "text-[hsl(var(--authority-review))]" : undefined, dim: degraded === 0 },
+    { value: cached, label: "cached", dim: cached === 0 },
+    { value: wall, label: "in tools" },
+  ];
   return (
-    <Tag
-      {...(onClick ? { type: "button" as const, onClick } : {})}
-      title={title}
-      data-interactive={onClick ? "true" : undefined}
+    <button
+      type="button"
+      onClick={onJump}
+      aria-label={`Run summary: ${calls} calls, ${failed} failed, ${degraded} degraded, ${cached} cached, ${wall} in tools. Open Tools.`}
+      className="-mx-1 flex w-full flex-wrap items-baseline gap-x-6 gap-y-1.5 rounded-md px-1 py-1.5 text-left text-data transition-colors duration-fast hover:bg-white/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {figures.map((f) => (
+        <span key={f.label} className="inline-flex items-baseline gap-1.5 whitespace-nowrap">
+          <span className={cn("font-mono tabular-nums", f.tone ?? (f.dim ? "text-faint-foreground" : "text-foreground"))}>
+            {f.value}
+          </span>
+          <span className={f.dim && !f.tone ? "text-faint-foreground" : "text-subtle-foreground"}>{f.label}</span>
+        </span>
+      ))}
+    </button>
+  );
+}
+
+/**
+ * An artifact's value, set the way the evidence ledger already sets it.
+ *
+ * `value` holds two different kinds of thing. A SELECTOR is compared character
+ * by character, so it belongs in the data face on one line, truncated -- you
+ * read the head of an address to recognise it. A FINDING is a sentence the
+ * extractor wrote into the same column ("CONTRADICTION: 1110 Sample Ave is NOT
+ * linked to James Harker. The reverse-address lookup returned 31 records and
+ * the ..."), and truncating that to forty monospace characters is how the most
+ * important row on the page went unread.
+ *
+ * `ArtifactRow` settled this in the ledger and these three lists never adopted
+ * it, so Overview truncated every kind alike -- most visibly once Latest
+ * evidence moved to half width. Same predicate, same two modes, so a row reads
+ * the same on both surfaces.
+ */
+function ArtifactValue({ value, className }: { value: string; className?: string }) {
+  const prose = isProseValue(value);
+  return (
+    <span
+      title={value}
       className={cn(
-        "panel stat-tile px-3 py-2.5 text-left transition-colors",
-        onClick && "hover:border-border-strong hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "min-w-0 text-foreground",
+        prose
+          ? "text-[12.5px] leading-[1.45] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden"
+          : "mono-value truncate text-data",
+        className,
       )}
     >
-      <span className="flex items-center gap-1.5 text-eyebrow uppercase tracking-[0.12em] text-muted-foreground">
-        <Icon className={cn("h-3 w-3 shrink-0", tone)} strokeWidth={2} aria-hidden />
-        {label}
-      </span>
-      <span className={cn("mt-1.5 block font-display text-h2 font-semibold leading-none", tone ? "tabular-nums" : "stat-figure", tone)}>{value}</span>
-      {sub && <span className="mt-1 block truncate text-micro text-muted-foreground">{sub}</span>}
-    </Tag>
+      {value}
+    </span>
   );
 }
 
@@ -200,65 +256,58 @@ export function OverviewTab({ threadId }: { threadId: string }) {
       <h2 className="sr-only">Overview — {total} artifact{total === 1 ? "" : "s"}, {activity.persistedTotal} tool call{activity.persistedTotal === 1 ? "" : "s"}</h2>
 
       <div className="mx-auto max-w-6xl space-y-4 p-3 sm:p-4">
-        {/* ── Instrument row ───────────────────────────────────────────── */}
-        {/* One aligned row on desktop; two balanced columns below it, with the
-            odd last tile spanning both instead of leaving an empty cell. */}
-        <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-5 [&>*:last-child:nth-child(odd)]:col-span-2 lg:[&>*:last-child:nth-child(odd)]:col-span-1">
-          <Stat
-            icon={ShieldCheck} label="Verified" value={tally.verified}
-            tone="text-[hsl(var(--authority-verified))]"
-            sub="corroborated or analyst-confirmed"
-            title={HINT.get("verified")} onClick={() => jump("artifacts")}
-          />
-          <Stat
-            icon={AlertTriangle} label="Conflict" value={tally.conflict}
-            tone={tally.conflict > 0 ? "text-[hsl(var(--authority-conflict))]" : undefined}
-            sub="contradicts the case"
-            title={HINT.get("conflict")} onClick={() => jump("artifacts")}
-          />
-          <Stat
-            icon={Unlink} label="Quarantined" value={tally.quarantined}
-            tone={tally.quarantined > 0 ? "text-[hsl(var(--authority-quarantine))]" : undefined}
-            sub="linkage unproven"
-            title={HINT.get("quarantined")} onClick={() => jump("artifacts")}
-          />
-          {/* NEVER sum these. `failed` is breakage — the lookup did not happen
-              and whatever it would have found is missing. `degraded` is
-              transient — our own throttles, upstream rate limits, timeouts —
-              and can succeed on a retry. ToolsTab keeps them as separate tiles
-              for that reason, and an Overview that adds them under the word
-              "failed" both overstates breakage and destroys the distinction an
-              analyst uses to decide whether to re-run. This is the
-              suppressed-failure problem in a new direction. */}
-          <Stat
-            icon={XCircle} label="Coverage gaps"
-            value={activity.degraded > 0 ? `${activity.failed}/${activity.degraded}` : activity.failed}
-            tone={activity.failed > 0 ? "text-destructive" : activity.degraded > 0 ? "text-[hsl(var(--confidence-mid))]" : undefined}
-            sub={activity.degraded > 0 ? "failed / degraded" : "failed lookups"}
-            title={
-              `${activity.failed} failed — the lookup did not happen, so anything it would have found is missing from this case.` +
-              (activity.degraded > 0
-                ? ` ${activity.degraded} degraded — throttles, upstream rate limits, denials and timeouts; these can succeed on a retry.`
-                : "")
+
+        {/* ── The decision queue leads ──────────────────────────────────
+            It is the one surface on this page that asks the analyst to do
+            something; everything below it is context for that decision. */}
+        {/* ── Needs a decision ───────────────────────────────────────── */}
+        <section className="panel panel-primary overflow-hidden">
+          <RuleLabel
+            right={
+              unresolved.length > 0 ? (
+                <button type="button" onClick={() => jump("artifacts")} className="inline-flex items-center gap-1 text-micro text-muted-foreground hover:text-foreground">
+                  Open <ArrowRight className="h-3 w-3" aria-hidden />
+                </button>
+              ) : undefined
             }
-            onClick={() => jump("issues")}
-          />
-          <Stat
-            icon={Timer} label="Time in tools"
-            // `Math.round(ms / 60_000)` reported 87s as "1m" — a 31% understatement,
-            // and every value from 30s to 89s collapsed onto the same label while
-            // the Tools tab showed the true "87s" for the same run. Carry the
-            // remainder: a wall-clock figure in an evidence tool should not round
-            // away half a minute of it.
-            // Round to whole seconds FIRST, then split. Rounding the remainder
-            // separately let it reach 60 and print "1m 60s" (119.6s did exactly
-            // that), and "60s" just under the minute mark.
-            value={fmtWallClock(toolMs)}
-            sub={cached > 0 ? `${cached} served from cache` : "wall-clock across the run"}
-            title="Total wall-clock across every recorded call."
-            onClick={() => jump("issues")}
-          />
-        </div>
+          >
+            Needs a decision
+          </RuleLabel>
+          {unresolved.length === 0 ? (
+            <p className="p-3 text-data text-muted-foreground">
+              Nothing disputed or unattributable. Conflicts and quarantined selectors would appear here.
+            </p>
+          ) : (
+            <ul>
+              {unresolved.map(({ a, v }) => (
+                <li key={a.id} className="relative border-b border-border-subtle px-3 py-2 pl-4 last:border-b-0">
+                  <AuthoritySpine state={v.state} />
+                  <div className="flex items-start gap-2">
+                    <ArtifactValue value={a.value} className="flex-1" />
+                    <AuthorityChip view={v} />
+                  </div>
+                  <AuthorityCaveat view={v} className="mt-1" />
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {/* ── The run, in one line ─────────────────────────────────────
+            These were five tiles. Three of them (verified, conflict,
+            quarantined) printed numbers the case bar already carries AND the
+            distribution chart below shows better, with all eight states and
+            their shares — so the bank was saying the same thing three times on
+            one screen. What is left is the other axis: what the run itself
+            cost, which appears nowhere else as a figure. */}
+        <RunStrip
+          calls={activity.persistedTotal}
+          failed={activity.failed}
+          degraded={activity.degraded}
+          cached={cached}
+          wall={fmtWallClock(toolMs)}
+          onJump={() => jump("issues")}
+        />
 
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
           {/* ── Authority distribution ─────────────────────────────────── */}
@@ -306,43 +355,8 @@ export function OverviewTab({ threadId }: { threadId: string }) {
             )}
           </section>
 
-          {/* ── Needs a decision ───────────────────────────────────────── */}
-          <section className="panel overflow-hidden">
-            <RuleLabel
-              right={
-                unresolved.length > 0 ? (
-                  <button type="button" onClick={() => jump("artifacts")} className="inline-flex items-center gap-1 text-micro text-muted-foreground hover:text-foreground">
-                    Open <ArrowRight className="h-3 w-3" aria-hidden />
-                  </button>
-                ) : undefined
-              }
-            >
-              Needs a decision
-            </RuleLabel>
-            {unresolved.length === 0 ? (
-              <p className="p-3 text-data text-muted-foreground">
-                Nothing disputed or unattributable. Conflicts and quarantined selectors would appear here.
-              </p>
-            ) : (
-              <ul>
-                {unresolved.map(({ a, v }) => (
-                  <li key={a.id} className="relative border-b border-border-subtle px-3 py-2 pl-4 last:border-b-0">
-                    <AuthoritySpine state={v.state} />
-                    <div className="flex items-center gap-2">
-                      <span className="mono-value min-w-0 flex-1 truncate text-data text-foreground/95" title={a.value}>{a.value}</span>
-                      <AuthorityChip view={v} />
-                    </div>
-                    <AuthorityCaveat view={v} className="mt-1" />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-3">
           {/* ── Strongest findings ─────────────────────────────────────── */}
-          <section className="panel overflow-hidden lg:col-span-2">
+          <section className="panel panel-flat overflow-hidden">
             <RuleLabel right={<span className="text-micro tabular-nums text-muted-foreground/70">{strongest.length} of {tally.verified + tally.infrastructure + tally.probable}</span>}>
               Strongest supported findings
             </RuleLabel>
@@ -351,9 +365,9 @@ export function OverviewTab({ threadId }: { threadId: string }) {
             ) : (
               <ul>
                 {strongest.map(({ a, v }) => (
-                  <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto_3rem] items-center gap-2 border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
+                  <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto_3rem] items-start gap-2 border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
                     <AuthoritySpine state={v.state} />
-                    <span className="mono-value min-w-0 truncate text-data text-foreground/95" title={a.value}>{a.value}</span>
+                    <ArtifactValue value={a.value} />
                     <AuthorityChip view={v} />
                     <span className="text-right text-data font-semibold tabular-nums text-foreground/80">{effectiveConfidence(a) ?? "—"}</span>
                   </li>
@@ -361,9 +375,11 @@ export function OverviewTab({ threadId }: { threadId: string }) {
               </ul>
             )}
           </section>
+        </div>
 
+        <div className="grid gap-4 lg:grid-cols-2">
           {/* ── Failed / degraded lookups ──────────────────────────────── */}
-          <section className="panel overflow-hidden">
+          <section className="panel panel-flat overflow-hidden">
             <RuleLabel
               right={
                 <button type="button" onClick={() => jump("issues")} className="inline-flex items-center gap-1 text-micro text-muted-foreground hover:text-foreground">
@@ -394,31 +410,31 @@ export function OverviewTab({ threadId }: { threadId: string }) {
               </ul>
             )}
           </section>
-        </div>
 
-        {/* ── Latest evidence ──────────────────────────────────────────── */}
-        <section className="panel overflow-hidden">
-          <RuleLabel right={<Activity className="h-3 w-3 text-muted-foreground/60" aria-hidden />}>
-            Latest evidence
-          </RuleLabel>
-          {recent.length === 0 ? (
-            <p className="p-3 text-data text-muted-foreground">Nothing recorded yet.</p>
-          ) : (
-            <ul>
-              {recent.map((a: Artifact) => {
-                const v = authorityFor(a, review.get(a.id));
-                return (
-                  <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
-                    <AuthoritySpine state={v.state} />
-                    <span className="mono-value min-w-0 truncate text-data text-foreground/90" title={a.value}>{a.value}</span>
-                    <AuthorityChip view={v} />
-                    <span className="shrink-0 text-eyebrow tabular-nums text-muted-foreground/70">{timeAgo(a.created_at)}</span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
+          {/* ── Latest evidence ──────────────────────────────────────────── */}
+          <section className="panel panel-flat overflow-hidden">
+            <RuleLabel right={<Activity className="h-3 w-3 text-muted-foreground/60" aria-hidden />}>
+              Latest evidence
+            </RuleLabel>
+            {recent.length === 0 ? (
+              <p className="p-3 text-data text-muted-foreground">Nothing recorded yet.</p>
+            ) : (
+              <ul>
+                {recent.map((a: Artifact) => {
+                  const v = authorityFor(a, review.get(a.id));
+                  return (
+                    <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto_auto] items-start gap-2 border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
+                      <AuthoritySpine state={v.state} />
+                      <ArtifactValue value={a.value} />
+                      <AuthorityChip view={v} />
+                      <span className="shrink-0 text-eyebrow tabular-nums text-muted-foreground/70">{timeAgo(a.created_at)}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        </div>
       </div>
     </div>
   );

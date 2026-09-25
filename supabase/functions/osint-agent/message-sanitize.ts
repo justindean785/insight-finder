@@ -114,9 +114,14 @@ export function summarizeToolResultValue(
   const selectorBlock = selectors.length
     ? `pivot selectors preserved: ${selectors.join(", ")}`
     : "no pivot selectors detected";
+  // ⚠️ Do NOT re-add a retrieval promise here. This marker used to end "full
+  // result persisted, retrieve via memory_recall"; `memory_recall` reads only
+  // `agent_memory` and no tool in the registry reads `tool_call_cache`, so it
+  // named a route the model cannot take. The selectors below ARE the durable
+  // carry-over — say that instead of promising a retrieval that never worked.
   const marker =
-    `[older ${name} result summarized to fit context — ${raw.length} chars original; ` +
-    `full result persisted, retrieve via memory_recall]`;
+    `[${name} result summarized to fit context — ${raw.length} chars original; ` +
+    `the selectors below are preserved in full]`;
   const fixed = `${marker}\n${selectorBlock}`;
   const room = maxChars - fixed.length - 12; // 12 ≈ "\n--- head ---\n"
   if (room > 40) {
