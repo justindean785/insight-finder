@@ -26,6 +26,7 @@ import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSw
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
 import { recordNameQuarantineEnabled } from "./lib/record-name-quarantine.ts";
 import { geminiPreflightPivotEnabled, preflightPivotHealthDetail } from "./lib/preflight-pivot.ts";
+import { positionalPairingSelfTest } from "./message-sanitize.ts";
 import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 
@@ -390,6 +391,13 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // that the build gating that pivot is live. `ok` is true either way: both settings
   // are deliberate operator choices, and the detail names which one is in force.
   r.checks.preflight_pivot = { ok: true, detail: preflightPivotHealthDetail(geminiPreflightPivotEnabled()) };
+
+  // Does the DEPLOYED sanitizer pair tool-calls by POSITION (message-sanitize.ts)?
+  // A self-test, not a label: it runs the live sanitizer on a fixed synthetic
+  // overlap probe and checks the result the way the AI SDK does. Pure and
+  // silent, so health probes never emit sanitize_positional_pair_repair. Its
+  // PRESENCE proves this build is live; ok:false means the pairing rule regressed.
+  r.checks.message_sanitize = positionalPairingSelfTest();
 
   // Which rule marks a clustered artifact CONTRADICTED (lib/cluster.ts)? Pure. Its
   // PRESENCE proves the build with the explicit-signal rule is live.
