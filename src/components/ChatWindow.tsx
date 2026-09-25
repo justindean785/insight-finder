@@ -2753,17 +2753,30 @@ function ChatWindowInner({
     // tab. Each is VALIDATED before it may carry a Run button — a malformed
     // suggestion (a table row, a report footer) stays visible as "needs repair".
     const ranked = computePivots({ artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets, reviews: review.map });
-    for (const p of ranked.filter((candidate) => candidate.status === "new").slice(0, 3)) {
+    // Three RUNNABLE pivots, not the top three candidates. Validation used to
+    // run after the slice, so a report whose recommendations were partly
+    // unparseable filled two of three slots with "needs repair" cards and
+    // pushed real, runnable pivots off the list. Unrunnable ones are still
+    // collected (bounded) and shown behind one disclosure line by NextSteps.
+    const repair: NextStepItem[] = [];
+    let runnable = 0;
+    for (const p of ranked.filter((candidate) => candidate.status === "new")) {
+      if (runnable >= 3) break;
       const dedupe = cardDedupeKey({ title: p.actionLabel, target: p.value });
       if (seenKeys.has(dedupe)) continue;
       seenKeys.add(dedupe);
-      seenLabels.add(p.actionLabel);
       const validation = validatePivotSuggestion(pivotSuggestionInput(p));
+      if (validation.status !== "valid") {
+        if (repair.length < 3) repair.push({ kind: "pivot", key: dedupe, validation, eligibility: null });
+        continue;
+      }
+      seenLabels.add(p.actionLabel);
+      runnable++;
       out.push({
         kind: "pivot",
         key: dedupe,
         validation,
-        eligibility: validation.status === "valid" ? pivotEligibility(validation.pivot, { artifactsById, review: reviewOf }) : null,
+        eligibility: pivotEligibility(validation.pivot, { artifactsById, review: reviewOf }),
       });
     }
     // Always include 1-2 generic next steps as fallback.
@@ -2778,7 +2791,7 @@ function ChatWindowInner({
       seenLabels.add(g.title);
       out.push({ kind: "action", key: `action:${g.title}`, title: g.title, detail: g.detail, prompt: g.prompt });
     }
-    return out.slice(0, 4);
+    return [...out.slice(0, 4), ...repair];
   }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability]);
 
   return (

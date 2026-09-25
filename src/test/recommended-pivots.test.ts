@@ -271,4 +271,49 @@ Let me also call detect_contradictions to check for any issues.
       expect(isPlausiblePhone("9165550142", "Check mobile 9165550142")).toBe(true);
     });
   });
+
+  // Shapes measured on a production report, 2026-09-25 (values synthetic).
+  describe("report formatting is not pivot data", () => {
+    const tableReport = `
+## 10. Recommended Next Pivots
+
+| Pivot | Rationale | Tool |
+| --- | --- | --- |
+| **Reverse phone lookup: +1-415-555-0142** | Would verify the breach phone independently | \`oathnet_lookup\` |
+| **Breach-check on \`handle_one\` and \`handle_two\`** | Would reveal additional corpora | \`breach_check\` |
+
+---
+
+*Investigation conducted by the investigator. 23 artifacts recorded.*
+`;
+
+    it("never turns the table header row into a pivot", () => {
+      const labels = extractRecommendedPivots(tableReport).map((p) => p.label);
+      expect(labels.some((l) => /^Pivot\b/.test(l) || /Rationale/.test(l))).toBe(false);
+    });
+
+    it("reads a table row by cell: first cell is the pivot, second the reason", () => {
+      const phone = extractRecommendedPivots(tableReport).find((p) => p.type === "phone");
+      expect(phone).toBeDefined();
+      expect(phone!.value.replace(/\D/g, "")).toBe("14155550142");
+      expect(phone!.reason).toBe("Would verify the breach phone independently");
+      expect(phone!.label).not.toMatch(/\|/);
+      expect(phone!.label).not.toMatch(/oathnet_lookup/);
+    });
+
+    it("ends the section at a horizontal rule, so the report footer is never a pivot", () => {
+      const labels = extractRecommendedPivots(tableReport).map((p) => p.label);
+      expect(labels.some((l) => /Investigation conducted/.test(l))).toBe(false);
+    });
+
+    it("still skips a rule that comes before the first pivot", () => {
+      const text = "**Recommended next pivots:**\n---\n- Investigate sam.cole@example.com — reuse check\n";
+      expect(extractRecommendedPivots(text).map((p) => p.value)).toEqual(["sam.cole@example.com"]);
+    });
+
+    it("skips a whole-line italic note between pivots", () => {
+      const text = "**Recommended next pivots:**\n- Investigate a@example.com — one\n*Note: breach values are masked.*\n- Investigate b@example.com — two\n";
+      expect(extractRecommendedPivots(text).map((p) => p.value)).toEqual(["a@example.com", "b@example.com"]);
+    });
+  });
 });
