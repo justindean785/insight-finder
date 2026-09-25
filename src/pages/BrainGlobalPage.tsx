@@ -9,8 +9,8 @@ import { ThreadSidebar } from "@/components/ThreadSidebar";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
 import {
-  Brain, Sparkles, Lightbulb, Star, Network, Zap, PanelLeftOpen,
-  Target, ThumbsUp, CreditCard, TrendingUp,
+  Brain, Lightbulb, Star, Network, Zap, PanelLeftOpen,
+  ThumbsUp, CreditCard, TrendingUp,
   Search, X, EyeOff, Trash2, HelpCircle, ArrowUp, User, Building2,
   ArrowRight, Wrench, UserCheck,
 } from "lucide-react";
@@ -52,12 +52,12 @@ const KIND_META: Record<string, { label: string; Icon: typeof Lightbulb; tone: s
  */
 type SubTab = "overview" | "analysis" | "memories" | "patterns" | "sources" | "credits";
 const SUB_TABS: { id: SubTab; label: string }[] = [
-  { id: "overview", label: "OVERVIEW" },
-  { id: "analysis", label: "ANALYSIS" },
-  { id: "memories", label: "MEMORIES" },
-  { id: "patterns", label: "PATTERNS" },
-  { id: "sources",  label: "SOURCES" },
-  { id: "credits",  label: "CREDITS" },
+  { id: "overview", label: "Overview" },
+  { id: "analysis", label: "Analysis" },
+  { id: "memories", label: "Memories" },
+  { id: "patterns", label: "Patterns" },
+  { id: "sources",  label: "Sources" },
+  { id: "credits",  label: "Credits" },
 ];
 const IS_SUB_TAB = (v: string | null): v is SubTab =>
   !!v && SUB_TABS.some((t) => t.id === v);
@@ -70,6 +70,12 @@ type PatternFilter = typeof PATTERN_FILTERS[number];
 const PATTERN_SORTS = ["NEWEST", "CONFIDENCE", "RECALLS"] as const;
 type PatternSort = typeof PATTERN_SORTS[number];
 const BRAIN_PROMOTED_KEY = "brain_promoted_memories";
+
+/** Filter and sort keys are stored upper-case; they are labels, so they are
+ * shown in sentence case like every other label in the product. */
+function titleCase(key: string): string {
+  return key.charAt(0) + key.slice(1).toLowerCase();
+}
 
 function matchesFilter(m: Memory, f: MemoryFilter): boolean {
   if (f === "ALL") return true;
@@ -260,7 +266,7 @@ export default function BrainGlobalPage() {
 
   const content = (
     <div className="flex-1 min-h-0 overflow-y-auto">
-      <header className="sticky top-0 z-10 glass-card border-b border-border-subtle">
+      <header className="sticky top-0 z-10 bg-background">
         {/* Phone: this header is sticky, so every pixel it takes is permanently
             gone. Measured at 390px before this change it stood ~330px tall —
             39% of an 844px viewport — ahead of any content. Padding, title size
@@ -270,57 +276,60 @@ export default function BrainGlobalPage() {
           <Link
             to="/"
             aria-label="Home"
-            className="relative shrink-0 focus:outline-none focus:ring-2 focus:ring-primary/40 rounded-xl"
+            className="shrink-0 grid h-10 w-10 place-items-center rounded-lg border border-border bg-surface-1 transition-colors hover:bg-surface-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <div className="w-10 h-10 rounded-xl glass-strong grid place-items-center ring-1 ring-primary/40 shadow-[0_0_24px_-6px_hsl(var(--primary)/0.7)] hover:bg-white/[0.04] transition-colors">
-              <Brain className="w-5 h-5 text-primary" strokeWidth={1.5} />
-            </div>
-            <Sparkles className="absolute -top-1 -right-1 w-3 h-3 text-primary animate-pulse" />
+            <Brain className="h-5 w-5 text-muted-foreground" strokeWidth={1.5} />
           </Link>
           <div className="flex-1 min-w-0">
-            <h1 className="font-display text-base sm:text-xl tracking-tight text-foreground">
-              INTELLIGENCE · CROSS-CASE VIEW
+            <h1 className="font-display text-lg sm:text-2xl font-semibold tracking-[-0.02em] text-foreground">
+              Intelligence
             </h1>
             {/* Decorative: it restates what the title and the tabs below already
                 say. First thing to go on a small screen. The governance note
                 below is NOT decorative and stays at every width. */}
-            <p className="hidden sm:block text-xs text-muted-foreground mt-0.5">
-              Aggregate stats, evidence-quality analysis, saved patterns, and source context across every case.
+            <p className="hidden sm:block text-meta text-muted-foreground mt-0.5">
+              Cross-case view: aggregate stats, evidence-quality analysis, saved patterns and source context across every case.
             </p>
-            <p className="mt-1 sm:mt-1.5 text-micro text-muted-foreground/80">
-              Pin / mute / hide actions on this screen are local view controls — they do not modify
+            <p className="mt-1 sm:mt-1.5 text-micro text-subtle-foreground">
+              Pin, mute and hide on this screen are local view controls. They do not modify
               the source memory or create an audited governance record.
             </p>
           </div>
           {stats.newSince > 0 && (
-            <span className="mt-1 px-2 py-1 rounded-full bg-primary/15 border border-primary/30 text-primary text-eyebrow font-mono uppercase tracking-wider shrink-0">
-              {stats.newSince} new
+            <span
+              className="mt-1 shrink-0 inline-flex items-baseline gap-1 rounded border border-[hsl(var(--brand)/0.55)] px-1.5 py-0.5 text-micro text-foreground"
+              title="Memories created since your last visit to this page"
+            >
+              <span className="font-mono tabular-nums">{stats.newSince}</span> new
             </span>
           )}
         </div>
-        <div className="px-4 sm:px-6 pb-3 sm:pb-4 flex gap-2 overflow-x-auto scrollbar-thin edge-fade-x">
-          <MetricChip icon={Brain} label="MEMORIES" value={stats.total} />
-          <MetricChip icon={Zap} label="RECALLS" value={stats.recalls} />
-          <MetricChip icon={Target} label="AVG CONFIDENCE" value={`${stats.avgConf}%`} />
-          <MetricChip
-            icon={TrendingUp}
-            label="HIGH CONFIDENCE"
-            value={stats.highConfidence}
-            title="Memories with confidence ≥75%. This is a source/tool confidence score, not an analyst confirmation."
-          />
-          <MetricChip icon={CreditCard} label="SOCIALFETCH" value={sfCreditsLeft != null ? `${sfCreditsLeft.toLocaleString()} left` : "—"} />
+        {/* One instrument with five readings, not five capsules competing:
+            the cells share their rules (`.hairline-grid`). On a phone the strip
+            scrolls sideways rather than wrapping to three rows of sticky
+            header. */}
+        <div className="px-4 sm:px-6 pb-3 sm:pb-4 overflow-x-auto scrollbar-thin">
+          <dl className="hairline-grid min-w-[560px] grid-cols-5">
+            <MetricCell label="Memories" value={stats.total.toLocaleString()} />
+            <MetricCell label="Recalls" value={stats.recalls.toLocaleString()} />
+            <MetricCell label="Avg confidence" value={`${stats.avgConf}%`} />
+            <MetricCell
+              label="High confidence"
+              value={stats.highConfidence.toLocaleString()}
+              title="Memories with confidence ≥75%. This is a source/tool confidence score, not an analyst confirmation."
+            />
+            <MetricCell label="SocialFetch left" value={sfCreditsLeft != null ? sfCreditsLeft.toLocaleString() : "—"} />
+          </dl>
         </div>
-        <div className="px-6 pb-3 flex gap-1 border-t border-border-subtle/40 pt-3">
+        <div role="tablist" aria-label="Intelligence views" className="tab-rule px-4 sm:px-6 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {SUB_TABS.map((t) => (
             <button
               key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={subTab === t.id}
               onClick={() => setSubTab(t.id)}
-              className={cn(
-                "px-3 py-1.5 rounded-md text-eyebrow uppercase tracking-wider font-mono transition-colors",
-                subTab === t.id
-                  ? "bg-primary/15 text-primary border border-primary/30"
-                  : "text-muted-foreground hover:text-foreground hover:bg-white/5 border border-transparent",
-              )}
+              className="tab-rule-item"
             >
               {t.label}
             </button>
@@ -417,18 +426,11 @@ export default function BrainGlobalPage() {
   );
 }
 
-function MetricChip({
-  icon: Icon, label, value, title,
-}: { icon: typeof Brain; label: string; value: string | number; title?: string }) {
+function MetricCell({ label, value, title }: { label: string; value: string | number; title?: string }) {
   return (
-    <div
-      className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-1/60 px-2.5 py-1.5"
-      title={title}
-    >
-      <Icon className="w-3 h-3 text-muted-foreground" strokeWidth={1.75} />
-      <span className="text-eyebrow uppercase tracking-wider text-muted-foreground">{label}</span>
-      <span className="text-data text-muted-foreground">·</span>
-      <span className="text-data font-mono text-foreground tabular-nums">{value}</span>
+    <div className="px-3 py-2" title={title}>
+      <dt className="text-micro text-subtle-foreground">{label}</dt>
+      <dd className="mt-0.5 font-mono text-[15px] leading-tight tabular-nums text-foreground">{value}</dd>
     </div>
   );
 }
@@ -439,10 +441,10 @@ function MemoryCard({ m, isNew }: { m: Memory; isNew: boolean }) {
   return (
     <div
       className={cn(
-        "glass-card rounded-lg p-3 border transition-colors",
+        "panel p-3 transition-colors",
         isNew
-          ? "border-primary/40 shadow-[0_0_18px_-8px_hsl(var(--primary)/0.6)]"
-          : "border-border-subtle hover:border-primary/30",
+          ? "border-[hsl(var(--brand)/0.45)]"
+          : "hover:border-border-strong",
       )}
     >
       <div className="flex items-start justify-between gap-2 mb-1.5">
@@ -450,26 +452,19 @@ function MemoryCard({ m, isNew }: { m: Memory; isNew: boolean }) {
           <Icon className={cn("w-3 h-3 shrink-0", meta.tone)} strokeWidth={1.75} />
           <span className="text-eyebrow uppercase tracking-wider text-muted-foreground">{meta.label}</span>
           {m.subject_kind && (
-            <span className="px-1 py-px rounded border border-border-subtle font-mono text-micro uppercase tracking-wider text-muted-foreground">
+            <span className="px-1 py-px rounded border border-border-subtle text-micro uppercase tracking-wider text-muted-foreground">
               {m.subject_kind}
             </span>
           )}
           {isNew && (
-            <span className="px-1 py-px rounded font-mono text-micro uppercase tracking-wider bg-primary/15 text-primary border border-primary/30">
+            <span className="px-1 py-px rounded text-micro uppercase tracking-wider bg-primary/15 text-primary border border-primary/30">
               new
             </span>
           )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0 text-data font-mono">
           {m.confidence != null && (
-            <span
-              style={{
-                color:
-                  m.confidence >= 75 ? "hsl(var(--confidence-high))" :
-                  m.confidence >= 50 ? "hsl(var(--confidence-mid))" :
-                  "hsl(var(--confidence-low))",
-              }}
-            >
+            <span className="tabular-nums text-foreground">
               {m.confidence}%
             </span>
           )}
@@ -535,24 +530,21 @@ function MemoriesTab({
             </button>
           )}
         </div>
-        <div className="ml-auto text-eyebrow font-mono uppercase tracking-wider text-muted-foreground">
-          MEMORIES · <span className="text-foreground tabular-nums">{totalCount}</span>
-        </div>
+        <p className="status-line ml-auto">
+          <span><span className="status-value">{totalCount.toLocaleString()}</span> memories</span>
+        </p>
       </div>
 
-      <div className="flex gap-1.5 overflow-x-auto scrollbar-thin edge-fade-x -mx-1 px-1">
+      <div role="group" aria-label="Filter memories by kind" className="tab-rule tab-rule--sub overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {MEMORY_FILTERS.map((f) => (
           <button
             key={f}
+            type="button"
+            aria-pressed={filter === f}
             onClick={() => setFilter(f)}
-            className={cn(
-              "shrink-0 px-2.5 py-1 rounded-full text-eyebrow uppercase tracking-wider font-mono border transition-colors",
-              filter === f
-                ? "bg-primary/15 text-primary border-primary/30"
-                : "bg-surface-1/40 text-muted-foreground border-border-subtle hover:text-foreground",
-            )}
+            className="tab-rule-item"
           >
-            {f}
+            {titleCase(f)}
           </button>
         ))}
       </div>
@@ -605,28 +597,20 @@ function MemoryRichCard({
   return (
     <div
       className={cn(
-        "glass-card rounded-lg p-3 border transition-colors flex flex-col gap-2",
+        "panel p-3 transition-colors flex flex-col gap-2",
         suppressed && "opacity-50",
         isNew
-          ? "border-primary/40 shadow-[0_0_18px_-8px_hsl(var(--primary)/0.6)]"
-          : "border-border-subtle hover:border-primary/30",
+          ? "border-[hsl(var(--brand)/0.45)]"
+          : "hover:border-border-strong",
       )}
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="px-1.5 py-px rounded border border-border-subtle font-mono text-micro uppercase tracking-wider text-muted-foreground">
+          <span className="px-1.5 py-px rounded border border-border-subtle text-micro uppercase tracking-wider text-muted-foreground">
             {typeLabel}
           </span>
           {m.confidence != null && (
-            <span
-              className="text-data font-mono tabular-nums"
-              style={{
-                color:
-                  m.confidence >= 75 ? "hsl(var(--confidence-high))" :
-                  m.confidence >= 50 ? "hsl(var(--confidence-mid))" :
-                  "hsl(var(--confidence-low))",
-              }}
-            >
+            <span className="text-data font-mono tabular-nums text-foreground">
               {m.confidence}%
             </span>
           )}
@@ -650,7 +634,7 @@ function MemoryRichCard({
           {threadTitle && m.source_thread_id && (
             <button
               onClick={onOpenCase}
-              className="px-1.5 py-0.5 rounded-full bg-white/5 border border-border-subtle text-data text-muted-foreground hover:text-foreground hover:border-primary/30 truncate max-w-[200px]"
+              className="px-1.5 py-0.5 rounded-sm bg-white/5 border border-border-subtle text-data text-muted-foreground hover:text-foreground hover:border-primary/30 truncate max-w-[200px]"
               title={threadTitle}
             >
               {threadTitle}
@@ -705,40 +689,35 @@ function PatternsTab({
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <div className="text-eyebrow font-mono uppercase tracking-wider text-muted-foreground">
-          PATTERNS · <span className="text-foreground tabular-nums">{patterns.length}</span>
-        </div>
-        <div className="ml-auto inline-flex items-center gap-0.5 rounded-lg bg-surface-1/60 border border-border-subtle p-0.5">
+        <p className="status-line">
+          <span><span className="status-value">{patterns.length.toLocaleString()}</span> patterns</span>
+        </p>
+        <div role="group" aria-label="Sort patterns" className="ml-auto tab-rule tab-rule--sub border-b-0">
+          <span className="self-center pr-1 text-micro text-subtle-foreground">Sort</span>
           {PATTERN_SORTS.map((s) => (
             <button
               key={s}
+              type="button"
+              aria-pressed={sort === s}
               onClick={() => setSort(s)}
-              className={cn(
-                "px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono transition-colors",
-                sort === s
-                  ? "bg-primary/15 text-primary"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
+              className="tab-rule-item"
             >
-              {s}
+              {titleCase(s)}
             </button>
           ))}
         </div>
       </div>
 
-      <div className="flex gap-1.5 overflow-x-auto scrollbar-thin edge-fade-x -mx-1 px-1">
+      <div role="group" aria-label="Filter patterns by kind" className="tab-rule tab-rule--sub overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {PATTERN_FILTERS.map((f) => (
           <button
             key={f}
+            type="button"
+            aria-pressed={filter === f}
             onClick={() => setFilter(f)}
-            className={cn(
-              "shrink-0 px-2.5 py-1 rounded-full text-eyebrow uppercase tracking-wider font-mono border transition-colors",
-              filter === f
-                ? "bg-primary/15 text-primary border-primary/30"
-                : "bg-surface-1/40 text-muted-foreground border-border-subtle hover:text-foreground",
-            )}
+            className="tab-rule-item"
           >
-            {f}
+            {titleCase(f)}
           </button>
         ))}
       </div>
@@ -799,30 +778,22 @@ function PatternCard({
   return (
     <div
       className={cn(
-        "glass-card rounded-lg p-3 border transition-colors flex flex-col gap-2",
+        "panel p-3 transition-colors flex flex-col gap-2",
         suppressed && "opacity-60",
         isNew && !suppressed
-          ? "border-primary/40 shadow-[0_0_18px_-8px_hsl(var(--primary)/0.6)]"
-          : "border-border-subtle hover:border-primary/30",
-        promoted && !suppressed && "ring-1 ring-primary/40",
+          ? "border-[hsl(var(--brand)/0.45)]"
+          : "hover:border-border-strong",
+        promoted && !suppressed && "border-border-strong",
       )}
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 min-w-0">
           <TrendingUp className="w-3 h-3 shrink-0 text-primary" strokeWidth={1.75} />
-          <span className="px-1.5 py-px rounded border border-border-subtle font-mono text-micro uppercase tracking-wider text-muted-foreground">
+          <span className="px-1.5 py-px rounded border border-border-subtle text-micro uppercase tracking-wider text-muted-foreground">
             {typeLabel}
           </span>
           {m.confidence != null && (
-            <span
-              className="text-data font-mono tabular-nums"
-              style={{
-                color:
-                  m.confidence >= 75 ? "hsl(var(--confidence-high))" :
-                  m.confidence >= 50 ? "hsl(var(--confidence-mid))" :
-                  "hsl(var(--confidence-low))",
-              }}
-            >
+            <span className="text-data font-mono tabular-nums text-foreground">
               {m.confidence}%
             </span>
           )}
@@ -832,12 +803,12 @@ function PatternCard({
             </span>
           )}
           {suppressed && (
-            <span className="px-1 py-px rounded font-mono text-micro uppercase tracking-wider bg-muted/30 text-muted-foreground border border-border-subtle">
+            <span className="px-1 py-px rounded text-micro uppercase tracking-wider bg-muted/30 text-muted-foreground border border-border-subtle">
               suppressed
             </span>
           )}
           {promoted && !suppressed && (
-            <span className="px-1 py-px rounded font-mono text-micro uppercase tracking-wider bg-primary/15 text-primary border border-primary/30">
+            <span className="px-1 py-px rounded text-micro uppercase tracking-wider bg-primary/15 text-primary border border-primary/30">
               promoted
             </span>
           )}
@@ -875,10 +846,10 @@ function PatternCard({
 
       {threadTitle && m.source_thread_id && (
         <div className="flex items-center gap-1 flex-wrap">
-          <span className="text-eyebrow uppercase tracking-wider font-mono text-muted-foreground">Cases:</span>
+          <span className="text-micro text-subtle-foreground">Case</span>
           <button
             onClick={onOpenCase}
-            className="px-1.5 py-0.5 rounded-full bg-white/5 border border-border-subtle text-data text-muted-foreground hover:text-foreground hover:border-primary/30 truncate max-w-[200px]"
+            className="px-1.5 py-0.5 rounded-sm bg-white/5 border border-border-subtle text-data text-muted-foreground hover:text-foreground hover:border-primary/30 truncate max-w-[200px]"
             title={threadTitle}
           >
             {threadTitle}
@@ -891,7 +862,7 @@ function PatternCard({
           onClick={onPromote}
           title="Pin in your local view — no audited change to source priority"
           className={cn(
-            "inline-flex items-center gap-1 px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono transition-colors hover:bg-white/5",
+            "inline-flex items-center gap-1 px-2 py-1 rounded text-micro font-medium transition-colors hover:bg-white/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             promoted ? "text-primary" : "text-muted-foreground/70 hover:text-foreground",
           )}
         >
@@ -902,7 +873,7 @@ function PatternCard({
           onClick={onSuppress}
           title="Mute in your local view — no audited change to source memory"
           className={cn(
-            "inline-flex items-center gap-1 px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono transition-colors hover:bg-white/5",
+            "inline-flex items-center gap-1 px-2 py-1 rounded text-micro font-medium transition-colors hover:bg-white/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             suppressed ? "text-primary" : "text-muted-foreground/70 hover:text-foreground",
           )}
         >
@@ -912,7 +883,7 @@ function PatternCard({
         <button
           onClick={onDelete}
           title="Hide in your local view — no audited deletion"
-          className="inline-flex items-center gap-1 px-2 py-1 rounded text-eyebrow uppercase tracking-wider font-mono text-muted-foreground/70 hover:text-foreground hover:bg-white/5"
+          className="inline-flex items-center gap-1 px-2 py-1 rounded text-micro font-medium text-muted-foreground/70 hover:text-foreground hover:bg-white/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Trash2 className="w-3 h-3" strokeWidth={1.75} />
           Hide locally
@@ -937,11 +908,14 @@ type SourceRow = {
 
 type ReviewSummary = { confirmed: number; key: number; recheck: number; dismissed: number };
 
-function reliabilityColor(p: number): string {
-  if (p >= 70) return "hsl(var(--brain-status-ok))";
-  if (p >= 40) return "hsl(var(--brain-status-warn))";
-  return "hsl(var(--brain-status-bad))";
-}
+/**
+ * Reliability is a magnitude, so it is carried by the LENGTH of a neutral bar,
+ * never by hue (DESIGN.md "Authority Rule"). It used to be green at >=70%,
+ * which on a healthy toolset painted every row the same green and said
+ * nothing. A 1px tick at this threshold gives the eye a reference instead:
+ * the bar that stops short of the line is the one to look at.
+ */
+const RELIABILITY_TICK = 90;
 
 function SourcesTab() {
   const { user } = useAuth();
@@ -1009,17 +983,21 @@ function SourcesTab() {
         Tool reliability reflects recent run outcomes; review totals summarize your saved case decisions.
       </p>
 
-      <div className="flex gap-2 flex-wrap">
-        <FeedbackChip label="CONFIRMED" value={reviews.confirmed} tone="hsl(var(--brain-status-ok))" />
-        <FeedbackChip label="KEY FINDINGS" value={reviews.key} tone="hsl(var(--primary))" />
-        <FeedbackChip label="NEEDS RECHECK" value={reviews.recheck} tone="hsl(var(--brain-status-warn))" />
-        <FeedbackChip label="DISMISSED" value={reviews.dismissed} tone="hsl(var(--brain-status-bad))" />
-      </div>
+      {/* Analyst review states, on the authority ladder's own hues: each is a
+          verdict someone made, so it may spend colour. The dot carries the
+          hue, the word carries the meaning, the number stays ink. */}
+      <dl className="hairline-grid grid-cols-2 sm:grid-cols-4">
+        <FeedbackCell label="Confirmed" value={reviews.confirmed} tone="hsl(var(--authority-verified))" />
+        <FeedbackCell label="Key findings" value={reviews.key} tone="hsl(var(--foreground))" />
+        <FeedbackCell label="Needs recheck" value={reviews.recheck} tone="hsl(var(--authority-review))" />
+        <FeedbackCell label="Dismissed" value={reviews.dismissed} tone="hsl(var(--authority-failed))" />
+      </dl>
 
-      <div className="rounded-xl border border-border-subtle bg-surface-1/40 overflow-hidden">
-        <div className="px-3 py-2 border-b border-border-subtle/60 flex items-center">
-          <span className="text-eyebrow font-mono uppercase tracking-wider text-muted-foreground">
-            SOURCE WEIGHTS · <span className="text-foreground tabular-nums">{rows.length}</span>
+      <div className="panel overflow-hidden">
+        <div className="panel-head">
+          <span className="label-eyebrow">Source reliability</span>
+          <span className="ml-auto text-micro text-subtle-foreground">
+            <span className="font-mono tabular-nums text-muted-foreground">{rows.length}</span> sources · tick at {RELIABILITY_TICK}%
           </span>
         </div>
         {loading ? (
@@ -1027,7 +1005,7 @@ function SourcesTab() {
         ) : rows.length === 0 ? (
           <div className="p-6 text-center text-xs text-muted-foreground">No source activity yet — run an investigation to see tool outcomes here.</div>
         ) : (
-          <div className="divide-y divide-border-subtle/40">
+          <div className="divide-y divide-border-subtle">
             {rows.map((r) => <SourceWeightRow key={r.tool} row={r} />)}
           </div>
         )}
@@ -1038,52 +1016,53 @@ function SourcesTab() {
   );
 }
 
-function FeedbackChip({ label, value, tone }: { label: string; value: number; tone: string }) {
+function FeedbackCell({ label, value, tone }: { label: string; value: number; tone: string }) {
   return (
-    <div
-      className="inline-flex items-center gap-1.5 rounded-lg border bg-surface-1/60 px-2.5 py-1.5"
-      style={{ borderColor: `${tone}40` }}
-    >
-      <span className="w-1.5 h-1.5 rounded-full" style={{ background: tone }} />
-      <span className="text-eyebrow uppercase tracking-wider text-muted-foreground">{label}</span>
-      <span className="text-data text-muted-foreground">·</span>
-      <span className="text-data font-mono tabular-nums" style={{ color: tone }}>{value}</span>
+    <div className="px-3 py-2">
+      <dt className="flex items-center gap-1.5 text-micro text-subtle-foreground">
+        <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-[1px]" style={{ background: tone }} />
+        {label}
+      </dt>
+      <dd className="mt-0.5 font-mono text-[15px] leading-tight tabular-nums text-foreground">{value.toLocaleString()}</dd>
     </div>
   );
 }
 
 function SourceWeightRow({ row }: { row: SourceRow }) {
-  const tone = reliabilityColor(row.reliability);
   const hasDelta = row.delta !== 0;
   const deltaUp = row.delta > 0;
+  const belowTick = row.reliability < RELIABILITY_TICK;
   return (
-    <div className="px-3 py-2.5 flex items-center gap-3">
-      <div className="font-mono text-xs text-foreground min-w-0 w-44 truncate">{row.tool}</div>
-      <div className="flex-1 min-w-0">
-        <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
-          <div
-            className="h-full rounded-full transition-[width] duration-slow ease-standard"
-            style={{ width: `${Math.max(2, row.reliability)}%`, background: tone }}
-          />
-        </div>
+    <div className="px-3 py-2 grid grid-cols-[minmax(0,11rem)_minmax(0,1fr)_2.75rem_3rem_4.5rem] items-center gap-3">
+      <div className="font-mono text-data text-foreground truncate" title={row.tool}>{row.tool}</div>
+      <div className="relative h-1.5 bg-surface-3" aria-hidden>
+        <div
+          className="absolute inset-y-0 left-0 transition-[width] duration-slow ease-standard"
+          style={{
+            // 0% draws nothing: a 2% stub on a zero reads as "a little".
+            width: `${row.reliability === 0 ? 0 : Math.max(1.5, row.reliability)}%`,
+            background: belowTick ? "hsl(var(--foreground))" : "hsl(var(--foreground) / 0.4)",
+          }}
+        />
+        <div
+          className="absolute -inset-y-1 w-px bg-[hsl(var(--border-strong))]"
+          style={{ left: `${RELIABILITY_TICK}%` }}
+        />
       </div>
-      <div className="font-mono text-data tabular-nums w-10 text-right" style={{ color: tone }}>
+      <div className={cn("font-mono text-data tabular-nums text-right", belowTick ? "text-foreground" : "text-muted-foreground")}>
         {row.reliability}%
       </div>
-      <div className="w-12 text-right">
+      <div className="text-right font-mono text-data tabular-nums text-subtle-foreground">
         {hasDelta ? (
-          <span
-            className="font-mono text-data tabular-nums"
-            style={{ color: deltaUp ? "hsl(var(--brain-status-ok))" : "hsl(var(--brain-status-bad))" }}
-          >
-            {deltaUp ? "+" : ""}{row.delta} {deltaUp ? "↑" : "↓"}
+          <span title={`${deltaUp ? "Up" : "Down"} ${Math.abs(row.delta)} points, recent runs against earlier runs`}>
+            {deltaUp ? "+" : "−"}{Math.abs(row.delta)} {deltaUp ? "↑" : "↓"}
           </span>
         ) : (
-          <span className="font-mono text-data text-muted-foreground/60">—</span>
+          <span aria-label="No change">—</span>
         )}
       </div>
-      <span className="px-1.5 py-0.5 rounded border border-border-subtle font-mono text-data text-muted-foreground tabular-nums shrink-0">
-        {row.runs} runs
+      <span className="text-right font-mono text-data tabular-nums text-subtle-foreground">
+        {row.runs.toLocaleString()} <span className="font-sans">{row.runs === 1 ? "run" : "runs"}</span>
       </span>
     </div>
   );
@@ -1091,28 +1070,25 @@ function SourceWeightRow({ row }: { row: SourceRow }) {
 
 function SavedContextExplainer() {
   const Step = ({ Icon, label, sub }: { Icon: typeof Wrench; label: string; sub: string }) => (
-    <div className="flex flex-col items-center gap-2 min-w-0 w-24 shrink-0">
-      <div className="w-12 h-12 rounded-full grid place-items-center border border-border-subtle bg-surface-1">
-        <Icon className="w-5 h-5 text-primary" strokeWidth={1.5} />
+    <div className="flex min-w-0 items-center gap-2.5">
+      <div className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-border bg-surface-1">
+        <Icon className="h-4 w-4 text-muted-foreground" strokeWidth={1.5} />
       </div>
-      <div className="text-eyebrow font-mono uppercase tracking-wider text-foreground">{label}</div>
-      <div className="text-data text-muted-foreground text-center leading-tight">{sub}</div>
+      <div className="min-w-0">
+        <div className="text-meta font-medium text-foreground">{label}</div>
+        <div className="text-micro text-subtle-foreground">{sub}</div>
+      </div>
     </div>
   );
   return (
-    <div
-      className="rounded-xl p-5"
-      style={{ background: "hsl(var(--brain-card))", border: "1px solid hsl(var(--brain-border))" }}
-    >
-      <div className="text-eyebrow font-mono uppercase tracking-wider text-muted-foreground mb-4">
-        What this page shows
-      </div>
-      <div className="flex items-start justify-center gap-2 sm:gap-4">
+    <div className="panel p-4">
+      <div className="label-eyebrow mb-3">What this page shows</div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
         <Step Icon={Wrench} label="Tools" sub="return findings" />
-        <ArrowRight className="w-4 h-4 mt-4 text-muted-foreground shrink-0" strokeWidth={1.5} />
+        <ArrowRight className="h-4 w-4 shrink-0 text-faint-foreground" strokeWidth={1.5} aria-hidden />
         <Step Icon={UserCheck} label="Reviews" sub="save decisions" />
-        <ArrowRight className="w-4 h-4 mt-4 text-muted-foreground shrink-0" strokeWidth={1.5} />
-        <Step Icon={Brain} label="Brain" sub="shows saved context" />
+        <ArrowRight className="h-4 w-4 shrink-0 text-faint-foreground" strokeWidth={1.5} aria-hidden />
+        <Step Icon={Brain} label="Intelligence" sub="shows saved context" />
       </div>
     </div>
   );
@@ -1229,39 +1205,35 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
   }, [user]);
 
   const sfLeft = Math.max(0, SOCIALFETCH_CAP - socialUsed);
-  const sfPct = Math.min(100, (socialUsed / SOCIALFETCH_CAP) * 100);
 
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* SocialFetch Credits card */}
-        <div className="rounded-xl p-5 bg-brain-card border border-brain-border">
-          <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider font-mono text-muted-foreground mb-3">
-            <CreditCard className="w-3.5 h-3.5" strokeWidth={1.5} />
-            SocialFetch Credits
+        <div className="panel p-5">
+          <div className="label-eyebrow mb-3 flex items-center gap-2">
+            <CreditCard className="w-3.5 h-3.5" strokeWidth={1.5} aria-hidden />
+            SocialFetch credits
           </div>
           <div className="flex items-baseline gap-2">
             <div className="stat-figure font-display text-3xl font-semibold">
               {sfLeft.toLocaleString()} <span className="text-base text-muted-foreground font-sans">left</span>
             </div>
           </div>
-          <div className="text-xs text-muted-foreground mt-1">{socialUsed.toLocaleString()} used</div>
-          <div className="mt-4 h-2 w-full bg-white/5 rounded" style={{ borderRadius: 4 }}>
-            <div
-              className="h-2 rounded"
-              style={{ width: `${sfPct}%`, backgroundColor: "hsl(var(--brain-status-ok))", borderRadius: 4 }}
-            />
+          <div className="text-xs text-muted-foreground mt-1">
+            <span className="font-mono tabular-nums">{socialUsed.toLocaleString()}</span> of {SOCIALFETCH_CAP.toLocaleString()} used
           </div>
-          <div className="text-data text-muted-foreground mt-3 font-mono">
-            Last used: {timeAgo(socialLastUsed)}
+          <CreditMeter left={sfLeft} cap={SOCIALFETCH_CAP} />
+          <div className="text-data text-muted-foreground mt-3">
+            {socialLastUsed ? <>Last used <span className="font-mono">{timeAgo(socialLastUsed)}</span></> : "Not used yet"}
           </div>
         </div>
 
         {/* Total API Spend card */}
-        <div className="rounded-xl p-5 bg-brain-card border border-brain-border">
-          <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider font-mono text-muted-foreground mb-3">
-            <BarChart3 className="w-3.5 h-3.5" strokeWidth={1.5} />
-            Total API Spend
+        <div className="panel p-5">
+          <div className="label-eyebrow mb-3 flex items-center gap-2">
+            <BarChart3 className="w-3.5 h-3.5" strokeWidth={1.5} aria-hidden />
+            Total API spend
           </div>
           <div className="flex items-baseline gap-2">
             <div className="stat-figure font-display text-3xl font-semibold">
@@ -1272,16 +1244,17 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
           <div className="mt-4">
             <Sparkline data={spark} />
           </div>
-          <div className="text-data text-muted-foreground mt-3 font-mono">
-            ${lastRunUsd.toFixed(3)} last run · avg ${avgRunUsd.toFixed(3)}/run
-          </div>
+          <p className="status-line mt-3">
+            <span><span className="status-value">${lastRunUsd.toFixed(3)}</span> last run</span>
+            <span><span className="status-value">${avgRunUsd.toFixed(3)}</span> avg per run</span>
+          </p>
         </div>
       </div>
 
       {/* Per-run breakdown */}
-      <div className="rounded-xl bg-brain-card border border-brain-border overflow-hidden">
-        <div className="px-5 py-3 border-b border-brain-border text-eyebrow uppercase tracking-wider font-mono text-muted-foreground">
-          Last 10 Runs
+      <div className="panel overflow-hidden">
+        <div className="panel-head">
+          <span className="label-eyebrow">Last 10 runs</span>
         </div>
         {loading ? (
           <div className="p-6 text-sm text-muted-foreground">Loading…</div>
@@ -1290,7 +1263,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-eyebrow uppercase tracking-wider font-mono text-muted-foreground/70">
+              <tr className="text-eyebrow uppercase tracking-wider text-subtle-foreground">
                 <th className="text-left font-normal px-5 py-2">Case</th>
                 <th className="text-left font-normal px-5 py-2">Date</th>
                 <th className="text-left font-normal px-5 py-2">Tools</th>
@@ -1299,17 +1272,17 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
             </thead>
             <tbody>
               {runs.map((r) => (
-                <tr key={r.threadId} className="border-t border-brain-border/60 hover:bg-white/[0.02]">
+                <tr key={r.threadId} className="border-t border-border-subtle hover:bg-white/[0.02]">
                   <td className="px-5 py-2.5">
                     <button
                       onClick={() => onOpenCase(r.threadId)}
-                      className="text-foreground hover:text-primary text-left truncate max-w-[28ch]"
+                      className="text-foreground hover:underline underline-offset-2 text-left truncate max-w-[28ch] rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       {r.title}
                     </button>
                   </td>
                   <td className="px-5 py-2.5 text-muted-foreground text-xs">{timeAgo(r.date)}</td>
-                  <td className="px-5 py-2.5 text-muted-foreground text-xs tabular-nums">{r.tools}</td>
+                  <td className="px-5 py-2.5 text-muted-foreground text-xs font-mono tabular-nums">{r.tools}</td>
                   <td className="px-5 py-2.5 text-right font-mono text-foreground tabular-nums">
                     ${r.costUsd.toFixed(3)}
                   </td>
@@ -1328,18 +1301,61 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
   );
 }
 
+/**
+ * SocialFetch balance as a ruled meter: 40 cells of 250 credits, each filled
+ * by exactly the share of its 250 that is still left. The old bar drew 40
+ * used credits of 10,000 as a 0.4% sliver that read as a rendering glitch;
+ * cells make the remaining balance countable at a glance without a hue.
+ */
+const METER_CELLS = 40;
+function CreditMeter({ left, cap }: { left: number; cap: number }) {
+  const per = cap / METER_CELLS;
+  return (
+    <div
+      role="meter"
+      aria-label="SocialFetch credits left"
+      aria-valuemin={0}
+      aria-valuemax={cap}
+      aria-valuenow={left}
+      className="mt-4 grid gap-px"
+      style={{ gridTemplateColumns: `repeat(${METER_CELLS}, minmax(0, 1fr))` }}
+    >
+      {Array.from({ length: METER_CELLS }, (_, i) => {
+        const fill = Math.min(1, Math.max(0, (left - i * per) / per));
+        return (
+          <span key={i} className="relative h-2.5 bg-surface-3">
+            <span className="absolute inset-y-0 left-0 bg-[hsl(var(--foreground)/0.55)]" style={{ width: `${fill * 100}%` }} />
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function Sparkline({ data }: { data: number[] }) {
   const w = 220, h = 36;
   const max = Math.max(0.0001, ...data);
   const step = data.length > 1 ? w / (data.length - 1) : 0;
-  const points = data
-    .map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max) * (h - 4) - 2).toFixed(1)}`)
-    .join(" ");
+  const ys = data.map((v) => h - (v / max) * (h - 4) - 2);
+  const points = ys.map((y, i) => `${(i * step).toFixed(1)},${y.toFixed(1)}`).join(" ");
   const areaPoints = `0,${h} ${points} ${w},${h}`;
+  const lastY = ys.length ? ys[ys.length - 1] : null;
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-9" preserveAspectRatio="none">
-      <polygon points={areaPoints} fill="hsl(var(--primary) / 0.15)" />
-      <polyline points={points} fill="none" stroke="hsl(var(--primary))" strokeWidth={1.5} />
-    </svg>
+    // The dot is HTML, not SVG: the chart stretches (preserveAspectRatio
+    // none) and a stretched circle is an ellipse. It is the one accent on the
+    // card because it marks the live end of the series, today.
+    <div className="relative">
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-9" preserveAspectRatio="none" aria-hidden>
+        <polygon points={areaPoints} fill="hsl(var(--foreground) / 0.08)" />
+        <polyline points={points} fill="none" stroke="hsl(var(--foreground) / 0.7)" strokeWidth={1.25} vectorEffect="non-scaling-stroke" />
+      </svg>
+      {lastY != null && (
+        <span
+          aria-hidden
+          className="absolute right-0 h-1.5 w-1.5 -translate-y-1/2 translate-x-1/2 rounded-full bg-[hsl(var(--brand))]"
+          style={{ top: `${(lastY / h) * 100}%` }}
+        />
+      )}
+    </div>
   );
 }

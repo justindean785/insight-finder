@@ -285,7 +285,23 @@ const SYNTHETIC: Record<string, unknown[]> = {
     { id: "r3", artifact_id: "twin-ip-a", thread_id: THREAD_ID, user_id: USER_ID, state: "dismissed", created_at: iso(6), note: "carrier NAT egress — not the subject's line" },
   ],
   user_credits: [{ user_id: USER_ID, credits_remaining: 466, credits_total: 500, updated_at: iso(4) }],
-  agent_memory: [], investigation_cache: [], client_errors: [],
+  // Cross-case memories, so the Intelligence page (Overview stat strip,
+  // Memories, Patterns) renders real card states instead of an empty list.
+  agent_memory: [
+    { id: "m1", user_id: USER_ID, kind: "lesson", subject: "breach IPs", subject_kind: "breach", confidence: 60, hit_count: 3,
+      content: "Breach registration IPs for web platforms are often CDN or WAF edges. Check ASN ownership before attributing a location to the subject.",
+      related_values: ["198.51.100.42"], source_thread_id: THREAD_ID, created_at: iso(30), last_used_at: iso(6) },
+    { id: "m2", user_id: USER_ID, kind: "pattern", subject: "handle reuse", subject_kind: "username", confidence: 74, hit_count: 5,
+      content: "The subject reuses one handle stem across gaming and social platforms; the numeric suffix tracks the account's creation year.",
+      related_values: ["jharker88", "j.harker"], source_thread_id: THREAD_ID, created_at: iso(3), last_used_at: iso(2) },
+    { id: "m3", user_id: USER_ID, kind: "lesson", subject: "name collisions", subject_kind: "identity", confidence: 82, hit_count: 1,
+      content: "Name-only person searches return same-name collisions. Never link a record without an exact email or phone match.",
+      related_values: null, source_thread_id: THREAD_ID, created_at: iso(50), last_used_at: null },
+    { id: "m4", user_id: USER_ID, kind: "pattern", subject: "mail host", subject_kind: "email", confidence: 41, hit_count: 0,
+      content: "Corporate mailboxes on this registrar share one MX and SPF include; co-location is not common ownership.",
+      related_values: ["northgate-logistics.com"], source_thread_id: THREAD_ID, created_at: iso(1), last_used_at: null },
+  ],
+  investigation_cache: [], client_errors: [],
 };
 
 const FIXTURES: Record<string, unknown[]> = SNAPSHOT?.tables ?? SYNTHETIC;
