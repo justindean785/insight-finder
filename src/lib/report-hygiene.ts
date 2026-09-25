@@ -530,9 +530,20 @@ function pickAllEmailsIdentity(
   return out;
 }
 
+/**
+ * The row the report's "Real name" field names as the subject, exported so every
+ * surface that names the subject (the report's Identity panel, the workspace
+ * case sheet) picks it by the SAME rule and can never name two different people
+ * side by side. Quarantined, collision-flagged and analyst-rejected rows are not
+ * candidates; see `pickBestIdentity`.
+ */
+export function pickSubjectName(artifacts: Artifact[], reviews?: Record<string, ReviewAdjustment>): Artifact | null {
+  return pickBestIdentity(artifacts, ["name", "person"], reviews);
+}
+
 export function buildIdentityRows(artifacts: Artifact[], reviews?: Record<string, ReviewAdjustment>): IdentityRow[] {
   const rows: IdentityRow[] = [];
-  const name = pickBestIdentity(artifacts, ["name", "person"], reviews);
+  const name = pickSubjectName(artifacts, reviews);
   if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name, reviews?.[name.id]) });
 
   const dob = pickBestIdentity(artifacts, ["dob"], reviews);
