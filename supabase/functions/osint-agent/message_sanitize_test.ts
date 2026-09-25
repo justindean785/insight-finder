@@ -1,6 +1,12 @@
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { modelMessageSchema, type ModelMessage } from "npm:ai@6";
-import { capToolResultOutputs, normalizeToolOutput, sanitizeModelMessages } from "./message-sanitize.ts";
+import { modelMessageSchema, streamText, type ModelMessage } from "npm:ai@6";
+import {
+  capToolResultOutputs,
+  normalizeToolOutput,
+  pairingProbeFixture,
+  positionalPairingSelfTest,
+  sanitizeModelMessages,
+} from "./message-sanitize.ts";
 
 /**
  * Asserts an array satisfies the AI SDK's ModelMessage[] schema — i.e. it would
@@ -276,4 +282,161 @@ Deno.test("FIX: an already-answered call never gains a spurious placeholder", ()
   const out = sanitizeModelMessages(msgs);
   assertPairedPositionally(out, "no spurious");
   assertEquals(out.length, 5, "nothing added to an already-paired conversation");
+});
+
+// ---------------------------------------------------------------------------
+// /health checks.message_sanitize — the proof-of-deploy key for this build.
+// It is a self-test: it runs the deployed sanitizer on a fixed overlap probe.
+// ---------------------------------------------------------------------------
+
+/**
+ * The pre-positional pass 3, reduced to the part that matters: pairing decided
+ * by a GLOBAL id set. Used only as a negative control for the self-test.
+ */
+function globalIdPairing(input: ModelMessage[]): ModelMessage[] {
+  // deno-lint-ignore no-explicit-any
+  const msgs = input as any[];
+  const resolved = new Set<string>();
+  for (const m of msgs) {
+    if (m.role !== "tool" || !Array.isArray(m.content)) continue;
+    for (const p of m.content) if (p.type === "tool-result") resolved.add(p.toolCallId);
+  }
+  // deno-lint-ignore no-explicit-any
+  const out: any[] = [];
+  for (const m of msgs) {
+    out.push(m);
+    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+    // deno-lint-ignore no-explicit-any
+    const missing = m.content.filter((p: any) => p.type === "tool-call" && !resolved.has(p.toolCallId));
+    // deno-lint-ignore no-explicit-any
+    for (const p of missing as any[]) resolved.add(p.toolCallId);
+    if (missing.length > 0) {
+      out.push({
+        role: "tool",
+        // deno-lint-ignore no-explicit-any
+        content: missing.map((p: any) => ({
+          type: "tool-result",
+          toolCallId: p.toolCallId,
+          toolName: p.toolName,
+          output: { type: "text", value: "placeholder" },
+        })),
+      });
+    }
+  }
+  return out as ModelMessage[];
+}
+
+/** What the real AI SDK does with a prompt: its error message, or MODEL_REACHED if validation passed. */
+async function sdkVerdict(messages: ModelMessage[]): Promise<string> {
+  // The SDK calls the model only after the prompt passes validation.
+  const reached = () => Promise.reject(new Error("MODEL_REACHED"));
+  const model = {
+    specificationVersion: "v3",
+    provider: "stub",
+    modelId: "stub",
+    supportedUrls: {},
+    doGenerate: reached,
+    doStream: reached,
+  };
+  let verdict = "";
+  const r = streamText({
+    model: model as never,
+    messages,
+    onError: ({ error }) => {
+      verdict ||= String((error as Error)?.message ?? error);
+    },
+  });
+  await r.consumeStream();
+  return verdict;
+}
+
+Deno.test("health probe: the raw fixture is the shape the real SDK rejects", async () => {
+  assertSchemaValid(pairingProbeFixture(), "probe fixture");
+  assertEquals(await sdkVerdict(pairingProbeFixture()), "Tool result is missing for tool call health-probe-overlap.");
+});
+
+Deno.test("health probe: the old global-id pairing still fails the real SDK on the fixture", async () => {
+  assertEquals(
+    await sdkVerdict(globalIdPairing(pairingProbeFixture())),
+    "Tool result is missing for tool call health-probe-overlap.",
+  );
+});
+
+Deno.test("health probe: this build's sanitizer output passes the real SDK", async () => {
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assertEquals(await sdkVerdict(sanitizeModelMessages(pairingProbeFixture())), "MODEL_REACHED");
+  } finally {
+    console.warn = warn;
+  }
+});
+
+Deno.test("health probe: the self-test passes on this build", () => {
+  const r = positionalPairingSelfTest();
+  assertEquals(r.ok, true, r.detail);
+  assert(r.detail.startsWith("pairing=positional"), r.detail);
+});
+
+Deno.test("health probe: the self-test catches the old global-id pairing (negative control)", () => {
+  const r = positionalPairingSelfTest(globalIdPairing);
+  assertEquals(r.ok, false);
+  assert(r.detail.includes("MissingToolResults"), r.detail);
+});
+
+Deno.test("health probe: the self-test catches no repair at all, and a dropped genuine result", () => {
+  assertEquals(positionalPairingSelfTest((m) => m).ok, false, "identity must fail");
+  // Answers every call in place with a placeholder, but throws the genuine result away.
+  const dropsGenuine = (m: ModelMessage[]) => {
+    // deno-lint-ignore no-explicit-any
+    const out: any[] = [];
+    // deno-lint-ignore no-explicit-any
+    for (const x of m as any[]) {
+      if (x.role === "tool") continue;
+      out.push(x);
+      if (x.role !== "assistant" || !Array.isArray(x.content)) continue;
+      out.push({
+        role: "tool",
+        // deno-lint-ignore no-explicit-any
+        content: x.content.filter((p: any) => p.type === "tool-call").map((p: any) => ({
+          type: "tool-result",
+          toolCallId: p.toolCallId,
+          toolName: p.toolName,
+          output: { type: "text", value: "placeholder" },
+        })),
+      });
+    }
+    return out as ModelMessage[];
+  };
+  const r = positionalPairingSelfTest(dropsGenuine);
+  assertEquals(r.ok, false);
+  assert(r.detail.includes("genuine"), r.detail);
+});
+
+Deno.test("health probe: the self-test is silent; the production path still logs the repair", () => {
+  const warn = console.warn;
+  let calls = 0;
+  console.warn = () => {
+    calls++;
+  };
+  try {
+    assertEquals(positionalPairingSelfTest().ok, true);
+    assertEquals(calls, 0, "a /health probe must never emit sanitize_positional_pair_repair");
+    sanitizeModelMessages(pairingProbeFixture());
+    assertEquals(calls, 1, "the production path must still log the overlap repair");
+  } finally {
+    console.warn = warn;
+  }
+});
+
+Deno.test("wiring: /health reports checks.message_sanitize from the pairing self-test", async () => {
+  const src = await Deno.readTextFile(new URL("./health-handler.ts", import.meta.url));
+  assert(
+    /import \{[^}]*\bpositionalPairingSelfTest\b[^}]*\} from "\.\/message-sanitize\.ts"/.test(src),
+    "health-handler.ts must import positionalPairingSelfTest from message-sanitize.ts",
+  );
+  assert(
+    src.includes("r.checks.message_sanitize = positionalPairingSelfTest();"),
+    "health-handler.ts must report the self-test as checks.message_sanitize",
+  );
 });

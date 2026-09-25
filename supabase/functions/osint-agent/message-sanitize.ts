@@ -175,7 +175,23 @@ export function normalizeToolOutput(output: unknown): { type: string; value: unk
  * Pure: returns a new array; does not mutate the input.
  */
 export function sanitizeModelMessages(input: ModelMessage[]): ModelMessage[] {
-  if (!Array.isArray(input)) return [];
+  const { out, overlapRepairs, messages } = sanitizeCore(input);
+  // Durable signal: counts the overlap repairs this build makes in production.
+  // Only emitted when a repair actually happened — a quiet log means no
+  // overlap. (Proof of deploy is /health checks.message_sanitize, not this.)
+  if (overlapRepairs > 0) {
+    console.warn(JSON.stringify({
+      event: "sanitize_positional_pair_repair",
+      repaired_calls: overlapRepairs,
+      messages,
+    }));
+  }
+  return out;
+}
+
+/** The repair itself, with no logging. Shared by sanitizeModelMessages and the /health self-test. */
+function sanitizeCore(input: ModelMessage[]): { out: ModelMessage[]; overlapRepairs: number; messages: number } {
+  if (!Array.isArray(input)) return { out: [], overlapRepairs: 0, messages: 0 };
 
   // Pass 1 — collect every toolCallId that has a real assistant tool-call.
   const callIds = new Set<string>();
@@ -300,18 +316,99 @@ export function sanitizeModelMessages(input: ModelMessage[]): ModelMessage[] {
     }
   }
 
-  // Durable signal: this build repairs a pairing the previous one shipped
-  // broken, so the event is also the proof that this bundle is deployed. Only
-  // emitted when a repair actually happened — a quiet log means no overlap.
-  if (overlapRepairs > 0) {
-    console.warn(JSON.stringify({
-      event: "sanitize_positional_pair_repair",
-      repaired_calls: overlapRepairs,
-      messages: cleaned.length,
-    }));
+  return { out, overlapRepairs, messages: cleaned.length };
+}
+
+const PAIRING_PROBE_ID = "health-probe-overlap";
+
+/**
+ * The overlap shape that wedged production, as a fixed synthetic probe: one
+ * tool-call id issued twice, the first copy never answered and followed by a
+ * user turn, the second answered late. The AI SDK rejects this raw array with
+ * MissingToolResultsError at the first user turn. (Two back-to-back assistant
+ * copies with no user turn between them would NOT reproduce it: the SDK only
+ * checks for unanswered calls at user/system turns and at the end.) A fresh
+ * array on every call; no case data.
+ */
+export function pairingProbeFixture(): ModelMessage[] {
+  const call = { type: "tool-call", toolCallId: PAIRING_PROBE_ID, toolName: "health_probe", input: {} };
+  return [
+    { role: "user", content: "probe" },
+    { role: "assistant", content: [{ ...call }] },
+    { role: "user", content: "continue" },
+    { role: "assistant", content: [{ ...call }] },
+    {
+      role: "tool",
+      content: [{
+        type: "tool-result",
+        toolCallId: PAIRING_PROBE_ID,
+        toolName: "health_probe",
+        output: { type: "json", value: { genuine: true } },
+      }],
+    },
+    { role: "user", content: "continue" },
+  ] as unknown as ModelMessage[];
+}
+
+/**
+ * /health `checks.message_sanitize`: run the DEPLOYED sanitizer on
+ * pairingProbeFixture() and check the result the way it has to hold in
+ * production. Walking in order, no tool-call may still be unanswered at a user
+ * turn or at the end (the AI SDK's MissingToolResults rule); every call must be
+ * answered by the tool block directly after it (what OpenAI-compatible
+ * providers require); and the genuine result must be kept. Pure and silent: it
+ * uses the non-logging core, so frequent health probes never emit
+ * sanitize_positional_pair_repair. `sanitize` is injectable only so a test can
+ * prove the probe catches the old global-id pairing.
+ */
+export function positionalPairingSelfTest(
+  sanitize: (m: ModelMessage[]) => ModelMessage[] = (m) => sanitizeCore(m).out,
+): { ok: boolean; detail: string } {
+  let msgs: AnyMsg[];
+  try {
+    msgs = sanitize(pairingProbeFixture()) as unknown as AnyMsg[];
+  } catch (e) {
+    return { ok: false, detail: `pairing self-test threw: ${String(e).slice(0, 120)}` };
+  }
+  const fail = (why: string) => ({ ok: false, detail: `pairing BROKEN: ${why}` });
+  const partsOf = (m: AnyMsg | undefined): AnyPart[] => (Array.isArray(m?.content) ? (m.content as AnyPart[]) : []);
+  const idOf = (p: AnyPart, type: string) =>
+    p?.type === type && typeof p.toolCallId === "string" ? p.toolCallId : null;
+
+  // 1. The SDK's rule: nothing pending at a user/system turn or at the end.
+  const pending = new Set<string>();
+  for (const m of msgs) {
+    if (m?.role === "assistant") {
+      for (const p of partsOf(m)) { const id = idOf(p, "tool-call"); if (id) pending.add(id); }
+    } else if (m?.role === "tool") {
+      for (const p of partsOf(m)) { const id = idOf(p, "tool-result"); if (id) pending.delete(id); }
+    } else if ((m?.role === "user" || m?.role === "system") && pending.size > 0) {
+      return fail("a tool-call is unanswered at a user turn (MissingToolResults)");
+    }
+  }
+  if (pending.size > 0) return fail("a tool-call is unanswered at the end");
+
+  // 2. Every call is answered by the tool block directly after it.
+  for (let i = 0; i < msgs.length; i++) {
+    if (msgs[i]?.role !== "assistant") continue;
+    const answered = new Set<string>();
+    for (let j = i + 1; j < msgs.length && msgs[j]?.role === "tool"; j++) {
+      for (const p of partsOf(msgs[j])) { const id = idOf(p, "tool-result"); if (id) answered.add(id); }
+    }
+    for (const p of partsOf(msgs[i])) {
+      const id = idOf(p, "tool-call");
+      if (id && !answered.has(id)) return fail("a tool-call is not answered in place");
+    }
   }
 
-  return out;
+  // 3. The genuine result survives; it is not replaced by a placeholder.
+  const genuine = msgs.flatMap(partsOf).some((p) =>
+    idOf(p, "tool-result") === PAIRING_PROBE_ID &&
+    (p.output as { value?: { genuine?: unknown } } | undefined)?.value?.genuine === true
+  );
+  if (!genuine) return fail("the genuine tool result was dropped");
+
+  return { ok: true, detail: "pairing=positional (overlap probe: every call answered in place, genuine result kept)" };
 }
 
 /**
