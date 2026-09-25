@@ -230,8 +230,12 @@ test.describe("12 · mobile 390px", () => {
   test("the case strip shows identity and run state; the composer stays reachable", async ({ page }) => {
     await open(page, `${THREAD}?scenario=interrupted`);
     await expect(page.getByText("Interrupted", { exact: true }).first()).toBeVisible();
-    await expect(page.getByLabel("Investigation request")).toBeInViewport();
-    await expect(page.getByRole("button", { name: "Start investigation" })).toBeInViewport();
+    // On an open case the composer is a follow-up to THIS case, and says so.
+    await expect(page.getByLabel("Message this case")).toBeInViewport();
+    await expect(page.getByTestId(/^(composer-primary|run-continue)$/)).toBeInViewport();
+    // One line on a phone: the composer stays compact.
+    const shell = await page.locator(".composer-shell").boundingBox();
+    expect(shell && shell.height).toBeLessThanOrEqual(64);
     // No page-level horizontal overflow.
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(0);
