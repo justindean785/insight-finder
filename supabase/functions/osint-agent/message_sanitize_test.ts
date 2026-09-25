@@ -289,41 +289,40 @@ Deno.test("FIX: an already-answered call never gains a spurious placeholder", ()
 // It is a self-test: it runs the deployed sanitizer on a fixed overlap probe.
 // ---------------------------------------------------------------------------
 
+type ProbePart = { type?: string; toolCallId?: string; toolName?: string; [k: string]: unknown };
+type ProbeMsg = { role?: string; content?: unknown; [k: string]: unknown };
+const probeParts = (m: ProbeMsg): ProbePart[] => (Array.isArray(m.content) ? (m.content as ProbePart[]) : []);
+const placeholderFor = (p: ProbePart) => ({
+  type: "tool-result",
+  toolCallId: p.toolCallId,
+  toolName: p.toolName,
+  output: { type: "text", value: "placeholder" },
+});
+
 /**
  * The pre-positional pass 3, reduced to the part that matters: pairing decided
  * by a GLOBAL id set. Used only as a negative control for the self-test.
  */
 function globalIdPairing(input: ModelMessage[]): ModelMessage[] {
-  // deno-lint-ignore no-explicit-any
-  const msgs = input as any[];
+  const msgs = input as unknown as ProbeMsg[];
   const resolved = new Set<string>();
   for (const m of msgs) {
-    if (m.role !== "tool" || !Array.isArray(m.content)) continue;
-    for (const p of m.content) if (p.type === "tool-result") resolved.add(p.toolCallId);
-  }
-  // deno-lint-ignore no-explicit-any
-  const out: any[] = [];
-  for (const m of msgs) {
-    out.push(m);
-    if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
-    // deno-lint-ignore no-explicit-any
-    const missing = m.content.filter((p: any) => p.type === "tool-call" && !resolved.has(p.toolCallId));
-    // deno-lint-ignore no-explicit-any
-    for (const p of missing as any[]) resolved.add(p.toolCallId);
-    if (missing.length > 0) {
-      out.push({
-        role: "tool",
-        // deno-lint-ignore no-explicit-any
-        content: missing.map((p: any) => ({
-          type: "tool-result",
-          toolCallId: p.toolCallId,
-          toolName: p.toolName,
-          output: { type: "text", value: "placeholder" },
-        })),
-      });
+    if (m.role !== "tool") continue;
+    for (const p of probeParts(m)) {
+      if (p.type === "tool-result" && typeof p.toolCallId === "string") resolved.add(p.toolCallId);
     }
   }
-  return out as ModelMessage[];
+  const out: ProbeMsg[] = [];
+  for (const m of msgs) {
+    out.push(m);
+    if (m.role !== "assistant") continue;
+    const missing = probeParts(m).filter((p) =>
+      p.type === "tool-call" && typeof p.toolCallId === "string" && !resolved.has(p.toolCallId)
+    );
+    for (const p of missing) resolved.add(p.toolCallId as string);
+    if (missing.length > 0) out.push({ role: "tool", content: missing.map(placeholderFor) });
+  }
+  return out as unknown as ModelMessage[];
 }
 
 /** What the real AI SDK does with a prompt: its error message, or MODEL_REACHED if validation passed. */
@@ -388,25 +387,14 @@ Deno.test("health probe: the self-test catches no repair at all, and a dropped g
   assertEquals(positionalPairingSelfTest((m) => m).ok, false, "identity must fail");
   // Answers every call in place with a placeholder, but throws the genuine result away.
   const dropsGenuine = (m: ModelMessage[]) => {
-    // deno-lint-ignore no-explicit-any
-    const out: any[] = [];
-    // deno-lint-ignore no-explicit-any
-    for (const x of m as any[]) {
+    const out: ProbeMsg[] = [];
+    for (const x of m as unknown as ProbeMsg[]) {
       if (x.role === "tool") continue;
       out.push(x);
-      if (x.role !== "assistant" || !Array.isArray(x.content)) continue;
-      out.push({
-        role: "tool",
-        // deno-lint-ignore no-explicit-any
-        content: x.content.filter((p: any) => p.type === "tool-call").map((p: any) => ({
-          type: "tool-result",
-          toolCallId: p.toolCallId,
-          toolName: p.toolName,
-          output: { type: "text", value: "placeholder" },
-        })),
-      });
+      if (x.role !== "assistant") continue;
+      out.push({ role: "tool", content: probeParts(x).filter((p) => p.type === "tool-call").map(placeholderFor) });
     }
-    return out as ModelMessage[];
+    return out as unknown as ModelMessage[];
   };
   const r = positionalPairingSelfTest(dropsGenuine);
   assertEquals(r.ok, false);
