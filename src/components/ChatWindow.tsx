@@ -1273,14 +1273,14 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             <button
               type="button"
               onClick={() => copyToClipboard(prose, "Message copied")}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-white/[0.04] hover:text-foreground transition-colors"
+              className="-ml-2 inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-white/[0.04] hover:text-foreground transition-colors"
               aria-label="Copy message"
               title="Copy message"
             >
               <CopyIcon className="w-3 h-3" /> Copy
             </button>
             {hasStatedLabel(prose) && (
-              <span className="ml-auto max-w-[min(100%,34ch)] text-right text-[11px] leading-snug text-faint-foreground">
+              <span className="ml-auto min-w-0 text-balance text-right text-[11px] leading-snug text-faint-foreground">
                 Labels are the agent&rsquo;s wording. Computed confidence is in Evidence.
               </span>
             )}
@@ -2971,7 +2971,9 @@ function ChatWindowInner({
         )}
       </div>
 
-      <div className="relative z-10 border-t border-white/[0.06] bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.92),hsl(var(--surface-0)/0.96))] px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-7 sm:pt-4 sm:pb-5 backdrop-blur-xl">
+      {/* Side padding mirrors .chat-stage__frame (1.25rem, 1.75rem from 1024px) so
+          the composer column sits on the transcript column at every width. */}
+      <div className="relative z-10 border-t border-white/[0.06] bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.92),hsl(var(--surface-0)/0.96))] px-5 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pt-4 sm:pb-5 lg:px-7 backdrop-blur-xl">
         <div className="chat-column">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
