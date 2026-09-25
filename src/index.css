@@ -1723,11 +1723,15 @@ All colors MUST be HSL.
 .chat-card__body {
   padding: 12px 14px 14px;
 }
+/* Same 14px side inset as .chat-card__body, so the footer sits on the body's text
+   edges: the ghost Copy button pulls its own padding back (-ml-2) to put its icon
+   on the text's left edge, and the caption ends on the text's right edge. */
 .chat-card__footer {
   display: flex;
   align-items: center;
+  gap: 12px;
   min-height: 32px;
-  padding: 0 10px 8px;
+  padding: 0 14px 8px;
   border-top: 1px solid hsl(var(--film) / 0.05);
 }
 

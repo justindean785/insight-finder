@@ -1275,14 +1275,14 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             <button
               type="button"
               onClick={() => copyToClipboard(prose, "Message copied")}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-white/[0.04] hover:text-foreground transition-colors"
+              className="-ml-2 inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-white/[0.04] hover:text-foreground transition-colors"
               aria-label="Copy message"
               title="Copy message"
             >
               <CopyIcon className="w-3 h-3" /> Copy
             </button>
             {hasStatedLabel(prose) && (
-              <span className="ml-auto max-w-[min(100%,34ch)] text-right text-[11px] leading-snug text-faint-foreground">
+              <span className="ml-auto min-w-0 text-balance text-right text-[11px] leading-snug text-faint-foreground">
                 Labels are the agent&rsquo;s wording. Computed confidence is in Evidence.
               </span>
             )}
@@ -2993,10 +2993,12 @@ function ChatWindowInner({
         )}
       </div>
 
-      {/* Composer dock. Flat ground, no blur. On a phone the workspace's bottom
-          tab bar sits below this and owns the safe-area inset, so the dock
-          keeps only its own padding. */}
-      <div className="relative z-10 border-t border-border-subtle bg-background px-2.5 pb-1.5 pt-2 sm:px-7 sm:pb-5 sm:pt-4">
+      {/* Composer dock. Flat ground, no blur. Side padding mirrors
+          .chat-stage__frame (1.25rem, 1.75rem from 1024px) so the composer
+          column sits on the transcript column at every width (#645). On a
+          phone the workspace's bottom tab bar sits below this and owns the
+          safe-area inset, so the dock keeps only its own vertical padding. */}
+      <div className="relative z-10 border-t border-border-subtle bg-background px-5 pb-1.5 pt-2 sm:pb-5 sm:pt-4 lg:px-7">
         <div className="chat-column">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
@@ -3081,8 +3083,8 @@ function ChatWindowInner({
                   }
                 }}
                 placeholder={isFollowUp
-                  ? (isPhone ? "Ask, or add a selector…" : "Ask about this case, or add a selector to pivot on…")
-                  : (isPhone ? "Email, handle, phone, name…" : "e.g. analyst@example.com — who controls this mailbox?")}
+                  ? (isPhone ? "Ask or add a selector" : "Ask about this case, or add a selector to pivot on…")
+                  : (isPhone ? "Email, handle, phone…" : "e.g. analyst@example.com — who controls this mailbox?")}
                 aria-describedby={composerIds.help}
                 aria-invalid={Boolean(preflight.errors.target)}
                 rows={1}
