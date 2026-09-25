@@ -40,7 +40,11 @@ export function detectSeedServer(input: string): DetectedSeed | null {
   }
   if (IP.test(raw)) return { kind: "ip", raw, normalized: raw };
   if (ETH.test(raw) || BTC.test(raw)) return { kind: "crypto", raw, normalized: raw.toLowerCase() };
-  if (PHONE.test(raw)) return { kind: "phone", raw, normalized: raw.replace(/[^\d+]/g, "") };
+  // E.164 caps a phone at 15 digits; a longer bare digit run is a platform account
+  // ID (Discord snowflake, Steam64). MUST match E164_MAX_DIGITS in src/lib/seed.ts.
+  const E164_MAX_DIGITS = 15;
+  if (/^\d+$/.test(raw) && raw.length > E164_MAX_DIGITS) return { kind: "other", raw, normalized: raw };
+  if (PHONE.test(raw) && raw.replace(/\D/g, "").length <= E164_MAX_DIGITS) return { kind: "phone", raw, normalized: raw.replace(/[^\d+]/g, "") };
   if (DOMAIN.test(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
   if (USER.test(raw)) return { kind: "username", raw, normalized: raw.toLowerCase() };
   // "@handle" is a username seed. It classified as `other` (USER has no `@`),
