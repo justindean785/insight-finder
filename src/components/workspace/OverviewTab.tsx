@@ -309,7 +309,11 @@ export function OverviewTab({ threadId }: { threadId: string }) {
           onJump={() => jump("issues")}
         />
 
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+        {/* With nothing corroborated there is no second column: an empty
+            panel used to take 40% of the width to say one sentence. The
+            sentence moves under the distribution as a status line, and the
+            panel returns the moment there is a finding to list. */}
+        <div className={cn("grid gap-4", strongest.length > 0 && "lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]")}>
           {/* ── Authority distribution ─────────────────────────────────── */}
           <section className="panel overflow-hidden">
             <RuleLabel right={<span className="text-micro tabular-nums text-muted-foreground/70">{total}</span>}>
@@ -356,13 +360,16 @@ export function OverviewTab({ threadId }: { threadId: string }) {
           </section>
 
           {/* ── Strongest findings ─────────────────────────────────────── */}
+          {strongest.length === 0 ? (
+            <p className="status-line px-1">
+              <span>Strongest supported findings</span>
+              <span><span className="status-value">0</span> corroborated yet</span>
+            </p>
+          ) : (
           <section className="panel panel-flat overflow-hidden">
             <RuleLabel right={<span className="text-micro tabular-nums text-muted-foreground/70">{strongest.length} of {tally.verified + tally.infrastructure + tally.probable}</span>}>
               Strongest supported findings
             </RuleLabel>
-            {strongest.length === 0 ? (
-              <p className="p-3 text-data text-muted-foreground">No corroborated findings yet.</p>
-            ) : (
               <ul>
                 {strongest.map(({ a, v }) => (
                   <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto_3rem] items-start gap-2 border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
@@ -373,8 +380,8 @@ export function OverviewTab({ threadId }: { threadId: string }) {
                   </li>
                 ))}
               </ul>
-            )}
           </section>
+          )}
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
@@ -397,7 +404,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
                   <li key={e.id} className="border-b border-border-subtle px-3 py-2 last:border-b-0">
                     <div className="flex items-center gap-2">
                       <XCircle className={cn("h-3 w-3 shrink-0", e.status === "failed" ? "text-destructive" : "text-[hsl(var(--confidence-mid))]")} aria-hidden />
-                      <span className="min-w-0 flex-1 truncate font-mono text-eyebrow uppercase tracking-wider text-foreground/85">{e.toolName}</span>
+                      <span className="min-w-0 flex-1 truncate font-mono text-data text-foreground">{e.toolName}</span>
                       {e.durationMs != null && (
                         <span className="shrink-0 font-mono text-eyebrow tabular-nums text-muted-foreground/70">
                           {e.durationMs >= 1000 ? `${Math.round(e.durationMs / 1000)}s` : `${e.durationMs}ms`}
