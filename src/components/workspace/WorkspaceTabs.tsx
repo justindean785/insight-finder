@@ -57,9 +57,12 @@ function AlertDot({ count, className }: { count: number; className?: string }) {
 /**
  * Primary workspace navigation — the six case sections.
  *
- * Desktop: one centred, stable strip of labelled tabs. The active tab is marked
- * by a 2px signal underline and a faintly lifted ground — no white pill, no
- * per-tab count bubbles, no boxed container. Centring uses `safe center`, which
+ * Desktop: one centred, stable strip of labelled tabs in the shared `.tab-rule`
+ * grammar (index.css) — the word is the control, the active tab is marked by a
+ * 2px accent rule on the strip's hairline, and the count sits beside it in the
+ * data face. No icons, no pill, no lifted ground: the same strip serves the
+ * Intelligence page and the Graph toolbar, so there is one tab style in the
+ * product. Centring uses `safe center`, which
  * falls back to start alignment the moment the strip overflows, so the first
  * tab can never be pushed into negative scroll space (#525).
  *
@@ -88,13 +91,13 @@ export function WorkspaceTabs({
   return <TabBar active={active} onChange={onChange} counts={counts} loading={loading} />;
 }
 
-function TabCountBadge({ count, loading, active }: { count?: TabCount; loading: boolean; active: boolean }) {
+function TabCountBadge({ count, loading }: { count?: TabCount; loading: boolean }) {
   if (!count) return null;
   if (loading) return <span aria-hidden className="h-2.5 w-4 rounded-sm bg-white/[0.08]" />;
   return (
     <>
       {count.value > 0 && (
-        <span className={cn("font-mono text-data tabular-nums leading-none", active ? "text-foreground/70" : "text-muted-foreground")} title={count.hint}>
+        <span className="tab-rule-count" title={count.hint}>
           {countText(count.value)}
         </span>
       )}
@@ -134,11 +137,10 @@ function TabBar({
   };
 
   return (
-    <div className="relative border-b border-white/[0.07] bg-surface-0">
-      <div className="flex justify-safe-center overflow-x-auto px-3 sm:px-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <div role="tablist" aria-label="Investigation workspace" className="flex w-max shrink-0 items-stretch gap-1">
+    <div className="relative bg-surface-0">
+      <div className="flex justify-safe-center overflow-x-auto border-b border-border-subtle px-3 sm:px-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div role="tablist" aria-label="Investigation workspace" className="tab-rule w-max shrink-0 border-b-0">
           {TABS.map((t, idx) => {
-            const Icon = t.icon;
             const isActive = active === t.key;
             return (
               <button
@@ -152,22 +154,10 @@ function TabBar({
                 tabIndex={isActive ? 0 : -1}
                 onKeyDown={(e) => onKeyDown(e, idx)}
                 onClick={() => onChange(t.key)}
-                className={cn(
-                  "relative inline-flex h-10 shrink-0 items-center gap-2 rounded-t-md px-3.5 text-[14px] font-medium",
-                  "transition-[color,background-color,box-shadow] duration-fast ease-standard",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                  isActive
-                    ? "bg-surface-2 text-foreground shadow-[inset_0_-2px_0_hsl(var(--brand))]"
-                    : "text-muted-foreground hover:bg-white/[0.03] hover:text-foreground",
-                )}
+                className="tab-rule-item h-11 px-3.5 text-[14px]"
               >
-                <Icon
-                  className={cn("h-4 w-4 shrink-0", isActive ? "text-[hsl(var(--intel-blue))]" : "opacity-75")}
-                  strokeWidth={1.8}
-                  aria-hidden
-                />
-                <span className="leading-none">{t.label}</span>
-                <TabCountBadge count={counts?.[t.key]} loading={loading} active={isActive} />
+                <span>{t.label}</span>
+                <TabCountBadge count={counts?.[t.key]} loading={loading} />
               </button>
             );
           })}
@@ -203,7 +193,7 @@ function CompactNav({
   };
 
   return (
-    <nav aria-label="Workspace sections" className="flex min-w-0 flex-1 items-stretch gap-1">
+    <nav aria-label="Workspace sections" className="tab-rule min-w-0 flex-1 border-b-0">
       <div role="tablist" aria-label="Investigation workspace" className="flex min-w-0 flex-1 items-stretch gap-0.5">
         {COMPACT_PRIMARY.map((t, idx) => {
           const isActive = active === t.key;
@@ -220,18 +210,11 @@ function CompactNav({
               tabIndex={isActive || (activeMore && idx === 0) ? 0 : -1}
               onKeyDown={(e) => onKeyDown(e, idx)}
               onClick={() => onChange(t.key)}
-              className={cn(
-                "relative inline-flex h-11 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-t-md px-2 text-[13.5px] font-medium",
-                "transition-[color,background-color,box-shadow] duration-fast ease-standard",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                isActive
-                  ? "bg-surface-2 text-foreground shadow-[inset_0_-2px_0_hsl(var(--brand))]"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
+              className="tab-rule-item h-11 min-w-0 flex-1 shrink justify-center gap-1.5 px-2"
             >
-              <span className="whitespace-nowrap">{t.label}</span>
+              <span>{t.label}</span>
               {!loading && count && count.value > 0 && (
-                <span className="font-mono text-data tabular-nums text-muted-foreground max-[479px]:hidden">{countText(count.value)}</span>
+                <span className="tab-rule-count max-[479px]:hidden">{countText(count.value)}</span>
               )}
               {!loading && count?.alert ? <AlertDot count={count.alert} /> : null}
             </button>
@@ -246,14 +229,10 @@ function CompactNav({
             // labels its panel (`aria-labelledby="workspace-tab-<key>"`).
             id={activeMore ? `workspace-tab-${activeMore.key}` : undefined}
             aria-label={activeMore ? `More, current section: ${activeMore.label}` : "More sections: Tools, Graph, Report"}
-            className={cn(
-              "relative inline-flex h-11 shrink-0 items-center gap-1 rounded-t-md px-2.5 text-[13.5px] font-medium",
-              "transition-[color,background-color,box-shadow] duration-fast ease-standard",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-              activeMore
-                ? "bg-surface-2 text-foreground shadow-[inset_0_-2px_0_hsl(var(--brand))]"
-                : "text-muted-foreground hover:text-foreground data-[state=open]:text-foreground",
-            )}
+            // Styled as a tab in the strip; `aria-pressed` drives the active
+            // rule because a menu trigger cannot carry `aria-selected`.
+            aria-pressed={activeMore ? true : undefined}
+            className="tab-rule-item h-11 gap-1 px-2.5 data-[state=open]:text-foreground"
           >
             <span className="whitespace-nowrap">{activeMore ? activeMore.label : "More"}</span>
             <ChevronDown className="h-3.5 w-3.5" aria-hidden />
@@ -286,7 +265,7 @@ function CompactNav({
                   {!loading && count && count.value > 0 && (
                     <span className="font-mono text-data tabular-nums text-muted-foreground">{countText(count.value)}</span>
                   )}
-                  {selected && <Check className="h-3.5 w-3.5 text-[hsl(var(--intel-blue))]" aria-hidden />}
+                  {selected && <Check className="h-3.5 w-3.5 text-[hsl(var(--brand))]" aria-hidden />}
                 </DropdownMenuRadioItem>
               );
             })}

@@ -256,27 +256,26 @@ export function SubTabs<T extends string>({
   onChange: (key: T) => void;
   className?: string;
 }): ReactNode {
+  // The shared `.tab-rule` grammar (index.css), compact size: the same strip
+  // as the workspace tabs and the Intelligence tabs, so a sub-view switch on
+  // Report, Tools and Graph reads as the same control one level down. Icons
+  // are not drawn here: the word is the control. `icon` stays on the option
+  // type because the menu controls in this file still render it.
   return (
-    <div role="group" aria-label={label} className={cn("flex min-w-0 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden", className)}>
+    <div role="group" aria-label={label} className={cn("tab-rule tab-rule--sub min-w-0 border-b-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden", className)}>
       {options.map((o) => {
         const on = o.key === active;
-        const Icon = o.icon;
         return (
           <button
             key={o.key}
             type="button"
             aria-pressed={on}
             onClick={() => onChange(o.key)}
-            className={cn(
-              "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-data font-medium transition-colors duration-fast [@media(pointer:coarse)]:h-11",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              on ? "bg-surface-3 text-foreground shadow-e1" : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
-            )}
+            className="tab-rule-item [@media(pointer:coarse)]:h-11"
           >
-            {Icon && <Icon className={cn("h-3.5 w-3.5", on ? "text-[hsl(var(--intel-blue))]" : "opacity-80")} strokeWidth={1.8} aria-hidden />}
             {o.label}
             {o.count !== undefined && o.count > 0 && (
-              <span className="font-mono tabular-nums text-muted-foreground/80">{countText(o.count)}</span>
+              <span className="tab-rule-count">{countText(o.count)}</span>
             )}
           </button>
         );

@@ -1,34 +1,14 @@
 import { useRef } from "react";
-import { Database, FileText, Share2, Activity, type LucideIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
 import type { TabCount } from "./WorkspaceTabs";
 
 export type ViewCaseTab = "evidence" | "report" | "graph" | "tools";
 
-const TABS: { key: ViewCaseTab; label: string; icon: LucideIcon }[] = [
-  { key: "report", label: "Report", icon: FileText },
-  { key: "evidence", label: "Evidence", icon: Database },
-  { key: "tools", label: "Tools", icon: Activity },
-  { key: "graph", label: "Graph", icon: Share2 },
+const TABS: { key: ViewCaseTab; label: string }[] = [
+  { key: "report", label: "Report" },
+  { key: "evidence", label: "Evidence" },
+  { key: "tools", label: "Tools" },
+  { key: "graph", label: "Graph" },
 ];
-
-function CountPill({ value, active }: { value: number; active: boolean }) {
-  return (
-    <span
-      aria-hidden={value === 0}
-      className={cn(
-        "inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-full px-1 font-mono text-eyebrow tabular-nums leading-none",
-        value === 0
-          ? "opacity-0"
-          : active
-            ? "bg-[hsl(var(--intel-blue)/0.22)] text-[hsl(var(--intel-blue))]"
-            : "bg-surface-3 text-muted-foreground",
-      )}
-    >
-      {value > 999 ? "999+" : value}
-    </span>
-  );
-}
 
 /** Read-only case viewer tabs — no chat mode. */
 export function ViewWorkspaceTabs({
@@ -53,18 +33,11 @@ export function ViewWorkspaceTabs({
   };
 
   return (
-    <div className="border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.5),hsl(var(--surface-0)/0.38))] px-3 py-2.5">
-      {/* Same `safe center` reasoning as WorkspaceTabs — see the comment there.
-          This strip has not been observed clipping (it renders four tabs, not
-          six) but carries the identical construction. */}
-      <div className="mx-auto max-w-6xl flex justify-safe-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <div
-          role="tablist"
-          aria-label="Case views"
-          className="inline-flex w-max items-center gap-1 rounded-2xl border border-white/[0.08] bg-[hsl(var(--film)/0.035)] p-1"
-        >
+    <div className="border-b border-border-subtle bg-surface-0 px-3">
+      {/* Same `safe center` reasoning as WorkspaceTabs — see the comment there. */}
+      <div className="mx-auto flex max-w-6xl justify-safe-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div role="tablist" aria-label="Case views" className="tab-rule w-max border-b-0">
           {TABS.map((t, idx) => {
-            const Icon = t.icon;
             const isActive = active === t.key;
             const count = counts?.[t.key];
             return (
@@ -73,21 +46,18 @@ export function ViewWorkspaceTabs({
                 ref={(el) => {
                   tabRefs.current[idx] = el;
                 }}
+                type="button"
                 role="tab"
                 aria-selected={isActive}
                 tabIndex={isActive ? 0 : -1}
                 onKeyDown={(e) => onKeyDown(e, idx)}
                 onClick={() => onChange(t.key)}
-                className={cn(
-                  "inline-flex h-9 items-center gap-2 rounded-lg px-3.5 text-meta font-medium transition-colors duration-fast",
-                  isActive
-                    ? "tab-key-active text-foreground"
-                    : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
-                )}
+                className="tab-rule-item h-11"
               >
-                <Icon className={cn("h-4 w-4", isActive && "text-[hsl(var(--intel-blue))]")} strokeWidth={1.8} />
                 {t.label}
-                {count ? <CountPill value={count.value} active={isActive} /> : null}
+                {count && count.value > 0 ? (
+                  <span className="tab-rule-count">{count.value > 999 ? "999+" : count.value}</span>
+                ) : null}
               </button>
             );
           })}

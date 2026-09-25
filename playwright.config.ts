@@ -45,15 +45,20 @@ export default defineConfig({
 
   /**
    * The three viewports the tab-clipping defect was reported and fixed against.
-   * 894x617 is the one that actually broke: it is wide enough for the desktop
-   * strip to render all six tabs, but too narrow to fit them, which is the exact
-   * band where the old `justify-content: center` pushed the first tab into
-   * unreachable negative scroll space.
+   * The narrow one must sit in the band where the desktop strip renders all six
+   * tabs but cannot fit them, which is where the old `justify-content: center`
+   * pushed the first tab into unreachable negative scroll space.
+   *
+   * The defect was reported at 894x617. When the tabs became words only (the
+   * shared `.tab-rule` strip, no icons) the strip shrank to ~553px and fit at
+   * 894, so the band moved: it now runs from 768 (below it the compact nav
+   * takes over) to ~840. 800x617 sits inside it with ~41px of overflow, and
+   * the spec's overflow guard fails loudly if it ever stops doing so.
    */
   // The case-integrity state suite is viewport-independent (its mobile cases
   // set their own 390px viewport), so it runs once, on the mid project.
   projects: [
-    { name: "894x617", testIgnore: /case-integrity\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 894, height: 617 } } },
+    { name: "800x617", testIgnore: /case-integrity\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 800, height: 617 } } },
     { name: "1280x720", use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 720 } } },
     { name: "1440x900", testIgnore: /case-integrity\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } } },
   ],

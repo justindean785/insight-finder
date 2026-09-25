@@ -3,7 +3,8 @@ import { test, expect, type Page, type Locator } from "@playwright/test";
 /**
  * Workspace tab strip — reachability contract.
  *
- * The defect this pins (reported at an authenticated 894x617 viewport):
+ * The defect this pins (reported at an authenticated 894x617 viewport; the
+ * narrow project now runs at 800x617, see playwright.config.ts for why):
  *   - "Overview" rendered underneath the z-10 left rail and swallowed pointer
  *     clicks, while keyboard Enter still activated it;
  *   - "Report" was clipped off the right edge with no way to scroll to it.
@@ -35,7 +36,7 @@ const TAB_LABELS = ["Overview", "Investigate", "Evidence", "Tools", "Graph", "Re
  * Blocking every non-localhost origin makes the suite hermetic and ~35x faster.
  * The trade is that type renders in fallback metrics rather than Sora/IBM Plex,
  * which changes tab widths — so `assertStripOverflows` below refuses to let that
- * silently turn the 894x617 case into a vacuous pass.
+ * silently turn the narrow case into a vacuous pass.
  */
 async function blockExternalOrigins(page: Page) {
   await page.route("**/*", (route) => {
@@ -93,13 +94,13 @@ test.describe("workspace tab strip", () => {
    */
   /**
    * Guard against a vacuous pass, in the same spirit as this repo's
-   * SECURITY DEFINER assertion in CI: at 894x617 the strip MUST actually
+   * SECURITY DEFINER assertion in CI: at 800x617 the strip MUST actually
    * overflow, or the reachability assertions below are proving nothing. If a
    * font change, a shorter label or a narrower tab ever makes six tabs fit at
    * this width, this fails loudly rather than going quietly green.
    */
-  test("the 894px case still exercises overflow", async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name !== "894x617", "overflow is only expected at the narrow viewport");
+  test("the narrow case still exercises overflow", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "800x617", "overflow is only expected at the narrow viewport");
     await openWorkspace(page);
     const maxScrollLeft = await page.evaluate(() => {
       const list = document.querySelector('[role="tab"]')!.closest('[role="tablist"]')!;
@@ -108,7 +109,7 @@ test.describe("workspace tab strip", () => {
     });
     expect(
       maxScrollLeft,
-      "the six tabs now fit at 894px, so the reachability tests no longer exercise the overflow path this suite exists for",
+      "the six tabs now fit at 800px, so the reachability tests no longer exercise the overflow path this suite exists for",
     ).toBeGreaterThan(0);
   });
 
@@ -213,21 +214,26 @@ test.describe("workspace tab strip", () => {
   });
 
   /**
-   * Requirement 3 — the #523 material styling survives the layout fix.
+   * Requirement 3 — the active tab stays unmistakable after the layout fix.
    *
-   * The active tab must still be a lit key, not a flat rectangle. Asserting the
-   * computed background is non-transparent and that the strip still carries its
-   * accent rail is enough to catch a regression that strips the styling while
-   * "fixing" the layout.
+   * Under the shared `.tab-rule` grammar the active tab is marked by a 2px
+   * accent rule on the strip and full ink, not by a filled key (#523's lit key
+   * was retired with the 3a register). Assert exactly that, against an
+   * inactive neighbour, so a regression that strips the marker while "fixing"
+   * the layout still fails.
    */
-  test("active tab keeps its material styling", async ({ page }) => {
+  test("active tab keeps a distinct active marker", async ({ page }) => {
     await openWorkspace(page);
-    const active = page.locator('[role="tab"][aria-selected="true"]').first();
-    const style = await active.evaluate((el) => {
-      const cs = getComputedStyle(el);
-      return { background: cs.backgroundColor, boxShadow: cs.boxShadow };
-    });
-    expect(style.background).not.toBe("rgba(0, 0, 0, 0)");
-    expect(style.boxShadow).not.toBe("none");
+    const read = (loc: Locator) =>
+      loc.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { rule: cs.borderBottomColor, width: cs.borderBottomWidth, color: cs.color };
+      });
+    const active = await read(page.locator('[role="tab"][aria-selected="true"]').first());
+    const idle = await read(page.locator('[role="tab"][aria-selected="false"]').first());
+    expect(active.width).toBe("2px");
+    expect(active.rule).not.toBe("rgba(0, 0, 0, 0)");
+    expect(active.rule).not.toBe(idle.rule);
+    expect(active.color).not.toBe(idle.color);
   });
 });
