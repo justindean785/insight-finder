@@ -301,13 +301,15 @@ All colors MUST be HSL.
     --speaker-system: 0 0% 54%;
     --speaker-failed: 0 0% 54%;
 
-    /* Brain (Global Brain tab) palette — cooled to match the register. */
-    --brain-surface-base: 222 42% 5%;
-    --brain-card:         221 38% 7.5%;
-    --brain-border:       219 27% 16%;
-    --brain-text:         212 38% 93%;
-    --brain-muted:        214 21% 74%;  /* AA body on brain-card */
-    --brain-cyan:         189 90% 58%;
+    /* Brain (Global Brain tab) palette. Restated onto the graphite ramp: the
+       3a pass neutralised :root but left these blue-black, so the one page
+       that used them read as a second product beside the case desk. */
+    --brain-surface-base: 0 0% 4%;
+    --brain-card:         0 0% 5%;
+    --brain-border:       0 0% 15%;
+    --brain-text:         0 0% 93%;
+    --brain-muted:        0 0% 74%;  /* AA body on brain-card */
+    --brain-cyan:         183 49% 58%;
     --brain-status-ok:    152 62% 46%;
     --brain-status-warn:   38 92% 58%;
     --brain-status-bad:   352 84% 61%;
@@ -318,12 +320,12 @@ All colors MUST be HSL.
        a darker fill — there is nothing darker than the page. --sidebar-background
        therefore holds the same triple as --background, deliberately. */
     --sidebar-background: 0 0% 4%;
-    --sidebar-foreground: 214 19% 74%;
+    --sidebar-foreground: 0 0% 74%;
     --sidebar-primary: 183 49% 58%;
-    --sidebar-primary-foreground: 222 55% 6%;
-    --sidebar-accent: 220 45% 13.5%;
-    --sidebar-accent-foreground: 212 40% 95%;
-    --sidebar-border: 220 38% 13%;
+    --sidebar-primary-foreground: 0 0% 4%;
+    --sidebar-accent: 0 0% 11%;
+    --sidebar-accent-foreground: 0 0% 93%;
+    --sidebar-border: 0 0% 11%;
     --sidebar-ring: 183 49% 58%;
   }
 }
