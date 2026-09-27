@@ -115,7 +115,7 @@ function itemsFor(inputs: Record<string, unknown>[]): NextStepItem[] {
 }
 
 describe("NextSteps — a malformed pivot cannot run, a valid one previews first", () => {
-  it("renders a malformed pivot as 'Suggestion needs repair' with no Run control", () => {
+  it("keeps a malformed pivot OFF the list, disclosed behind one line, with no Run control", () => {
     render(
       <NextSteps
         items={itemsFor([{ ...validInput, action: "Review lead", target: "| Review lead | Keith family | name |", targetType: "name" }])}
@@ -123,9 +123,33 @@ describe("NextSteps — a malformed pivot cannot run, a valid one previews first
         onRunAction={vi.fn()}
       />,
     );
+    expect(screen.queryByText("Suggestion needs repair")).toBeNull();
+    const disclosure = screen.getByRole("button", { name: /1 suggestion from the report couldn't be turned into a runnable step/ });
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(disclosure);
+    expect(disclosure.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText("Suggestion needs repair")).toBeTruthy();
     expect(screen.getByText(/table cell/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Run/ })).toBeNull();
+  });
+
+  it("counts and lists only runnable steps; the repair line sits below them", () => {
+    render(
+      <NextSteps
+        items={itemsFor([
+          { ...validInput, action: "Review lead", target: "| Review lead | Keith family | name |", targetType: "name" },
+          validInput,
+        ])}
+        onRunPivot={vi.fn()}
+        onRunAction={vi.fn()}
+      />,
+    );
+    const section = screen.getByRole("region", { name: "Next steps" });
+    expect(section.querySelector("header")?.textContent).toMatch(/Next steps\s*1$/);
+    expect(screen.getByRole("button", { name: "Run Verify email ownership on j@example.com" })).toBeTruthy();
+    const run = screen.getByRole("button", { name: /^Run Verify/ });
+    const disclosure = screen.getByRole("button", { name: /couldn't be turned into/ });
+    expect(run.compareDocumentPosition(disclosure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("Run opens the preview and starts NOTHING; Start dispatches exactly once", () => {

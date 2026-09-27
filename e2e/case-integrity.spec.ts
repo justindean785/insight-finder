@@ -148,6 +148,12 @@ test.describe("next steps", () => {
   test("9 · a malformed generated pivot is quarantined and cannot run", async ({ page }) => {
     await open(page, `${THREAD}?scenario=malformed`);
     const steps = page.getByRole("region", { name: "Next steps" });
+    // Off the list by default: an unrunnable suggestion is not a step.
+    await expect(steps.getByText("Suggestion needs repair")).toHaveCount(0);
+    // Still disclosed, one line, and expandable to the repair notice.
+    const disclosure = steps.getByRole("button", { name: /couldn't be turned into/ });
+    await expect(disclosure).toBeVisible();
+    await disclosure.click();
     await expect(steps.getByText("Suggestion needs repair").first()).toBeVisible();
     const repair = steps.locator('[data-suggestion-state="needs-repair"]').first();
     await expect(repair.getByRole("button")).toHaveCount(0);
