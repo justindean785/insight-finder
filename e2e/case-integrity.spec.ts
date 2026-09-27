@@ -23,7 +23,8 @@ async function blockExternalOrigins(page: Page) {
 async function open(page: Page, path: string, { waitHydrated = true } = {}) {
   await blockExternalOrigins(page);
   await page.goto(path);
-  await page.getByRole("tab", { name: /Overview/ }).first().waitFor({ state: "visible" });
+  // "Investigate" is a tab at every breakpoint; Overview is not a tab on a phone.
+  await page.getByRole("tab", { name: /Investigate/ }).first().waitFor({ state: "visible" });
   if (waitHydrated) await expect(page.getByText("Syncing case…")).toHaveCount(0, { timeout: 10_000 });
 }
 
@@ -209,10 +210,14 @@ test.describe("12 · mobile 390px", () => {
 
   test("navigation is labelled, keyboard-operable, and names the current overflow section", async ({ page }) => {
     await open(page, THREAD);
-    for (const name of ["Overview", "Investigate", "Evidence"]) {
+    for (const name of ["Investigate", "Evidence", "Report"]) {
       await expect(page.getByRole("tab", { name: new RegExp(name) })).toBeVisible();
     }
-    const more = page.getByRole("button", { name: "More sections: Tools, Graph, Report" });
+    // Section navigation sits at the bottom of the screen, where the thumb is.
+    const nav = page.getByRole("navigation", { name: "Workspace sections" });
+    const box = await nav.boundingBox();
+    expect(box && box.y + box.height).toBeGreaterThan(844 - 2);
+    const more = page.getByRole("button", { name: "More sections: Overview, Tools, Graph" });
     await expect(more).toHaveAttribute("aria-expanded", "false");
     await more.focus();
     await page.keyboard.press("ArrowDown");
@@ -240,7 +245,7 @@ test.describe("12 · mobile 390px", () => {
 
   test("graph defaults to a readable list", async ({ page }) => {
     await open(page, THREAD);
-    await page.getByRole("button", { name: "More sections: Tools, Graph, Report" }).click();
+    await page.getByRole("button", { name: "More sections: Overview, Tools, Graph" }).click();
     await page.getByRole("menuitemradio", { name: /Graph/ }).click();
     await expect(page.getByRole("button", { name: "List", pressed: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: /Linked entities/ })).toBeVisible();

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { ChevronDown, MessagesSquare, Database, FileText, Share2, Activity, LayoutDashboard, Check, type LucideIcon } from "lucide-react";
+import { MoreHorizontal, MessagesSquare, Database, FileText, Share2, Activity, LayoutDashboard, Check, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -33,8 +33,13 @@ const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
   { key: "report", label: "Report", icon: FileText },
 ];
 
-const COMPACT_PRIMARY = TABS.filter((t) => t.key === "overview" || t.key === "chat" || t.key === "evidence");
-const COMPACT_MORE = TABS.filter((t) => t.key === "tools" || t.key === "graph" || t.key === "report");
+// Mobile: the three places an analyst goes on a phone — the conversation, the
+// evidence, and the report they will hand on — are one thumb-tap away. Report
+// used to sit behind More while Overview took a primary slot; on a phone the
+// report is the deliverable and Overview is a summary of the other two.
+const COMPACT_PRIMARY = TABS.filter((t) => t.key === "chat" || t.key === "evidence" || t.key === "report");
+const COMPACT_MORE = TABS.filter((t) => t.key === "overview" || t.key === "tools" || t.key === "graph");
+const MORE_LABEL = `More sections: ${COMPACT_MORE.map((t) => t.label).join(", ")}`;
 
 function countText(value: number): string {
   return value > 999 ? "999+" : String(value);
@@ -63,10 +68,12 @@ function AlertDot({ count, className }: { count: number; className?: string }) {
  * falls back to start alignment the moment the strip overflows, so the first
  * tab can never be pushed into negative scroll space (#525).
  *
- * Mobile: Overview, Investigate and Evidence as labelled tabs, and Tools, Graph
- * and Report behind a More menu. The More trigger ALWAYS carries a name — "More"
- * or, when one of its sections is active, "More, current section: Graph" — so
- * primary navigation is never an unlabelled icon.
+ * Mobile: a BOTTOM tab bar, where the thumb is — Investigate, Evidence and
+ * Report as labelled tabs (icon over label), and Overview, Tools and Graph
+ * behind More. The More trigger ALWAYS carries a name — "More sections: …" or,
+ * when one of its sections is active, "More, current section: Graph" — so
+ * primary navigation is never an unlabelled icon. The bar pads itself by the
+ * device's bottom safe-area inset so the home indicator never sits on a tab.
  */
 export function WorkspaceTabs({
   active,
@@ -202,10 +209,15 @@ function CompactNav({
     tabRefs.current[next]?.focus();
   };
 
+  const item = "relative flex min-w-0 flex-1 flex-col items-center justify-center gap-1 pb-1.5 pt-2 text-[11.5px] font-medium leading-none transition-colors duration-fast ease-standard focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
   return (
-    <nav aria-label="Workspace sections" className="flex min-w-0 flex-1 items-stretch gap-1">
-      <div role="tablist" aria-label="Investigation workspace" className="flex min-w-0 flex-1 items-stretch gap-0.5">
+    <nav
+      aria-label="Workspace sections"
+      className="flex items-stretch border-t border-border-subtle bg-card pb-[env(safe-area-inset-bottom)]"
+    >
+      <div role="tablist" aria-label="Investigation workspace" className="flex min-w-0 flex-[3] items-stretch">
         {COMPACT_PRIMARY.map((t, idx) => {
+          const Icon = t.icon;
           const isActive = active === t.key;
           const count = counts?.[t.key];
           return (
@@ -220,20 +232,13 @@ function CompactNav({
               tabIndex={isActive || (activeMore && idx === 0) ? 0 : -1}
               onKeyDown={(e) => onKeyDown(e, idx)}
               onClick={() => onChange(t.key)}
-              className={cn(
-                "relative inline-flex h-11 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-t-md px-2 text-[13.5px] font-medium",
-                "transition-[color,background-color,box-shadow] duration-fast ease-standard",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                isActive
-                  ? "bg-surface-2 text-foreground shadow-[inset_0_-2px_0_hsl(var(--brand))]"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
+              className={cn(item, "min-h-14", isActive ? "text-foreground" : "text-subtle-foreground")}
             >
+              <span className="relative">
+                <Icon className={cn("h-5 w-5", isActive && "text-[hsl(var(--brand))]")} strokeWidth={isActive ? 2 : 1.7} aria-hidden />
+                {!loading && count?.alert ? <AlertDot count={count.alert} className="absolute -right-1.5 -top-0.5" /> : null}
+              </span>
               <span className="whitespace-nowrap">{t.label}</span>
-              {!loading && count && count.value > 0 && (
-                <span className="font-mono text-data tabular-nums text-muted-foreground max-[479px]:hidden">{countText(count.value)}</span>
-              )}
-              {!loading && count?.alert ? <AlertDot count={count.alert} /> : null}
             </button>
           );
         })}
@@ -245,25 +250,23 @@ function CompactNav({
             // When a More section is active, this trigger is the element that
             // labels its panel (`aria-labelledby="workspace-tab-<key>"`).
             id={activeMore ? `workspace-tab-${activeMore.key}` : undefined}
-            aria-label={activeMore ? `More, current section: ${activeMore.label}` : "More sections: Tools, Graph, Report"}
-            className={cn(
-              "relative inline-flex h-11 shrink-0 items-center gap-1 rounded-t-md px-2.5 text-[13.5px] font-medium",
-              "transition-[color,background-color,box-shadow] duration-fast ease-standard",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-              activeMore
-                ? "bg-surface-2 text-foreground shadow-[inset_0_-2px_0_hsl(var(--brand))]"
-                : "text-muted-foreground hover:text-foreground data-[state=open]:text-foreground",
-            )}
+            aria-label={activeMore ? `More, current section: ${activeMore.label}` : MORE_LABEL}
+            className={cn(item, "min-h-14", activeMore ? "text-foreground" : "text-subtle-foreground data-[state=open]:text-foreground")}
           >
+            <span className="relative">
+              {activeMore
+                ? <activeMore.icon className="h-5 w-5 text-[hsl(var(--brand))]" strokeWidth={2} aria-hidden />
+                : <MoreHorizontal className="h-5 w-5" strokeWidth={1.7} aria-hidden />}
+              {!loading && moreAlert > 0 && <AlertDot count={moreAlert} className="absolute -right-1.5 -top-0.5" />}
+            </span>
             <span className="whitespace-nowrap">{activeMore ? activeMore.label : "More"}</span>
-            <ChevronDown className="h-3.5 w-3.5" aria-hidden />
-            {!loading && moreAlert > 0 && <AlertDot count={moreAlert} className="absolute right-1 top-2" />}
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
+          side="top"
           align="end"
-          sideOffset={4}
-          className="w-56 rounded-xl border-white/10 bg-[hsl(var(--popover))] p-1 shadow-overlay"
+          sideOffset={6}
+          className="mr-2 w-60 rounded-xl border-border bg-[hsl(var(--popover))] p-1 shadow-overlay"
         >
           <DropdownMenuLabel className="px-2.5 pb-1 pt-1.5 text-micro font-medium text-muted-foreground">More sections</DropdownMenuLabel>
           <DropdownMenuRadioGroup value={activeMore?.key ?? ""} onValueChange={(v) => onChange(v as WorkspaceTab)}>
@@ -276,7 +279,7 @@ function CompactNav({
                   key={t.key}
                   value={t.key}
                   className={cn(
-                    "flex min-h-11 items-center gap-2.5 rounded-lg py-2 pl-2.5 pr-2.5 text-[14px] [&>span:first-child]:hidden",
+                    "flex min-h-12 items-center gap-2.5 rounded-lg py-2 pl-2.5 pr-2.5 text-[14.5px] [&>span:first-child]:hidden",
                     selected ? "bg-surface-3 text-foreground" : "text-muted-foreground focus:text-foreground",
                   )}
                 >
@@ -286,7 +289,7 @@ function CompactNav({
                   {!loading && count && count.value > 0 && (
                     <span className="font-mono text-data tabular-nums text-muted-foreground">{countText(count.value)}</span>
                   )}
-                  {selected && <Check className="h-3.5 w-3.5 text-[hsl(var(--intel-blue))]" aria-hidden />}
+                  {selected && <Check className="h-3.5 w-3.5 text-[hsl(var(--brand))]" aria-hidden />}
                 </DropdownMenuRadioItem>
               );
             })}
