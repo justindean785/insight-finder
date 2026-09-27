@@ -33,11 +33,29 @@ function fill(state: AuthorityState): string {
     : `hsl(var(--authority-${state}))`;
 }
 
-function jumpToEvidence() {
-  window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "artifacts" } }));
+function jumpToEvidence(artifactId?: string) {
+  // Carries the row, so Evidence can reveal it even under a filter that hides
+  // quarantined rows — the ones this sheet most often hands off.
+  window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "artifacts", artifactId } }));
 }
 
-export function CaseSheetView({ model, hydrated }: { model: CaseSheetModel; hydrated: boolean }) {
+const REVIEWS_UNAVAILABLE =
+  "Your review decisions couldn't be loaded, so this is withheld — it could otherwise show a row you already rejected.";
+
+export function CaseSheetView({
+  model,
+  hydrated,
+  reviewsUnavailable = false,
+}: {
+  model: CaseSheetModel;
+  hydrated: boolean;
+  /**
+   * The analyst's verdicts failed to load. The subject and the queue are both
+   * decided BY those verdicts (a rejected name must never be the subject), so
+   * both fail closed rather than render from an empty map.
+   */
+  reviewsUnavailable?: boolean;
+}) {
   if (!hydrated) {
     return (
       <div className="space-y-3 p-5" aria-busy="true">
@@ -55,7 +73,9 @@ export function CaseSheetView({ model, hydrated }: { model: CaseSheetModel; hydr
       {/* ── Subject ───────────────────────────────────────────────────── */}
       <section aria-label="Subject" className="flex flex-col gap-2.5 border-b border-border-subtle px-5 py-4">
         <h3 className="text-[12px] font-medium text-faint-foreground">Subject</h3>
-        {subject ? (
+        {reviewsUnavailable ? (
+          <p role="status" className="text-[13px] leading-snug text-muted-foreground">{REVIEWS_UNAVAILABLE}</p>
+        ) : subject ? (
           <div className="flex items-center gap-3">
             <span
               aria-hidden
@@ -114,14 +134,18 @@ export function CaseSheetView({ model, hydrated }: { model: CaseSheetModel; hydr
       <section aria-label="Needs your call" className="flex flex-col gap-2 px-3.5 py-4">
         <div className="flex items-baseline px-1.5">
           <h3 className="text-[13px] font-semibold text-foreground">Needs your call</h3>
-          <span className="ml-2 rounded-full bg-surface-3 px-1.5 font-mono text-[11.5px] leading-[18px] tabular-nums text-foreground">
-            {queueTotal}
-          </span>
-          {queueTotal > queue.length && (
+          {!reviewsUnavailable && (
+            <span className="ml-2 rounded-full bg-surface-3 px-1.5 font-mono text-[11.5px] leading-[18px] tabular-nums text-foreground">
+              {queueTotal}
+            </span>
+          )}
+          {!reviewsUnavailable && queueTotal > queue.length && (
             <span className="ml-auto text-[12px] text-faint-foreground">showing {queue.length}</span>
           )}
         </div>
-        {queue.length === 0 ? (
+        {reviewsUnavailable ? (
+          <p className="px-1.5 text-[13px] leading-snug text-muted-foreground">{REVIEWS_UNAVAILABLE}</p>
+        ) : queue.length === 0 ? (
           <p className="px-1.5 text-[13px] leading-snug text-muted-foreground">
             Nothing disputed or unattributed.
           </p>
@@ -154,7 +178,7 @@ export function CaseSheetView({ model, hydrated }: { model: CaseSheetModel; hydr
                     <span className="text-[12px] text-faint-foreground">{ASK_LABEL[ask]}</span>
                     <button
                       type="button"
-                      onClick={jumpToEvidence}
+                      onClick={() => jumpToEvidence(artifact.id)}
                       className="ml-auto inline-flex h-[26px] items-center gap-1 rounded-md bg-secondary px-2.5 text-[12px] font-medium text-foreground transition-colors duration-fast hover:bg-surface-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       Decide in Evidence <ArrowRight className="h-3 w-3" aria-hidden />
@@ -183,5 +207,6 @@ export function CaseSheet({ threadId }: { threadId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [items, tally, review.map, review.revision],
   );
-  return <CaseSheetView model={model} hydrated={Boolean(snapshot?.hydrated) && review.availability !== "unknown"} />;
+  return <CaseSheetView model={model} hydrated={Boolean(snapshot?.hydrated) && review.availability !== "unknown"}
+    reviewsUnavailable={review.availability === "unavailable"} />;
 }

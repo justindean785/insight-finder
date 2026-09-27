@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { authorityFor, tallyAuthority, type AuthorityState } from "@/lib/authority";
 import { buildCaseSheet, initialsOf, ASK_LABEL, CASE_SHEET_QUEUE_LIMIT } from "@/lib/case-sheet";
@@ -88,6 +88,27 @@ describe("case sheet — needs your call", () => {
     expect(m.queueTotal).toBe(CASE_SHEET_QUEUE_LIMIT + 3);
   });
 
+  it("never asks linkage of a collision-only row, since no release can retire it", () => {
+    // Release is gated on an ACTIVE subject_unlinked quarantine, and a review
+    // verdict does not clear collision ineligibility — so a "whose is this?"
+    // card for this row would sit in the queue forever.
+    const col = art("username", "namesake_h", { possible_collision: true });
+    expect(authorityFor(col).state).toBe("quarantined");
+    expect(authorityFor(col).caveatKind).toBe("linkage");
+    const m = model([col]);
+    expect(m.queue).toEqual([]);
+    expect(m.queueTotal).toBe(0);
+    // Still disclosed in the distribution — withheld from the queue, not hidden.
+    expect(m.distribution.find((d) => d.state === "quarantined")?.n).toBe(1);
+  });
+
+  it("asks REVIEW of a disputed collision row, not linkage", () => {
+    const c = art("phone", "+15550102", { conflict: true, collision: true });
+    // Conflict outranks the collision's quarantine, so the row reads Conflict.
+    expect(authorityFor(c).state).toBe("conflict");
+    expect(model([c]).queue.map((x) => x.ask)).toEqual(["review"]);
+  });
+
   it("puts conflicts before quarantined rows", () => {
     const q = art("username", "h", { subject_unlinked: true });
     const c = art("phone", "+15550101", { conflict: true });
@@ -108,10 +129,55 @@ describe("case sheet — view", () => {
     expect(within(queue).queryByText(/^confirm$/i)).toBeNull();
   });
 
+  it("hands the row's id to Evidence so a hidden quarantined row can be opened", () => {
+    const q = art("username", "handle_z", { subject_unlinked: true });
+    const seen: unknown[] = [];
+    const onNav = (e: Event) => seen.push((e as CustomEvent).detail);
+    window.addEventListener("swarmbot:navigate", onNav);
+    try {
+      render(<CaseSheetView model={model([q])} hydrated />);
+      const queue = screen.getByRole("region", { name: "Needs your call" });
+      fireEvent.click(within(queue).getByRole("button", { name: /Decide in Evidence/ }));
+    } finally {
+      window.removeEventListener("swarmbot:navigate", onNav);
+    }
+    expect(seen).toEqual([{ tab: "artifacts", artifactId: q.id }]);
+  });
+
+  it("fails closed on the subject and the queue when review decisions could not load", () => {
+    // With the verdict read failed the review map is empty, so the model can
+    // name a subject the analyst already REJECTED. The view must not show it.
+    const name = art("name", "Rejected Person", {}, 90);
+    const q = art("username", "handle_w", { subject_unlinked: true });
+    const m = model([name, q]);
+    expect(m.subject?.artifact.value).toBe("Rejected Person");
+    render(<CaseSheetView model={m} hydrated reviewsUnavailable />);
+    expect(screen.queryByText("Rejected Person")).toBeNull();
+    expect(screen.queryByText("handle_w")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Decide in Evidence/ })).toBeNull();
+    expect(screen.getAllByText(/review decisions couldn't be loaded/).length).toBe(2);
+  });
+
   it("prints no figure until the case has hydrated", () => {
     render(<CaseSheetView model={model([art("email", "b@example.test")])} hydrated={false} />);
     expect(screen.queryByText(/item/)).toBeNull();
     expect(screen.queryByRole("region", { name: "Evidence" })).toBeNull();
+  });
+});
+
+describe("case sheet — review availability wiring", () => {
+  it("passes an UNAVAILABLE review read to the view instead of treating it as loaded", () => {
+    const src = readFileSync(resolve(process.cwd(), "src/components/workspace/CaseSheet.tsx"), "utf8");
+    expect(src).toMatch(/reviewsUnavailable=\{review\.availability === "unavailable"\}/);
+  });
+});
+
+describe("case sheet — Evidence handoff wiring", () => {
+  it("forwards the artifact id from the navigate event down to the board", () => {
+    const page = readFileSync(resolve(process.cwd(), "src/pages/ChatPage.tsx"), "utf8");
+    expect(page).toMatch(/artifactId: detail\?\.artifactId/);
+    const tab = readFileSync(resolve(process.cwd(), "src/components/workspace/EvidenceTab.tsx"), "utf8");
+    expect(tab).toMatch(/focusRequest=\{viewRequest\?\.artifactId/);
   });
 });
 

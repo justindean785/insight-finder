@@ -252,3 +252,20 @@ test.describe("read-only case view", () => {
     await expect(page.getByText(/unexpected error/i)).toHaveCount(0);
   });
 });
+
+test.describe("case sheet → Evidence handoff", () => {
+  test("Decide in Evidence opens that row even though the default view hides quarantined rows", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, THREAD);
+    const queue = page.getByRole("region", { name: "Needs your call" });
+    await expect(queue).toBeVisible();
+    // A quarantined (linkage) card — the kind the Analyst view hides.
+    const card = queue.getByRole("listitem").filter({ hasText: "Linkage · whose is this?" }).first();
+    const value = (await card.locator("[title]").first().getAttribute("title")) ?? "";
+    expect(value).not.toBe("");
+    await card.getByRole("button", { name: /Decide in Evidence/ }).click();
+    const drawer = page.getByRole("dialog");
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toContainText(value);
+  });
+});

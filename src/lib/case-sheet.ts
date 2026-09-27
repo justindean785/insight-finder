@@ -5,6 +5,7 @@ import {
   type AuthorityState, type AuthorityView,
 } from "@/lib/authority";
 import { pickSubjectName } from "@/lib/report-hygiene";
+import { isQuarantined } from "@/lib/quarantine";
 
 /**
  * The case sheet: the right-hand column of the 3a "Case desk" layout, shown
@@ -58,6 +59,25 @@ export const CASE_SHEET_QUEUE_LIMIT = 5;
 
 const NEEDS_CALL: ReadonlySet<AuthorityState> = new Set<AuthorityState>(["conflict", "quarantined"]);
 
+/**
+ * The question a row puts to the analyst, or `null` when there is nothing the
+ * analyst can do about it here.
+ *
+ * "Whose is this?" is only asked of a row the release control can actually
+ * answer: an ACTIVE `subject_unlinked` quarantine (`isQuarantined`). A row
+ * withheld only as a name COLLISION also reads "quarantined" with a linkage
+ * caveat, but release is gated on `isQuarantined` and a review verdict does
+ * not clear collision ineligibility, so offering it would park a card in the
+ * queue that no decision could ever retire. It stays in the distribution
+ * above, disclosed, just not asked about.
+ */
+export function askFor(artifact: Artifact, view: AuthorityView): CaseSheetAsk | null {
+  if (!NEEDS_CALL.has(view.state)) return null;
+  if (isQuarantined(artifact.metadata)) return "linkage";
+  if (view.state === "conflict") return "review";
+  return null;
+}
+
 export function initialsOf(name: string): string {
   const words = name.trim().split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w));
   if (words.length === 0) return "?";
@@ -85,13 +105,11 @@ export function buildCaseSheet(
 
   const needing = items
     .map((a) => ({ artifact: a, view: authorityFor(a, reviewOf(a.id)) }))
-    .filter((x) => NEEDS_CALL.has(x.view.state))
+    .map((x) => ({ ...x, ask: askFor(x.artifact, x.view) }))
+    .filter((x): x is CaseSheetQueueItem => x.ask !== null)
     .sort((x, y) => LEDGER_SORT_RANK[x.view.state] - LEDGER_SORT_RANK[y.view.state]);
 
-  const queue = needing.slice(0, CASE_SHEET_QUEUE_LIMIT).map((x) => ({
-    ...x,
-    ask: (x.view.caveatKind === "linkage" ? "linkage" : "review") as CaseSheetAsk,
-  }));
+  const queue = needing.slice(0, CASE_SHEET_QUEUE_LIMIT);
 
   return { subject, total, distribution, queue, queueTotal: needing.length };
 }
