@@ -17,6 +17,13 @@ export type RecommendedPivot = {
 const HEADING_RE = /recommended\s+(?:next\s+)?pivots?/i;
 const NEXT_HEADING_RE = /^(?:#{1,6}\s+|(?:summary|findings|network|sources|limitations|conclusion|next steps)\s*:?\s*$)/i;
 
+/** A markdown table delimiter row: `|---|:--:|`. */
+const TABLE_DELIM_RE = /^[\s|:_-]*-[\s|:_-]*$/;
+/** A horizontal rule on its own line: `---`, `***`, `___`, `- - -`. */
+const HR_RE = /^(?:[-*_][ \t]*){3,}$/;
+/** A line that is entirely italic (`*note*`, `_note_`) — never a bullet ("* x") or bold ("**x**"). */
+const ITALIC_NOTE_RE = /^([*_])(?![*_\s]).*[^*_\s]\1$/;
+
 function cleanLine(line: string): string {
   return line
     .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "")
@@ -229,15 +236,43 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
 
   const pivots: RecommendedPivot[] = [];
   const seen = new Set<string>();
-  for (const rawLine of lines.slice(start + 1)) {
-    const line = cleanLine(rawLine);
+  const body = lines.slice(start + 1);
+  for (let i = 0; i < body.length; i++) {
+    const raw = body[i].trim();
+    if (!raw) continue;
+    // Skip markdown table delimiter rows (|---|---|…) — table formatting, not
+    // pivot data. Checked BEFORE the horizontal-rule test below, which a bare
+    // "---" delimiter row would otherwise also match.
+    if (raw.includes("|") && TABLE_DELIM_RE.test(raw)) continue;
+    // A horizontal rule ENDS the section. It used to be skipped like a table
+    // delimiter, so whatever followed it — measured 2026-09-25: the report's
+    // closing "*Investigation conducted by …*" footer — was parsed as a pivot
+    // and rendered as a "Suggestion needs repair" card on every run. A rule
+    // before any pivot has been read is still skipped, so "## Pivots\n---\n- …"
+    // keeps working.
+    if (HR_RE.test(raw)) {
+      if (pivots.length > 0) break;
+      continue;
+    }
+    // A line that is entirely italic is a note or a footer, never an action.
+    if (ITALIC_NOTE_RE.test(raw)) continue;
+    let line: string;
+    if (raw.startsWith("|")) {
+      // A pivots TABLE: read it by cell. The raw row used to be parsed whole,
+      // so the header row ("| Pivot | Rationale | Tool |") and every
+      // "| action | reason | tool |" row became a pivot whose target was the
+      // entire row — rejected downstream as "a Markdown table cell" and shown
+      // to the analyst as a broken card. First cell = the pivot, second = why.
+      const next = body.slice(i + 1).find((l) => l.trim());
+      if (next && TABLE_DELIM_RE.test(next.trim())) continue; // header row
+      const cells = raw.replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => cleanLine(c));
+      if (!cells[0]) continue;
+      line = cells[1] ? `${cells[0]} — ${cells[1]}` : cells[0];
+    } else {
+      line = cleanLine(raw);
+    }
     if (!line) continue;
     if (NEXT_HEADING_RE.test(line)) break;
-    // Skip markdown table delimiter rows (|---|---|…), column-separator rows, and
-    // horizontal rules — they are table formatting, not pivot data. When the
-    // report renders recommended pivots as a table, the separator row otherwise
-    // leaks through as a bogus pivot whose Target/Reason render as "|---|---|---|".
-    if (/^[\s|:_-]*-[\s|:_-]*$/.test(line)) continue;
     // Defense-in-depth: drop any first-person reasoning line that survived
     // block stripping (e.g. a malformed/unterminated think block).
     if (looksLikeReasoning(line)) continue;

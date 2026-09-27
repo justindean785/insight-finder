@@ -149,6 +149,12 @@ test.describe("next steps", () => {
   test("9 · a malformed generated pivot is quarantined and cannot run", async ({ page }) => {
     await open(page, `${THREAD}?scenario=malformed`);
     const steps = page.getByRole("region", { name: "Next steps" });
+    // Off the list by default: an unrunnable suggestion is not a step.
+    await expect(steps.getByText("Suggestion needs repair")).toHaveCount(0);
+    // Still disclosed, one line, and expandable to the repair notice.
+    const disclosure = steps.getByRole("button", { name: /couldn't be turned into/ });
+    await expect(disclosure).toBeVisible();
+    await disclosure.click();
     await expect(steps.getByText("Suggestion needs repair").first()).toBeVisible();
     const repair = steps.locator('[data-suggestion-state="needs-repair"]').first();
     await expect(repair.getByRole("button")).toHaveCount(0);
@@ -259,5 +265,22 @@ test.describe("read-only case view", () => {
     await tools.click();
     await expect(page.getByText("Tool calls", { exact: true })).toBeVisible();
     await expect(page.getByText(/unexpected error/i)).toHaveCount(0);
+  });
+});
+
+test.describe("case sheet → Evidence handoff", () => {
+  test("Decide in Evidence opens that row even though the default view hides quarantined rows", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, THREAD);
+    const queue = page.getByRole("region", { name: "Needs your call" });
+    await expect(queue).toBeVisible();
+    // A quarantined (linkage) card — the kind the Analyst view hides.
+    const card = queue.getByRole("listitem").filter({ hasText: "Linkage · whose is this?" }).first();
+    const value = (await card.locator("[title]").first().getAttribute("title")) ?? "";
+    expect(value).not.toBe("");
+    await card.getByRole("button", { name: /Decide in Evidence/ }).click();
+    const drawer = page.getByRole("dialog");
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toContainText(value);
   });
 });

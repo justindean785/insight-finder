@@ -6,7 +6,7 @@ import type { ToolEvent } from "@/hooks/useThreadToolActivity";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { useReviewStates } from "@/lib/review";
 import { isProseValue } from "@/lib/evidence-bands";
-import { authorityFor, LEDGER_SORT_RANK, AUTHORITY_LEGEND, type AuthorityState } from "@/lib/authority";
+import { authorityFor, LEDGER_SORT_RANK, AUTHORITY_LEGEND, AUTHORITY_DISTRIBUTION, type AuthorityState } from "@/lib/authority";
 import { AuthorityChip, AuthoritySpine, AuthorityCaveat, RuleLabel } from "@/components/ui/authority";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { timeAgo } from "@/lib/time";
@@ -38,16 +38,7 @@ import {
  * this file, not a different model.
  */
 
-const DIST: { state: AuthorityState; short: string }[] = [
-  { state: "verified", short: "Verified" },
-  { state: "infrastructure", short: "Infra" },
-  { state: "probable", short: "Probable" },
-  { state: "review", short: "Review" },
-  { state: "conflict", short: "Conflict" },
-  { state: "quarantined", short: "Quarantined" },
-  { state: "weak", short: "Leads" },
-  { state: "failed", short: "Excluded" },
-];
+const DIST = AUTHORITY_DISTRIBUTION;
 
 const HINT = new Map(AUTHORITY_LEGEND.map((e) => [e.state, e.hint]));
 

@@ -53,6 +53,9 @@ const EXCEPTIONS: Record<string, string> = {
   "components/panel/PivotsTab.tsx": "control strip",
   // The raw-markdown disclosure sits INSIDE the report panel. Second tier.
   "components/panel/ReportTab.tsx": "nested code panel",
+  // The case sheet's initials tile and its "Needs your call" cards sit INSIDE
+  // the sheet column, which is itself the top-level surface. Second tier.
+  "components/workspace/CaseSheet.tsx": "nested queue cards + initials tile",
 };
 
 describe("the workspace has one panel material", () => {
