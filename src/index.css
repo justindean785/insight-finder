@@ -529,21 +529,7 @@ All colors MUST be HSL.
     position: relative;
     overflow: hidden;
   }
-  .stat-tile::before {
-    content: "";
-    position: absolute;
-    inset: 0 0 auto 0;
-    height: 1px;
-    pointer-events: none;
-    background: linear-gradient(90deg, hsl(var(--film) / 0.22), hsl(var(--film) / 0.05) 55%, transparent);
-  }
-  .stat-tile::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background: radial-gradient(80% 120% at 0% 0%, hsl(var(--film) / 0.045), transparent 62%);
-  }
+
   /* An interactive tile earns the signal on hover — it is a destination. */
   .stat-tile[data-interactive="true"] {
     transition:
@@ -552,19 +538,14 @@ All colors MUST be HSL.
       border-color var(--motion-fast, 120ms) var(--ease-standard, ease),
       background-color var(--motion-fast, 120ms) var(--ease-standard, ease);
   }
-  .stat-tile[data-interactive="true"]:hover::before {
-    background: linear-gradient(90deg, hsl(var(--brand) / 0.75), hsl(var(--brand) / 0.2) 55%, transparent);
-  }
+
   /* One pixel of lift and a bloom under the near edge. A tile that navigates
      should feel like a control under the cursor; transform and shadow only, so
      nothing in the bank reflows when the pointer crosses it. */
   .stat-tile[data-interactive="true"]:hover,
   .stat-tile[data-interactive="true"]:focus-visible {
     transform: translateY(-1px);
-    box-shadow:
-      inset 0 1px 0 hsl(var(--film) / 0.1),
-      0 10px 26px -18px hsl(0 0% 0% / 0.9),
-      0 0 22px -14px hsl(var(--brand) / 0.85);
+    border-color: hsl(var(--brand) / 0.5);
   }
   @media (prefers-reduced-motion: reduce) {
     .stat-tile[data-interactive="true"] { transition: none; }
@@ -2144,19 +2125,11 @@ All colors MUST be HSL.
   /* Sidebar rail — the app's one tinted surface. Kept under 6% so it separates
      the rail from the canvas without becoming a "coloured sidebar"; the brand
      shows up as a temperature difference you notice at the seam, not as fill. */
+  /* 3a register: the rail is a flat plate. The teal corner bloom and the lit
+     seam it used to carry were the last glow on the workspace chrome; the
+     border-r the rail already has is the seam. */
   .rail-surface {
-    background:
-      radial-gradient(120% 42% at 0% 0%, hsl(var(--brand) / 0.22) 0%, transparent 62%),
-      linear-gradient(180deg, hsl(var(--brand) / 0.07) 0%, hsl(var(--brand) / 0.025) 40%, transparent 70%),
-      hsl(var(--sidebar-background));
-  }
-  .rail-surface::after {
-    content: "";
-    position: absolute;
-    inset: 0 0 0 auto;
-    width: 1px;
-    pointer-events: none;
-    background: linear-gradient(180deg, hsl(var(--brand) / 0.85) 0%, hsl(var(--brand) / 0.25) 30%, hsl(var(--film) / 0.07) 60%, transparent);
+    background: hsl(var(--sidebar-background));
   }
 
   /* ── Brand tile ───────────────────────────────────────────────────────────
@@ -2468,39 +2441,19 @@ All colors MUST be HSL.
    as temperature rather than as a gradient. Nothing here carries meaning, which
    is why it stays this quiet -- The Light Source Rule: indigo is a light
    source, not a fill. */
+/* 3a register: flat. The corner bloom and the teal rim are gone; the bar is
+   separated from the tabs by its border, like every other plate. */
 .case-bar {
-  background:
-    radial-gradient(130% 190% at 93% 0%, hsl(var(--brand) / 0.10), transparent 58%),
-    linear-gradient(180deg, hsl(var(--film) / 0.035), transparent 44%),
-    hsl(var(--surface-1));
-}
-.case-bar::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 1px;
-  pointer-events: none;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    hsl(var(--film) / 0.16) 20%,
-    hsl(var(--brand) / 0.32) 64%,
-    transparent
-  );
+  background: hsl(var(--surface-1));
 }
 
 /* The selector's mark. The only piece of brand furniture on the workspace, so
    it is worth building properly: a lit tile rather than a grey square, with the
    kind icon in the accent's own light. */
 .case-mark {
-  background:
-    radial-gradient(130% 130% at 28% 0%, hsl(var(--brand) / 0.32), transparent 72%),
-    hsl(var(--surface-3));
-  border: 1px solid hsl(var(--brand) / 0.24);
-  box-shadow:
-    inset 0 1px 0 hsl(var(--film) / 0.15),
-    0 0 18px -8px hsl(var(--brand) / 0.6);
-  color: hsl(var(--primary-glow));
+  background: hsl(var(--surface-3));
+  border: 1px solid hsl(var(--border));
+  color: hsl(var(--muted-foreground));
 }
 
 /* Share rule — the same instrument, sized to a dashboard tile. A confidence is

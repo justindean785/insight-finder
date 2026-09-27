@@ -62,11 +62,13 @@ function AlertDot({ count, className }: { count: number; className?: string }) {
 /**
  * Primary workspace navigation — the six case sections.
  *
- * Desktop: one centred, stable strip of labelled tabs. The active tab is marked
- * by a 2px signal underline and a faintly lifted ground — no white pill, no
- * per-tab count bubbles, no boxed container. Centring uses `safe center`, which
- * falls back to start alignment the moment the strip overflows, so the first
- * tab can never be pushed into negative scroll space (#525).
+ * Desktop: one stable strip of labelled tabs, LEFT-aligned so the first tab's
+ * icon sits on the case bar's left edge, under the case mark — the eye reads
+ * down the title's column into the sections instead of jumping to a centred
+ * island. The active tab is marked by a 2px signal underline and a faintly
+ * lifted ground — no white pill, no boxed container. Start alignment also
+ * keeps the first tab out of negative scroll space when the strip overflows
+ * (#525), which centring needed `safe center` for.
  *
  * Mobile: a BOTTOM tab bar, where the thumb is — Investigate, Evidence and
  * Report as labelled tabs (icon over label), and Overview, Tools and Graph
@@ -142,7 +144,7 @@ function TabBar({
 
   return (
     <div className="relative border-b border-white/[0.07] bg-surface-0">
-      <div className="flex justify-safe-center overflow-x-auto px-3 sm:px-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="flex overflow-x-auto px-1 sm:px-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div role="tablist" aria-label="Investigation workspace" className="flex w-max shrink-0 items-stretch gap-1">
           {TABS.map((t, idx) => {
             const Icon = t.icon;
@@ -169,7 +171,7 @@ function TabBar({
                 )}
               >
                 <Icon
-                  className={cn("h-4 w-4 shrink-0", isActive ? "text-[hsl(var(--intel-blue))]" : "opacity-75")}
+                  className={cn("h-4 w-4 shrink-0", isActive ? "text-[hsl(var(--brand))]" : "opacity-75")}
                   strokeWidth={1.8}
                   aria-hidden
                 />
