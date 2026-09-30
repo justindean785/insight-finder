@@ -1986,12 +1986,28 @@ export function buildTools(ctx: ToolContext) {
           const body = env?.data ?? null;
           const bodyText = typeof body === "string" ? body : body == null ? "" : JSON.stringify(body);
           if (r.ok && (env?.error != null || bodyText.trim().length < SOCIALFETCH_MIN_BODY_CHARS)) {
+            const trimmed = bodyText.trim();
+            // A thin 2xx is the ONLY failure class that leaves the whole budget
+            // intact — nothing timed out, the provider answered fast. That makes
+            // it the best position the free reader ever gets, the opposite of the
+            // full-timeout path where it has ~3s and usually misses.
+            const fb = await socialfetchJinaFallback(url, startedAt, outerSignal);
+            if (fb) return { ...fb, primary_failure: "empty_body", primary_chars: trimmed.length };
             return {
               ok: false,
               status: r.status,
               failure_class: "empty_body",
               url,
-              chars: bodyText.trim().length,
+              chars: trimmed.length,
+              // Never discard what the credit already bought. The floor exists so
+              // a blank page or an interstitial cannot enter the case AS a page
+              // read — `ok:false` already secures that. Throwing the characters
+              // away as well is a separate, unintended loss: a legitimately short
+              // page (a stub profile, a one-line bio) is rare but real, and a bare
+              // char count gives the model nothing to judge it by. Returned under
+              // `thin_body`, deliberately NOT `data`, so no caller that keys on a
+              // successful read can mistake it for one.
+              ...(trimmed ? { thin_body: trimmed.slice(0, SOCIALFETCH_MIN_BODY_CHARS) } : {}),
               error: env?.error ?? "socialfetch returned 2xx with no usable page content",
             };
           }

@@ -155,6 +155,9 @@ Deno.test("a timeout with no rescue reports timed_out, not a bare failure", asyn
 });
 
 Deno.test("a 2xx carrying an error envelope or a blank page is NOT a page read", async () => {
+  // jina is made to fail here so the primary classification is what is asserted.
+  // The rescue path is the next test; keeping them apart is deliberate — a mock
+  // that answers every host with a good page hides which reader produced it.
   for (const payload of [
     JSON.stringify({ data: "", error: "target URL returned error 404" }),
     JSON.stringify({ data: "" }),
@@ -163,14 +166,69 @@ Deno.test("a 2xx carrying an error envelope or a blank page is NOT a page read",
     await withFetch(
       (u) => u.includes("api.socialfetch.dev")
         ? new Response(payload, { status: 200 })
-        : new Response(bigPage, { status: 200 }),
+        : new Response("", { status: 502 }),
       async () => {
         const r = await webRead().execute({ url: "https://blank.example/p" }, {});
         assertEquals(r.ok, false, payload);
         assertEquals(r.failure_class, "empty_body", payload);
+        assertEquals(r.data, undefined, "a rejected body must never arrive as `data`");
       },
     );
   }
+});
+
+Deno.test("a thin 2xx spends its intact budget on the free reader", async () => {
+  // This is the ONE failure class where nothing timed out, so the fallback has
+  // the full wrapper budget rather than the ~3s the full-timeout path leaves it.
+  // Before this it did not even try: the credit was spent and the call returned
+  // a char count.
+  await withFetch(
+    (u) => u.includes("api.socialfetch.dev")
+      ? new Response(JSON.stringify({ data: "too short" }), { status: 200 })
+      : new Response(bigPage, { status: 200 }),
+    async () => {
+      const r = await webRead().execute({ url: "https://thin.example/p" }, {});
+      assertEquals(r.ok, true);
+      assertEquals(r.via, "jina_fallback");
+      assertEquals(r.primary_failure, "empty_body");
+      assertEquals(r.primary_chars, "too short".length);
+      assertEquals(r.data, bigPage);
+    },
+  );
+});
+
+Deno.test("when the free reader misses too, the paid-for characters survive", async () => {
+  // The floor exists so a blank page cannot enter the case AS a page read, which
+  // `ok:false` secures on its own. Discarding the characters as well was a second,
+  // unintended loss: a legitimately short page (a stub profile, a one-line bio) is
+  // rare but real, and a bare char count gives the model nothing to judge it by.
+  await withFetch(
+    (u) => u.includes("api.socialfetch.dev")
+      ? new Response(JSON.stringify({ data: "Ann Marie — private account." }), { status: 200 })
+      : new Response("", { status: 502 }),
+    async () => {
+      const r = await webRead().execute({ url: "https://stub.example/p" }, {});
+      assertEquals(r.ok, false, "still not a successful read");
+      assertEquals(r.failure_class, "empty_body");
+      assertEquals(r.thin_body, "Ann Marie — private account.");
+      assertEquals(r.data, undefined, "deliberately not `data` — nothing may mistake it for a read");
+      assertEquals(r.chars, "Ann Marie — private account.".length);
+    },
+  );
+});
+
+Deno.test("a genuinely blank body carries no thin_body key at all", async () => {
+  await withFetch(
+    (u) => u.includes("api.socialfetch.dev")
+      ? new Response(JSON.stringify({ data: "   " }), { status: 200 })
+      : new Response("", { status: 502 }),
+    async () => {
+      const r = await webRead().execute({ url: "https://void.example/p" }, {});
+      assertEquals(r.failure_class, "empty_body");
+      assertEquals(r.thin_body, undefined);
+      assertEquals(r.chars, 0);
+    },
+  );
 });
 
 Deno.test("a real 2xx page is unchanged — the taxonomy must not eat good reads", async () => {
