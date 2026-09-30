@@ -379,6 +379,37 @@ export const SOCIALFETCH_YOUTUBE_HOSTS = ["youtube.com", "youtu.be"] as const;
 export const SOCIALFETCH_YOUTUBE_FAST_TIMEOUT_MS = 6_000;
 export const SOCIALFETCH_DEFAULT_TIMEOUT_MS = 18_000;
 
+// ── 2026-09-30: three hosts move from fast_timeout/normal to SKIP ────────────
+// The block above explains why youtube was fast_timeout rather than skip: "there
+// is no proven-working reader for them today", so a few seconds bought the rare
+// channel-About page that might carry a bio. That precondition no longer holds —
+// youtube_oembed, roblox_user and steam_profile land the same identity facts
+// keylessly in ~300ms. The 14-day record to 2026-09-30 says the rare case never
+// arrived either: 0 of 10 real youtube reads completed, 0 of 3 roblox, and every
+// steamcommunity attempt aborted at the 18s cap.
+//
+// What the replacements do NOT recover is a channel-About bio or contact email —
+// oembed returns title/channel/author_url only. That is a real, narrow loss, set
+// against a measured 0% success rate for the thing that was supposedly preserving
+// it.
+export const SOCIALFETCH_ROBLOX_HOSTS = ["roblox.com"] as const;
+export const SOCIALFETCH_STEAM_HOSTS = ["steamcommunity.com"] as const;
+
+// Hosts that hang to the 18s cap AND that jina_reader_scrape can actually read.
+// The jina-reachability half is not optional: x.com and twitter.com hang on
+// SocialFetch too and were proposed for this list, but both are in
+// JINA_HARD_BLOCK_HOSTS, so routing them here would hand them to a reader that
+// refuses them and leave them with no reader at all. They stay on the normal
+// path — not because it works, but because removing the only attempt on a thin
+// sample is worse than an 18s abort. Revisit when a reader exists for them.
+export const SOCIALFETCH_SLOW_HOSTS = [
+  "chess.com",
+  "namemc.com",
+  "gofundme.com",
+  "scamadviser.com",
+  "threads.net",
+] as const;
+
 /** Characters of converted document returned per `markdown_extract` call.
  *  Bounded to protect the turn's context budget; `next_offset` pages past it. */
 export const MARKDOWN_EXTRACT_WINDOW = 12_000;
@@ -404,7 +435,37 @@ export function socialfetchHostPolicy(hostname: string): SocialfetchHostDecision
     };
   }
   if (hostMatchesAny(hostname, SOCIALFETCH_YOUTUBE_HOSTS)) {
-    return { action: "fast_timeout", timeoutMs: SOCIALFETCH_YOUTUBE_FAST_TIMEOUT_MS };
+    return {
+      action: "skip",
+      hint:
+        "socialfetch_web_read has never completed a youtube.com/youtu.be read " +
+        "(0 of 10 real attempts, 14 days to 2026-09-30) — use youtube_oembed, " +
+        "which returns the video title, channel name and channel URL keylessly.",
+    };
+  }
+  if (hostMatchesAny(hostname, SOCIALFETCH_ROBLOX_HOSTS)) {
+    return {
+      action: "skip",
+      hint:
+        "socialfetch_web_read times out on roblox.com (0 of 3, 2026-09-30) — use " +
+        "roblox_user { username } or { user_id } for the profile instead.",
+    };
+  }
+  if (hostMatchesAny(hostname, SOCIALFETCH_STEAM_HOSTS)) {
+    return {
+      action: "skip",
+      hint:
+        "socialfetch_web_read aborts at the 18s cap on steamcommunity.com — use " +
+        "steam_profile { url } / { steamid64 } / { vanity } instead.",
+    };
+  }
+  if (hostMatchesAny(hostname, SOCIALFETCH_SLOW_HOSTS)) {
+    return {
+      action: "skip",
+      hint:
+        "this host hangs to socialfetch_web_read's 18s cap — use jina_reader_scrape, " +
+        "which reads it and costs nothing.",
+    };
   }
   return { action: "normal" };
 }
@@ -1767,7 +1828,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     socialfetch_web_read: tool({
       description:
-        "Read ANY web URL as clean markdown via SocialFetch's SERVER-SIDE fetch (/v1/web/markdown). Use this for hosts that r.jina.ai HARD-BLOCKS — youtube/youtu.be, x/twitter, twitch, reddit — and for arbitrary evidence pages Jina can't reach: SocialFetch fetches server-side so origin 403/451 blocks don't apply. Costs ~1 credit per URL and SocialFetch quota is LOW — call it only for a specific blocked/important URL, NEVER as a bulk crawler. Returns { ok, status, data (markdown), meta, error }.",
+        "Read ANY web URL as clean markdown via SocialFetch's SERVER-SIDE fetch (/v1/web/markdown). Use it for hosts r.jina.ai HARD-BLOCKS — x/twitter, twitch, reddit, instagram — and for arbitrary evidence pages Jina can't reach: SocialFetch fetches server-side so origin 403/451 blocks don't apply. SKIPPED FOR FREE, use the named tool instead: youtube.com/youtu.be -> youtube_oembed, roblox.com -> roblox_user, steamcommunity.com -> steam_profile, t.me / chess.com / namemc.com / gofundme.com / scamadviser.com / threads.net -> jina_reader_scrape. It has never once completed a read on those hosts. Costs ~1 credit per URL and quota is LOW — call it for a specific blocked/important URL, NEVER as a bulk crawler. Returns { ok, status, data (markdown), meta, error }.",
       inputSchema: memoSchema("socialfetch_web_read", () => z.object({
         url: z.string().describe("Fully-qualified http(s) URL to read"),
       })),
