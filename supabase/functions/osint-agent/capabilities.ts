@@ -118,6 +118,19 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   // credential; NINETEEN DAYS WITHOUT A SUCCESS is. Do not extend this block to
   // a provider that still lands calls — re-measure first.
   //
+  // ⚠️ READ THE STREAK, NOT ONLY THE RATIO — rapidapi_breach_search is the
+  // cautionary case for this file's own method. Its 58/6 looks healthy, but all
+  // 58 successes predate 2026-09-25 19:55 and every one of the 6 calls after it
+  // (through 09-30 03:23) was a 403: a step change the 21-day aggregate hides in
+  // both directions. The operator fixed the account on 2026-09-30 and it is
+  // deliberately left ENABLED, but "healthy" was the wrong word for a provider
+  // 0-for-6 over five days. When the ratio and the recency disagree, the recency
+  // is the live fact. Confirm the fix the same way — a fresh `ok` row, not a
+  // report that it was fixed:
+  //   select outcome, max(created_at) from tool_usage_log
+  //   where tool_name='rapidapi_breach_search' and created_at > '2026-09-30'
+  //   group by 1;
+  //
   // reddit_user is deliberately NOT disabled here despite 0 ok / 7 failed: its
   // 403 is Reddit blocking datacenter IPs, and disabling it reverses a settled
   // operator decision (CLAUDE.md). That one needs a ruling, not a commit.

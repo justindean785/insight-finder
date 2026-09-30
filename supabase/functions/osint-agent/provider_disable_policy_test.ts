@@ -17,7 +17,13 @@ import { PROVIDER_REQUIREMENTS } from "./capabilities.ts";
  *
  * Measured 2026-09-30 over the preceding 21 days:
  *   deepfind_email_breach    3 ok / 11 failed, last ok 2026-09-11  → DISABLED
- *   rapidapi_breach_search  58 ok /  6 failed, last ok 2026-09-25  → healthy
+ *   rapidapi_breach_search  58 ok /  6 failed, last ok 2026-09-25  → enabled (see note)
+ *
+ * The rapidapi row is the trap in this method, not just an example of it. All 58
+ * successes predate 2026-09-25; all 6 calls after it were 403. A 21-day ratio can
+ * hide a step change in EITHER direction, so read the last success date beside the
+ * ratio. It stays enabled because the operator fixed the account on 2026-09-30 —
+ * confirm with a fresh `ok` row before trusting it, and re-open this if none appears.
  *   nominatim_geocode        6 ok /  2 failed, last ok 2026-09-23  → healthy
  *   reddit_user              0 ok /  7 failed, never              → operator call
  */
