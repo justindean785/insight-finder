@@ -23,7 +23,7 @@ import { buildDecisionSets, isManualDispatchRefused } from "@/lib/analyst-decisi
 import { KIND_TO_PIVOT } from "@/lib/intel";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
-import { isSubmitBlocked } from "@/lib/submit-guard";
+import { isSubmitBlocked, submitRefusal, submitRefusalMessage } from "@/lib/submit-guard";
 import { RunChips, RunMenu } from "@/components/pivots/RunControls";
 import { composerPrimary } from "@/lib/composer-primary";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -1964,7 +1964,14 @@ function ChatWindowInner({
   const send = async () => {
     const text = input.trim();
     const hasFiles = attachments.length > 0;
-    if ((!text && !hasFiles) || isSubmitBlocked(status, submitLockRef.current)) return;
+    // An empty box stays silent — the button is disabled and nothing was asked
+    // for. A refused submission does not: the analyst pressed a live control.
+    if (!text && !hasFiles) return;
+    const sendRefusal = submitRefusal(status, submitLockRef.current);
+    if (sendRefusal) {
+      toast.info(submitRefusalMessage(sendRefusal));
+      return;
+    }
     // The preflight decides what is sent: the request exactly as typed, plus one
     // Target line only when the analyst corrected the detected type.
     if (!preflight.canSubmit) return;
@@ -2185,7 +2192,14 @@ function ChatWindowInner({
   const artifactsCountRef = useRef(artifacts.length);
   artifactsCountRef.current = artifacts.length;
   const sendCycle = useCallback(async (prompt: string, countAsAutoCycle: boolean) => {
-    if (isSubmitBlocked(status, submitLockRef.current)) return;
+    // Continue / Write report / arming Auto-run all land here, and all three are
+    // buttons the analyst just pressed. A bare `return` is what made Continue
+    // look broken — see submit-guard.ts for the operator report this comes from.
+    const refusal = submitRefusal(status, submitLockRef.current);
+    if (refusal) {
+      toast.info(submitRefusalMessage(refusal));
+      return;
+    }
     stoppedByAnalystRef.current = false;
     setAutoRun((prev) => ({
       ...prev,
@@ -2438,7 +2452,11 @@ function ChatWindowInner({
     // The same synchronous lock the composer and the pivot rail hold. Retry used
     // to skip it, so a double-click on "Retry investigation" started two billed
     // runs: the server has no idempotency key and does not reject overlaps.
-    if (isSubmitBlocked(status, submitLockRef.current)) return;
+    const retryRefusal = submitRefusal(status, submitLockRef.current);
+    if (retryRefusal) {
+      toast.info(submitRefusalMessage(retryRefusal));
+      return;
+    }
     const lastUser = [...messages].reverse().find((m) => m.role === "user") as UIMessage | undefined;
     if (!lastUser) return toast.error("No previous message to retry");
     const text = (lastUser.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
