@@ -402,6 +402,15 @@ export const SOCIALFETCH_STEAM_HOSTS = ["steamcommunity.com"] as const;
 // refuses them and leave them with no reader at all. They stay on the normal
 // path — not because it works, but because removing the only attempt on a thin
 // sample is worse than an 18s abort. Revisit when a reader exists for them.
+// Mirrors TOOL_TIMEOUT_OVERRIDE_MS.socialfetch_web_read in cache.ts. Duplicated
+// rather than imported to keep tool-registry.ts free of a cache.ts dependency;
+// socialfetch_fallback_test.ts asserts the two never drift.
+export const SOCIALFETCH_WRAPPER_BUDGET_MS = 22_000;
+// A jina attempt needs enough runway to be worth starting. Below this we return
+// the classified timeout rather than burn the remainder on a near-certain abort.
+export const SOCIALFETCH_FALLBACK_MIN_BUDGET_MS = 4_000;
+export const SOCIALFETCH_FALLBACK_MAX_MS = 10_000;
+
 export const SOCIALFETCH_SLOW_HOSTS = [
   "chess.com",
   "namemc.com",
@@ -468,6 +477,82 @@ export function socialfetchHostPolicy(hostname: string): SocialfetchHostDecision
     };
   }
   return { action: "normal" };
+}
+
+/** A 2xx body shorter than this is a blank page, an interstitial or an error
+ *  document — never a page read worth recording as evidence. */
+export const SOCIALFETCH_MIN_BODY_CHARS = 200;
+
+/** An abort (our own cap or the SDK cancelling the step) rather than a fault.
+ *  Matched on name AND message because fetch implementations disagree: Deno
+ *  throws DOMException("AbortError"), some paths surface a plain TimeoutError,
+ *  and fetchRetry can wrap either in an Error whose name is lost. */
+export function isAbortLikeError(e: unknown): boolean {
+  const name = (e as { name?: unknown })?.name;
+  if (name === "AbortError" || name === "TimeoutError") return true;
+  return /\babort(ed)?\b|\btimed? ?out\b|signal (is|has been) aborted/i.test(String(e));
+}
+
+/**
+ * One free jina attempt for a URL SocialFetch could not read.
+ *
+ * Returns null when there is no budget left or jina also fails — the caller then
+ * reports its own classified failure. SocialFetch is NEVER retried here: a retry
+ * would spend a second credit on a provider that just demonstrated it cannot read
+ * this page.
+ *
+ * ⚠️ HONEST LIMIT. The wrapper allows 22s and the internal cap is 18s, so a FULL
+ * timeout leaves ~4s and jina gets ~3s against a measured 4.2s average — it will
+ * usually miss. This path earns its keep on the fast failures (5xx, an early
+ * abort, a cancelled step), not on the full-cap case. Do not "fix" that by
+ * raising the wrapper or lowering the internal cap: both are pinned, and
+ * tool_timeout_caps_test.ts asserts the wrapper stays above the internal budget
+ * so the tool fails cleanly before the wrapper orphans an un-signalled request.
+ * The real remedy for the full-cap case is not sending those hosts here at all,
+ * which is what socialfetchHostPolicy now does.
+ */
+export async function socialfetchJinaFallback(
+  url: string,
+  startedAt: number,
+  outerSignal?: AbortSignal,
+): Promise<Record<string, unknown> | null> {
+  const remaining = SOCIALFETCH_WRAPPER_BUDGET_MS - (Date.now() - startedAt);
+  if (remaining < SOCIALFETCH_FALLBACK_MIN_BUDGET_MS) return null;
+  // Leave a second of headroom so the fallback cannot be the thing that trips
+  // the wrapper — a wrapper kill loses the classified result too.
+  const budget = Math.min(remaining - 1_000, SOCIALFETCH_FALLBACK_MAX_MS);
+  if (budget <= 0) return null;
+  try {
+    let clean: string;
+    try { const u = new URL(url); u.hash = ""; clean = u.toString(); } catch { return null; }
+    // jina hard-blocks a known set outright; spending the remaining budget to be
+    // refused is strictly worse than returning the classified timeout now.
+    try { if (isJinaHardBlocked(new URL(clean).hostname)) return null; } catch { return null; }
+    const headers: Record<string, string> = { Accept: "text/plain" };
+    if (JINA_API_KEY) headers.Authorization = `Bearer ${JINA_API_KEY}`;
+    const signals: AbortSignal[] = [AbortSignal.timeout(budget)];
+    if (outerSignal) signals.push(outerSignal);
+    const r = await fetch(`https://r.jina.ai/${clean}`, {
+      headers,
+      signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
+    });
+    if (!r.ok) return null;
+    const text = await r.text();
+    if (text.trim().length < SOCIALFETCH_MIN_BODY_CHARS) return null;
+    return {
+      ok: true,
+      status: r.status,
+      url: clean,
+      via: "jina_fallback",
+      data: text.slice(0, 18_000),
+      truncated: text.length > 18_000,
+      fallback_budget_ms: budget,
+    };
+  } catch {
+    // A failed fallback is not a new fault to report — the caller already has a
+    // classified primary failure that describes what actually went wrong.
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1832,7 +1917,12 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: memoSchema("socialfetch_web_read", () => z.object({
         url: z.string().describe("Fully-qualified http(s) URL to read"),
       })),
-      execute: async ({ url }) => {
+      execute: async ({ url }, opts) => {
+        // The AI SDK's own abort signal. Combined with the per-call timeout below
+        // so a cancelled STEP actually cancels the in-flight upstream request
+        // instead of leaving it streaming into a run nobody is reading.
+        const outerSignal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+        const startedAt = Date.now();
         if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
         // Host policy (2026-09-08 audit): t.me and youtube.com/youtu.be do not
         // share the success distribution the 18s cap below is calibrated
@@ -1847,7 +1937,17 @@ export function buildTools(ctx: ToolContext) {
           // surface the real error, exactly as it would have before this policy.
         }
         if (policy.action === "skip") {
-          return { error: "socialfetch host skip", status: null, url, skipped: true, hint: policy.hint };
+          // A classified skip, not an error: `skipped:true` keeps it out of the
+          // failure metrics (tool-outcome.ts reads it), `failure_class` says WHY
+          // for the trace, and no request is issued so no credit is spent.
+          return {
+            ok: false,
+            skipped: true,
+            status: "skipped",
+            failure_class: "host_unsupported",
+            url,
+            hint: policy.hint,
+          };
         }
         try {
           // Single attempt, no retry: retrying a timeout would just double the
@@ -1863,15 +1963,55 @@ export function buildTools(ctx: ToolContext) {
           // the one exception (fast_timeout above) — they never cleared this
           // window in the audited sample, so the shorter cap costs no real success.
           const timeoutMs = policy.action === "fast_timeout" ? policy.timeoutMs : SOCIALFETCH_DEFAULT_TIMEOUT_MS;
-          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 0, timeoutMs });
+          const r = await fetchRetry(
+            `https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`,
+            { headers: { "x-api-key": SOCIALFETCH_API_KEY }, signal: outerSignal },
+            { retries: 0, timeoutMs },
+          );
           if (r.status === 402) {
             return { ok: false, status: 402, error: "SOCIALFETCH_CREDITS_EXHAUSTED", message: "Social Fetch credit balance is zero. Check /v1/balance." };
+          }
+          // A 5xx is the provider failing, not the page refusing. Worth one free
+          // jina attempt — and unlike a full timeout it leaves real budget.
+          if (r.status >= 500) {
+            const fb = await socialfetchJinaFallback(url, startedAt, outerSignal);
+            if (fb) return { ...fb, primary_failure: "upstream_5xx", primary_status: r.status };
+            return { ok: false, status: r.status, failure_class: "upstream_5xx", url, error: `socialfetch ${r.status}` };
           }
           const text = await r.text();
           let env: { data?: unknown; meta?: unknown; error?: unknown };
           try { env = JSON.parse(text) as typeof env; } catch { env = { data: text.slice(0, 8000) }; }
+          // A 2xx carrying nothing is not a read. Recording it as one lets a blank
+          // page or an error envelope enter the case as page evidence.
+          const body = env?.data ?? null;
+          const bodyText = typeof body === "string" ? body : body == null ? "" : JSON.stringify(body);
+          if (r.ok && (env?.error != null || bodyText.trim().length < SOCIALFETCH_MIN_BODY_CHARS)) {
+            return {
+              ok: false,
+              status: r.status,
+              failure_class: "empty_body",
+              url,
+              chars: bodyText.trim().length,
+              error: env?.error ?? "socialfetch returned 2xx with no usable page content",
+            };
+          }
           return { ok: r.ok, status: r.status, data: env?.data ?? env, meta: env?.meta ?? null, error: env?.error ?? null };
         } catch (e) {
+          // An abort is a TIMEOUT, which is a different fact from a failure: the
+          // host was slow, not broken, and the failed-tools panel should not read
+          // the two the same way.
+          if (isAbortLikeError(e)) {
+            const fb = await socialfetchJinaFallback(url, startedAt, outerSignal);
+            if (fb) return { ...fb, primary_failure: "timeout" };
+            return {
+              ok: false,
+              status: "timed_out",
+              failure_class: "timeout",
+              url,
+              elapsed_ms: Date.now() - startedAt,
+              error: String(e),
+            };
+          }
           return { error: String(e) };
         }
       },

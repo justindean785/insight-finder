@@ -162,9 +162,15 @@ Deno.test("a YouTube URL costs ZERO network and zero credits now", async () => {
 Deno.test("an ordinary host is unaffected by the policy — same behavior as before", async () => {
   const origFetch = globalThis.fetch;
   let hit = "";
+  // FIXTURE WIDENED 2026-09-30. This used to return the 8-char body "markdown",
+  // which the empty-body guard added in the same commit now correctly rejects as
+  // an interstitial rather than a page. The guard is the intended behaviour —
+  // socialfetch_fallback_test.ts asserts a short body IS refused — so the fixture
+  // becomes a realistic page instead of the threshold being lowered to suit it.
+  const page = "a realistic page body ".repeat(20);
   globalThis.fetch = ((input: string | URL | Request) => {
     hit = String(input);
-    return Promise.resolve(new Response(JSON.stringify({ data: "markdown" }), { status: 200 }));
+    return Promise.resolve(new Response(JSON.stringify({ data: page }), { status: 200 }));
   }) as typeof fetch;
   try {
     const tool = socialfetchWebRead();
