@@ -3219,6 +3219,134 @@ export function buildTools(ctx: ToolContext) {
         } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
       },
     }),
+    // ---- Free, keyless replacements for hosts socialfetch_web_read cannot read ----
+    // Measured 2026-09-30 over 14 days of tool_usage_log: socialfetch_web_read
+    // completed ZERO of 10 real youtube.com reads and 0 of 3 roblox.com reads,
+    // and every steamcommunity.com attempt aborted at the 18s cap. Each of those
+    // hosts publishes a free, keyless, sub-second structured endpoint instead.
+    // These three exist so socialfetchHostPolicy can SKIP those hosts outright
+    // rather than spending 6-18s per call to fail. They return profile metadata
+    // for the queried handle only: they prove an account exists and what it
+    // says about itself, never who controls it.
+    youtube_oembed: tool({
+      description:
+        "YouTube oEmbed metadata for a video URL — title, author_name (channel), author_url, thumbnail. FREE, keyless, sub-second. Use this INSTEAD of socialfetch_web_read for youtube.com / youtu.be, which has never once read a YouTube page (0 of 10 real attempts, 2026-09-30 audit). A 401/404 means private or deleted — a genuine negative about the URL, returned as { ok: true, found: false }, not a tool fault.",
+      inputSchema: memoSchema("youtube_oembed", () => z.object({
+        url: z.string().min(1).describe("youtube.com or youtu.be video URL"),
+      })),
+      execute: async ({ url }) => {
+        try {
+          const r = await fetchT(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`, {}, 8_000);
+          // oEmbed answers 401 for a private video and 404 for a deleted or
+          // never-existent one. Both are real facts about the URL, so they are
+          // successes that found nothing — never `ok: false`.
+          if (r.status === 401 || r.status === 404) {
+            return { ok: true, url, found: false, status: r.status, reason: r.status === 401 ? "private" : "not_found" };
+          }
+          if (!r.ok) return { ok: false, status: r.status, error: `youtube oembed ${r.status}`, url };
+          const d = (await r.json().catch(() => null)) as
+            { title?: string; author_name?: string; author_url?: string; thumbnail_url?: string } | null;
+          if (!d) return { ok: false, status: r.status, error: "youtube oembed returned non-JSON", url };
+          return {
+            ok: true, url, found: true,
+            title: d.title ?? null,
+            author_name: d.author_name ?? null,
+            author_url: d.author_url ?? null,
+            thumbnail_url: d.thumbnail_url ?? null,
+          };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
+    roblox_user: tool({
+      description:
+        "Roblox public profile lookup by username or numeric user id — id, name, displayName, created, isBanned, description, profile_url. FREE, keyless, official users.roblox.com API. Use this INSTEAD of socialfetch_web_read for roblox.com, which timed out on every attempt (3 of 3, 2026-09-30 audit). Proves the account exists and what its profile says — never who owns it.",
+      inputSchema: memoSchema("roblox_user", () => z.object({
+        username: z.string().min(1).optional().describe("Roblox username"),
+        user_id: z.union([z.string(), z.number()]).optional().describe("numeric Roblox user id"),
+      })),
+      execute: async ({ username, user_id }) => {
+        try {
+          let id = user_id == null ? null : String(user_id).trim();
+          if (!id && !username) return { error: "roblox_user needs username or user_id" };
+          if (!id && username) {
+            const lookup = await fetchT("https://users.roblox.com/v1/usernames/users", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ usernames: [username], excludeBannedUsers: false }),
+            }, 8_000);
+            if (!lookup.ok) return { ok: false, status: lookup.status, error: `roblox usernames ${lookup.status}`, username };
+            const ld = (await lookup.json().catch(() => null)) as { data?: Array<{ id?: number }> } | null;
+            const hit = ld?.data?.[0]?.id;
+            // An unknown username returns 200 with an EMPTY data array, so a
+            // 200 alone is not a hit.
+            if (hit == null) return { ok: true, username, found: false };
+            id = String(hit);
+          }
+          const r = await fetchT(`https://users.roblox.com/v1/users/${encodeURIComponent(id!)}`, {}, 8_000);
+          if (r.status === 404) return { ok: true, username: username ?? null, user_id: id, found: false };
+          if (!r.ok) return { ok: false, status: r.status, error: `roblox users ${r.status}`, user_id: id };
+          const d = (await r.json().catch(() => null)) as
+            { id?: number; name?: string; displayName?: string; created?: string; isBanned?: boolean; description?: string } | null;
+          if (!d) return { ok: false, status: r.status, error: "roblox returned non-JSON", user_id: id };
+          return {
+            ok: true, found: true,
+            id: d.id ?? Number(id),
+            name: d.name ?? null,
+            displayName: d.displayName ?? null,
+            created: d.created ?? null,
+            isBanned: d.isBanned ?? null,
+            // Bounded: a Roblox bio is free text and the whole result is
+            // re-serialized into the prompt on every later step.
+            description: typeof d.description === "string" ? d.description.slice(0, 500) : null,
+            profile_url: `https://www.roblox.com/users/${d.id ?? id}/profile`,
+          };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
+    steam_profile: tool({
+      description:
+        "Steam community profile by profile URL, steamID64 or vanity name — steamID64, display name, realname, location, memberSince, privacyState. FREE, keyless (the public ?xml=1 endpoint). Use this INSTEAD of socialfetch_web_read for steamcommunity.com, which aborts at the 18s cap there (2026-09-30 audit). A private profile returns privacyState 'private' with no detail — that is the account's own setting, not a failure.",
+      inputSchema: memoSchema("steam_profile", () => z.object({
+        url: z.string().min(1).optional().describe("full steamcommunity.com profile URL"),
+        steamid64: z.string().min(1).optional().describe("17-digit steamID64"),
+        vanity: z.string().min(1).optional().describe("vanity /id/<name> segment"),
+      })),
+      execute: async ({ url, steamid64, vanity }) => {
+        try {
+          let target: string | null = null;
+          if (steamid64) target = `https://steamcommunity.com/profiles/${encodeURIComponent(steamid64.trim())}`;
+          else if (vanity) target = `https://steamcommunity.com/id/${encodeURIComponent(vanity.trim())}`;
+          else if (url) {
+            const m = url.match(/steamcommunity\.com\/(profiles|id)\/([^/?#]+)/i);
+            if (m) target = `https://steamcommunity.com/${m[1].toLowerCase()}/${m[2]}`;
+          }
+          if (!target) return { error: "steam_profile needs url, steamid64 or vanity" };
+          const r = await fetchT(`${target}?xml=1`, {}, 8_000);
+          if (!r.ok) return { ok: false, status: r.status, error: `steam ${r.status}`, profile_url: target };
+          const xml = await r.text();
+          const pick = (tag: string): string | null => {
+            const m = xml.match(new RegExp(`<${tag}>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</${tag}>`, "i"));
+            return m ? (m[1].trim() || null) : null;
+          };
+          // The ?xml=1 endpoint answers HTTP 200 with an <error> document for an
+          // unknown vanity or id, so a 200 is not on its own a hit.
+          const err = pick("error");
+          if (err) return { ok: true, found: false, profile_url: target, reason: err.slice(0, 200) };
+          const steamID64 = pick("steamID64");
+          if (!steamID64) return { ok: true, found: false, profile_url: target, reason: "no steamID64 in response" };
+          return {
+            ok: true, found: true,
+            steamID64,
+            steamID: pick("steamID"),
+            realname: pick("realname"),
+            location: pick("location"),
+            memberSince: pick("memberSince"),
+            privacyState: pick("privacyState"),
+            profile_url: target,
+          };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
     nominatim_geocode: tool({
       description:
         "OpenStreetMap Nominatim geocoder — resolve any worldwide ADDRESS or place to coordinates. Input: { address: string }. Returns the top match: display_name, lat/lon, category/type, and a residential-vs-commercial hint when derivable. Rate-limited to 1 req/sec by OSM policy (sends a descriptive User-Agent). No API key.",
