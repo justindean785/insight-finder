@@ -55,6 +55,59 @@ export function shouldPivotOnPreflight(
   return true;
 }
 
+/**
+ * ## Skipping a preflight whose answer cannot matter (measured 2026-09-30)
+ *
+ * The preflight is a serial chat/completions round trip on the path to the first
+ * streamed byte: two attempts of up to 12s each plus a 250ms back-off. Its only job
+ * is to decide a pivot. With the pivot target `gemini-direct` and the switch above
+ * OFF, no outcome can pivot, so the probe's whole output is a log line. In that
+ * window, 9 of 230 production runs (4%) waited 24.5s or more between the user
+ * message insert and the run start (orchestrator_invocations, 2026-09-11 → 09-30),
+ * consistent with both attempts timing out.
+ *
+ * So the probe now runs only when its result could move the run. The decision is
+ * DERIVED from `shouldPivotOnPreflight` with a canonical explicit failure, so the
+ * two can never disagree about which targets are pivotable.
+ *
+ * Kill switch `DEEPSEEK_PREFLIGHT_ALWAYS=true`, read at CALL TIME, restores the
+ * probe on every request.
+ */
+export const DEEPSEEK_PREFLIGHT_ALWAYS_ENV = "DEEPSEEK_PREFLIGHT_ALWAYS";
+
+/** Operator switch, read at CALL TIME. Default OFF: skip a preflight that cannot pivot. */
+export function deepseekPreflightAlways(
+  env: (k: string) => string | undefined = (k) => Deno.env.get(k),
+): boolean {
+  return (env(DEEPSEEK_PREFLIGHT_ALWAYS_ENV) ?? "").trim().toLowerCase() === "true";
+}
+
+/** Could ANY preflight outcome move the run onto `target`? */
+export function preflightCanPivot(
+  target: { provider: string } | null,
+  geminiPivotEnabled: boolean,
+): boolean {
+  return shouldPivotOnPreflight({ ok: false, status: 503 }, target, geminiPivotEnabled);
+}
+
+/** Run the preflight only when its result could change routing, unless the operator forces it. */
+export function shouldRunPreflight(
+  target: { provider: string } | null,
+  geminiPivotEnabled: boolean,
+  always: boolean,
+): boolean {
+  if (!target) return false;
+  return always || preflightCanPivot(target, geminiPivotEnabled);
+}
+
+/** `/health` detail for `checks.preflight_policy`. Its PRESENCE proves this build is live. */
+export function preflightPolicyHealthDetail(always: boolean, geminiPivotEnabled: boolean): string {
+  if (always) return `preflight runs on every request (${DEEPSEEK_PREFLIGHT_ALWAYS_ENV}=true)`;
+  return geminiPivotEnabled
+    ? "preflight runs only when a failure could pivot (gemini-direct pivot enabled → runs)"
+    : "preflight skipped when no outcome can pivot (gemini-direct pivot disabled)";
+}
+
 /** `/health` detail for `checks.preflight_pivot`. Its PRESENCE proves this build is live. */
 export function preflightPivotHealthDetail(enabled: boolean): string {
   return enabled

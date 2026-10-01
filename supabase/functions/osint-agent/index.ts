@@ -83,7 +83,12 @@ import {
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
-import { geminiPreflightPivotEnabled, shouldPivotOnPreflight } from "./lib/preflight-pivot.ts";
+import {
+  deepseekPreflightAlways,
+  geminiPreflightPivotEnabled,
+  shouldPivotOnPreflight,
+  shouldRunPreflight,
+} from "./lib/preflight-pivot.ts";
 import { redactErrorMessage } from "./lib/redact-error.ts";
 import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
 
@@ -690,7 +695,22 @@ Deno.serve(async (req) => {
     // id (400), or an upstream outage would previously commit the whole run to
     // DeepSeek and die mid-stream with no failover, instead of a clean pivot
     // to Gemini.
-    if (deepseekIsPrimary && !useFallback && fallbackTarget) {
+    //
+    // Skipped when no outcome can pivot (lib/preflight-pivot.ts → shouldRunPreflight):
+    // with the gemini-direct pivot disabled the probe's only output is a log line, and
+    // it sat serially on the path to the first byte (up to 2×12s + 250ms).
+    // DEEPSEEK_PREFLIGHT_ALWAYS=true restores it on every request.
+    const runDeepseekPreflight = deepseekIsPrimary && !useFallback &&
+      shouldRunPreflight(fallbackTarget, geminiPreflightPivotEnabled(), deepseekPreflightAlways());
+    if (deepseekIsPrimary && !useFallback && fallbackTarget && !runDeepseekPreflight) {
+      console.log(JSON.stringify({
+        event: "preflight_skipped",
+        thread_id: threadId,
+        fallback: fallbackTarget.provider,
+        reason: "no outcome can pivot",
+      }));
+    }
+    if (runDeepseekPreflight && fallbackTarget) {
       const DEEPSEEK_PREFLIGHT_TIMEOUT_MS = 12_000;
       const DEEPSEEK_PREFLIGHT_ATTEMPTS = 2;
       const probeDeepseekOnce = async (): Promise<{ ok: boolean; status: number }> => {
