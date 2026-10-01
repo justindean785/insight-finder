@@ -72,7 +72,7 @@ import {
   MINIMAX_API_KEY, LOVABLE_API_KEY,
   OATHNET_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY,
-  HIBP_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,
+  HIBP_API_KEY, OPSIS_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
   RAPIDAPI_KEY, INDICIA_API_KEY, PEOPLEDATALABS_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
@@ -82,6 +82,7 @@ import {
   deadHosts, markHostDead, isHostDead,
 } from "./env.ts";
 import { buildLeakcheckUrl, buildOathnetUrl } from "./breach-request.ts";
+import { opsisAccount, opsisDepsFromEnv, opsisKillSwitchOn, opsisResults, opsisSearch } from "./lib/opsis.ts";
 import {
   oathnetBreachSearchUrl, oathnetStealerSearchUrl, oathnetVictimsSearchUrl,
   oathnetVictimManifestUrl, oathnetVictimFileUrl, oathnetVictimArchiveUrl,
@@ -561,6 +562,11 @@ export function buildTools(ctx: ToolContext) {
             name: "geoseer_geolocate",
             reason: "GEOSEER_API_KEY not configured — AI image geolocation is unavailable; do not attempt to infer capture locations from photos.",
           });
+        }
+        if (!OPSIS_API_KEY || opsisKillSwitchOn()) {
+          for (const n of ["opsis_search", "opsis_results", "opsis_balance", "opsis_status"]) {
+            disabled.push({ name: n, reason: "Opsis is not configured or is switched off — use username_sweep for account enumeration." });
+          }
         }
         // Config-disabled providers (`disabled: true` in capabilities.ts's
         // PROVIDER_REQUIREMENTS) were NEVER gated here — only the key-presence
@@ -2878,6 +2884,44 @@ export function buildTools(ctx: ToolContext) {
         }
         return await sweepUsername(username);
       },
+    }),
+    // Opsis OSINT API (lib/opsis.ts): account enumeration across ~700 platforms.
+    // opsis_search is PAID per call; the other three are free reads. All four are
+    // removed from the schema when OPSIS_API_KEY is unset (capabilities.ts), and
+    // OPSIS_DISABLED=true stops every call at call time. The wrapper's timeout
+    // signal is forwarded so its cap can end a poll early.
+    opsis_search: tool({
+      description:
+        "Opsis: find accounts for a username, email or domain across ~700 platforms. PAID (1 credit; premium username 2). Returns within ~25s; a run still going returns partial results plus a run_id, so fetch the rest with opsis_results and never search the same selector again. Hits are unverified account leads.",
+      inputSchema: memoSchema("opsis_search", () => z.object({
+        kind: z.enum(["username", "email", "domain"]),
+        value: z.string().min(1),
+        premium: z.boolean().optional().describe("Username only, 2 credits: adds solver-backed platforms. Default false."),
+      })),
+      execute: async ({ kind, value, premium }, opts) =>
+        await opsisSearch({ kind, value, premium }, opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
+    }),
+    opsis_results: tool({
+      description: "Opsis: fetch the rest of a still-running opsis_search by its run_id (free). Pass the kind and value that search used.",
+      inputSchema: memoSchema("opsis_results", () => z.object({
+        kind: z.enum(["username", "email", "domain"]),
+        value: z.string().min(1),
+        run_id: z.string().min(1),
+      })),
+      execute: async ({ kind, value, run_id }, opts) =>
+        await opsisResults({ kind, value, run_id }, opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
+    }),
+    opsis_balance: tool({
+      description: "Opsis: API credit balance (free). Diagnostics only; do not call before routine searches.",
+      inputSchema: memoSchema("opsis_balance", () => z.object({})),
+      execute: async (_input, opts) =>
+        await opsisAccount("balance", opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
+    }),
+    opsis_status: tool({
+      description: "Opsis: API key, plan and rate-limit self-check (free). Diagnostics only.",
+      inputSchema: memoSchema("opsis_status", () => z.object({})),
+      execute: async (_input, opts) =>
+        await opsisAccount("status", opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
     }),
     crtsh_subdomains: tool({
       description: "Enumerate subdomains for a domain via crt.sh certificate transparency logs.",
