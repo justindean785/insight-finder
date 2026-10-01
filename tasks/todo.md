@@ -685,3 +685,115 @@ Deploy: backend ships via Lovable sync (sync `osint-agent/` → `seeker-spark-se
 - GitHub Actions CI run `#938`: **success** — lint, typecheck, unit tests + coverage, production build, migration validation, and Deno edge tests all passed.
 - Desktop visual QA confirmed the redesigned auth gateway renders correctly with all expected controls and no app-origin console errors. Vercel/extension sign-in telemetry produced unrelated browser warnings.
 - Remaining QA risk: the latest protected landing revision could not be re-opened for a second screenshot after cloud-browser access was denied by policy; responsive behavior is covered by source inspection and CSS contracts, but a final human mobile visual pass is still recommended before merge.
+
+## 2026-09-30 — Latency & agent-usability audit (READ-ONLY) (`claude/insight-finder-latency-audit-f3l04m`)
+
+**Status: APPROVED by JD 2026-09-30 ("Approve as written") — COMPLETE 2026-09-30T23:15Z. Stopped at recommendations; nothing implemented.**
+
+Scope rules for the whole audit: no code edits, merges, deploys, provider switches, settings
+changes, or paid scans/LLM calls. `REVEAL_BREACH_DATA` untouched. Secret NAMES and presence only,
+never values. No raw case PII in output — thread ids truncated, selectors redacted. Earlier audit
+and handoff findings are hypotheses to re-check, not facts.
+
+### 0. Preflight
+- [x] `git fetch --unshallow --filter=blob:none` in both clones; fetch `deploy/live`.
+- [x] Secrets scan of any shared/pasted file before using it — no shared files were supplied; no secret values were read or printed (names only).
+
+### 1. What is actually running
+- [x] Live `/health` (unauthenticated GET, no LLM spend): build marker, provider slot, model,
+      fallback chain, behavioural keys.
+- [x] Map marker → canonical commit → `deploy-log.jsonl` / `deploy/live` → mirror `main`;
+      `diff -rq` per function dir; mirror `git log` for unbackported Lovable commits.
+- [x] Vercel production deployment: `target: production`, commit SHA, alias.
+- [x] Code trace of provider selection: slot name vs `DEEPSEEK_BASE_URL` vendor vs model id;
+      which env var / default is authoritative for each setting.
+- [x] Effective settings: thinking/reasoning, streaming, tool calls, parallel tool calls,
+      `maxOutputTokens`, timeouts, retries, preflight, fallback routing; SDK + provider
+      compatibility (AI SDK version vs Z.AI OpenAI-compatible API).
+
+### 2. Measured latency timeline (production records, read-only SELECTs only)
+- [x] Inventory timing sources: `orchestrator_invocations`, `orchestrator_step_metrics`,
+      `tool_usage_log`, `threads`, `messages`, `evidence_log`; note what each does NOT capture.
+- [x] State date range, n, missing fields; p50/p95 only where n supports it.
+- [x] Split by request type: follow-up, new investigation, Continue, recovery, report.
+- [x] Per-phase decomposition: admission → auth/DB/memory/prompt build → provider TTFT →
+      steps → tools → finalize → persistence; mark overlapping spans.
+- [x] 2–3 representative slow + normal runs as sanitized timelines.
+- [x] Client path from source: composer guards, request body build, stream parsing, React
+      render/refresh; local harness profiling (no production calls).
+
+### 3. Bottleneck checks (each: Confirmed / Likely / Possible / Unverified / Excluded)
+- [x] Follow-ups routed through full loop? History size re-uploaded? Request/prompt/tool-schema sizes.
+- [x] DB read shape (bounded? serial vs parallel), memory recall cost, bypass.
+- [x] Preflight, cold starts, retries, fallback waits; reasoning + output-limit effects.
+- [x] Slow/low-yield tool selection (outcome-separated: ok / empty / skipped / failed).
+- [x] Cap scope (invocation vs isolate vs thread vs investigation); budget vs finalize.
+- [x] Finalize wait after collection; overlap/lock/heartbeat/completion races.
+- [x] Silent refusal on Send/Continue; stream flush through each layer; client render/invalidation lag.
+
+### 4. Quality-of-life audit
+- [x] Ack latency, stage + last-progress visibility, cancel, duplicate submit, stuck/recovery,
+      incremental findings, quick-question path, "collection done" vs "report generating",
+      mobile + long-session behaviour. Format: Trigger → behaviour → cause → impact → fix → verify.
+
+### 5. Options (official docs only, with access dates)
+- [x] A. Keep model, fix app — ranked by impact/effort/risk/confidence.
+- [x] B. Other Z.AI models — tool calling, streaming, reasoning, context, price, rate limits.
+- [x] C. Short cross-provider shortlist (OpenAI, Anthropic, Google, Z.AI, DeepSeek, other).
+- [x] D. Agent design split (quick chat / orchestration / report), smallest viable change.
+
+### 6. Benchmark plan
+- [x] Offline replay design (recorded tool responses) + gated live E2E design; metrics, fixtures,
+      cost ceiling. **Designed only — not executed** (needs separate approval).
+
+### 7. Deliverable
+- [x] Report `docs/AUDIT_2026-09-30_latency-and-agent-usability.md` (top-5 findings first; placed beside `docs/PROD_AUDIT_2026-07-17.md` rather than a new `docs/audits/` dir).
+- [x] Results section appended here; commit + push to this branch; draft PR (docs only).
+
+### Access I intend to use (approve or strike)
+- Live `/health` GET (**correction:** NOT free — each GET makes a 4-token paid Z.AI ping, plus MiniMax if idle >60 s; called exactly once).
+- Lovable MCP `query_database` for **SELECT-only**, aggregate-first queries on project
+  `4ce11bc3-…` — no writes, no DDL, no `send_message`, no deploy.
+- Vercel MCP read calls (deployments, runtime logs) for the frontend.
+- GitHub MCP read calls (PRs, commits, CI) for both repos.
+- Public web for official model/provider docs.
+
+### Results (2026-09-30T23:15Z)
+
+Full report: `docs/AUDIT_2026-09-30_latency-and-agent-usability.md`. Headline: **the model is not the
+main bottleneck — the request architecture is.**
+
+- **Running:** frontend `0cdae6c` (Vercel `dpl_4nNb…`, production, READY); edge `06ba9b9`
+  (`/health`, ledger clean, mirror function dirs byte-identical); slot `deepseek` pinned →
+  **Z.AI `glm-5.2`** (not 5.3; GLM-5.3 would force thinking on). No undeployed edge code.
+- **Measured** (231 GLM-5.2 runs, 2026-09-11 → 09-30): run p50 141.5 s / p95 215.5 s (excludes
+  admission). Follow-ups (median 68 chars, n=136): p50 135 s, 12 tool calls, **111 s before the
+  answer step starts**. Decode 13.1 ms/token (~76 tok/s) + ~5.2 s/text step, ~9.8 s/tool step;
+  ~65k input tokens re-sent per step, 406k per run.
+- **Top 5:** (1) every message runs the full tool loop, no Ask/Report path; (2) cost is step
+  architecture, not decode — a 2× faster model saves ~45 s of ~141 s; (3) **26% of runs overlap**
+  another on the same thread (53% week of 09-28) — Send ignores server-active runs; (4) salvage
+  generation adds unstreamed tail (Continue gap p50 17 s / p90 82 s) — Likely; (5) dead preflight
+  (4% of runs wait ≥24.5 s), blocking 5 s `/health` probe on first Send (6.7 s measured),
+  `tool_choice` "required"/"none" and `parallel_tool_calls:false` are ignored by Z.AI.
+- **Excluded:** memory recall (0.45 s p50), prompt-tail summarization (no LLM), provider fallback
+  hops (none occur), undeployed code.
+- **Recommendation:** keep GLM-5.2; fix the app; split into explicit Ask / Investigate / Report
+  modes; benchmark before any model change. Staged plan S0–S8 in §8 — nothing started.
+- **Gaps:** no TTFT, no client timings, salvage/preflight console-only, cache-hit rate unknown,
+  19-day window, 1 health sample, request type inferred from prompt text.
+- **No production changes made.** SELECT-only DB access; one paid 4-token health ping.
+
+### Implementation status (2026-10-01T04:35Z — JD approved the plan, then "Go")
+- **S1** (edge): PR #657 `claude/latency-s1-skip-dead-preflight`, CI green (edge 1972/0/6).
+  NOT merged/deployed — waits behind #653 in the one-edge-PR lane, then the full stamp → sync →
+  gate → Lovable deploy → `/health` cycle. Proof key: `checks.preflight_policy`.
+- **S2b** (frontend): PR #658 `claude/latency-s2b-probe-off-send-path`. First Send no longer awaits
+  `/health`; pre-stream HTTP failures carry status + server code (`withHttpStatusInErrorBody`).
+  vitest 2293/1/185 (main re-measured 2271/1/185), e2e 52/2. Ships on merge — JD's call.
+- **S3**: discarded at JD's instruction (client pre-stamps the heartbeat, so a failed POST would
+  lock Send for ~75 s). Belongs with a server-owned lease.
+- **S0a/S0b** (schema + telemetry), **S4** (salvage, needs sign-off), **S2a** (edge `?ping`),
+  **S5–S8**: not started; S0 and S4 await JD.
+- PR queue cleared the same session: #654, #655, #623, #610, #574 merged and verified live
+  (main CI incl. e2e green through `cf6b6f2`, Vercel production READY).
