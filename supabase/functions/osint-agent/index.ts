@@ -904,6 +904,9 @@ Deno.serve(async (req) => {
     // `capped` once the cap is hit; prepareStep reads it to force finalize. Owned by
     // this per-request closure so concurrent runs on a warm isolate never share it.
     const toolCallBudget = { genuine: 0, reserved: 0, capped: false };
+    // Request-owned: set by wrapToolsWithCache when a budget ceiling refuses a call
+    // in THIS invocation; read by both telemetry finish() calls for budget_exhausted.
+    const budgetCeiling = { fired: false };
     // Separate one-shot latch for the run_capped telemetry: `capped` is now flipped at
     // ADMISSION (reserveToolCall), before this prepareStep closure runs, so the old
     // `capReached && !capped` gate would never log. This latch fires the event exactly
@@ -1248,6 +1251,7 @@ Deno.serve(async (req) => {
         onCost,
         manualOverrideSelector,
         toolCallBudget,
+        budgetCeiling,
         shouldStopLiveLookups: () =>
           shouldForceFinalize(Date.now() - runStartedAt, 0),
         // See cache.ts's ctx field comment: the correlate exemption in the
@@ -1575,6 +1579,7 @@ Deno.serve(async (req) => {
           hadStreamError: true,
           creditsMicroUsd: runCostMicroUsd,
           errorMessage: msg,
+          budgetExhausted: budgetCeiling.fired,
         });
         // A terminal stream error means onFinish never fires, so without this the
         // thread row stays "active" forever (UI stuck on "running"). Write the
@@ -2072,6 +2077,7 @@ Deno.serve(async (req) => {
           hadStreamError: false,
           creditsMicroUsd: runCostMicroUsd,
           errorMessage: null,
+          budgetExhausted: budgetCeiling.fired,
         });
         heartbeat?.stop();
         releaseRunState();

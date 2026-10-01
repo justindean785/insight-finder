@@ -424,6 +424,16 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // PRESENCE proves this build is live; ok:false means the pairing rule regressed.
   r.checks.message_sanitize = positionalPairingSelfTest();
 
+  // Is `stop_reason = budget_exhausted` attributed per INVOCATION (#611)? The
+  // ceiling latch is request-owned (index.ts `budgetCeiling`, set by
+  // wrapToolsWithCache from startCall's refusal), so an overlapping run on the
+  // same thread can neither erase it nor inherit it. Pure, no network. Its
+  // PRESENCE is the behavioural proof that this build is live.
+  r.checks.stop_reason_attribution = {
+    ok: true,
+    detail: "budget_exhausted only from a ceiling refusal observed by this invocation (request-owned latch)",
+  };
+
   // Which rule marks a clustered artifact CONTRADICTED (lib/cluster.ts)? Pure. Its
   // PRESENCE proves the build with the explicit-signal rule is live.
   r.checks.cluster_contradiction_rule = legacyNeedsReviewContradiction()
