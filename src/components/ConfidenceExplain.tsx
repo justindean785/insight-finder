@@ -2,6 +2,7 @@ import { Info } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { explainConfidence } from "@/lib/confidence";
 import { displayConfidence } from "@/lib/display-confidence";
+import { machineScoreText } from "@/lib/analyst-confirmed";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ReviewState } from "@/lib/review";
 import { cn } from "@/lib/utils";
@@ -59,6 +60,14 @@ export function ConfidenceExplain({
             <span className="font-mono text-data text-muted-foreground">/100</span>
           </div>
         </header>
+        {/* The machine score, NAMED. An analyst-confirmed row shows the words
+            "Analyst-confirmed" where its figure would sit (AnalystConfirmedMark),
+            so this popover is where that row's number lives on screen — the same
+            `displayConfidence(a).effective` the board renders for every other
+            row, with the server's recorded cap beside it when there is one. */}
+        <div className="px-3 py-1.5 border-b border-border-subtle text-data text-foreground" data-machine-score>
+          {machineScoreText(shown)}
+        </div>
         <ul className="py-1">
           {exp.components.map((c, i) => (
             <li key={i} className="px-3 py-1.5 grid grid-cols-[1fr_auto] gap-2 items-start">
