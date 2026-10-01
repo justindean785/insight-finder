@@ -72,9 +72,9 @@ Deno.test("wiring: the catch-all goes through orchestratorFaultResponse and neve
 
 Deno.test("wiring: the stream onError log line and client message are both redacted", async () => {
   const src = await Deno.readTextFile(new URL("./index.ts", import.meta.url));
-  // The log line carries the recorded detail (status + provider code, body
-  // withheld — stream-error-classify.ts), still through the shared redactor.
-  assert(src.includes("message: redactErrorMessage(detail).slice(0, 600),"), "stream log line");
+  // The log line carries the detail (status + provider code; a bounded body only
+  // under STREAM_ERROR_BODY_DETAIL), still through the shared redactor.
+  assert(src.includes("message: redactErrorMessage(logDetail).slice(0, 600),"), "stream log line");
   assert(!src.includes("message: msg.slice(0, 600)"), "raw stream log line must be gone");
   assert(src.includes('return redactErrorMessage(m).slice(0, 300) || "Provider stream error";'), "stream client message");
 });

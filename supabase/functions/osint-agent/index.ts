@@ -1541,18 +1541,21 @@ Deno.serve(async (req) => {
       // they come in, and save the final assistant message via onFinish.
       onError: async ({ error }) => {
         const msg = error instanceof Error ? error.message : String(error);
-        // What gets RECORDED: the reason-phrase plus the provider's HTTP status and
-        // enum-like error code, so a fallback "Bad Request" is diagnosable from the
-        // ledger (14/14 gemini-direct fallbacks died as a bare "Bad Request").
-        // The raw body is NOT included — it is persisted text and a 4xx body echoes
-        // the request, which here is the investigation. STREAM_ERROR_BODY_DETAIL=true
-        // opts in for a debugging session, read at call time.
+        // What gets RECORDED (invocation row, thread recovery_reason): the
+        // reason-phrase plus the provider's HTTP status and enum-like error code, so
+        // a fallback "Bad Request" is diagnosable from the ledger (14/14
+        // gemini-direct fallbacks died as a bare "Bad Request"). NEVER the body: a
+        // 4xx body echoes the request, which here is the investigation, and these
+        // fields are durable and analyst-visible.
+        const detail = describeStreamError(error);
+        // STREAM_ERROR_BODY_DETAIL=true adds a bounded body excerpt to the LOG LINE
+        // only — redacted, and kept out of every persisted field (Codex P2 on #672).
+        // Read at call time.
+        const logDetail = (Deno.env.get("STREAM_ERROR_BODY_DETAIL") ?? "").trim().toLowerCase() === "true"
+          ? describeStreamError(error, true)
+          : detail;
         // Classification below keeps reading `msg`: the overflow test matches a
         // bare "2013", which a body SIZE in `detail` could otherwise supply.
-        const detail = describeStreamError(
-          error,
-          (Deno.env.get("STREAM_ERROR_BODY_DETAIL") ?? "").trim().toLowerCase() === "true",
-        );
         const errName = error instanceof Error ? error.name : "";
         const isCtxOverflow =
           /context window|context length|2013|invalid params.*context|exceeds limit/i.test(msg);
@@ -1581,7 +1584,7 @@ Deno.serve(async (req) => {
             error_name: errName,
             // Redacted: a provider error can echo our key, and this line is kept in
             // the edge logs (lib/redact-error.ts).
-            message: redactErrorMessage(detail).slice(0, 600),
+            message: redactErrorMessage(logDetail).slice(0, 600),
           }),
         );
         invocationTelemetry.finish({

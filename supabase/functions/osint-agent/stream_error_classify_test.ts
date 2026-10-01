@@ -120,7 +120,11 @@ Deno.test("streamErrorDetailSelfTest: passes on the shipped describeStreamError"
 
 Deno.test("wiring: onError records the detail, classifies on the raw reason, and /health reports the key", async () => {
   const idx = await Deno.readTextFile(new URL("./index.ts", import.meta.url));
-  assert(idx.includes("const detail = describeStreamError("), "onError builds the recorded detail");
+  assert(idx.includes("const detail = describeStreamError(error);"), "the RECORDED detail never opts into the body");
+  assert(idx.includes("message: redactErrorMessage(logDetail).slice(0, 600),"), "the opt-in body reaches the redacted log line only");
+  // Neither persisted field may ever carry the opt-in variant.
+  assert(!idx.includes("errorMessage: logDetail"), "invocation row");
+  assert(!/recovery_reason: `stream_error: \$\{logDetail/.test(idx), "thread recovery_reason");
   assert(idx.includes("errorMessage: detail,"), "the invocation row records the detail");
   assert(idx.includes("recovery_reason: `stream_error: ${detail.slice(0, 220)}`"), "the thread row records the detail");
   assert(/isCtxOverflow =\s*\/[^\n]*\/i\.test\(msg\)/.test(idx), "overflow is classified on the raw reason, never the detail");
