@@ -13,7 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
 import {
   ArrowDown, ArrowUp, Loader2, ChevronDown, ChevronRight, Wrench, RotateCcw, AlertTriangle,
-  StickyNote, CheckCircle2, XCircle, Clock, CircleSlash, Square,
+  StickyNote, CheckCircle2, XCircle, Clock, CircleSlash, Square, Play,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -23,8 +23,10 @@ import { buildDecisionSets, isManualDispatchRefused } from "@/lib/analyst-decisi
 import { KIND_TO_PIVOT } from "@/lib/intel";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
-import { isSubmitBlocked } from "@/lib/submit-guard";
-import { RunControls } from "@/components/pivots/RunControls";
+import { isSubmitBlocked, submitRefusal, submitRefusalMessage } from "@/lib/submit-guard";
+import { RunChips, RunMenu } from "@/components/pivots/RunControls";
+import { composerPrimary } from "@/lib/composer-primary";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import {
   AUTO_RUN_MAX_CYCLES, AUTO_RUN_SETTLE_MS, CONTINUE_PROMPT, REPORT_PROMPT,
@@ -760,18 +762,83 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
   );
 }
 
+/**
+ * A label the AGENT typed into its own prose. It is an ASSERTION, never a
+ * measurement, and the difference is the whole point of this block.
+ *
+ * The engine derives and caps confidence server-side (`record_finding` ->
+ * `countIndependentClasses`) and those values reach the screen through
+ * `ui/confidence.tsx` / `ui/authority.tsx` as FILLED chips. What arrives here is
+ * a string the model wrote with nothing behind it. Measured on a real run
+ * (2026-09-22): the transcript published "Confirmed (95)" and "Confirmed (90)"
+ * while the engine held zero finding rows and a maximum confidence of 65.
+ *
+ * Until today a stated label was painted with the same token, the same border
+ * alpha and the same fill as a computed one, so the two were indistinguishable.
+ * Two things changed.
+ *
+ * IT GIVES UP THE FILL. A filled chip is what a computed value looks like; this
+ * one is hollow, and the dashed edge is the texture half of the rule
+ * `authority.tsx` already states -- a state that withholds authority is never
+ * carried by colour alone. Border alpha rises a little to compensate, because a
+ * dashed hairline loses about half its perimeter and reads as a smudge at 10px.
+ *
+ * IT GIVES UP THE CONFIDENCE RAMP. The 88% -> 39% luminance ladder belongs to
+ * the thing that computes confidence; a second copy of it in prose is the
+ * "drifting second source of truth" this codebase warns about everywhere else.
+ * Stated labels take the INK ramp instead, at three registers that say who is
+ * talking rather than how sure anyone is: the agent claims strength (ink 2), the
+ * agent hedges (ink 3), the agent flags trouble (the ladder's alarm hue). Every
+ * one of them sits below body ink, so the sentence outranks the label on it --
+ * which is the correct order, since the sentence is the evidence and the label
+ * is an opinion about it.
+ */
+const STATED_LABEL_SOURCE = "\\[(CONFIRMED|CORRELATED|INFERRED|VERIFY|FAILED|LOW|CONFLICT)\\]";
+
 const LABEL_STYLES: Record<string, string> = {
-  CONFIRMED: "chat-label-chip text-[hsl(var(--conf-confirmed))] border-[hsl(var(--conf-confirmed)/0.4)] bg-[hsl(var(--conf-confirmed)/0.12)]",
-  CORRELATED: "chat-label-chip text-[hsl(var(--conf-likely))] border-[hsl(var(--conf-likely)/0.4)] bg-[hsl(var(--conf-likely)/0.12)]",
-  INFERRED:  "chat-label-chip text-[hsl(var(--conf-possible))] border-[hsl(var(--conf-possible)/0.45)] bg-[hsl(var(--conf-possible)/0.12)]",
-  VERIFY:    "chat-label-chip text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid)/0.4)] bg-[hsl(var(--confidence-mid)/0.12)]",
-  FAILED:    "chat-label-chip text-destructive border-destructive/40 bg-destructive/12",
-  LOW:       "chat-label-chip text-muted-foreground border-border bg-secondary/60",
-  CONFLICT:  "chat-label-chip text-destructive border-destructive/40 bg-destructive/12",
+  // Claims of strength.
+  CONFIRMED:  "chat-label-chip text-muted-foreground border-[hsl(var(--muted-foreground)/0.4)]",
+  CORRELATED: "chat-label-chip text-muted-foreground border-[hsl(var(--muted-foreground)/0.4)]",
+  // Hedges.
+  INFERRED:   "chat-label-chip text-subtle-foreground border-[hsl(var(--subtle-foreground)/0.45)]",
+  VERIFY:     "chat-label-chip text-subtle-foreground border-[hsl(var(--subtle-foreground)/0.45)]",
+  LOW:        "chat-label-chip text-subtle-foreground border-[hsl(var(--subtle-foreground)/0.45)]",
+  // Alarms. --destructive (48% L) measured 3.90:1 against the composited
+  // transcript ground and fails AA at 10px; once the fill is gone the ink IS the
+  // chip, so both take the ladder's brighter tokens, which clear it at 5.37:1.
+  FAILED:     "chat-label-chip text-[hsl(var(--danger))] border-[hsl(var(--danger)/0.5)]",
+  CONFLICT:   "chat-label-chip text-[hsl(var(--authority-conflict))] border-[hsl(var(--authority-conflict)/0.5)]",
 };
 
+/**
+ * Hover text. Every one of these says WHO said it, because that is the fact the
+ * chip cannot carry on its own, and it points at the surface that holds the
+ * engine's answer instead of leaving the analyst to guess there is one.
+ */
+const LABEL_TITLES: Record<string, string> = {
+  CONFIRMED:  "The agent wrote this. Confidence computed from the evidence is in Evidence.",
+  CORRELATED: "The agent wrote this. Confidence computed from the evidence is in Evidence.",
+  INFERRED:   "The agent wrote this. Confidence computed from the evidence is in Evidence.",
+  VERIFY:     "The agent flagged this as needing corroboration. Evidence holds the computed state.",
+  FAILED:     "The agent reported a failure here. The Tools tab holds the call that failed.",
+  LOW:        "The agent flagged this as a weak lead. Evidence holds the computed state.",
+  CONFLICT:   "The agent reported a contradiction here. Evidence holds the computed state.",
+};
+
+/**
+ * Does this prose carry any agent-stated label? Drives the one line of footer
+ * chrome that says so out loud, since a hover title reaches neither a touch
+ * device nor a reader who never thinks to hover.
+ */
+function hasStatedLabel(text: string): boolean {
+  return new RegExp(STATED_LABEL_SOURCE).test(text);
+}
+
 function renderTextWithBadges(text: string): React.ReactNode {
-  const re = /\[(CONFIRMED|CORRELATED|INFERRED|VERIFY|FAILED|LOW|CONFLICT)\]/g;
+  // Built per call rather than shared: a module-level /g regex carries lastIndex
+  // between callers, and one .test() elsewhere would silently start the next
+  // scan mid-string.
+  const re = new RegExp(STATED_LABEL_SOURCE, "g");
   const out: React.ReactNode[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
@@ -779,7 +846,11 @@ function renderTextWithBadges(text: string): React.ReactNode {
     if (m.index > last) out.push(text.slice(last, m.index));
     const tag = m[1];
     out.push(
-      <span key={`b-${m.index}`} className={LABEL_STYLES[tag] ?? "chat-label-chip border-border text-muted-foreground"}>
+      <span
+        key={`b-${m.index}`}
+        title={LABEL_TITLES[tag]}
+        className={LABEL_STYLES[tag] ?? "chat-label-chip border-border text-muted-foreground"}
+      >
         {tag}
       </span>,
     );
@@ -1204,12 +1275,17 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             <button
               type="button"
               onClick={() => copyToClipboard(prose, "Message copied")}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-white/[0.04] hover:text-foreground transition-colors"
+              className="-ml-2 inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-white/[0.04] hover:text-foreground transition-colors"
               aria-label="Copy message"
               title="Copy message"
             >
               <CopyIcon className="w-3 h-3" /> Copy
             </button>
+            {hasStatedLabel(prose) && (
+              <span className="ml-auto min-w-0 text-balance text-right text-[11px] leading-snug text-faint-foreground">
+                Labels are the agent&rsquo;s wording. Computed confidence is in Evidence.
+              </span>
+            )}
           </div>
         </article>
       )}
@@ -1888,7 +1964,14 @@ function ChatWindowInner({
   const send = async () => {
     const text = input.trim();
     const hasFiles = attachments.length > 0;
-    if ((!text && !hasFiles) || isSubmitBlocked(status, submitLockRef.current)) return;
+    // An empty box stays silent — the button is disabled and nothing was asked
+    // for. A refused submission does not: the analyst pressed a live control.
+    if (!text && !hasFiles) return;
+    const sendRefusal = submitRefusal(status, submitLockRef.current);
+    if (sendRefusal) {
+      toast.info(submitRefusalMessage(sendRefusal));
+      return;
+    }
     // The preflight decides what is sent: the request exactly as typed, plus one
     // Target line only when the analyst corrected the detected type.
     if (!preflight.canSubmit) return;
@@ -2109,7 +2192,14 @@ function ChatWindowInner({
   const artifactsCountRef = useRef(artifacts.length);
   artifactsCountRef.current = artifacts.length;
   const sendCycle = useCallback(async (prompt: string, countAsAutoCycle: boolean) => {
-    if (isSubmitBlocked(status, submitLockRef.current)) return;
+    // Continue / Write report / arming Auto-run all land here, and all three are
+    // buttons the analyst just pressed. A bare `return` is what made Continue
+    // look broken — see submit-guard.ts for the operator report this comes from.
+    const refusal = submitRefusal(status, submitLockRef.current);
+    if (refusal) {
+      toast.info(submitRefusalMessage(refusal));
+      return;
+    }
     stoppedByAnalystRef.current = false;
     setAutoRun((prev) => ({
       ...prev,
@@ -2362,7 +2452,11 @@ function ChatWindowInner({
     // The same synchronous lock the composer and the pivot rail hold. Retry used
     // to skip it, so a double-click on "Retry investigation" started two billed
     // runs: the server has no idempotency key and does not reject overlaps.
-    if (isSubmitBlocked(status, submitLockRef.current)) return;
+    const retryRefusal = submitRefusal(status, submitLockRef.current);
+    if (retryRefusal) {
+      toast.info(submitRefusalMessage(retryRefusal));
+      return;
+    }
     const lastUser = [...messages].reverse().find((m) => m.role === "user") as UIMessage | undefined;
     if (!lastUser) return toast.error("No previous message to retry");
     const text = (lastUser.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
@@ -2398,6 +2492,25 @@ function ChatWindowInner({
     () => evaluatePreflight({ text: input, attachments: attachments.length, isFollowUp, controls }),
     [input, attachments.length, isFollowUp, controls],
   );
+  // Placeholder length only — layout is CSS-responsive and never remounts.
+  const isPhone = useIsMobile();
+  const runControlsVisible = canShowRunControls({
+    isLoading,
+    hasAssistantTurn: messages.some((m) => m.role === "assistant"),
+    seedLoaded,
+    hasLiveError: Boolean(error) && !networkDropWhileAlive && !hasPersistedFailure(messages),
+    autoRunEnabled: autoRun.enabled,
+    serverRunActive,
+  });
+  const primary = composerPrimary({
+    isLoading,
+    stopping,
+    isFollowUp,
+    canContinue: runControlsVisible && !isLoading,
+    empty: preflight.empty,
+    canSubmit: preflight.canSubmit,
+    uploading,
+  });
   // Auto-grow the request box: one calm line when idle and empty, up to ~8
   // lines while writing. Height is set on the element so it never reflows the
   // transcript above more than the text itself needs.
@@ -2405,9 +2518,10 @@ function ChatWindowInner({
     const el = inputRef.current;
     if (!el) return;
     el.style.height = "auto";
-    const min = composerFocused || input ? 64 : 44;
+    // A phone composer is one line until the text needs a second one.
+    const min = (composerFocused || input) && !isPhone ? 64 : 44;
     el.style.height = `${Math.min(Math.max(el.scrollHeight, min), 208)}px`;
-  }, [input, composerFocused]);
+  }, [input, composerFocused, isPhone]);
   // Watchdog-only ref: the terminal-status realtime handler below is set up in
   // an effect with a stable dependency array (see stopRef further down), so its
   // closure would otherwise see a stale `isLoading` from whenever the effect
@@ -2679,17 +2793,30 @@ function ChatWindowInner({
     // tab. Each is VALIDATED before it may carry a Run button — a malformed
     // suggestion (a table row, a report footer) stays visible as "needs repair".
     const ranked = computePivots({ artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets, reviews: review.map });
-    for (const p of ranked.filter((candidate) => candidate.status === "new").slice(0, 3)) {
+    // Three RUNNABLE pivots, not the top three candidates. Validation used to
+    // run after the slice, so a report whose recommendations were partly
+    // unparseable filled two of three slots with "needs repair" cards and
+    // pushed real, runnable pivots off the list. Unrunnable ones are still
+    // collected (bounded) and shown behind one disclosure line by NextSteps.
+    const repair: NextStepItem[] = [];
+    let runnable = 0;
+    for (const p of ranked.filter((candidate) => candidate.status === "new")) {
+      if (runnable >= 3) break;
       const dedupe = cardDedupeKey({ title: p.actionLabel, target: p.value });
       if (seenKeys.has(dedupe)) continue;
       seenKeys.add(dedupe);
-      seenLabels.add(p.actionLabel);
       const validation = validatePivotSuggestion(pivotSuggestionInput(p));
+      if (validation.status !== "valid") {
+        if (repair.length < 3) repair.push({ kind: "pivot", key: dedupe, validation, eligibility: null });
+        continue;
+      }
+      seenLabels.add(p.actionLabel);
+      runnable++;
       out.push({
         kind: "pivot",
         key: dedupe,
         validation,
-        eligibility: validation.status === "valid" ? pivotEligibility(validation.pivot, { artifactsById, review: reviewOf }) : null,
+        eligibility: pivotEligibility(validation.pivot, { artifactsById, review: reviewOf }),
       });
     }
     // Always include 1-2 generic next steps as fallback.
@@ -2704,7 +2831,7 @@ function ChatWindowInner({
       seenLabels.add(g.title);
       out.push({ kind: "action", key: `action:${g.title}`, title: g.title, detail: g.detail, prompt: g.prompt });
     }
-    return out.slice(0, 4);
+    return [...out.slice(0, 4), ...repair];
   }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability]);
 
   return (
@@ -2897,7 +3024,12 @@ function ChatWindowInner({
         )}
       </div>
 
-      <div className="relative z-10 border-t border-white/[0.06] bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.92),hsl(var(--surface-0)/0.96))] px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-7 sm:pt-4 sm:pb-5 backdrop-blur-xl">
+      {/* Composer dock. Flat ground, no blur. Side padding mirrors
+          .chat-stage__frame (1.25rem, 1.75rem from 1024px) so the composer
+          column sits on the transcript column at every width (#645). On a
+          phone the workspace's bottom tab bar sits below this and owns the
+          safe-area inset, so the dock keeps only its own vertical padding. */}
+      <div className="relative z-10 border-t border-border-subtle bg-background px-5 pb-1.5 pt-2 sm:pb-5 sm:pt-4 lg:px-7">
         <div className="chat-column">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
@@ -2929,41 +3061,39 @@ function ChatWindowInner({
               })}
             </div>
           )}
-          {canShowRunControls({
-            isLoading,
-            hasAssistantTurn: messages.some((m) => m.role === "assistant"),
-            seedLoaded,
-            hasLiveError: Boolean(error) && !networkDropWhileAlive && !hasPersistedFailure(messages),
-            autoRunEnabled: autoRun.enabled,
-            serverRunActive,
-          }) && (
-            <RunControls
-              busy={isLoading}
-              autoRunEnabled={autoRun.enabled}
-              autoRunCyclesRun={autoRun.cyclesRun}
-              onContinue={runContinue}
-              onToggleAutoRun={toggleAutoRun}
-              onWriteReport={runWriteReport}
+          <div className="composer-shell">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*,.pdf,.txt,.csv,.json,.eml,.html,.md"
+              className="hidden"
+              onChange={(e) => onFilesPicked(e.target.files)}
             />
-          )}
-          <div className="composer-shell p-1">
-            <div className="rounded-[11px] bg-background/60">
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept="image/*,.pdf,.txt,.csv,.json,.eml,.html,.md"
-                className="hidden"
-                onChange={(e) => onFilesPicked(e.target.files)}
-              />
-              <div className="flex items-center justify-between gap-2 px-3 pt-2">
-                <label htmlFor={composerIds.textarea} className="text-data font-medium text-foreground/90">
-                  Investigation request
-                </label>
-                <span className="hidden text-micro text-muted-foreground sm:inline" aria-hidden>
-                  <kbd className="font-sans">⌘/Ctrl</kbd> + <kbd className="font-sans">Enter</kbd> to start · Enter for a new line
-                </span>
-              </div>
+            {/* Label row. Visually hidden on a phone, where the composer is one
+                line, but still the textarea's accessible name. */}
+            <div className="flex items-center justify-between gap-2 px-3 pt-2 max-sm:sr-only">
+              <label htmlFor={composerIds.textarea} className="text-data font-medium text-foreground/90">
+                {isFollowUp ? "Message this case" : "Investigation request"}
+              </label>
+              <span className="hidden text-micro text-muted-foreground sm:inline" aria-hidden>
+                {primary.kind === "continue"
+                  ? <><kbd className="font-sans">⌘/Ctrl</kbd> + <kbd className="font-sans">Enter</kbd> to continue</>
+                  : <><kbd className="font-sans">⌘/Ctrl</kbd> + <kbd className="font-sans">Enter</kbd> to {isFollowUp ? "send" : "start"} · Enter for a new line</>}
+              </span>
+            </div>
+            <div className="flex items-end gap-1 p-1.5 sm:block sm:p-0">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isLoading}
+                className="h-11 w-11 shrink-0 rounded-full text-muted-foreground hover:bg-white/[0.05] hover:text-foreground sm:hidden"
+                aria-label="Attach file"
+              >
+                <Paperclip className="h-[18px] w-[18px]" aria-hidden />
+              </Button>
               <Textarea
                 ref={inputRef}
                 id={composerIds.textarea}
@@ -2972,16 +3102,20 @@ function ChatWindowInner({
                 onFocus={() => setComposerFocused(true)}
                 onBlur={() => setComposerFocused(false)}
                 onKeyDown={(e) => {
-                  // Enter writes a new line; Cmd/Ctrl+Enter starts the run — and
-                  // only when the preflight says the request is valid. An IME
-                  // composition's confirming Enter is never a submit.
+                  // Enter writes a new line; Cmd/Ctrl+Enter runs the primary
+                  // action — Continue on an open case with an empty box, else
+                  // start/send, and only when the preflight says the request is
+                  // valid. An IME composition's confirming Enter is never a submit.
                   if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
                   if (e.metaKey || e.ctrlKey) {
                     e.preventDefault();
-                    if (preflight.canSubmit && !isLoading) void send();
+                    if (primary.kind === "continue") runContinue();
+                    else if ((primary.kind === "start" || primary.kind === "send") && !primary.disabled) void send();
                   }
                 }}
-                placeholder="e.g. analyst@example.com — who controls this mailbox?"
+                placeholder={isFollowUp
+                  ? (isPhone ? "Ask or add a selector" : "Ask about this case, or add a selector to pivot on…")
+                  : (isPhone ? "Email, handle, phone…" : "e.g. analyst@example.com — who controls this mailbox?")}
                 aria-describedby={composerIds.help}
                 aria-invalid={Boolean(preflight.errors.target)}
                 rows={1}
@@ -2989,42 +3123,79 @@ function ChatWindowInner({
                 autoCapitalize="off"
                 autoCorrect="off"
                 spellCheck={false}
-                className="min-h-[44px] max-h-52 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 px-3 py-2 text-[16px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70 sm:text-body"
+                className="min-h-[44px] max-h-52 min-w-0 flex-1 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 px-1 py-2.5 text-[16px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70 sm:px-3 sm:py-2 sm:text-body"
               />
-              <div className="flex flex-wrap items-center gap-1.5 px-2 pb-2">
+              <div className="flex shrink-0 items-center gap-1 sm:gap-1.5 sm:px-2 sm:pb-2">
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isLoading}
-                  className="h-8 w-8 shrink-0 rounded-md text-muted-foreground transition-colors duration-fast hover:bg-white/[0.05] hover:text-foreground [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+                  className="hidden h-8 w-8 shrink-0 rounded-md text-muted-foreground transition-colors duration-fast hover:bg-white/[0.05] hover:text-foreground sm:inline-flex [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
                   aria-label="Attach file"
                   title="Attach file"
                 >
                   <Paperclip className="h-4 w-4" aria-hidden />
                 </Button>
-                <TargetChip
-                  result={preflight}
-                  kindOverride={controls.targetKind}
-                  onKindChange={(k) => setControls((c) => ({ ...c, targetKind: k }))}
-                />
+                <span className="hidden min-w-0 sm:contents">
+                  <TargetChip
+                    result={preflight}
+                    kindOverride={controls.targetKind}
+                    onKindChange={(k) => setControls((c) => ({ ...c, targetKind: k }))}
+                  />
+                </span>
+                {runControlsVisible && (
+                  <>
+                    <RunChips
+                      busy={isLoading}
+                      autoRunEnabled={autoRun.enabled}
+                      autoRunCyclesRun={autoRun.cyclesRun}
+                      onToggleAutoRun={toggleAutoRun}
+                      onWriteReport={runWriteReport}
+                      className="ml-auto max-sm:hidden"
+                    />
+                    <RunMenu
+                      busy={isLoading}
+                      autoRunEnabled={autoRun.enabled}
+                      autoRunCyclesRun={autoRun.cyclesRun}
+                      onToggleAutoRun={toggleAutoRun}
+                      onWriteReport={runWriteReport}
+                      className="sm:hidden"
+                    />
+                  </>
+                )}
                 <Button
                   type="button"
-                  onClick={isLoading ? stopInvestigation : () => void send()}
-                  disabled={isLoading ? stopping : (!preflight.canSubmit || uploading)}
+                  data-testid={primary.kind === "continue" ? "run-continue" : "composer-primary"}
+                  onClick={
+                    primary.kind === "stop" ? stopInvestigation
+                      : primary.kind === "continue" ? runContinue
+                        : () => void send()
+                  }
+                  disabled={
+                    primary.kind === "stop" ? primary.stopping
+                      : primary.kind === "continue" ? false
+                        : primary.disabled
+                  }
                   className={cn(
-                    "ml-auto h-9 shrink-0 gap-1.5 rounded-lg px-3.5 text-data font-semibold transition-colors duration-fast [@media(pointer:coarse)]:h-11",
-                    isLoading
+                    "h-11 w-11 shrink-0 gap-1.5 rounded-full p-0 text-data font-semibold transition-colors duration-fast",
+                    "sm:h-9 sm:w-auto sm:rounded-lg sm:px-3.5 [@media(pointer:coarse)]:sm:h-11",
+                    !runControlsVisible && "sm:ml-auto",
+                    primary.kind === "stop"
                       ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
                       : "bg-white text-black hover:bg-white/90 disabled:bg-white/[0.08] disabled:text-muted-foreground disabled:opacity-100",
                   )}
                 >
-                  {isLoading
-                    ? stopping
-                      ? <><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Stopping…</>
-                      : <><Square className="h-3.5 w-3.5 fill-current" aria-hidden /> Stop investigation</>
-                    : <>Start investigation <ArrowUp className="h-4 w-4 rotate-90" aria-hidden /></>}
+                  {primary.kind === "stop"
+                    ? primary.stopping
+                      ? <><Loader2 className="h-4 w-4 animate-spin" aria-hidden /> <span className="max-sm:sr-only">Stopping…</span></>
+                      : <><Square className="h-3.5 w-3.5 fill-current" aria-hidden /> <span className="max-sm:sr-only">Stop investigation</span></>
+                    : primary.kind === "continue"
+                      ? <><Play className="h-4 w-4 fill-current sm:h-3.5 sm:w-3.5" aria-hidden /> <span className="max-sm:sr-only">Continue</span></>
+                      : primary.kind === "send"
+                        ? <><span className="max-sm:sr-only">Send</span> <ArrowUp className="h-4 w-4" aria-hidden /></>
+                        : <><span className="max-sm:sr-only">Start investigation</span> <ArrowUp className="h-4 w-4 rotate-90 max-sm:rotate-0" aria-hidden /></>}
                 </Button>
               </div>
             </div>
@@ -3038,12 +3209,19 @@ function ChatWindowInner({
             className={cn(
               "mt-1.5 min-h-[1.25rem] truncate px-1 text-micro",
               preflight.errors.target ? "text-[hsl(var(--danger))]" : "text-muted-foreground",
+              // On a phone the default instruction is the placeholder's job;
+              // the line only appears when it says something about THIS input.
+              preflight.empty && !preflight.errors.target && "max-sm:sr-only",
             )}
           >
             {preflight.errors.target
               ? preflight.errors.target
               : preflight.empty
-                ? "Enter one primary target, then state the question you need answered."
+                ? primary.kind === "continue"
+                  ? "Continue runs the next best pivots and reports only what is new — or ask anything about this case."
+                  : isFollowUp
+                    ? "Ask about this case, or name a new selector to pivot on."
+                    : "Enter one primary target, then state the question you need answered."
                 : `Target: ${preflight.summary.target}`}
           </p>
         </div>

@@ -222,11 +222,18 @@ function ActivityLog({
             ? `Every tool call recorded for this case, failures included. The list below holds the ${events.length} rows the server returned; the ledger holds more.`
             : "Every tool call recorded for this case, failures included. The same figure as the case bar and the Tools tab."}
         />
-        <MetricCard label="Succeeded" value={ok} icon={CheckCircle2} tone={ok > 0 ? "ok" : "neutral"} hint="Calls that returned a usable result." />
+        <MetricCard
+          label="Succeeded" value={ok} icon={CheckCircle2}
+          of={total || null} share={total ? ok / total : null}
+          tone={ok > 0 ? "ok" : "neutral"}
+          hint="Calls that returned a usable result."
+        />
         <MetricCard
           label="Failed"
           value={failed}
           icon={XCircle}
+          of={total || null}
+          share={total ? failed / total : null}
           tone={failed > 0 ? "danger" : "neutral"}
           hint="Calls that errored outright. Each one is a coverage gap: the lookup did not happen, so anything it would have found is missing from this case."
         />
@@ -239,6 +246,8 @@ function ActivityLog({
             label="Degraded"
             value={degraded}
             icon={Clock}
+            of={total || null}
+            share={total ? degraded / total : null}
             tone="warn"
             hint="Transient, not breakage: our own throttles and caps, upstream rate limits, denials and timeouts. The lookup can succeed on a retry."
           />
@@ -247,6 +256,8 @@ function ActivityLog({
           label={gated > 0 ? "Skipped / Gated" : "Skipped"}
           value={gated > 0 ? `${skipped}/${gated}` : skipped}
           icon={MinusCircle}
+          of={total || null}
+          share={total ? (skipped + gated) / total : null}
           tone={gated > 0 ? "warn" : "neutral"}
           hint="Skipped = deduped/no-op. Gated = blocked by a triage, policy, or budget gate (an intentional decision, not a fault)."
         />
@@ -271,6 +282,8 @@ function ActivityLog({
             label="Cached"
             value={cachedCount}
             icon={DatabaseZap}
+            of={total || null}
+            share={total ? cachedCount / total : null}
             hint="Served from cache: no provider call and no spend. Useful coverage, but the data can be older than the timestamp on the row."
           />
         )}
@@ -354,7 +367,7 @@ function ActivityLog({
       {ordered.length === 0 ? (
         <EmptyState icon={Activity} title="No visible tools match this filter" hint="Try a different status filter." />
       ) : (
-        <ul className="rounded-xl border border-border-subtle bg-surface-1 divide-y divide-border-subtle/60 overflow-hidden">
+        <ul className="panel divide-y divide-border-subtle/60 overflow-hidden">
           {ordered.map((e) => (
             <li key={e.id}>
               {e.reason ? (

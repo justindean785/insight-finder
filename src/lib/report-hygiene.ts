@@ -12,6 +12,7 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { isUsernameSweepSource, labelForArtifact, KIND_TO_PIVOT, type ConfLabel, type ReviewAdjustment } from "@/lib/intel";
 import { effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { isRejectedReview } from "@/lib/review";
+import { isRejectedArtifact } from "@/lib/analyst-decisions";
 import { isQuarantined } from "@/lib/quarantine";
 
 // ---------------------------------------------------------------------------
@@ -197,6 +198,74 @@ export function isCollisionArtifact(a: AuthorityInput): boolean {
  */
 export function isClusterIneligible(a: AuthorityInput): boolean {
   return isCollisionArtifact(a) || isQuarantined(a.metadata);
+}
+
+/**
+ * May this row speak FOR THE SUBJECT on a report surface — the Subject Profile,
+ * aliases, digital footprint, the "Analyst confidence" headline, the breach
+ * count behind the Hunter's Note and the risk level?
+ *
+ * Same two exclusions `pickBestIdentity` applies to the Identity panel (#8):
+ * no active quarantine / collision flag, and no analyst rejection. Those
+ * surfaces sat beside the gated one in the same report and read the raw
+ * artifact list, so on a username-seed case (2026-09-23) the Subject Profile
+ * named a quarantined name-only breach echo as the subject, the 85% "Analyst
+ * confidence" came from a row the analyst had REJECTED, and a rejected handle
+ * was listed as an alias — while the gated Identity panel on the same page
+ * named somebody else. The row keeps its place in every evidence table.
+ */
+export function isSubjectAuthorityEligible(a: AuthorityInput & { id?: string }, review?: string | null): boolean {
+  // `isRejectedArtifact`, not `isRejectedReview`: the canonical predicate also
+  // honours the legacy `metadata.false_positive` flag, which has no review row.
+  return !isClusterIneligible(a) && !isRejectedArtifact({ id: a.id ?? "", metadata: a.metadata }, review);
+}
+
+/**
+ * A row recording that a lookup found NOTHING ("quietfalcon77 - no breach hits").
+ * Mirrors the edge's `NULL_RESULT_RE` (`lib/artifact-hygiene.ts`). Used only to
+ * keep negatives out of COUNTS that assert exposure: "Subject appears in N
+ * breach corpora" must not count the corpora that said the subject is absent.
+ */
+// Result nouns, with their REAL plurals ("breaches", "matches"): the edge's
+// `(?:…)s?` misses those, and a "no breaches found" row must still read as null.
+const NULL_NOUN = "(?:hits?|breach(?:es)?|results?|records?|pastes?|match(?:es)?|exposures?)";
+// Non-global twins for .test(): a /g regex carries lastIndex across calls, so a
+// shared one used with .test() is order-dependent. Only .replace() gets /g.
+const NULL_PHRASE_TEST = new RegExp(`\\b(?:0|no|zero)\\s+${NULL_NOUN}\\b`, "i");
+const NULL_PHRASE_ALL = new RegExp(`\\b(?:0|no|zero)\\s+${NULL_NOUN}\\b`, "gi");
+const NULL_NOUN_TEST = new RegExp(`\\b${NULL_NOUN}\\b`, "i");
+const NULL_NOUN_ALL = new RegExp(`\\b${NULL_NOUN}\\b`, "gi");
+const NULL_RESULT_FILLER_RE =
+  /\b(?:for|on|in|of|the|a|an|from|found|returned|via|with|and|to|at|by|any|were|was|there|this|that|query|lookup|search|check|against|across)\b/g;
+
+const escapeRe = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * PURE null result only, same rule as the edge's `nullResultResidue`: after
+ * removing the zero phrase, the tool name, the leading "<selector> - " and
+ * connective filler, nothing of substance may remain. "quietfalcon77 - no breach
+ * hits" is null; "Canva breach found; no records of password exposure" is a
+ * real hit that happens to contain a zero phrase, and must still count.
+ */
+export function isNullResultValue(value: unknown, source?: string | null): boolean {
+  const raw = String(value ?? "");
+  if (!NULL_PHRASE_TEST.test(raw)) return false;
+  let s = raw.toLowerCase();
+  // Strip a leading "<selector> - " ONLY when it looks like a selector: at most
+  // three tokens and no result noun. "LinkedIn exposed email and phone - 0 hits"
+  // keeps its substance, so a real hit is never read as a null result.
+  const sep = s.match(/^(.+?)\s+[-–—]\s+/);
+  if (sep) {
+    const head = sep[1].trim();
+    if (head.split(/\s+/).length <= 3 && !NULL_NOUN_TEST.test(head)) s = s.slice(sep[0].length);
+  }
+  s = s.replace(NULL_PHRASE_ALL, " ");
+  // Tool name removed as a WHOLE WORD only, so a short source label can never
+  // delete characters from inside other words.
+  const tool = (source ?? "").trim().toLowerCase();
+  if (tool.length >= 3) s = s.replace(new RegExp(`(^|[^a-z0-9_])${escapeRe(tool)}(?=$|[^a-z0-9_])`, "g"), "$1 ");
+  s = s.replace(NULL_NOUN_ALL, " ").replace(NULL_RESULT_FILLER_RE, " ");
+  return s.replace(/[^a-z0-9]+/g, " ").trim() === "";
 }
 
 // ---------------------------------------------------------------------------
@@ -461,9 +530,20 @@ function pickAllEmailsIdentity(
   return out;
 }
 
+/**
+ * The row the report's "Real name" field names as the subject, exported so every
+ * surface that names the subject (the report's Identity panel, the workspace
+ * case sheet) picks it by the SAME rule and can never name two different people
+ * side by side. Quarantined, collision-flagged and analyst-rejected rows are not
+ * candidates; see `pickBestIdentity`.
+ */
+export function pickSubjectName(artifacts: Artifact[], reviews?: Record<string, ReviewAdjustment>): Artifact | null {
+  return pickBestIdentity(artifacts, ["name", "person"], reviews);
+}
+
 export function buildIdentityRows(artifacts: Artifact[], reviews?: Record<string, ReviewAdjustment>): IdentityRow[] {
   const rows: IdentityRow[] = [];
-  const name = pickBestIdentity(artifacts, ["name", "person"], reviews);
+  const name = pickSubjectName(artifacts, reviews);
   if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name, reviews?.[name.id]) });
 
   const dob = pickBestIdentity(artifacts, ["dob"], reviews);

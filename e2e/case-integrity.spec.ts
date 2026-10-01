@@ -23,7 +23,8 @@ async function blockExternalOrigins(page: Page) {
 async function open(page: Page, path: string, { waitHydrated = true } = {}) {
   await blockExternalOrigins(page);
   await page.goto(path);
-  await page.getByRole("tab", { name: /Overview/ }).first().waitFor({ state: "visible" });
+  // "Investigate" is a tab at every breakpoint; Overview is not a tab on a phone.
+  await page.getByRole("tab", { name: /Investigate/ }).first().waitFor({ state: "visible" });
   if (waitHydrated) await expect(page.getByText("Syncing case…")).toHaveCount(0, { timeout: 10_000 });
 }
 
@@ -148,6 +149,12 @@ test.describe("next steps", () => {
   test("9 · a malformed generated pivot is quarantined and cannot run", async ({ page }) => {
     await open(page, `${THREAD}?scenario=malformed`);
     const steps = page.getByRole("region", { name: "Next steps" });
+    // Off the list by default: an unrunnable suggestion is not a step.
+    await expect(steps.getByText("Suggestion needs repair")).toHaveCount(0);
+    // Still disclosed, one line, and expandable to the repair notice.
+    const disclosure = steps.getByRole("button", { name: /couldn't be turned into/ });
+    await expect(disclosure).toBeVisible();
+    await disclosure.click();
     await expect(steps.getByText("Suggestion needs repair").first()).toBeVisible();
     const repair = steps.locator('[data-suggestion-state="needs-repair"]').first();
     await expect(repair.getByRole("button")).toHaveCount(0);
@@ -203,10 +210,14 @@ test.describe("12 · mobile 390px", () => {
 
   test("navigation is labelled, keyboard-operable, and names the current overflow section", async ({ page }) => {
     await open(page, THREAD);
-    for (const name of ["Overview", "Investigate", "Evidence"]) {
+    for (const name of ["Investigate", "Evidence", "Report"]) {
       await expect(page.getByRole("tab", { name: new RegExp(name) })).toBeVisible();
     }
-    const more = page.getByRole("button", { name: "More sections: Tools, Graph, Report" });
+    // Section navigation sits at the bottom of the screen, where the thumb is.
+    const nav = page.getByRole("navigation", { name: "Workspace sections" });
+    const box = await nav.boundingBox();
+    expect(box && box.y + box.height).toBeGreaterThan(844 - 2);
+    const more = page.getByRole("button", { name: "More sections: Overview, Tools, Graph" });
     await expect(more).toHaveAttribute("aria-expanded", "false");
     await more.focus();
     await page.keyboard.press("ArrowDown");
@@ -225,8 +236,12 @@ test.describe("12 · mobile 390px", () => {
   test("the case strip shows identity and run state; the composer stays reachable", async ({ page }) => {
     await open(page, `${THREAD}?scenario=interrupted`);
     await expect(page.getByText("Interrupted", { exact: true }).first()).toBeVisible();
-    await expect(page.getByLabel("Investigation request")).toBeInViewport();
-    await expect(page.getByRole("button", { name: "Start investigation" })).toBeInViewport();
+    // On an open case the composer is a follow-up to THIS case, and says so.
+    await expect(page.getByLabel("Message this case")).toBeInViewport();
+    await expect(page.getByTestId(/^(composer-primary|run-continue)$/)).toBeInViewport();
+    // One line on a phone: the composer stays compact.
+    const shell = await page.locator(".composer-shell").boundingBox();
+    expect(shell && shell.height).toBeLessThanOrEqual(64);
     // No page-level horizontal overflow.
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(0);
@@ -234,7 +249,7 @@ test.describe("12 · mobile 390px", () => {
 
   test("graph defaults to a readable list", async ({ page }) => {
     await open(page, THREAD);
-    await page.getByRole("button", { name: "More sections: Tools, Graph, Report" }).click();
+    await page.getByRole("button", { name: "More sections: Overview, Tools, Graph" }).click();
     await page.getByRole("menuitemradio", { name: /Graph/ }).click();
     await expect(page.getByRole("button", { name: "List", pressed: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: /Linked entities/ })).toBeVisible();
@@ -250,5 +265,22 @@ test.describe("read-only case view", () => {
     await tools.click();
     await expect(page.getByText("Tool calls", { exact: true })).toBeVisible();
     await expect(page.getByText(/unexpected error/i)).toHaveCount(0);
+  });
+});
+
+test.describe("case sheet → Evidence handoff", () => {
+  test("Decide in Evidence opens that row even though the default view hides quarantined rows", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, THREAD);
+    const queue = page.getByRole("region", { name: "Needs your call" });
+    await expect(queue).toBeVisible();
+    // A quarantined (linkage) card — the kind the Analyst view hides.
+    const card = queue.getByRole("listitem").filter({ hasText: "Linkage · whose is this?" }).first();
+    const value = (await card.locator("[title]").first().getAttribute("title")) ?? "";
+    expect(value).not.toBe("");
+    await card.getByRole("button", { name: /Decide in Evidence/ }).click();
+    const drawer = page.getByRole("dialog");
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toContainText(value);
   });
 });

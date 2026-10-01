@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractRecommendedPivots } from "@/lib/recommended-pivots";
+import { extractRecommendedPivots, isPlausiblePhone } from "@/lib/recommended-pivots";
 
 describe("extractRecommendedPivots", () => {
   it("extracts the final report recommendations in display order", () => {
@@ -202,5 +202,118 @@ Let me also call detect_contradictions to check for any issues.
     expect(pivots.length).toBeGreaterThan(0);
     expect(pivots.map((p) => p.value)).toContain("jane@example.com");
     expect(pivots.some((p) => /jdoe88/i.test(p.value) || /jdoe88/i.test(p.label))).toBe(true);
+  });
+
+  describe("ids and dates are not phone pivots", () => {
+    // Measured case (2026-09-24): a report linked an Apple Music track without
+    // a scheme, and "Check phone association <track id>" was offered at HIGH
+    // priority for the 10-digit catalogue id in the path. Values are synthetic.
+    it("never takes a phone from inside a scheme-less link's path", () => {
+      const text = `
+## Recommended Next Pivots
+- Review credit on music.apple.com/us/song/example-track/1234567890 — producer credit
+- Review listing example.com/listing?id=4155550142 — marketplace listing
+`;
+      const pivots = extractRecommendedPivots(text);
+      expect(pivots.some((p) => p.type === "phone")).toBe(false);
+      expect(pivots.map((p) => p.value)).not.toContain("1234567890");
+      expect(pivots.map((p) => p.value)).not.toContain("4155550142");
+    });
+
+    it("does not offer a bare id or a date as a phone pivot through the action-clause fallback", () => {
+      const text = `
+## Recommended Next Pivots
+- Check track 1234567890 — Apple Music catalogue id
+- Check 4155550142 — listing id
+- Check 2023-02-02 — join date on the second account
+`;
+      expect(extractRecommendedPivots(text).some((p) => p.type === "phone")).toBe(false);
+    });
+
+    it("still extracts real phone numbers, including ones the old parser took", () => {
+      const text = `
+## Recommended Next Pivots
+- Check phone 9165550142 — carrier lookup
+- Check (916) 555-0199 — listing on business page
+- Check 916-555-0123 listed on example.com/biz/some-shop
+- Check +44 20 7946 0958 — UK landline in footer
+- Check 020 7946 0958 — same line, national format
+- Check 555-0142 — local number from the flyer
+`;
+      const phones = extractRecommendedPivots(text).filter((p) => p.type === "phone").map((p) => p.value);
+      expect(phones).toEqual([
+        "9165550142",
+        "(916) 555-0199",
+        "916-555-0123",
+        "+44 20 7946 0958",
+        "020 7946 0958",
+        "555-0142",
+      ]);
+    });
+
+    it("isPlausiblePhone: NANP shape, path tokens, dates and bare runs", () => {
+      expect(isPlausiblePhone("925-642-7442", "Check 925-642-7442")).toBe(true);
+      expect(isPlausiblePhone("1-925-642-7442", "Check 1-925-642-7442")).toBe(true);
+      // area code starting 1 is not a NANP number
+      expect(isPlausiblePhone("180-228-5951", "Check phone 180-228-5951")).toBe(false);
+      // "+1" is NANP whatever follows it, so it is held to the NANP shape
+      expect(isPlausiblePhone("+1 (916) 555-0199", "Check +1 (916) 555-0199")).toBe(true);
+      expect(isPlausiblePhone("+11234567890", "Check phone +11234567890")).toBe(false);
+      expect(isPlausiblePhone("+442079460958", "Check whatsapp +442079460958")).toBe(true);
+      // inside a path or query
+      expect(isPlausiblePhone("9165550142", "Check phone example.com/u/9165550142")).toBe(false);
+      expect(isPlausiblePhone("9165550142", "Check phone https://x.test/?id=9165550142")).toBe(false);
+      // dates
+      expect(isPlausiblePhone("2023-02-02", "Check 2023-02-02")).toBe(false);
+      expect(isPlausiblePhone("02/03/2023", "Check 02/03/2023")).toBe(false);
+      // a bare run needs the line to say phone
+      expect(isPlausiblePhone("9165550142", "Check 9165550142")).toBe(false);
+      expect(isPlausiblePhone("9165550142", "Check mobile 9165550142")).toBe(true);
+    });
+  });
+
+  // Shapes measured on a production report, 2026-09-25 (values synthetic).
+  describe("report formatting is not pivot data", () => {
+    const tableReport = `
+## 10. Recommended Next Pivots
+
+| Pivot | Rationale | Tool |
+| --- | --- | --- |
+| **Reverse phone lookup: +1-415-555-0142** | Would verify the breach phone independently | \`oathnet_lookup\` |
+| **Breach-check on \`handle_one\` and \`handle_two\`** | Would reveal additional corpora | \`breach_check\` |
+
+---
+
+*Investigation conducted by the investigator. 23 artifacts recorded.*
+`;
+
+    it("never turns the table header row into a pivot", () => {
+      const labels = extractRecommendedPivots(tableReport).map((p) => p.label);
+      expect(labels.some((l) => /^Pivot\b/.test(l) || /Rationale/.test(l))).toBe(false);
+    });
+
+    it("reads a table row by cell: first cell is the pivot, second the reason", () => {
+      const phone = extractRecommendedPivots(tableReport).find((p) => p.type === "phone");
+      expect(phone).toBeDefined();
+      expect(phone!.value.replace(/\D/g, "")).toBe("14155550142");
+      expect(phone!.reason).toBe("Would verify the breach phone independently");
+      expect(phone!.label).not.toMatch(/\|/);
+      expect(phone!.label).not.toMatch(/oathnet_lookup/);
+    });
+
+    it("ends the section at a horizontal rule, so the report footer is never a pivot", () => {
+      const labels = extractRecommendedPivots(tableReport).map((p) => p.label);
+      expect(labels.some((l) => /Investigation conducted/.test(l))).toBe(false);
+    });
+
+    it("still skips a rule that comes before the first pivot", () => {
+      const text = "**Recommended next pivots:**\n---\n- Investigate sam.cole@example.com — reuse check\n";
+      expect(extractRecommendedPivots(text).map((p) => p.value)).toEqual(["sam.cole@example.com"]);
+    });
+
+    it("skips a whole-line italic note between pivots", () => {
+      const text = "**Recommended next pivots:**\n- Investigate a@example.com — one\n*Note: breach values are masked.*\n- Investigate b@example.com — two\n";
+      expect(extractRecommendedPivots(text).map((p) => p.value)).toEqual(["a@example.com", "b@example.com"]);
+    });
   });
 });
