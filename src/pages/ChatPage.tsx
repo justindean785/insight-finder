@@ -22,6 +22,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "
 import { PanelLeftOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
+import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
@@ -119,7 +120,12 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
 
   // Tab badges read the SAME published snapshot as the case bar and the panels.
   const hydrated = Boolean(snapshot?.hydrated);
-  const tabCounts = buildWorkspaceTabCounts(snapshot?.items ?? [], snapshot?.tools.total ?? 0, snapshot?.authority ?? null);
+  // The Evidence number IS the case sheet's "Needs your call" count.
+  const sheet = useCaseSheetModel(threadId);
+  const tabCounts = buildWorkspaceTabCounts(
+    snapshot?.tools.total ?? 0,
+    sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null,
+  );
 
   // Panels stay mounted once visited. Switching back is instant, and each tab
   // keeps its own scroll position, filters and open drawers — the old
