@@ -114,3 +114,8 @@ Deno.test("wiring: index.ts owns the latch per request and both telemetry rows r
   assertEquals(src.split("budgetExhausted: budgetCeiling.fired,").length - 1, 2, "both finish() call sites");
   assert(!src.includes("budgetCeilingFired("), "no thread-keyed read remains");
 });
+
+Deno.test("wiring: /health reports checks.stop_reason_attribution (this build's proof of deploy)", async () => {
+  const src = await Deno.readTextFile(new URL("./health-handler.ts", import.meta.url));
+  assert(src.includes("r.checks.stop_reason_attribution = {"), "the proof key must be reported");
+});
