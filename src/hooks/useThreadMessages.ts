@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { classifyActivityRow } from "@/hooks/useThreadToolActivity";
+import { deriveToolReason } from "@/lib/tool-run";
 
 export type MessageSummary = {
   id: string;
@@ -58,21 +59,28 @@ function outputLooksLikeReport(output: unknown): boolean {
  * `0 Needs attention` — a healthy run reading as broken, which is exactly what
  * the "a 403 is not a dead credential" rule exists to prevent.
  *
- * `outcome` is null here because message parts do not carry the edge function's
- * `classifyToolOutcome` verdict; the classifier's documented fallback to the
- * `ok` boolean is the intended path for exactly that case.
+ * Message parts do not carry the edge function's `classifyToolOutcome` verdict,
+ * so the classifier gets the most a part CAN say: an explicit `skipped` flag as
+ * the outcome, and the tool's own words wherever it put them — a stream-error
+ * `errorText`, then the output's `reason` / `error` / `message` (the order
+ * `deriveToolReason` reads). Passing only `output.error` made the `skipped`
+ * branch unreachable and turned `{ok:false, skipped:true, reason:"duplicate
+ * query"}` or an `output-error` "paid-call budget exhausted" back into "failed".
  */
-function resultSummaryFor(output: unknown, errored: boolean): string {
+function resultSummaryFor(output: unknown, errored: boolean, errorText?: unknown): string {
   const o = output && typeof output === "object" ? (output as Record<string, unknown>) : null;
+  const skippedFlag = o?.skipped === true;
 
   // No verdict of any kind in the payload — the call returned something we
   // cannot characterise. Unchanged, and deliberately not called a failure.
-  if (!errored && (!o || (o.ok === undefined && !("error" in o)))) return "returned";
+  if (!errored && !skippedFlag && (!o || (o.ok === undefined && !("error" in o)))) return "returned";
 
   const ok = errored ? false : o?.ok === true;
-  const errorMsg = typeof o?.error === "string" ? o.error : o?.error != null ? String(o.error) : null;
+  const errorMsg = [typeof errorText === "string" ? errorText : "", o ? deriveToolReason(o) : ""]
+    .filter(Boolean).join(" ") || null;
+  const outcome = !errored && skippedFlag ? "skipped" : null;
 
-  const { status } = classifyActivityRow(null, ok, errorMsg);
+  const { status } = classifyActivityRow(outcome, ok, errorMsg);
   switch (status) {
     case "succeeded": return "completed";
     case "gated": return "gated";
@@ -112,7 +120,9 @@ export function summarizeMessageRow(msg: RawMessageRow): MessageSummary {
       toolCalls.push({
         toolName: typeof part.toolName === "string" ? part.toolName : "unknown",
         args: (part as Record<string, unknown>).input ?? part.args,
-        resultSummary: hasOutput || errored ? resultSummaryFor(part.output, errored) : undefined,
+        resultSummary: hasOutput || errored
+          ? resultSummaryFor(part.output, errored, (part as Record<string, unknown>).errorText)
+          : undefined,
         startedAt: msg.created_at,
       });
       continue;
@@ -127,7 +137,9 @@ export function summarizeMessageRow(msg: RawMessageRow): MessageSummary {
       toolCalls.push({
         toolName: type.slice("tool-".length),
         args: (part as Record<string, unknown>).input ?? part.args,
-        resultSummary: hasOutput || errored ? resultSummaryFor(part.output, errored) : undefined,
+        resultSummary: hasOutput || errored
+          ? resultSummaryFor(part.output, errored, (part as Record<string, unknown>).errorText)
+          : undefined,
         startedAt: msg.created_at,
       });
       continue;

@@ -133,6 +133,21 @@ describe("summarizeMessageRow — non-OK outcomes are not all failures", () => {
     expect(out({ ok: false, error: "TypeError: cannot read property of undefined" })).toBe("failed");
   });
 
+  it("an explicit skip carrying its words in `reason` is skipped, not failed (Codex P2, #610)", () => {
+    expect(out({ ok: false, skipped: true, reason: "duplicate query" })).toBe("skipped");
+  });
+
+  it("a gate named in `reason` rather than `error` is still recognised", () => {
+    expect(out({ ok: false, reason: "provider disabled for this deployment" })).toBe("gated");
+  });
+
+  it("an output-error part is classified by its errorText, not called failed blind", () => {
+    const s = summarizeMessageRow(row("assistant", [
+      { type: "tool-minimax_correlate", toolCallId: "c9", state: "output-error", input: {}, errorText: "paid-call budget exhausted" },
+    ]));
+    expect(s.toolCalls[0].resultSummary).toBe("degraded");
+  });
+
   it("a successful call is still completed, and an uncharacterised one still returns", () => {
     expect(out({ ok: true, hits: 3 })).toBe("completed");
     expect(out({ hits: 3 })).toBe("returned");
