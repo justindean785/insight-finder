@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
+  applyRealtimeInsert,
+  EVIDENCE_RECORD_HEADING,
   isSameChatMessage,
   isTerminalThreadUpdate,
   mergePersistedChatMessages,
@@ -194,5 +198,48 @@ describe("the server's post-stream Evidence Record append is the same message", 
 
   it("the same tool ids under a different role never match", () => {
     expect(isSameChatMessage(live, { ...stored, role: "user" })).toBe(false);
+  });
+});
+
+describe("only the server's Evidence Record append collapses (Codex P2 on #671)", () => {
+  it("a later answer that restates and expands an earlier one is a different message", () => {
+    const a = { id: "c", role: "assistant", parts: [{ type: "text", text: "The domain is on Vercel." }] };
+    const b = { id: "d", role: "assistant", parts: [{ type: "text", text: "The domain is on Vercel.\n\nMore detail: it also uses Zoho mail." }] };
+    expect(isSameChatMessage(a, b)).toBe(false);
+    expect(mergePersistedChatMessages([a], [b])).toHaveLength(2);
+  });
+
+  it("the heading matches the edge function's EVIDENCE_RECORD_HEADING", () => {
+    const edge = readFileSync(resolve(__dirname, "../../supabase/functions/osint-agent/lib/evidence-record.ts"), "utf8");
+    expect(edge).toContain(`export const EVIDENCE_RECORD_HEADING = "${EVIDENCE_RECORD_HEADING}";`);
+  });
+});
+
+describe("applyRealtimeInsert (Codex P2 on #671)", () => {
+  const EVIDENCE = `\n\n${EVIDENCE_RECORD_HEADING}\n\n_No authoritative finding rows were recorded for this run._`;
+  const live = { id: "client-1", role: "assistant", parts: [{ type: "text", text: "Report." }] };
+  const row = { id: "db-1", role: "assistant", parts: [{ type: "text", text: `Report.${EVIDENCE}` }] };
+
+  it("replaces the live copy in place once no stream is running: durable id, Evidence Record", () => {
+    const next = applyRealtimeInsert([{ id: "u", role: "user", parts: [] }, live], row, false);
+    expect(next).toHaveLength(2);
+    expect(next[1].id).toBe("db-1");
+    expect(JSON.stringify(next[1].parts)).toContain("Evidence Record");
+  });
+
+  it("leaves the live copy alone mid-stream, so the SDK never re-appends it", () => {
+    const current = [live];
+    expect(applyRealtimeInsert(current, row, true)).toBe(current);
+  });
+
+  it("appends a row that is not on screen, streaming or not", () => {
+    const other = { id: "db-2", role: "assistant", parts: [{ type: "text", text: "A different message." }] };
+    expect(applyRealtimeInsert([live], other, true)).toHaveLength(2);
+    expect(applyRealtimeInsert([live], other, false)).toHaveLength(2);
+  });
+
+  it("an echo of a row already adopted is a no-op", () => {
+    const current = [row];
+    expect(applyRealtimeInsert(current, row, false)).toBe(current);
   });
 });

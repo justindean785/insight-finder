@@ -67,6 +67,13 @@ function toolCallIdsOf(message: { parts?: unknown }): string[] {
 }
 
 /**
+ * The heading every Evidence Record block starts with — including its
+ * "unavailable" variants. MUST equal EVIDENCE_RECORD_HEADING in
+ * supabase/functions/osint-agent/lib/evidence-record.ts (a test pins the two).
+ */
+export const EVIDENCE_RECORD_HEADING = "## Evidence Record — authoritative";
+
+/**
  * Does `persisted` differ from `live` only by the ONE edit the server makes after
  * the stream ends? lib/evidence-record-persist.ts appends the "Evidence Record —
  * authoritative" block to the LAST text part (or adds a text part when there was
@@ -85,6 +92,7 @@ function extendsStreamedMessage(
   if (lastText === -1) {
     // No text part to merge into: the server pushes one at the end.
     return a.length > 0 && b.length === a.length + 1 && isText(b[b.length - 1]) &&
+      String((b[b.length - 1] as Record<string, unknown>).text ?? "").startsWith(EVIDENCE_RECORD_HEADING) &&
       a.every((p, i) => partSignature(p) === partSignature(b[i]));
   }
   if (a.length !== b.length) return false;
@@ -92,8 +100,11 @@ function extendsStreamedMessage(
     if (i !== lastText) return partSignature(p) === partSignature(b[i]);
     const liveText = String((p as Record<string, unknown>).text ?? "");
     const storedText = isText(b[i]) ? String((b[i] as Record<string, unknown>).text ?? "") : null;
-    // The server appends `\n\n<block>`; anything else is a different message.
-    return storedText !== null && liveText.trim() !== "" && storedText.startsWith(`${liveText}\n\n`);
+    // The server appends exactly `\n\n<Evidence Record block>`. Any other
+    // extension — a restated or expanded answer — is a different message
+    // (Codex P2 on #671).
+    return storedText !== null && liveText.trim() !== "" &&
+      storedText.startsWith(`${liveText}\n\n${EVIDENCE_RECORD_HEADING}`);
   });
 }
 
@@ -155,4 +166,28 @@ export function mergePersistedChatMessages<T extends { id: string; role?: unknow
   });
 
   return [...merged, ...persisted.filter((message) => !adopted.has(message.id))];
+}
+
+/**
+ * Apply one realtime `messages` INSERT to the live store.
+ *
+ * - A row that is not already on screen is appended.
+ * - A row that IS on screen replaces its live copy in place, so the message gains
+ *   its durable id (its timestamp is keyed on it) and the server's Evidence Record
+ *   — unless a stream is running. Mid-stream the AI SDK still owns the live copy
+ *   by its client id, and swapping that id makes the next chunk append the
+ *   message again; the terminal reconcile adopts the row once the run settles.
+ *   (Codex P2 on #671.)
+ */
+export function applyRealtimeInsert<T extends { id: string; role?: unknown; parts?: unknown }>(
+  current: readonly T[],
+  row: T,
+  streaming: boolean,
+): T[] {
+  const index = current.findIndex((message) => isSameChatMessage(message, row));
+  if (index === -1) return [...current, row];
+  if (streaming || current[index].id === row.id) return current as T[];
+  const next = current.slice();
+  next[index] = row;
+  return next;
 }
