@@ -665,6 +665,11 @@ export function wrapToolsWithCache(
     // `capped` is surfaced by index.ts (finalize + telemetry). Optional so callers
     // that don't set it (tests, other entrypoints) are unaffected.
     toolCallBudget?: { genuine: number; reserved: number; capped: boolean };
+    // Request-owned latch for telemetry's `budget_exhausted` stop reason: set when
+    // a runtime-policy budget ceiling REFUSES a call in THIS invocation. Never
+    // keyed by thread — overlapping invocations share one, and each request's
+    // clearRuntime(threadId) would erase or cross-attribute a thread-keyed flag.
+    budgetCeiling?: { fired: boolean };
     shouldStopLiveLookups?: () => boolean;
     // TRUE only while enough wall-clock remains for a dispatched
     // minimax_correlate call to actually finish (its own enforced cap + the
@@ -1490,6 +1495,7 @@ export function wrapToolsWithCache(
           force,
         });
         if (!runtimeDecision.allow) {
+          if (runtimeDecision.budgetCeiling && ctx.budgetCeiling) ctx.budgetCeiling.fired = true;
           noteRejectedCall(ctx.investigationId, {
             tool_name: name,
             selector: sel,

@@ -188,7 +188,8 @@ export interface InvocationRowInput {
   creditsMicroUsd: number | null;
   errorMessage: string | null;
   /** True only when a budget ceiling demonstrably refused a call during this
-   *  invocation (runtime-policy's `budgetCeilingFired`). Optional so existing
+   *  invocation (index.ts's request-owned `budgetCeiling.fired`, set by
+   *  wrapToolsWithCache from startCall's `budgetCeiling`). Optional so existing
    *  callers keep the honest default of "not observed". */
   budgetExhausted?: boolean;
 }
@@ -262,7 +263,8 @@ export interface InvocationFinishInput {
   creditsMicroUsd: number | null;
   errorMessage: string | null;
   /** True only when a budget ceiling demonstrably refused a call during this
-   *  invocation (runtime-policy's `budgetCeilingFired`). Optional so existing
+   *  invocation (index.ts's request-owned `budgetCeiling.fired`, set by
+   *  wrapToolsWithCache from startCall's `budgetCeiling`). Optional so existing
    *  callers keep the honest default of "not observed". */
   budgetExhausted?: boolean;
 }
