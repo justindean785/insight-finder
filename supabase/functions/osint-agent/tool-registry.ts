@@ -1945,6 +1945,14 @@ export function buildTools(ctx: ToolContext) {
             skipped: true,
             status: "skipped",
             failure_class: "host_unsupported",
+            // THE SLOT, not just the seconds. `startCall` reserves a paid-call
+            // slot at admission and `cache.ts` releases it ONLY on this
+            // structural marker (runtime-policy.ts:isPreProviderGate) — never on
+            // `skipped`, which also covers rate-limits, 5xx and timeouts that
+            // really did spend. Without it this skip still burned one of the
+            // run's 12 paid calls on a lookup it never performed, which would
+            // have left the headline saving of this commit at wall-clock only.
+            provider_attempted: false,
             url,
             hint: policy.hint,
           };

@@ -10,6 +10,7 @@
 // 18s" — is demonstrated end to end, not just at the predicate.
 import "./_test_env_socialfetch_key.ts";
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { isPreProviderGate } from "./runtime-policy.ts";
 import {
   buildTools,
   socialfetchHostPolicy,
@@ -192,6 +193,51 @@ Deno.test("an unparseable URL falls through to normal handling rather than throw
     // Must not throw; whatever the underlying fetch does with a malformed URL
     // is unrelated to this policy — it must simply not crash the tool.
     assertEquals(typeof r, "object");
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Review findings on this branch (Codex, 2026-10-01). Both are the same shape:
+// the skip saves the right thing in one dimension and silently fails to save it
+// in another, and nothing in the suite noticed.
+// ---------------------------------------------------------------------------
+
+Deno.test("a host-policy skip releases the PAID-CALL SLOT, not just the seconds", async () => {
+  // `startCall` reserves a paid slot at admission; cache.ts releases it ONLY on
+  // the structural `provider_attempted: false` marker — never on `skipped`,
+  // which also covers rate-limits, 5xx and timeouts that really did spend. A
+  // skip without the marker still burned one of the run's 12 paid calls on a
+  // lookup it never performed, so repeated YouTube/Roblox/Steam URLs could
+  // exhaust the budget and force early finalization having fetched nothing.
+  const origFetch = globalThis.fetch;
+  let networkHits = 0;
+  globalThis.fetch = (() => {
+    networkHits++;
+    return Promise.resolve(new Response("{}", { status: 200 }));
+  }) as typeof fetch;
+  try {
+    const tool = socialfetchWebRead();
+    for (
+      const url of [
+        "https://www.youtube.com/watch?v=abc",
+        "https://www.roblox.com/users/1/profile",
+        "https://steamcommunity.com/id/someone",
+        "https://t.me/somechannel",
+        "https://www.chess.com/member/someone",
+      ]
+    ) {
+      const r = await tool.execute({ url }, {});
+      assertEquals(r.skipped, true, url);
+      assertEquals(r.failure_class, "host_unsupported", url);
+      assertEquals(
+        isPreProviderGate(r),
+        true,
+        `${url}: the skip must carry provider_attempted:false or the paid slot is never refunded`,
+      );
+    }
+    assertEquals(networkHits, 0, "a skip must issue no request at all");
   } finally {
     globalThis.fetch = origFetch;
   }
