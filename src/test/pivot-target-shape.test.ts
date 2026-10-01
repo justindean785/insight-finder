@@ -152,5 +152,7 @@ describe("email shape rejects Markdown around the address", () => {
       expect(isWellFormedTarget("email", v), v).toBe(false);
     }
     expect(isWellFormedTarget("email", "jane.doe+tag@uni.example")).toBe(true);
+    expect(isWellFormedTarget("email", "o'connor@site.example")).toBe(true);
+    expect(isWellFormedTarget("email", "'o'connor@site.example")).toBe(false);
   });
 });

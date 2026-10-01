@@ -372,6 +372,37 @@ describe("examples and Markdown are never selectors", () => {
     expect(values).toContain("owner@site.example");
   });
 
+  it("an apostrophe inside an address is kept; quotes around it are not (Codex P1)", () => {
+    const text = `
+## Recommended next pivots
+- Investigate o'connor@site.example — named on the contact page
+- Investigate 'jane@uni.example' — quoted in the footer
+`;
+    const values = extractRecommendedPivots(text).map((p) => p.value);
+    expect(values).toContain("o'connor@site.example");
+    expect(values).not.toContain("connor@site.example");
+    expect(values).toContain("jane@uni.example");
+  });
+
+  it("an example ends at its sentence; a real selector in the next one survives (Codex P2)", () => {
+    const text = `
+## Recommended next pivots
+- Review naming patterns, e.g. first.last. Check observed@site.example — observed in WHOIS
+`;
+    expect(extractRecommendedPivots(text)[0]).toMatchObject({ value: "observed@site.example", type: "email" });
+  });
+
+  it("a capitalised marker is still an example", () => {
+    const text = `
+## Recommended next pivots
+- Try the university format. E.g. jane.doe@uni.example might exist
+- For example, guess@mail.example could be tried
+`;
+    const values = extractRecommendedPivots(text).map((p) => p.value);
+    expect(values).not.toContain("jane.doe@uni.example");
+    expect(values).not.toContain("guess@mail.example");
+  });
+
   it("a bare domain still extracts when it is not a URL host", () => {
     const text = `
 ## Recommended next pivots

@@ -32,11 +32,13 @@ function cleanLine(line: string): string {
 }
 
 /**
- * Quotes, backticks and brackets are Markdown around a selector, never part of
+ * Quotes, backticks and brackets are Markdown AROUND a selector, never part of
  * it. `[^\s@]` used to swallow them, so "`jane@uni.example`" became a target
- * WITH its backticks (measured 2026-10-01, spearheadlab case).
+ * WITH its backticks (measured 2026-10-01, spearheadlab case). An apostrophe
+ * BETWEEN local-part characters is legal, though ("o'connor@…"): excluding it
+ * outright extracted the different address "connor@…" (Codex P1 on #670).
  */
-const EMAIL_RE = /[^\s@`'"()<>[\],;]+@[^\s@`'"()<>[\],;]+\.[^\s@`'"()<>[\],;]+/i;
+const EMAIL_RE = /[^\s@`'"()<>[\],;]+(?:'[^\s@`'"()<>[\],;]+)*@[^\s@`'"()<>[\],;]+\.[^\s@`'"()<>[\],;]+/i;
 const IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/;
 const USERNAME_RE = /@[a-z0-9_.-]{2,40}\b/i;
 const URL_RE = /\bhttps?:\/\/[^\s)]+/i;
@@ -134,7 +136,11 @@ function firstPlausiblePhone(label: string): string | undefined {
  * the thing itself rather than offering a sample of it.
  */
 const EXAMPLE_PAREN_RE = /\([^()]*\b(?:e\.\s?g\.|eg\.|for example|for instance|such as)[^()]*\)/gi;
-const EXAMPLE_CLAUSE_RE = /\b(?:e\.\s?g\.|eg\.|for example|for instance|such as)[^;—–)]*/gi;
+// Stops at a clause break OR the end of the example's sentence (". " then a
+// capital), so a real selector in the next sentence survives (Codex P2 on #670).
+// No `i` flag (the capital in the lookahead must be a real capital), so the
+// markers spell out their own case.
+const EXAMPLE_CLAUSE_RE = /\b(?:[Ee]\.\s?[Gg]\.|[Ee][Gg]\.|[Ff]or example|[Ff]or instance|[Ss]uch as)(?:(?!\.\s+[A-Z])[^;—–)])*/g;
 
 function withoutExamples(label: string): string {
   return label.replace(EXAMPLE_PAREN_RE, " ").replace(EXAMPLE_CLAUSE_RE, " ");
