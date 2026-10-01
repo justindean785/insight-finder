@@ -115,6 +115,13 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   socialfetch_web_read: 3000, // /v1/web/markdown — ~1 credit/URL, same pool as a lookup
   socialfetch_whoami: 0,      // /v1/whoami — free, zero credits
   socialfetch_balance: 0,     // /v1/balance — free, zero credits
+  // Opsis (useopsis.com/docs/api, 2026-10-01): a search is 1 credit (premium username
+  // search 2); credit packs run $0.40 down to $0.25 per credit. Mid-range figure.
+  // Reading a run, /v1/credits and /v1/me are free.
+  opsis_search: 300_000,
+  opsis_results: 0,
+  opsis_balance: 0,
+  opsis_status: 0,
 
   // ---- CordCat (Discord OSINT) ----
   // Free plan: 60 req/hour. Treat each successful call as ~$0.002.
