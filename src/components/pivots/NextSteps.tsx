@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowRight, Sparkles } from "lucide-react";
+import { ArrowRight, ChevronRight, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { PivotEligibility, PivotValidation, RunnablePivot } from "@/lib/pivot-schema";
 import { PivotPreview, RepairNotice } from "@/components/pivots/PivotPreview";
@@ -26,6 +26,14 @@ export type NextStepItem =
  * One column, full-size type: the old two-column grid of 11px rationales cut
  * the reason mid-sentence at exactly the width where it stopped being a reason.
  * Every Run opens an inline preview first; nothing starts from the row itself.
+ *
+ * ONLY RUNNABLE STEPS ARE LISTED. A report recommendation the parser could not
+ * turn into a selector (a table row, a sentence, a footer) is not a step the
+ * analyst can take, and listing it as a card beside real ones is what made the
+ * panel read as broken: measured on production 2026-09-25, two of four cards on
+ * a finished case were "Suggestion needs repair". They are still disclosed —
+ * one quiet line, expandable to the same repair notice and its reasons — so
+ * nothing the agent recommended is silently dropped.
  */
 export function NextSteps({
   items,
@@ -48,25 +56,22 @@ export function NextSteps({
   const [localOpen, setLocalOpen] = useState<string | null>(null);
   const open = openKey !== undefined ? openKey : localOpen;
   const setOpen = (k: string | null) => { if (onOpenChange) onOpenChange(k); else setLocalOpen(k); };
+  const [showRepair, setShowRepair] = useState(false);
   if (items.length === 0) return null;
+  const isRepair = (item: NextStepItem) => item.kind === "pivot" && item.validation.status === "invalid";
+  const runnable = items.filter((item) => !isRepair(item));
+  const repair = items.filter(isRepair);
 
   return (
     <section aria-label="Next steps" className="ws-panel-enter w-full overflow-hidden rounded-xl border border-white/[0.08] bg-surface-1">
       <header className="flex h-10 items-center gap-2 border-b border-white/[0.06] px-4 text-data font-medium text-muted-foreground">
         <Sparkles className="h-3.5 w-3.5" aria-hidden />
         Next steps
-        <span className="ml-auto font-mono tabular-nums">{items.length}</span>
+        <span className="ml-auto font-mono tabular-nums">{runnable.length}</span>
       </header>
       <ul className="divide-y divide-white/[0.06]">
-        {items.map((item) => {
+        {runnable.map((item) => {
           const isOpen = open === item.key;
-          if (item.kind === "pivot" && item.validation.status === "invalid") {
-            return (
-              <li key={item.key} className="flex items-start gap-3 px-4 py-3 opacity-90">
-                <RepairNotice action={item.validation.action} target={item.validation.target} problems={item.validation.problems} />
-              </li>
-            );
-          }
           const pivot = item.kind === "pivot" && item.validation.status === "valid" ? item.validation.pivot : null;
           const title = pivot ? pivot.action : item.kind === "action" ? item.title : "";
           const detail = pivot ? pivot.reason : item.kind === "action" ? item.detail : "";
@@ -150,6 +155,32 @@ export function NextSteps({
           );
         })}
       </ul>
+      {repair.length > 0 && (
+        <div className={cn(runnable.length > 0 && "border-t border-white/[0.06]")}>
+          <button
+            type="button"
+            onClick={() => setShowRepair((v) => !v)}
+            aria-expanded={showRepair}
+            className="flex w-full items-center gap-1.5 px-4 py-2.5 text-left text-[12.5px] text-faint-foreground transition-colors duration-fast hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [@media(pointer:coarse)]:min-h-11"
+          >
+            <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 transition-transform duration-fast", showRepair && "rotate-90")} aria-hidden />
+            {repair.length === 1
+              ? "1 suggestion from the report couldn't be turned into a runnable step"
+              : `${repair.length} suggestions from the report couldn't be turned into runnable steps`}
+          </button>
+          {showRepair && (
+            <ul className="divide-y divide-white/[0.06] border-t border-white/[0.06]">
+              {repair.map((item) =>
+                item.kind === "pivot" && item.validation.status === "invalid" ? (
+                  <li key={item.key} className="flex items-start gap-3 px-4 py-3 opacity-90">
+                    <RepairNotice action={item.validation.action} target={item.validation.target} problems={item.validation.problems} />
+                  </li>
+                ) : null,
+              )}
+            </ul>
+          )}
+        </div>
+      )}
     </section>
   );
 }

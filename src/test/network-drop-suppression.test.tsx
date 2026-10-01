@@ -219,10 +219,10 @@ function retryVisible(): boolean {
 async function awaitComposer(): Promise<HTMLTextAreaElement> {
   await waitFor(() =>
     expect(
-      screen.getByLabelText(/investigation request/i),
+      screen.getByLabelText(/investigation request|message this case/i),
     ).toBeTruthy(),
   );
-  return screen.getByLabelText(/investigation request/i) as HTMLTextAreaElement;
+  return screen.getByLabelText(/investigation request|message this case/i) as HTMLTextAreaElement;
 }
 
 /** Drive a real run to its transport failure through the real send path. */
@@ -231,7 +231,9 @@ async function runAndFail(seed: string) {
   await act(async () => {
     fireEvent.change(box, { target: { value: seed } });
   });
-  const send = screen.getByRole("button", { name: /start investigation/i }) as HTMLButtonElement;
+  // A first message starts the case; a later one on the same mount is a
+  // follow-up, whose primary reads "Send" (lib/composer-primary.ts).
+  const send = screen.getByRole("button", { name: /^(start investigation|send)$/i }) as HTMLButtonElement;
   // Guard against a vacuous pass: a disabled button means the composer never
   // took the seed, so no run starts and every "card absent" assertion below
   // would hold for the wrong reason.

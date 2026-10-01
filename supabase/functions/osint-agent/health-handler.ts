@@ -18,11 +18,16 @@ import {
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
+import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
 import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
+import { recordNameQuarantineEnabled } from "./lib/record-name-quarantine.ts";
+import { geminiPreflightPivotEnabled, preflightPivotHealthDetail } from "./lib/preflight-pivot.ts";
+import { positionalPairingSelfTest } from "./message-sanitize.ts";
+import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 
 /**
@@ -358,11 +363,55 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     const hardCeiling = promptBudgetHardCeilingEnabled();
     r.checks.prompt_budget_ceiling = {
       ok: hardCeiling,
+      // `tail=summarize` is the proof-of-deploy token for the 2026-09-22 fix: the
+      // build that elided the unconsumed tail by bare reference cannot emit it.
+      // Read the STRATEGY, not just the key — the key alone only proves #604.
       detail: hardCeiling
-        ? `hard ceiling ${TOTAL_PROMPT_CHAR_BUDGET} chars`
+        ? `hard ceiling ${TOTAL_PROMPT_CHAR_BUDGET} chars, tail=summarize`
         : `DISABLED via PROMPT_BUDGET_HARD_CEILING_DISABLED — tail exempt above ${TOTAL_PROMPT_CHAR_BUDGET} chars`,
     };
   }
+
+  // Does record_artifacts inherit an active same-name quarantine onto the rows the
+  // MODEL writes (lib/record-name-quarantine.ts)? Pure, no DB. Its PRESENCE is the
+  // behavioural proof that the build carrying that gate is the one running; `ok`
+  // tracks the kill switch so a disabled gate is visible at a glance.
+  {
+    const on = recordNameQuarantineEnabled();
+    r.checks.record_name_quarantine = {
+      ok: on,
+      detail: on
+        ? "record_artifacts inherits active person-name quarantine; exempt=person-seed-only"
+        : "DISABLED via RECORD_NAME_QUARANTINE_DISABLED — model-authored rows can name unlinked persons at full authority",
+    };
+  }
+
+  // May a failed DeepSeek preflight pivot the run to gemini-direct
+  // (lib/preflight-pivot.ts)? Pure, no network. Its PRESENCE is the behavioural proof
+  // that the build gating that pivot is live. `ok` is true either way: both settings
+  // are deliberate operator choices, and the detail names which one is in force.
+  r.checks.preflight_pivot = { ok: true, detail: preflightPivotHealthDetail(geminiPreflightPivotEnabled()) };
+
+  // Does the DEPLOYED sanitizer pair tool-calls by POSITION (message-sanitize.ts)?
+  // A self-test, not a label: it runs the live sanitizer on a fixed synthetic
+  // overlap probe and checks the result the way the AI SDK does. Pure and
+  // silent, so health probes never emit sanitize_positional_pair_repair. Its
+  // PRESENCE proves this build is live; ok:false means the pairing rule regressed.
+  r.checks.message_sanitize = positionalPairingSelfTest();
+
+  // Which rule marks a clustered artifact CONTRADICTED (lib/cluster.ts)? Pure. Its
+  // PRESENCE proves the build with the explicit-signal rule is live.
+  r.checks.cluster_contradiction_rule = legacyNeedsReviewContradiction()
+    ? { ok: true, detail: "LEGACY via CLUSTER_LEGACY_NEEDS_REVIEW_CONTRADICTION — needs_review counts as contradicted" }
+    : { ok: true, detail: "explicit signals only; group-keyed contradicted cluster ids" };
+
+  // SSRF guard coverage (safety.ts isPrivateHost). Its PRESENCE proves the build
+  // that also blocks the IPv6 forms of internal addresses is live.
+  r.checks.ssrf_guard = { ok: true, detail: ssrfGuardHealthDetail(ssrfGuardLegacy()) };
+
+  // Error hygiene (lib/redact-error.ts). Its PRESENCE proves the build that redacts
+  // the catch-all 500 detail and keeps the seed text out of the log is live.
+  r.checks.error_redaction = { ok: true, detail: "500 detail and fault/stream logs redacted (configured keys + shapes); seed text not logged" };
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure
