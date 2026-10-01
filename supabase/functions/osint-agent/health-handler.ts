@@ -13,6 +13,7 @@ import {
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL,
   ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY, OPENADAPTER_API_KEY, OPENADAPTER_BASE_URL,
+  lovableGateway, geminiDirectGateway, ALLOW_LOVABLE_FALLBACK,
   promptBudgetHardCeilingEnabled,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
@@ -25,7 +26,13 @@ import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-c
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
 import { recordNameQuarantineEnabled } from "./lib/record-name-quarantine.ts";
-import { geminiPreflightPivotEnabled, preflightPivotHealthDetail } from "./lib/preflight-pivot.ts";
+import {
+  deepseekPreflightAlways,
+  geminiPreflightPivotEnabled,
+  preflightPivotHealthDetail,
+  preflightPolicyHealthDetail,
+  resolveFallbackProvider,
+} from "./lib/preflight-pivot.ts";
 import { positionalPairingSelfTest } from "./message-sanitize.ts";
 import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
@@ -391,6 +398,24 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // that the build gating that pivot is live. `ok` is true either way: both settings
   // are deliberate operator choices, and the detail names which one is in force.
   r.checks.preflight_pivot = { ok: true, detail: preflightPivotHealthDetail(geminiPreflightPivotEnabled()) };
+
+  // Does the run skip a DeepSeek preflight whose answer cannot change routing
+  // (lib/preflight-pivot.ts → shouldRunPreflight)? Pure, no network. Its PRESENCE is
+  // the behavioural proof that this build is live; the detail names the policy in force.
+  const preflightFallback = resolveFallbackProvider({
+    orchestratorProvider: ORCHESTRATOR_PROVIDER,
+    hasLovableGateway: !!lovableGateway,
+    hasGeminiDirect: !!geminiDirectGateway,
+    allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
+  });
+  r.checks.preflight_policy = {
+    ok: true,
+    detail: preflightPolicyHealthDetail(
+      preflightFallback ? { provider: preflightFallback } : null,
+      deepseekPreflightAlways(),
+      geminiPreflightPivotEnabled(),
+    ),
+  };
 
   // Does the DEPLOYED sanitizer pair tool-calls by POSITION (message-sanitize.ts)?
   // A self-test, not a label: it runs the live sanitizer on a fixed synthetic

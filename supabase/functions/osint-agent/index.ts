@@ -83,7 +83,13 @@ import {
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
-import { geminiPreflightPivotEnabled, shouldPivotOnPreflight } from "./lib/preflight-pivot.ts";
+import {
+  deepseekPreflightAlways,
+  geminiPreflightPivotEnabled,
+  resolveFallbackProvider,
+  shouldPivotOnPreflight,
+  shouldRunPreflight,
+} from "./lib/preflight-pivot.ts";
 import { redactErrorMessage } from "./lib/redact-error.ts";
 import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
 
@@ -613,12 +619,18 @@ Deno.serve(async (req) => {
     // Lovable gateway only participates when the operator pinned it as primary
     // (ORCHESTRATOR_PROVIDER=lovable) or opted in via ALLOW_LOVABLE_FALLBACK.
     // Grok/xAI is never a fallback (primary pin only).
-    const fallbackTarget = lovablePinned
+    // The precedence lives in resolveFallbackProvider (lib/preflight-pivot.ts) so
+    // /health's checks.preflight_policy reports the same target routing resolves.
+    const fallbackProvider = resolveFallbackProvider({
+      orchestratorProvider: ORCHESTRATOR_PROVIDER,
+      hasLovableGateway: !!lovableGateway,
+      hasGeminiDirect: !!geminiDirectGateway,
+      allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
+    });
+    const fallbackTarget = fallbackProvider === "lovable-gateway"
       ? { gateway: lovableGateway!, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
-      : geminiDirectGateway
-      ? { gateway: geminiDirectGateway, modelId: GEMINI_FALLBACK_MODEL_ID, label: "Gemini direct fallback", provider: "gemini-direct" as const }
-      : (lovableGateway && ALLOW_LOVABLE_FALLBACK)
-      ? { gateway: lovableGateway, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
+      : fallbackProvider === "gemini-direct"
+      ? { gateway: geminiDirectGateway!, modelId: GEMINI_FALLBACK_MODEL_ID, label: "Gemini direct fallback", provider: "gemini-direct" as const }
       : null;
     // Pre-flight MiniMax health probe. The fallback selection above only fires
     // when MiniMax's key is missing or the prompt would overflow — it does NOT
@@ -690,7 +702,22 @@ Deno.serve(async (req) => {
     // id (400), or an upstream outage would previously commit the whole run to
     // DeepSeek and die mid-stream with no failover, instead of a clean pivot
     // to Gemini.
-    if (deepseekIsPrimary && !useFallback && fallbackTarget) {
+    //
+    // Skipped when no outcome can pivot (lib/preflight-pivot.ts → shouldRunPreflight):
+    // with the gemini-direct pivot disabled the probe's only output is a log line, and
+    // it sat serially on the path to the first byte (up to 2×12s + 250ms).
+    // DEEPSEEK_PREFLIGHT_ALWAYS=true restores it on every request.
+    const runDeepseekPreflight = deepseekIsPrimary && !useFallback &&
+      shouldRunPreflight(fallbackTarget, geminiPreflightPivotEnabled(), deepseekPreflightAlways());
+    if (deepseekIsPrimary && !useFallback && fallbackTarget && !runDeepseekPreflight) {
+      console.log(JSON.stringify({
+        event: "preflight_skipped",
+        thread_id: threadId,
+        fallback: fallbackTarget.provider,
+        reason: "no outcome can pivot",
+      }));
+    }
+    if (runDeepseekPreflight && fallbackTarget) {
       const DEEPSEEK_PREFLIGHT_TIMEOUT_MS = 12_000;
       const DEEPSEEK_PREFLIGHT_ATTEMPTS = 2;
       const probeDeepseekOnce = async (): Promise<{ ok: boolean; status: number }> => {
