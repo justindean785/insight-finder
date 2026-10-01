@@ -83,6 +83,8 @@ export type MirrorFacts = {
   localHead?: string | null;
   /** `git rev-parse origin/main` in the mirror checkout, after a best-effort fetch. */
   remoteMain?: string | null;
+  /** True when that fetch was attempted and FAILED — the cached ref cannot be trusted. */
+  remoteFetchFailed?: boolean;
 };
 
 export type TreeComparison = {
@@ -92,7 +94,7 @@ export type TreeComparison = {
 
 /** Has the mirror's local HEAD actually reached its GitHub remote? */
 export type PushComparison = {
-  status: "pushed" | "not_pushed" | "not_run";
+  status: "pushed" | "not_pushed" | "not_run" | "fetch_failed";
   note: Note | null;
 };
 
@@ -141,6 +143,8 @@ export function compareSourceTrees(input: {
 export function verifyMirrorPushed(input: {
   localHead: string | null;
   remoteMain: string | null;
+  /** The `git fetch origin main` that refreshes `remoteMain` was attempted and failed. */
+  remoteFetchFailed?: boolean;
 }): PushComparison;
 export function buildLogEntry(input: {
   live: LiveHealthOk;

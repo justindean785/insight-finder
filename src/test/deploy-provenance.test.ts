@@ -222,6 +222,22 @@ describe("verifyDeployedCommit", () => {
     expect(verdict.problems.map((p) => p.code)).toContain("mirror_local_not_pushed");
   });
 
+  it("blocks when the mirror's origin/main could not be refreshed", () => {
+    const verdict = verifyDeployedCommit({
+      live,
+      repo: healthy,
+      mirror: {
+        commit: "33d676e",
+        treeDigest: healthy.sourceTreeDigest,
+        localHead: "33d676ea1b2c3d4e5f60718293a4b5c6d7e8f901",
+        remoteMain: "33d676ea1b2c3d4e5f60718293a4b5c6d7e8f901",
+        remoteFetchFailed: true,
+      },
+    });
+    expect(verdict.markerProvenanceOk).toBe(false);
+    expect(verdict.problems.map((p) => p.code)).toContain("mirror_fetch_failed");
+  });
+
   it("does not block on a mirror that was actually pushed", () => {
     const verdict = verifyDeployedCommit({
       live,
@@ -317,6 +333,15 @@ describe("verifyMirrorPushed", () => {
     expect(result.status).toBe("not_pushed");
     expect(result.note?.code).toBe("mirror_local_not_pushed");
     expect(result.note?.detail).toContain("has not been pushed");
+  });
+
+  it("fails closed with mirror_fetch_failed when the refresh failed, even if a cached ref matches", () => {
+    // Codex P1 on #574: after a failed `git fetch`, origin/main still resolves to
+    // the cached ref. If that cache equals local HEAD while GitHub has moved on,
+    // comparing the two reads "pushed" — a false green on the deploy gate.
+    const result = verifyMirrorPushed({ localHead: pushed, remoteMain: pushed, remoteFetchFailed: true });
+    expect(result.status).toBe("fetch_failed");
+    expect(result.note?.code).toBe("mirror_fetch_failed");
   });
 
   it("reports not_run — never pushed — when either SHA is unavailable", () => {

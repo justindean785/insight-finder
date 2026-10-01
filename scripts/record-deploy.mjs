@@ -146,18 +146,19 @@ const mirrorGit = (...args) => {
     return null;
   }
 };
-// Best-effort: reaches out to the mirror's GitHub remote so `remoteMain` below
-// reflects what Lovable would actually fetch, not a stale ref left over from
-// whenever this checkout last talked to origin. A failure here (no network, no
-// remote configured) is not fatal — mirrorGit still returns whatever origin/main
-// already resolves to, or null, and verifyMirrorPushed treats null as NOT RUN
-// rather than silently comparing against a ref that predates this run.
-if (mirrorPath) mirrorGit("fetch", "origin", "main");
+// Reaches out to the mirror's GitHub remote so `remoteMain` below reflects what
+// Lovable would actually fetch, not a stale ref left over from whenever this
+// checkout last talked to origin. A FAILED fetch fails closed: after it,
+// `origin/main` still resolves to the old cached ref, which can equal local HEAD
+// while GitHub has moved on — so the failure is recorded (`remoteFetchFailed`)
+// and verifyMirrorPushed turns it into a blocking mirror_fetch_failed problem.
+const mirrorFetchOk = mirrorPath ? mirrorGit("fetch", "origin", "main") !== null : false;
 const mirror = {
   commit: mirrorGit("rev-parse", "--short", "HEAD"),
   treeDigest: mirrorGit("rev-parse", "HEAD:supabase/functions/osint-agent"),
   localHead: mirrorGit("rev-parse", "HEAD"),
-  remoteMain: mirrorGit("rev-parse", "origin/main"),
+  remoteMain: mirrorFetchOk ? mirrorGit("rev-parse", "origin/main") : null,
+  remoteFetchFailed: Boolean(mirrorPath) && !mirrorFetchOk,
 };
 
 const verdict = verifyDeployedCommit({ live, repo, ledger, mirror });
@@ -168,6 +169,7 @@ const treeComparison = compareSourceTrees({
 const pushComparison = verifyMirrorPushed({
   localHead: mirror.localHead,
   remoteMain: mirror.remoteMain,
+  remoteFetchFailed: mirror.remoteFetchFailed,
 });
 
 console.log(`live build       : ${live.build}${live.committedAt ? ` (${live.committedAt})` : ""}`);

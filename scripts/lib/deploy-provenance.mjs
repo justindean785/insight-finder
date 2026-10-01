@@ -292,8 +292,26 @@ export function verifyDeployedCommit({ live, repo, ledger, mirror }) {
  * failed with no prior fetch to fall back on — is legitimately NOT RUN, exactly
  * like an absent mirror checkout for the tree comparison. It must never read as
  * "pushed".
+ *
+ * A fetch that FAILED is different from one never attempted, and it fails closed
+ * (`remoteFetchFailed`). After a failed refresh `origin/main` still resolves to
+ * whatever the clone cached last time — which can equal local HEAD while GitHub
+ * has since moved on — so comparing against it reports a false "pushed" on the
+ * exact workflow this gate guards. That is a blocking `mirror_fetch_failed`.
  */
-export function verifyMirrorPushed({ localHead, remoteMain }) {
+export function verifyMirrorPushed({ localHead, remoteMain, remoteFetchFailed }) {
+  if (remoteFetchFailed === true) {
+    return {
+      status: "fetch_failed",
+      note: {
+        code: "mirror_fetch_failed",
+        detail:
+          "could not refresh the mirror's origin/main (git fetch failed). A cached ref may predate " +
+          "what Lovable will pull, so the push check cannot be trusted. Fix the mirror checkout's " +
+          "remote access and re-run before deploying.",
+      },
+    };
+  }
   if (!localHead || !remoteMain) return { status: "not_run", note: null };
   if (localHead === remoteMain) return { status: "pushed", note: null };
   return {
