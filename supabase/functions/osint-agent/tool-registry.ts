@@ -3124,14 +3124,16 @@ export function buildTools(ctx: ToolContext) {
     // signal is forwarded so its cap can end a poll early.
     opsis_search: tool({
       description:
-        "Opsis: find accounts for a username, email or domain across ~700 platforms. PAID (1 credit; premium username 2). Returns within ~25s; a run still going returns partial results plus a run_id, so fetch the rest with opsis_results and never search the same selector again. Hits are unverified account leads.",
+        "Opsis: find accounts for a username, email or domain across ~700 platforms. PAID (1 credit). Returns within ~25s; a run still going returns partial results plus a run_id, so fetch the rest with opsis_results and never search the same selector again. Hits are unverified account leads.",
       inputSchema: memoSchema("opsis_search", () => z.object({
         kind: z.enum(["username", "email", "domain"]),
         value: z.string().min(1),
-        premium: z.boolean().optional().describe("Username only, 2 credits: adds solver-backed platforms. Default false."),
       })),
-      execute: async ({ kind, value, premium }, opts) =>
-        await opsisSearch({ kind, value, premium }, opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
+      // No `premium` input: a premium username search costs 2 credits and
+      // costs.ts prices per tool name, so exposing it would under-report spend
+      // (Codex P2 on #659). It returns as its own costed tool if wanted.
+      execute: async ({ kind, value }, opts) =>
+        await opsisSearch({ kind, value }, opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
     }),
     opsis_results: tool({
       description: "Opsis: fetch the rest of a still-running opsis_search by its run_id (free). Pass the kind and value that search used.",

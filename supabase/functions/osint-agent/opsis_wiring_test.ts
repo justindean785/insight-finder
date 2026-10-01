@@ -62,6 +62,18 @@ Deno.test("registry: with no key, the shipped opsis_search closure skips without
   }
 });
 
+// Codex P2 on #659: costs.ts prices per tool NAME, so a 2-credit premium search
+// would be booked as 1. Premium is therefore not offered to the model.
+Deno.test("registry: opsis_search offers no premium input (its 2nd credit cannot be priced)", async () => {
+  const { tools } = buildTools(stubCtx());
+  const schema = (tools.opsis_search as unknown as { inputSchema: unknown }).inputSchema as Record<string, unknown>;
+  const src = await Deno.readTextFile(new URL("./tool-registry.ts", import.meta.url));
+  const block = src.slice(src.indexOf("opsis_search: tool({"), src.indexOf("opsis_results: tool({"));
+  assert(block.length > 0);
+  assertEquals(/premium\s*:/.test(block), false, "no premium field in the opsis_search schema or call");
+  assert(schema !== undefined);
+});
+
 // ── Paid budget ─────────────────────────────────────────────────────────────
 
 Deno.test("budget: a search takes a paid slot; reading a run, balance and status do not", () => {

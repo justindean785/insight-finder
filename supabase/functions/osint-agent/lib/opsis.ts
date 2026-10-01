@@ -410,12 +410,17 @@ export async function opsisResults(
   }
   const { run, failure } = await pollRun(deps, runId, deps.now() + OPSIS_POLL_DEADLINE_MS, true);
   if (failure) return failure;
-  if (run) {
-    const runKind = normKind(run.type);
-    const runQuery = typeof run.query === "string" ? run.query.trim().toLowerCase() : null;
-    if ((runKind && runKind !== kind) || (runQuery !== null && runQuery !== value.toLowerCase())) {
-      return { ok: false, error: "opsis run belongs to a different selector", code: "selector_mismatch", run_id: runId };
-    }
+  // Not one poll answered (timeouts, 429s, 5xx until the deadline). A search can
+  // still return its run_id as partial — its POST was accepted — but a RESUME
+  // learned nothing, so "still searching" would hide an outage from the model,
+  // the circuit and credential health (Codex P2 on #659).
+  if (!run) {
+    return { ok: false, error: "opsis run status unavailable", code: "unavailable", run_id: runId };
+  }
+  const runKind = normKind(run.type);
+  const runQuery = typeof run.query === "string" ? run.query.trim().toLowerCase() : null;
+  if ((runKind && runKind !== kind) || (runQuery !== null && runQuery !== value.toLowerCase())) {
+    return { ok: false, error: "opsis run belongs to a different selector", code: "selector_mismatch", run_id: runId };
   }
   return shapeRun(runId, kind, value, run);
 }

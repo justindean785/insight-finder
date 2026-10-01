@@ -1208,17 +1208,20 @@ export function extractFindings(
       const p = typeof r.platform === "string" ? r.platform.trim() : "";
       if (p && !platforms.includes(p)) platforms.push(p);
     }
+    // The headline counts what Opsis FOUND; `results` is capped at
+    // OPSIS_MAX_RESULTS_RETURNED for the prompt (Codex P2 on #659).
+    const total = typeof o.total_results === "number" && o.total_results >= rows.length ? o.total_results : rows.length;
     if (queried && rows.length >= SWEEP_COLLAPSE_MIN_HITS) {
       findings.push({
         kind: "social_footprint",
-        value: `${queried} — ${rows.length} Opsis result${rows.length === 1 ? "" : "s"} (unverified)`,
+        value: `${queried} — ${total} Opsis result${total === 1 ? "" : "s"} (unverified)`,
         context: {
           tool: toolName,
           via: "opsis",
           ...(kind === "username" ? { handle: queried } : {}),
           opsis_kind: kind,
           opsis_run_id: typeof o.run_id === "string" ? o.run_id : null,
-          platform_count: rows.length,
+          platform_count: total,
           urls,
           opsis_platforms: platforms,
           ...(typeof o.results_truncated === "number" ? { opsis_results_truncated: o.results_truncated } : {}),

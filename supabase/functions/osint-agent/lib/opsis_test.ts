@@ -334,6 +334,28 @@ Deno.test("results: a vanished run (404) stops polling at once", async () => {
   assertEquals(h.calls.length, 1);
 });
 
+// Codex P2 on #659: a resume that never got one poll answered learned nothing.
+// Reporting it as "partial, still searching" hid the outage from the model, the
+// circuit and credential health, and invited repeated 25 s retries.
+Deno.test("results: an outage for the whole deadline is a failure, not 'still searching'", async () => {
+  for (const reply of [json(503, { error: "unavailable" }), json(429, { error: "rate_limited" }), new Error("network down")]) {
+    const h = harness({ get: [reply as Reply] });
+    const out = await opsisResults({ kind: "username", value: "jordanvale", run_id: "run-1" }, h.deps);
+    assertEquals(out.ok, false, String(reply));
+    assertEquals(out.code, "unavailable");
+    assertEquals(out.partial, undefined, "never presented as a run still in progress");
+    assertEquals(out.run_id, "run-1", "the run id is kept so it can be resumed later");
+    assert(h.elapsed() <= OPSIS_POLL_DEADLINE_MS + 8_000, "still bounded by the deadline");
+  }
+});
+
+Deno.test("results: one answered poll of a running run is still an honest partial", async () => {
+  const h = harness({ get: [json(503, {}), json(200, { id: "run-1", type: "username", query: "jordanvale", status: "running", results: [] })] });
+  const out = await opsisResults({ kind: "username", value: "jordanvale", run_id: "run-1" }, h.deps);
+  assertEquals(out.ok, true);
+  assertEquals(out.partial, true);
+});
+
 // ── Account lookups ─────────────────────────────────────────────────────────
 
 Deno.test("balance and status return only documented, non-identifying fields", async () => {

@@ -99,3 +99,21 @@ Deno.test("a run on a QUARANTINED selector yields quarantined findings (authorit
   assertEquals(one.length, 1);
   assertEquals((one[0].context as Record<string, unknown>).subject_unlinked, true);
 });
+
+// Codex P2 on #659: `results` is capped for the prompt, so the headline must
+// count what Opsis found (total_results), not the truncated array.
+Deno.test("a truncated run's headline counts the provider's total, not the capped array", () => {
+  const rows = Array.from({ length: 100 }, (_, i) => row(`p${i}`));
+  const out = extractFindings("opsis_search", run(rows, { total_results: 350, results_returned: 100, results_truncated: 250 }));
+  assertEquals(out.length, 1);
+  assertEquals(out[0].value, "jordanvale — 350 Opsis results (unverified)");
+  const ctx = out[0].context as Record<string, unknown>;
+  assertEquals(ctx.platform_count, 350);
+  assertEquals((ctx.urls as string[]).length, 100, "the URL list stays bounded");
+  assertEquals(ctx.opsis_results_truncated, 250);
+});
+
+Deno.test("a total smaller than the rows held is ignored (never under-counts)", () => {
+  const out = extractFindings("opsis_search", run([row("a"), row("b"), row("c"), row("d")], { total_results: 2 }));
+  assertEquals(out[0].value, "jordanvale — 4 Opsis results (unverified)");
+});
