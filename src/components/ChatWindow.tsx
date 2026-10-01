@@ -65,6 +65,7 @@ import {
   mergePersistedChatMessages,
   shouldAbortClientStream,
   type TerminalThreadUpdate,
+  applyRealtimeInsert,
 } from "@/lib/chat-terminal-reconcile";
 
 const SUPABASE_PROJECT_ID = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined)?.trim();
@@ -1689,6 +1690,11 @@ function ChatWindowInner({
 
   clearErrorRef.current = clearError;
 
+  // Read by the realtime INSERT handler, which subscribes once per thread and so
+  // cannot close over the current `status`.
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
   // True only while the error ON SCREEN is still the one we adjudicated as a
   // harmless client drop over a live run. Derived rather than stored, so the
   // suppression expires by construction: if `error` becomes a different fault,
@@ -1764,19 +1770,15 @@ function ChatWindowInner({
             created_at?: string;
           };
           if (!row.id || !row.role || !Array.isArray(row.parts)) return;
-          const serialized = JSON.stringify(row.parts);
-          setMessages((current) => {
-            const alreadyPresent = current.some((message) =>
-              message.id === row.id ||
-              (message.role === row.role && JSON.stringify(message.parts) === serialized)
-            );
-            if (alreadyPresent) return current;
-            return [...current, {
-              id: row.id,
-              role: row.role,
-              parts: row.parts,
-            } as UIMessage];
-          });
+          // The same identity as the terminal reconcile: a plain JSON compare
+          // missed the server's post-stream Evidence Record append and added the
+          // stored row as a second copy of the run (2026-10-01).
+          const streaming = statusRef.current === "streaming" || statusRef.current === "submitted";
+          setMessages((current) => applyRealtimeInsert(
+            current,
+            { id: row.id!, role: row.role, parts: row.parts } as UIMessage,
+            streaming,
+          ));
           if (row.created_at) {
             setCreatedAtMap((current) => ({ ...current, [row.id!]: row.created_at! }));
           }

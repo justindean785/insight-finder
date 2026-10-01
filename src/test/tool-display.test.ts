@@ -119,3 +119,25 @@ describe("humanizeStage", () => {
     expect(humanizeStage(undefined)).toBe("Review");
   });
 });
+
+/**
+ * Production 2026-10-01: GLM wrote its `<arg_key>/<arg_value>` call markup into
+ * the tool NAME, and the fallback title-cased it into a cycle label carrying the
+ * markup and the case's selectors.
+ */
+describe("malformed tool names", () => {
+  const POLLUTED = 'minimax_correlate</arg_value>artifacts</arg_key><arg_value>[{"kind":"domain","value":"site.example"}]';
+
+  it("are labelled as a malformed call, never rendered verbatim", () => {
+    const display = toolDisplayName(POLLUTED);
+    expect(display).toBe("Analyst — Malformed call (Minimax Correlate)");
+    expect(display).not.toMatch(/[<>{}[\]"]/);
+    expect(display).not.toContain("site.example");
+  });
+
+  it("toolActionLabel gives the action only, for malformed and unknown names alike", () => {
+    expect(toolActionLabel(POLLUTED)).toBe("Malformed call (Minimax Correlate)");
+    expect(toolActionLabel("mystery_tool_xyz")).toBe("Mystery Tool Xyz");
+    expect(toolActionLabel("<arg_key>")).toBe("Malformed call");
+  });
+});
