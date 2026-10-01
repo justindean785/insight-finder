@@ -242,3 +242,56 @@ Deno.test("a host-policy skip releases the PAID-CALL SLOT, not just the seconds"
     globalThis.fetch = origFetch;
   }
 });
+
+Deno.test("every tool a skip hint NAMES is on the live planner menu", () => {
+  // The hint is the whole value of the skip: it tells the planner where to go
+  // instead. A hint naming a tool the planner cannot select routes the pivot
+  // nowhere, which is strictly worse than the slow failure it replaced.
+  //
+  // This is NOT the list in tools/minimax.ts — nothing imports that file, so
+  // the names added there were dead. `buildTools()` defines its own inline
+  // `baseToolList` in tool-registry.ts and that is the one that ships; the
+  // negative control below fails if this test is ever pointed back at the
+  // dead copy.
+  const src = Deno.readTextFileSync(new URL("./tool-registry.ts", import.meta.url));
+  const start = src.indexOf("const baseToolList = [");
+  assert(start > 0, "inline baseToolList not found — buildTools() shape changed");
+  const list = src.slice(start, src.indexOf("];", start));
+  assert(
+    !list.includes("intelbase_email_lookup"),
+    "negative control: this is the dead tools/minimax.ts list, not the live one",
+  );
+
+  const hosts = [
+    "www.youtube.com",
+    "youtu.be",
+    "www.roblox.com",
+    "steamcommunity.com",
+    "t.me",
+    "www.chess.com",
+    "namemc.com",
+    "www.gofundme.com",
+    "www.scamadviser.com",
+    "www.threads.net",
+  ];
+  const named = new Set<string>();
+  for (const h of hosts) {
+    const d = socialfetchHostPolicy(h);
+    assertEquals(d.action, "skip", h);
+    if (d.action !== "skip") continue;
+    // Drop `{ ... }` argument illustrations first — `roblox_user { user_id }`
+    // would otherwise contribute `user_id` as if it were a tool name.
+    const prose = d.hint.replace(/\{[^}]*\}/g, " ");
+    for (const m of prose.matchAll(/\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b/g)) {
+      // The hint names the failing tool too; only the replacements matter.
+      if (m[1] !== "socialfetch_web_read") named.add(m[1]);
+    }
+  }
+  assert(named.size >= 4, `expected several named replacements, got ${[...named].join(", ")}`);
+  for (const t of named) {
+    assert(
+      list.includes(`"${t}"`),
+      `skip hints name ${t} but the live planner baseToolList cannot propose it`,
+    );
+  }
+});

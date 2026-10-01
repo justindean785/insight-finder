@@ -1075,6 +1075,13 @@ export function buildTools(ctx: ToolContext) {
             // Profile / social
             "socialfetch_lookup","socialfetch_web_read","cordcat_discord_lookup","github_user","github_code_search",
             "hackernews_user","reddit_user","gravatar_profile",
+            // Free keyless profile readers. These MUST be here, not only in the
+            // system prompt: `socialfetch_web_read` now skips youtube / roblox /
+            // steamcommunity and its hint names these as the replacement, so a
+            // planner menu without them routes the pivot nowhere. (The copy in
+            // tools/minimax.ts is dead code — nothing imports it. This inline
+            // list is the one `buildTools()` actually ships.)
+            "youtube_oembed","roblox_user","steam_profile",
             "username_sweep","username_search",
             // Email enrichment
             "hunter_domain_search","hunter_email_finder","hunter_email_verifier","hunter_combined",
