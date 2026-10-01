@@ -220,15 +220,44 @@ Deno.test("steam_profile: accepts a full URL and needs some selector", async () 
   assert(String(missing.error).includes("url, steamid64 or vanity"));
 });
 
-Deno.test("steam_profile: non-XML body is found:false; abort returns { error }", async () => {
+// ⚠️ This test previously asserted `ok:true, found:false` for a maintenance
+// page, which contradicted this file's own header contract and MANUFACTURED
+// EVIDENCE: Steam answers 200 with a maintenance page, an age/consent
+// interstitial, a rate-limit notice or a truncated body, none of which carry an
+// <error> element — and "no <steamID64>" was being reported as "this account
+// does not exist", then cached as that for the TTL. Only a recognized <error>
+// document is a successful negative. Raised in review on this branch.
+Deno.test("steam_profile: an unrecognized 200 body is a tool FAULT, never a negative", async () => {
+  for (const body of [
+    "<html>maintenance</html>",
+    "",
+    "<?xml version=\"1.0\"?><profile><steamI",            // truncated
+    "<html><body>Age verification required</body></html>",
+  ]) {
+    await withFetch(
+      () => new Response(body, { status: 200 }),
+      async () => {
+        const r = await tool("steam_profile").execute({ vanity: "x" }, {});
+        assertEquals(r.ok, false, `must not be a success: ${body.slice(0, 24)}`);
+        assertEquals(r.found, undefined, "must not claim anything about the account");
+        assertEquals(r.failure_class, "malformed_response");
+      },
+    );
+  }
+});
+
+Deno.test("steam_profile: the <error> document stays the ONLY successful negative", async () => {
   await withFetch(
-    () => new Response("<html>maintenance</html>", { status: 200 }),
+    () => new Response("<response><error>The specified profile could not be found.</error></response>", { status: 200 }),
     async () => {
-      const r = await tool("steam_profile").execute({ vanity: "x" }, {});
+      const r = await tool("steam_profile").execute({ vanity: "nope" }, {});
       assertEquals(r.ok, true);
       assertEquals(r.found, false);
     },
   );
+});
+
+Deno.test("steam_profile: abort returns { error }, never a throw", async () => {
   await withFetch(abortError, async () => {
     const r = await tool("steam_profile").execute({ vanity: "x" }, {});
     assert(typeof r.error === "string" && r.error.length > 0);

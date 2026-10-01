@@ -3558,7 +3558,26 @@ export function buildTools(ctx: ToolContext) {
           const err = pick("error");
           if (err) return { ok: true, found: false, profile_url: target, reason: err.slice(0, 200) };
           const steamID64 = pick("steamID64");
-          if (!steamID64) return { ok: true, found: false, profile_url: target, reason: "no steamID64 in response" };
+          if (!steamID64) {
+            // ⚠️ NOT a negative. Steam answers 200 with a maintenance page, an
+            // age/consent interstitial, a rate-limit notice or a truncated body,
+            // and none of those carry an <error> element. Reporting "no such
+            // account" for one MANUFACTURES EVIDENCE: it is an operational fault
+            // dressed as a fact about the target, and the cache would then serve
+            // that fabricated negative for the whole TTL. A recognized <error>
+            // document is the only successful negative; anything else is a tool
+            // fault, so `ok:false` — which keeps it out of the case and out of
+            // the cache.
+            return {
+              ok: false,
+              status: r.status,
+              failure_class: "malformed_response",
+              error: "steam ?xml=1 returned 200 with neither <steamID64> nor <error> — not a profile document",
+              profile_url: target,
+              chars: xml.length,
+              body_head: xml.trim().slice(0, 200) || null,
+            };
+          }
           return {
             ok: true, found: true,
             steamID64,
