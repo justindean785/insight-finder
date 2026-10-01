@@ -232,3 +232,15 @@ describe("computePivots — report pivots re-evaluated live", () => {
     expect(p?.status).toBe("searched");
   });
 });
+
+describe("an email pivot reads the same whichever producer made it", () => {
+  it("evidence-derived and report-recommended email pivots share one honest label", () => {
+    const fromEvidence = computePivots({
+      artifacts: [art({ kind: "email", value: "found@site.example", confidence: 80 })],
+      seedValue: null, reportPivots: [], skipSet: NONE,
+    }).find((p) => p.value === "found@site.example");
+    const fromReport = extractRecommendedPivots("## Recommended next pivots\n- Investigate other@site.example — on the contact page\n")[0];
+    expect(fromEvidence?.actionLabel).toBe("Investigate email");
+    expect(fromReport.actionLabel).toBe("Investigate email");
+  });
+});

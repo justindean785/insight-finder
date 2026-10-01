@@ -35,6 +35,7 @@ import {
   resolveFallbackProvider,
 } from "./lib/preflight-pivot.ts";
 import { positionalPairingSelfTest } from "./message-sanitize.ts";
+import { streamErrorDetailSelfTest } from "./stream-error-classify.ts";
 import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
@@ -436,6 +437,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // silent, so health probes never emit sanitize_positional_pair_repair. Its
   // PRESENCE proves this build is live; ok:false means the pairing rule regressed.
   r.checks.message_sanitize = positionalPairingSelfTest();
+
+  // Do stream errors record the provider's status and code WITHOUT the response
+  // body (stream-error-classify.ts)? A self-test on a synthetic error, pure.
+  r.checks.stream_error_detail = streamErrorDetailSelfTest();
 
   // Is `stop_reason = budget_exhausted` attributed per INVOCATION (#611)? The
   // ceiling latch is request-owned (index.ts `budgetCeiling`, set by
