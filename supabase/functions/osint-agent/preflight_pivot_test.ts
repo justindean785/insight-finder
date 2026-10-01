@@ -12,6 +12,7 @@ import {
   preflightCanPivot,
   preflightPivotHealthDetail,
   preflightPolicyHealthDetail,
+  resolveFallbackProvider,
   shouldPivotOnPreflight,
   shouldRunPreflight,
 } from "./lib/preflight-pivot.ts";
@@ -118,9 +119,55 @@ Deno.test("preflight skip: DEEPSEEK_PREFLIGHT_ALWAYS is read from env, default O
 });
 
 Deno.test("preflight skip: the /health detail names the policy in force", () => {
-  assertStringIncludes(preflightPolicyHealthDetail(false, false), "skipped when no outcome can pivot");
-  assertStringIncludes(preflightPolicyHealthDetail(false, true), "runs");
-  assertStringIncludes(preflightPolicyHealthDetail(true, false), DEEPSEEK_PREFLIGHT_ALWAYS_ENV);
+  assertStringIncludes(preflightPolicyHealthDetail(GEMINI, false, false), "skipped: no outcome can pivot");
+  assertStringIncludes(preflightPolicyHealthDetail(GEMINI, false, true), "runs: a failure can pivot (fallback=gemini-direct)");
+  assertStringIncludes(preflightPolicyHealthDetail(GEMINI, true, false), DEEPSEEK_PREFLIGHT_ALWAYS_ENV);
+});
+
+// Codex P2 on #657: the detail was computed from the two switches alone, so it
+// said "skipped" for a Lovable-gateway fallback that routing DOES probe, and
+// "every request" with no fallback at all, which routing never probes.
+Deno.test("preflight skip: the /health detail follows the RESOLVED fallback, exactly as routing does", () => {
+  assertStringIncludes(preflightPolicyHealthDetail(LOVABLE, false, false), "runs: a failure can pivot (fallback=lovable-gateway)");
+  assertStringIncludes(preflightPolicyHealthDetail(null, true, true), "skipped: no fallback configured");
+  assertStringIncludes(preflightPolicyHealthDetail(GEMINI, true, false), "cannot pivot");
+  // Exhaustive: "runs" in the detail iff shouldRunPreflight says the probe runs.
+  for (const target of [GEMINI, LOVABLE, null]) {
+    for (const always of [false, true]) {
+      for (const enabled of [false, true]) {
+        const runs = shouldRunPreflight(target, enabled, always);
+        const detail = preflightPolicyHealthDetail(target, always, enabled);
+        assertEquals(detail.startsWith("preflight runs"), runs, `${target?.provider ?? "none"}/${always}/${enabled}: ${detail}`);
+      }
+    }
+  }
+});
+
+Deno.test("resolveFallbackProvider: the precedence index.ts routes by", () => {
+  const base = { orchestratorProvider: "", hasLovableGateway: false, hasGeminiDirect: false, allowLovableFallback: false };
+  assertEquals(resolveFallbackProvider(base), null);
+  assertEquals(resolveFallbackProvider({ ...base, hasGeminiDirect: true }), "gemini-direct");
+  // The case Codex named: no Gemini key, Lovable key + ALLOW_LOVABLE_FALLBACK.
+  assertEquals(resolveFallbackProvider({ ...base, hasLovableGateway: true, allowLovableFallback: true }), "lovable-gateway");
+  assertEquals(resolveFallbackProvider({ ...base, hasLovableGateway: true }), null, "the Lovable gateway is opt-in");
+  assertEquals(resolveFallbackProvider({ ...base, hasLovableGateway: true, hasGeminiDirect: true, allowLovableFallback: true }), "gemini-direct");
+  assertEquals(
+    resolveFallbackProvider({ ...base, orchestratorProvider: "lovable", hasLovableGateway: true, hasGeminiDirect: true }),
+    "lovable-gateway",
+    "a Lovable pin wins",
+  );
+  assertEquals(resolveFallbackProvider({ ...base, orchestratorProvider: "lovable", hasGeminiDirect: true }), "gemini-direct", "a pin without a key falls through");
+});
+
+Deno.test("wiring: routing and /health resolve the fallback through the same function", async () => {
+  const idx = await Deno.readTextFile(new URL("./index.ts", import.meta.url));
+  const hh = await Deno.readTextFile(new URL("./health-handler.ts", import.meta.url));
+  assert(idx.includes("const fallbackProvider = resolveFallbackProvider({"), "index.ts must route by resolveFallbackProvider");
+  assert(hh.includes("resolveFallbackProvider({"), "health-handler.ts must report by resolveFallbackProvider");
+  assert(
+    /preflightPolicyHealthDetail\(\s*preflightFallback \? \{ provider: preflightFallback \} : null,/.test(hh),
+    "the health detail must be fed the resolved target",
+  );
 });
 
 Deno.test("wiring: the DeepSeek preflight is gated by shouldRunPreflight and a skip is logged", async () => {
@@ -140,8 +187,9 @@ Deno.test("wiring: the DeepSeek preflight is gated by shouldRunPreflight and a s
 Deno.test("wiring: /health reports checks.preflight_policy from the same switches", async () => {
   const src = await Deno.readTextFile(new URL("./health-handler.ts", import.meta.url));
   assert(
-    src.includes("detail: preflightPolicyHealthDetail(deepseekPreflightAlways(), geminiPreflightPivotEnabled()),"),
-    "the proof key must be reported from the call-time switches",
+    /preflightPolicyHealthDetail\(\s*preflightFallback \? \{ provider: preflightFallback \} : null,\s*deepseekPreflightAlways\(\),\s*geminiPreflightPivotEnabled\(\),\s*\)/
+      .test(src),
+    "the proof key must be reported from the resolved fallback and the call-time switches",
   );
   assert(src.includes("r.checks.preflight_policy = {"), "checks.preflight_policy must be reported");
 });

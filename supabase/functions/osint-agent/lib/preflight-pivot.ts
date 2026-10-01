@@ -100,12 +100,48 @@ export function shouldRunPreflight(
   return always || preflightCanPivot(target, geminiPivotEnabled);
 }
 
-/** `/health` detail for `checks.preflight_policy`. Its PRESENCE proves this build is live. */
-export function preflightPolicyHealthDetail(always: boolean, geminiPivotEnabled: boolean): string {
-  if (always) return `preflight runs on every request (${DEEPSEEK_PREFLIGHT_ALWAYS_ENV}=true)`;
-  return geminiPivotEnabled
-    ? "preflight runs only when a failure could pivot (gemini-direct pivot enabled → runs)"
-    : "preflight skipped when no outcome can pivot (gemini-direct pivot disabled)";
+export type FallbackProvider = "lovable-gateway" | "gemini-direct";
+
+/**
+ * Which provider takes a fallback turn. This IS the precedence `index.ts` builds
+ * `fallbackTarget` from, so `/health` reports the target routing actually resolves
+ * rather than re-deriving it from the switches alone (Codex P2 on #657): a pinned
+ * Lovable gateway first, then direct Gemini, then the Lovable gateway only when
+ * the operator opted in with ALLOW_LOVABLE_FALLBACK.
+ */
+export function resolveFallbackProvider(c: {
+  orchestratorProvider: string;
+  hasLovableGateway: boolean;
+  hasGeminiDirect: boolean;
+  allowLovableFallback: boolean;
+}): FallbackProvider | null {
+  if (c.orchestratorProvider === "lovable" && c.hasLovableGateway) return "lovable-gateway";
+  if (c.hasGeminiDirect) return "gemini-direct";
+  if (c.hasLovableGateway && c.allowLovableFallback) return "lovable-gateway";
+  return null;
+}
+
+/**
+ * `/health` detail for `checks.preflight_policy`. Its PRESENCE proves this build is
+ * live. Derived from `shouldRunPreflight` with the same inputs request routing uses,
+ * so it can never claim a probe runs when routing skips it, or the reverse.
+ */
+export function preflightPolicyHealthDetail(
+  target: { provider: string } | null,
+  always: boolean,
+  geminiPivotEnabled: boolean,
+): string {
+  if (!target) return "preflight skipped: no fallback configured, nothing to pivot to";
+  const fb = `fallback=${target.provider}`;
+  if (!shouldRunPreflight(target, geminiPivotEnabled, always)) {
+    return `preflight skipped: no outcome can pivot (${fb}, gemini-direct pivot disabled)`;
+  }
+  if (!preflightCanPivot(target, geminiPivotEnabled)) {
+    return `preflight runs on every request (${DEEPSEEK_PREFLIGHT_ALWAYS_ENV}=true), but cannot pivot (${fb}, gemini-direct pivot disabled)`;
+  }
+  return always
+    ? `preflight runs on every request (${DEEPSEEK_PREFLIGHT_ALWAYS_ENV}=true); a failure can pivot (${fb})`
+    : `preflight runs: a failure can pivot (${fb})`;
 }
 
 /** `/health` detail for `checks.preflight_pivot`. Its PRESENCE proves this build is live. */

@@ -86,6 +86,7 @@ import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
 import {
   deepseekPreflightAlways,
   geminiPreflightPivotEnabled,
+  resolveFallbackProvider,
   shouldPivotOnPreflight,
   shouldRunPreflight,
 } from "./lib/preflight-pivot.ts";
@@ -618,12 +619,18 @@ Deno.serve(async (req) => {
     // Lovable gateway only participates when the operator pinned it as primary
     // (ORCHESTRATOR_PROVIDER=lovable) or opted in via ALLOW_LOVABLE_FALLBACK.
     // Grok/xAI is never a fallback (primary pin only).
-    const fallbackTarget = lovablePinned
+    // The precedence lives in resolveFallbackProvider (lib/preflight-pivot.ts) so
+    // /health's checks.preflight_policy reports the same target routing resolves.
+    const fallbackProvider = resolveFallbackProvider({
+      orchestratorProvider: ORCHESTRATOR_PROVIDER,
+      hasLovableGateway: !!lovableGateway,
+      hasGeminiDirect: !!geminiDirectGateway,
+      allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
+    });
+    const fallbackTarget = fallbackProvider === "lovable-gateway"
       ? { gateway: lovableGateway!, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
-      : geminiDirectGateway
-      ? { gateway: geminiDirectGateway, modelId: GEMINI_FALLBACK_MODEL_ID, label: "Gemini direct fallback", provider: "gemini-direct" as const }
-      : (lovableGateway && ALLOW_LOVABLE_FALLBACK)
-      ? { gateway: lovableGateway, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
+      : fallbackProvider === "gemini-direct"
+      ? { gateway: geminiDirectGateway!, modelId: GEMINI_FALLBACK_MODEL_ID, label: "Gemini direct fallback", provider: "gemini-direct" as const }
       : null;
     // Pre-flight MiniMax health probe. The fallback selection above only fires
     // when MiniMax's key is missing or the prompt would overflow — it does NOT

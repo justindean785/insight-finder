@@ -13,6 +13,7 @@ import {
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL,
   ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY, OPENADAPTER_API_KEY, OPENADAPTER_BASE_URL,
+  lovableGateway, geminiDirectGateway, ALLOW_LOVABLE_FALLBACK,
   promptBudgetHardCeilingEnabled,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
@@ -30,6 +31,7 @@ import {
   geminiPreflightPivotEnabled,
   preflightPivotHealthDetail,
   preflightPolicyHealthDetail,
+  resolveFallbackProvider,
 } from "./lib/preflight-pivot.ts";
 import { positionalPairingSelfTest } from "./message-sanitize.ts";
 import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
@@ -400,9 +402,19 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Does the run skip a DeepSeek preflight whose answer cannot change routing
   // (lib/preflight-pivot.ts → shouldRunPreflight)? Pure, no network. Its PRESENCE is
   // the behavioural proof that this build is live; the detail names the policy in force.
+  const preflightFallback = resolveFallbackProvider({
+    orchestratorProvider: ORCHESTRATOR_PROVIDER,
+    hasLovableGateway: !!lovableGateway,
+    hasGeminiDirect: !!geminiDirectGateway,
+    allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
+  });
   r.checks.preflight_policy = {
     ok: true,
-    detail: preflightPolicyHealthDetail(deepseekPreflightAlways(), geminiPreflightPivotEnabled()),
+    detail: preflightPolicyHealthDetail(
+      preflightFallback ? { provider: preflightFallback } : null,
+      deepseekPreflightAlways(),
+      geminiPreflightPivotEnabled(),
+    ),
   };
 
   // Does the DEPLOYED sanitizer pair tool-calls by POSITION (message-sanitize.ts)?
