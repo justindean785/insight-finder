@@ -103,6 +103,7 @@ const { WorkspaceTabs } = await import("@/components/workspace/WorkspaceTabs");
 const { ToolsTab } = await import("@/components/workspace/ToolsTab");
 const { useCaseSnapshot } = await import("@/hooks/useCaseSnapshot");
 const { buildWorkspaceTabCounts } = await import("@/lib/workspace-tab-counts");
+const { useCaseSheetModel } = await import("@/hooks/useCaseSheetModel");
 
 const T = "11111111-2222-4333-8444-555555555555";
 
@@ -124,7 +125,11 @@ function threadRow(over: Row = {}): Row {
 /** The tab strip as ChatPage wires it: badges from the SAME snapshot. */
 function Tabs() {
   const { snapshot } = useCaseSnapshot();
-  const counts = buildWorkspaceTabCounts(snapshot?.items ?? [], snapshot?.tools.total ?? 0);
+  const sheet = useCaseSheetModel(T);
+  const counts = buildWorkspaceTabCounts(
+    snapshot?.tools.total ?? 0,
+    sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null,
+  );
   return <WorkspaceTabs active="tools" onChange={() => {}} counts={counts} loading={!snapshot?.hydrated} />;
 }
 
@@ -299,14 +304,14 @@ describe("CaseSnapshotProvider — failed reads fail closed", () => {
 
   const probe = () => screen.getByTestId("probe");
   const syncLabel = () =>
-    screen.getAllByText(/^(Synced|Sync failed|Syncing|Updated)/).map((el) => el.textContent ?? "");
+    screen.getAllByText(/^(Updated|Up to date|Sync failed|Syncing)/).map((el) => el.textContent ?? "");
 
-  it("a refresh whose tool read fails says 'Sync failed', keeps the last count, and does not move 'Synced'", async () => {
+  it("a refresh whose tool read fails says 'Sync failed', keeps the last count, and does not move the Updated time", async () => {
     const tid = freshThread();
     seedFor(tid);
     mountFor(tid);
     await flush();
-    expect(syncLabel().some((t) => t.startsWith("Synced"))).toBe(true);
+    expect(syncLabel().some((t) => t.startsWith("Updated"))).toBe(true);
     expect(headerTools()).toBe("46");
     const syncedBefore = probe().dataset.syncedAt;
     expect(syncedBefore).not.toBe("");
@@ -319,7 +324,7 @@ describe("CaseSnapshotProvider — failed reads fail closed", () => {
     await flush(10);
 
     expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(true);
-    expect(syncLabel().some((t) => t.startsWith("Synced"))).toBe(false);
+    expect(syncLabel().some((t) => t.startsWith("Updated"))).toBe(false);
     // The last good count stays — a failed read never repaints it — and the
     // "last synced" time is NOT advanced by a refresh that kept stale rows.
     expect(headerTools()).toBe("46");
@@ -330,8 +335,8 @@ describe("CaseSnapshotProvider — failed reads fail closed", () => {
     await act(async () => { screen.getAllByRole("button", { name: "Refresh case data" })[0].click(); });
     await flush(10);
     expect(headerTools()).toBe("48");
-    // A refresh that moved a figure reads "Updated <time>" for a moment, then "Synced".
-    expect(syncLabel().some((t) => /^(Synced|Updated)/.test(t))).toBe(true);
+    // A refresh that moved a figure reads "Updated <time>" for a moment, then the last full read time.
+    expect(syncLabel().some((t) => /^Updated/.test(t))).toBe(true);
     expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(false);
     expect(Number(probe().dataset.syncedAt)).toBeGreaterThan(Number(syncedBefore));
   });
@@ -341,7 +346,7 @@ describe("CaseSnapshotProvider — failed reads fail closed", () => {
     seedFor(tid);
     mountFor(tid);
     await flush();
-    expect(syncLabel().some((t) => t.startsWith("Synced"))).toBe(true);
+    expect(syncLabel().some((t) => t.startsWith("Updated"))).toBe(true);
 
     // A heartbeat-only thread UPDATE: the provider does not reconcile, but the
     // shared tool store re-reads on it — and that read fails.

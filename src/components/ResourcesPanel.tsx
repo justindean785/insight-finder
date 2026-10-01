@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useToolbarSlot } from "@/hooks/useToolbarSlot";
 import { CompactFilter, FilterPopover, MenuSelect, type CompactOption } from "@/components/ui/compact-controls";
@@ -1298,11 +1298,32 @@ function PeekField({ label, children }: { label: string; children: React.ReactNo
  * (pass a threadId). This is the core surface of the Evidence workspace tab;
  * it reuses the same ArtifactsList/ArtifactDrawer the rail used to render.
  */
-export function EvidenceBoard({ threadId }: { threadId: string }) {
+export function EvidenceBoard({
+  threadId,
+  focusRequest,
+}: {
+  threadId: string;
+  /** Open one row, whatever filter the board was left on. `n` is a nonce. */
+  focusRequest?: { id: string; n: number } | null;
+}) {
   const { items, updateLocal, loading, error, retry } = useThreadArtifacts(threadId);
   const review = useReviewStates(threadId);
   const [selected, setSelected] = useState<Artifact | null>(null);
   const [statusFilter, setStatusFilter] = useState<EvidenceStatusFilter>("analyst");
+
+  // A handoff from the case sheet names a row that the default Analyst view
+  // may HIDE (it excludes quarantined rows). Widen to All so the row is in the
+  // list, and open its drawer. Applied once per nonce, and only once the row
+  // has actually loaded — the board can mount before its artifacts arrive.
+  const [focusedNonce, setFocusedNonce] = useState<number | null>(null);
+  useEffect(() => {
+    if (!focusRequest || focusRequest.n === focusedNonce) return;
+    const target = items.find((a) => a.id === focusRequest.id);
+    if (!target) return;
+    setStatusFilter("all");
+    setSelected(target);
+    setFocusedNonce(focusRequest.n);
+  }, [focusRequest, focusedNonce, items]);
   const [sortMode, setSortMode] = useState<EvidenceSortMode>("strength");
 
   // Live counts per quick-filter so the analyst sees how much sits in each bucket.

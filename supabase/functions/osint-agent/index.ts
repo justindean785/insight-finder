@@ -83,6 +83,9 @@ import {
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
+import { geminiPreflightPivotEnabled, shouldPivotOnPreflight } from "./lib/preflight-pivot.ts";
+import { redactErrorMessage } from "./lib/redact-error.ts";
+import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
 // Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
@@ -239,8 +242,10 @@ Deno.serve(async (req) => {
       console.warn("[credits] pre-gate check failed (allowing run):", e);
     }
 
-    const { tools, availableToolsForAudit } = buildTools({
+    const { tools, availableToolsForAudit, noteQuarantinedFindings } = buildTools({
       supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector,
+      // Getter: `subjectSeedName` is derived below. Tools only execute after it is set.
+      getSubjectSeedName: () => subjectSeedName,
     });
 
     const modelMessages = await convertToModelMessages(messages);
@@ -311,7 +316,6 @@ Deno.serve(async (req) => {
     trimmedMessages = capTotalToBudget(
       trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW, promptBudgetHardCeilingEnabled(),
     );
-    reportBudgetCeiling(trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, "initial");
     // Bound individual tool-result outputs (a few giant results were holding the
     // prompt at the ~250k schema/length ceiling) and then HARD-GUARANTEE the
     // array is structurally valid for the AI SDK: every tool-result has a
@@ -326,6 +330,13 @@ Deno.serve(async (req) => {
     trimmedMessages = sanitizeModelMessages(
       capToolResultOutputs(trimmedMessages, MAX_TOOL_RESULT_CHARS),
     );
+    // Measure the ceiling on the FINAL array, AFTER sanitize+cap — never before.
+    // sanitizeModelMessages can GROW the array (pass 3 appends a whole tool
+    // message per unpaired tool-call) and capToolResultOutputs can grow a message
+    // too (JSON-escaping an 8k truncated string re-serializes larger), so a
+    // reading taken before them describes something that is never sent. See the
+    // matching call site in prepareStep below; they must stay in step.
+    reportBudgetCeiling(trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, "initial");
 
     // Cumulative cost tracker for this run.
     let runCostMicroUsd = 0;
@@ -721,11 +732,22 @@ Deno.serve(async (req) => {
       // Explicit HTTP failure (status >= 400, incl. an invalid/renamed model id
       // → 400/404) pivots the run; a bare timeout (status 0) does not — same
       // ambiguity policy as the MiniMax preflight.
-      if (!lastDeepseekProbe.ok && lastDeepseekProbe.status >= 400) {
+      // …and a pivot to gemini-direct additionally needs GEMINI_PREFLIGHT_PIVOT_ENABLED:
+      // it finished 0 of 16 runs, so pivoting turned a preflight error into a dead run
+      // (lib/preflight-pivot.ts). Without it the run keeps DeepSeek.
+      if (shouldPivotOnPreflight(lastDeepseekProbe, fallbackTarget, geminiPreflightPivotEnabled())) {
         useFallback = true;
         console.warn(
-          `[orchestrator] deepseek preflight failed after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts (status=${lastDeepseekProbe.status}) → Gemini fallback for thread ${threadId}`,
+          `[orchestrator] deepseek preflight failed after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts (status=${lastDeepseekProbe.status}) → ${fallbackTarget.label} for thread ${threadId}`,
         );
+      } else if (!lastDeepseekProbe.ok && lastDeepseekProbe.status >= 400) {
+        console.warn(JSON.stringify({
+          event: "preflight_pivot_suppressed",
+          thread_id: threadId,
+          status: lastDeepseekProbe.status,
+          fallback: fallbackTarget.provider,
+          reason: "gemini-direct pivot disabled; keeping DeepSeek primary",
+        }));
       } else if (!lastDeepseekProbe.ok) {
         console.info(
           `[orchestrator] deepseek preflight ambiguous (status=${lastDeepseekProbe.status}) after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts — keeping DeepSeek primary for thread ${threadId}`,
@@ -961,10 +983,14 @@ Deno.serve(async (req) => {
         const budgeted = capTotalToBudget(
           trimmed, TOTAL_PROMPT_CHAR_BUDGET, STEP_RECENT_WINDOW, promptBudgetHardCeilingEnabled(),
         );
-        reportBudgetCeiling(budgeted, TOTAL_PROMPT_CHAR_BUDGET, "prepare_step");
         const stepMessagesOut = sanitizeModelMessages(
           capToolResultOutputs(budgeted, MAX_TOOL_RESULT_CHARS),
         );
+        // Measure `stepMessagesOut` — the array this step actually sends — not
+        // `budgeted`. Both sanitizeModelMessages and capToolResultOutputs run
+        // after capTotalToBudget and both can ADD chars, so measuring `budgeted`
+        // reported a size that was never on the wire.
+        reportBudgetCeiling(stepMessagesOut, TOTAL_PROMPT_CHAR_BUDGET, "prepare_step");
         // A1 instrument, per step. It must measure THE PROMPT THIS STEP ACTUALLY
         // SENDS, not the registry-wide baseline: `prepareStep` narrows the tool set
         // per branch (the persistence nudge exposes only record_artifacts, the
@@ -1311,6 +1337,10 @@ Deno.serve(async (req) => {
           const stepFindings = stepToolResults.length > 0
             ? extractStepFindings(stepToolResults, subjectSeedName, { escalated })
             : [];
+          // SYNCHRONOUSLY, before the detached auto-persist below: record_artifacts'
+          // name-quarantine gate must see a name quarantined in THIS step even when
+          // the model records the same-name rows before that insert lands.
+          noteQuarantinedFindings(stepFindings);
           // PRE-NUDGE BUFFER. The gate above can only open AFTER the nudge fires,
           // and the nudge fires only after several unrecorded fan-out steps — so
           // everything the run found before that point was denied by the denylist
@@ -1506,7 +1536,9 @@ Deno.serve(async (req) => {
             // never let the (now correctly-false) overflow flag mask it.
             message_schema_invalid: isSchemaError,
             error_name: errName,
-            message: msg.slice(0, 600),
+            // Redacted: a provider error can echo our key, and this line is kept in
+            // the edge logs (lib/redact-error.ts).
+            message: redactErrorMessage(msg).slice(0, 600),
           }),
         );
         invocationTelemetry.finish({
@@ -1972,7 +2004,10 @@ Deno.serve(async (req) => {
               record_artifact_calls: recordCalls,
               tool_calls: toolCalls,
               in_memory_artifacts: routingGuard.artifactsTotal,
-              seed: seedValueRaw.slice(0, 120),
+              // The seed's KIND and length, never its text: this is a log line, and the
+              // seed is a person's selector. thread_id recovers it from the DB.
+              seed_kind: detectSeedServer(seedValueRaw)?.kind ?? "unknown",
+              seed_chars: seedValueRaw.length,
               // ran lookups but never recorded → almost certainly the record gap,
               // not a genuinely empty case.
               findings_likely: toolCalls > 3 && recordCalls === 0,
@@ -2063,12 +2098,7 @@ Deno.serve(async (req) => {
         }
         const friendly = classifyStreamProviderError(m, name);
         if (friendly) return friendly;
-        const redacted = m
-          .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-          .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
-          .replace(/xai-[A-Za-z0-9._-]+/g, "xai-[REDACTED]")
-          .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
-        return redacted.slice(0, 300) || "Provider stream error";
+        return redactErrorMessage(m).slice(0, 300) || "Provider stream error";
       },
       onFinish: persistFinalMessages,
     });
@@ -2077,12 +2107,8 @@ Deno.serve(async (req) => {
     releaseRunState();
     // setupRequest throws Response objects for 401/403/400 — return them directly
     if (e instanceof Response) return e;
-    console.error("osint-agent error", e);
-    const message = e instanceof Error ? e.message : String(e);
-    return new Response(JSON.stringify({ error: "Internal Server Error", code: "ORCHESTRATOR_FAULT", detail: message }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    // Redacted before it is logged or returned (lib/orchestrator-fault.ts).
+    return orchestratorFaultResponse(e, corsHeaders);
   }
 
 });

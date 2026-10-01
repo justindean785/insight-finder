@@ -102,7 +102,42 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   deepfind_vessel_lookup: { requiresKey: "DEEPFIND_API_KEY" },
   deepfind_mac_lookup: { requiresKey: "DEEPFIND_API_KEY" },
   deepfind_dark_web_link: { requiresKey: "DEEPFIND_API_KEY" },
-  deepfind_email_breach: { requiresKey: "DEEPFIND_API_KEY" },
+  // ── DISABLED 2026-09-30 (measured provider death, not a transient 403) ─────
+  // deepfind_email_breach is hard-disabled on the same evidence standard as
+  // deepfind_reverse_email above. tool_usage_log over the 21 days to 2026-09-30,
+  // counting only real attempts (outcome IN ('ok','failed'), skips and empties
+  // excluded from BOTH sides — see the tool_health migration header for why):
+  // 3 ok / 11 failed, and the LAST SUCCESS was 2026-09-11 — nineteen days with
+  // nothing but HTTP 403.
+  //
+  // The bar matters, because three sibling providers were flagged alongside it
+  // by an audit and every one of them is HEALTHY on the same query:
+  //   rapidapi_breach_search  58 ok /  6 failed, last ok 2026-09-25
+  //   nominatim_geocode        6 ok /  2 failed, last ok 2026-09-23  (OSM 1 req/s)
+  // Gating those would destroy working capability. A 403 is not a dead
+  // credential; NINETEEN DAYS WITHOUT A SUCCESS is. Do not extend this block to
+  // a provider that still lands calls — re-measure first.
+  //
+  // ⚠️ READ THE STREAK, NOT ONLY THE RATIO — rapidapi_breach_search is the
+  // cautionary case for this file's own method. Its 58/6 looks healthy, but all
+  // 58 successes predate 2026-09-25 19:55 and every one of the 6 calls after it
+  // (through 09-30 03:23) was a 403: a step change the 21-day aggregate hides in
+  // both directions. The operator fixed the account on 2026-09-30 and it is
+  // deliberately left ENABLED, but "healthy" was the wrong word for a provider
+  // 0-for-6 over five days. When the ratio and the recency disagree, the recency
+  // is the live fact. Confirm the fix the same way — a fresh `ok` row, not a
+  // report that it was fixed:
+  //   select outcome, max(created_at) from tool_usage_log
+  //   where tool_name='rapidapi_breach_search' and created_at > '2026-09-30'
+  //   group by 1;
+  //
+  // reddit_user is deliberately NOT disabled here despite 0 ok / 7 failed: its
+  // 403 is Reddit blocking datacenter IPs, and disabling it reverses a settled
+  // operator decision (CLAUDE.md). That one needs a ruling, not a commit.
+  //
+  // Execute code is LEFT intact — re-enable by restoring
+  // `{ requiresKey: "DEEPFIND_API_KEY" }` if the provider recovers.
+  deepfind_email_breach: { disabled: true },
   deepfind_transaction_viewer: { requiresKey: "DEEPFIND_API_KEY" },
   virustotal_lookup: { requiresKey: "VIRUSTOTAL_API_KEY" },
   fofa_search: { requiresKey: "FOFA_API_KEY" },

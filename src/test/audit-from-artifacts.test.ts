@@ -83,6 +83,21 @@ describe("audit adapter — honest source collapsing", () => {
     const findings = checkIndependence(artifactsToSources(arts));
     expect(findings.some((f) => f.effectiveCount < f.declaredCount)).toBe(true);
   });
+
+  it("names collapsed sources by what the analyst sees, not by artifact UUID (username-seed case report)", () => {
+    const ids = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
+    const arts = [
+      art({ id: ids[0], source: "username_sweep", value: "quietfalcon77" }),
+      art({ id: ids[1], source: "username_sweep", value: "https://www.roblox.com/user.aspx?username=jordanvael" }),
+    ];
+    const f = checkIndependence(artifactsToSources(arts)).find((x) => x.message.includes("share origin"));
+    expect(f).toBeDefined();
+    expect(f!.message).toContain('"quietfalcon77"');
+    expect(f!.message).toContain('share origin "username_sweep"');
+    for (const id of ids) expect(f!.message).not.toContain(id);
+    // The machine-readable ids are still carried for every consumer that keys on them.
+    expect(f!.sources).toEqual(ids);
+  });
 });
 
 describe("audit verdict roll-up", () => {
@@ -113,5 +128,18 @@ describe("audit verdict roll-up", () => {
       expect(["Low", "Medium", "High", "Verified"]).toContain(c.declaredTier);
       expect(Array.isArray(c.cells)).toBe(true);
     }
+  });
+});
+
+describe("audit source labels — minor safety", () => {
+  it("a minor-flagged row never lends its value to a guardrail message", () => {
+    const arts = [
+      art({ id: "m1", source: "username_sweep", value: "kid_handle_2011", metadata: { possible_minor: true } }),
+      art({ id: "m2", source: "username_sweep", value: "other" }),
+    ];
+    const f = checkIndependence(artifactsToSources(arts)).find((x) => x.message.includes("share origin"));
+    expect(f).toBeDefined();
+    expect(f!.message).not.toContain("kid_handle_2011");
+    expect(f!.message).toContain("minor-safety redacted");
   });
 });

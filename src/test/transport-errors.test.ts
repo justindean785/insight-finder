@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { describeTransportError, isNetworkDropError, parseHttpStatusFromError } from "@/lib/tool-run";
+import {
+  describeTransportError, formatHttpFailure, isNetworkDropError, parseHttpStatusFromError, withHttpStatusInErrorBody,
+} from "@/lib/tool-run";
 
 // ── Tests: parseHttpStatusFromError ────────────────────────────
 
@@ -126,6 +128,90 @@ describe("describeTransportError", () => {
   it("returns catch-all for unrecognized errors", () => {
     const result = describeTransportError(new Error("something weird happened"));
     expect(result).toContain("failed before the stream started");
+  });
+  it("returns out-of-credits message for 402", () => {
+    expect(describeTransportError(new Error("HTTP 402"))).toContain("Out of beta credits");
+  });
+
+  it("returns bad-request message for 400", () => {
+    expect(describeTransportError(new Error("HTTP 400 Bad Request (MISSING_PARAMS)"))).toContain("Bad request");
+  });
+
+  it("returns too-large message for 413", () => {
+    const result = describeTransportError(new Error("HTTP 413 Payload Too Large (BODY_TOO_LARGE)"));
+    expect(result).toContain("Request too large");
+    expect(result).toContain("Start a new investigation");
+  });
+});
+
+// ── Tests: carrying the HTTP status through the AI SDK transport ────────────
+//
+// The SDK throws `new Error(await response.text())` on a non-2xx answer, so the
+// body is the only thing that survives. These pin that the status gets into it.
+
+/** What the osint-agent actually sends (auth.ts / orchestrator-fault.ts shapes). */
+const EDGE_BODIES: Array<{ status: number; body: Record<string, string>; says: string }> = [
+  { status: 400, body: { error: "Bad Request", code: "MISSING_PARAMS", detail: "Request must include threadId and messages array." }, says: "Bad request" },
+  { status: 401, body: { error: "Unauthorized", code: "INVALID_SESSION", detail: "Session is invalid or expired. Sign in again." }, says: "Session expired" },
+  { status: 402, body: { error: "Out of credits", code: "INSUFFICIENT_CREDITS", detail: "No credits left." }, says: "Out of beta credits" },
+  { status: 403, body: { error: "Forbidden", code: "THREAD_ACCESS_DENIED", detail: "This thread does not exist or does not belong to your account." }, says: "Access denied" },
+  { status: 413, body: { error: "Payload Too Large", code: "BODY_TOO_LARGE", detail: "Request body exceeds the 2000000 byte limit." }, says: "Request too large" },
+  { status: 429, body: { error: "Too Many Requests", code: "RATE_LIMITED", detail: "Slow down. Retry in 42s." }, says: "Rate limited" },
+  { status: 500, body: { error: "Internal Server Error", code: "ORCHESTRATOR_FAULT", detail: "engine fault" }, says: "Backend error (HTTP 500)" },
+];
+
+describe("withHttpStatusInErrorBody", () => {
+  it.each(EDGE_BODIES)("HTTP $status: the message the SDK builds names the status and the server's code", async ({ status, body, says }) => {
+    const res = await withHttpStatusInErrorBody(
+      new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }),
+    );
+    expect(res.status).toBe(status);
+    // Exactly what the SDK does with it.
+    const err = new Error(await res.text());
+    expect(parseHttpStatusFromError(err)).toBe(status);
+    expect(err.message).toContain(`(${body.code})`);
+    expect(err.message).toContain(body.detail);
+    expect(describeTransportError(err)).toContain(says);
+    // A response came back from the server — never a dropped connection.
+    expect(isNetworkDropError(err)).toBe(false);
+  });
+
+  it.each(EDGE_BODIES)("HTTP $status: the RAW body alone loses the status (the defect this fixes)", ({ body }) => {
+    const err = new Error(JSON.stringify(body));
+    expect(parseHttpStatusFromError(err)).toBeNull();
+  });
+
+  it("passes a 2xx response through untouched", async () => {
+    const ok = new Response("data: {}\n\n", { status: 200 });
+    expect(await withHttpStatusInErrorBody(ok)).toBe(ok);
+  });
+
+  it("reads the Supabase gateway's `message` when there is no `detail` (undeployed function)", async () => {
+    const res = await withHttpStatusInErrorBody(
+      new Response(JSON.stringify({ code: "NOT_FOUND", message: "Requested function was not found" }), { status: 404 }),
+    );
+    const err = new Error(await res.text());
+    expect(err.message).toBe("HTTP 404 (NOT_FOUND): Requested function was not found");
+    expect(describeTransportError(err)).toContain("Edge function not deployed");
+  });
+
+  it("keeps a non-JSON body, stripped of markup and bounded", async () => {
+    const html = `<html><body><h1>502 Bad Gateway</h1>${"x".repeat(1000)}</body></html>`;
+    const res = await withHttpStatusInErrorBody(new Response(html, { status: 502, statusText: "Bad Gateway" }));
+    const text = await res.text();
+    expect(text.startsWith("HTTP 502 Bad Gateway: 502 Bad Gateway")).toBe(true);
+    expect(text).not.toContain("<h1>");
+    expect(text.length).toBeLessThan(400);
+  });
+
+  it("an empty body still names the status", async () => {
+    const res = await withHttpStatusInErrorBody(new Response("", { status: 503 }));
+    expect(parseHttpStatusFromError(new Error(await res.text()))).toBe(503);
+  });
+
+  it("puts the status and code before the first colon, which is where the failure card cuts its headline", () => {
+    const line = formatHttpFailure(403, "", JSON.stringify(EDGE_BODIES[3].body));
+    expect(line.split(":")[0]).toBe("HTTP 403 Forbidden (THREAD_ACCESS_DENIED)");
   });
 });
 

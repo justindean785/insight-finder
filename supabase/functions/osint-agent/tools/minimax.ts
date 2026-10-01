@@ -117,6 +117,7 @@ export const minimax_plan_pivots = tool({
         "deepfind_mac_lookup","deepfind_dark_web_link",
         "socialfetch_lookup","cordcat_discord_lookup","github_user","github_code_search",
         "hackernews_user","reddit_user","gravatar_profile",
+        "youtube_oembed","roblox_user","steam_profile",
         "username_sweep","username_search",
         "hunter_domain_search","hunter_email_finder","hunter_email_verifier","hunter_combined",
         "whois_lookup","dns_records","crtsh_subdomains","http_fingerprint",

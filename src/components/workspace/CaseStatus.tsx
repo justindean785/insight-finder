@@ -123,7 +123,9 @@ export function CaseSyncStatus({ className, compact = false }: { className?: str
     label = `Updated ${clock(change.at)}`;
     detail = `Case updated: ${describeCaseChanges(change.changes)}.`;
   } else {
-    label = syncedAt ? `Synced ${clock(syncedAt)}` : "Synced";
+    // One word for "the figures are current as of": "Updated". A second word
+    // ("Synced") for the same fact read as a different state beside it.
+    label = syncedAt ? `Updated ${clock(syncedAt)}` : "Up to date";
     detail = syncedAt ? `Last read in full ${fullStamp(syncedAt)}.` : "Read from the server.";
   }
 

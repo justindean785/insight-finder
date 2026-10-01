@@ -117,19 +117,52 @@ export function CopyButton({
 
 /* ── MetricCard ─────────────────────────────────────────────────────── */
 
+/**
+ * One reading on an instrument bank. The ONE metric tile in this product.
+ *
+ * Its own header used to note that OverviewTab kept a second, visibly different
+ * copy of this component; that copy is gone and what it had learned lives here.
+ *
+ * TWO THINGS A COUNT NEEDS. A denominator, because "Quarantined 9" is a crisis
+ * in a twelve-artifact case and a footnote in a five-hundred-artifact one; and
+ * a rule whose LENGTH is the share, drawn from the same authority table the
+ * evidence ledger uses for a confidence, so a tile and a row read as one
+ * product. The track is half the reading: two in fifty-five is a 3.6% fill,
+ * which against an invisible track is a decorative tick and against a visible
+ * one is the sentence the number is making.
+ *
+ * HUE ON THE ICON AND THE RULE, INK ON THE FIGURE. ui/confidence.tsx settled
+ * this: "ink, never the tier colour — the bar's LENGTH already says how big the
+ * number is", and colouring a figure by its value made a low score read as a
+ * failure rather than as a small measurement.
+ *
+ * WEIGHT FOLLOWS MEANING. A reading at zero recedes to reference ink. A case
+ * with no failures should not spend the same attention as one with three.
+ */
+
 export type MetricTone = "neutral" | "ok" | "danger" | "warn";
 
+/** Tone maps onto the authority ladder rather than a second colour vocabulary. */
 const METRIC_TONE: Record<MetricTone, string> = {
   neutral: "text-foreground",
-  ok: "text-[hsl(var(--confidence-high))]",
-  danger: "text-destructive",
-  warn: "text-[hsl(var(--confidence-mid))]",
+  ok: "text-[hsl(var(--authority-verified))]",
+  danger: "text-[hsl(var(--danger))]",
+  warn: "text-[hsl(var(--authority-review))]",
+};
+
+const METRIC_RULE: Record<MetricTone, string | undefined> = {
+  neutral: undefined,
+  ok: "verified",
+  danger: "conflict",
+  warn: "review",
 };
 
 export function MetricCard({
   icon: Icon,
   label,
   value,
+  of,
+  share,
   tone = "neutral",
   hint,
   className,
@@ -137,26 +170,57 @@ export function MetricCard({
   icon?: LucideIcon;
   label: string;
   value: ReactNode;
+  /** The whole `value` is a share of. Renders as a denominator beside it. */
+  of?: number | null;
+  /** 0..1. Omit when the reading is not a share of anything (a duration). */
+  share?: number | null;
   tone?: MetricTone;
   /** Tooltip explaining the metric. */
   hint?: string;
   className?: string;
 }) {
   const color = METRIC_TONE[tone];
+  const dormant = typeof value === "number" && value === 0;
+  const pct = share == null ? null : Math.max(0, Math.min(1, share));
   return (
-    <div
-      // `panel` rather than a flat `bg-surface-1` box: this is the same
-      // instrument reading as OverviewTab's Stat, and the two rendered as
-      // visibly different objects — one lit, one a plain rectangle.
-      className={cn("panel stat-tile px-3 py-2.5", className)}
-      title={hint}
-    >
-      <div className="flex items-center gap-1.5 text-micro tracking-normal text-muted-foreground">
-        {Icon && <Icon className={cn("w-3 h-3", tone !== "neutral" && color)} />}
-        <span className="truncate">{label}</span>
+    <div className={cn("panel stat-tile flex h-full flex-col gap-1 px-3.5 py-2.5", className)} title={hint}>
+      {/* Two lines reserved, always: a bank whose figures sit on two baselines
+          because one label wrapped reads as a layout accident. */}
+      <div
+        className={cn(
+          "flex min-h-[1.625rem] items-start gap-1.5 text-eyebrow uppercase leading-[1.1] tracking-[0.12em]",
+          dormant ? "text-faint-foreground" : "text-subtle-foreground",
+        )}
+      >
+        {Icon && <Icon className={cn("mt-px h-3 w-3 shrink-0", tone !== "neutral" && !dormant && color)} />}
+        <span className="min-w-0">{label}</span>
       </div>
-      <div className={cn("mt-1 text-2xl font-display font-semibold leading-none", tone === "neutral" ? "stat-figure" : "tabular-nums", color)}>
-        {value}
+
+      <div className="flex min-w-0 items-baseline gap-1.5">
+        <span
+          className={cn(
+            // 28px, not 32: at seven readings across a run summary the tile is
+            // ~140px wide and "1m 27s" wrapped to two lines, which put one
+            // figure on its own baseline and undid the alignment the label row
+            // above exists to protect. `nowrap` makes that failure loud rather
+            // than silent if a longer value ever arrives.
+            "whitespace-nowrap font-display text-[1.75rem] font-semibold leading-none tracking-[-0.03em]",
+            dormant ? "tabular-nums text-faint-foreground" : "stat-figure",
+          )}
+        >
+          {value}
+        </span>
+        {of != null && (
+          <span className="shrink-0 font-mono text-micro tabular-nums text-faint-foreground">of {of}</span>
+        )}
+      </div>
+
+      <div className="mt-auto pt-2">
+        {pct != null && (
+          <span className="stat-rule" aria-hidden>
+            <i style={{ width: `${Math.max(pct > 0 ? 2 : 0, pct * 100)}%` }} data-authority={METRIC_RULE[tone]} />
+          </span>
+        )}
       </div>
     </div>
   );
