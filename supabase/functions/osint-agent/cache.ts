@@ -346,22 +346,54 @@ export function withTimeoutSignal(opts: unknown, signal: AbortSignal): unknown {
   return { ...((opts as Record<string, unknown>) ?? {}), abortSignal: merged };
 }
 
+/**
+ * ⚠️ EVERY GOVERNANCE CHECK IN THIS WRAPPER IS KEYED ON WHAT THESE TWO RETURN.
+ *
+ * A tool whose input uses none of the recognized field names yields selector
+ * type `"value"` and selector value `""` — and an EMPTY selector makes the
+ * analyst-rejection lookup, the `subject_unlinked` quarantine lookup and the
+ * `unproven_linkage` taint all vacuous. They do not refuse and they do not
+ * taint; they match nothing and fall silently open. So a new tool that invents
+ * a parameter name is not merely uncached, it is UNGOVERNED.
+ *
+ * `vanity` is the sharp case: it is a username in everything but spelling, so
+ * without the alias an analyst could quarantine a handle and the planner could
+ * still read that same handle's Steam profile at full subject authority. It is
+ * therefore mapped to `username`, where the quarantine table can see it.
+ *
+ * `steamid64` / `user_id` are platform account ids and are deliberately NOT
+ * mapped to `username`: keying a numeric id into the username namespace invites
+ * exactly the cross-type collision `lib/dispatch-quarantine.ts` warns about
+ * (`normalizeTarget` collapses non-alphanumerics, so distinct selector kinds
+ * can normalize equal). They get their own `account_id` type, which cannot
+ * collide with a handle while still producing a NON-EMPTY key, so the checks
+ * above evaluate honestly instead of no-oping.
+ *
+ * Adding a key here changes `params_hash` for any tool that uses it, because
+ * selector keys are excluded from the params bag. Verified 2026-10-01: no tool
+ * in the live registry takes `vanity`, `steamid64` or `user_id` as an INPUT
+ * except the two added in this PR, which have no cached rows yet — so this
+ * invalidates nothing. Re-check that before adding a fourth.
+ */
 function detectSelectorType(input: Record<string, unknown>): string {
   const hinted = String(input.kind ?? input.selector_type ?? "").trim().toLowerCase();
   if (hinted) return hinted;
   if (typeof input.email === "string") return "email";
-  if (typeof input.username === "string" || typeof input.handle === "string") return "username";
+  if (typeof input.username === "string" || typeof input.handle === "string" || typeof input.vanity === "string") return "username";
   if (typeof input.domain === "string") return "domain";
   if (typeof input.phone === "string") return "phone";
   if (typeof input.ip === "string") return "ip";
   if (typeof input.url === "string") return "url";
   if (typeof input.name === "string") return "name";
+  if (input.steamid64 != null || input.user_id != null) return "account_id";
   if (typeof input.value === "string") return "value";
   return "value";
 }
 
 function detectSelectorValue(input: Record<string, unknown>): string {
-  const raw = input.value ?? input.email ?? input.username ?? input.handle ?? input.domain ?? input.ip ?? input.phone ?? input.url ?? input.name ?? input.seed ?? "";
+  const raw = input.value ?? input.email ?? input.username ?? input.handle ?? input.vanity ??
+    input.domain ?? input.ip ?? input.phone ?? input.url ?? input.name ?? input.seed ??
+    input.steamid64 ?? input.user_id ?? "";
   return typeof raw === "string" ? raw : String(raw ?? "");
 }
 
@@ -370,12 +402,15 @@ const SELECTOR_INPUT_KEYS = new Set([
   "email",
   "username",
   "handle",
+  "vanity",
   "domain",
   "ip",
   "phone",
   "url",
   "name",
   "seed",
+  "steamid64",
+  "user_id",
   "kind",
   "selector_type",
   "force",

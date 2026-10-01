@@ -259,9 +259,9 @@ beforeEach(() => {
   hoisted.onErrorSettled = 0;
   hoisted.heartbeatGate = null;
   hoisted.releaseHeartbeat = null;
-  // The once-per-session readiness probe in send() uses global fetch directly,
-  // not the transport. Answer it "deployed and ready" so the run reaches the
-  // transport, which is where the drop under test is produced.
+  // The stuck-run sweeper hits `?health=1` with global fetch directly, not the
+  // transport. Answer it "deployed and ready"; the drop under test is produced
+  // by the transport mock above.
   vi.stubGlobal("fetch", async () => ({
     ok: true,
     status: 200,

@@ -23,7 +23,7 @@ import { buildDecisionSets, isManualDispatchRefused } from "@/lib/analyst-decisi
 import { KIND_TO_PIVOT } from "@/lib/intel";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
-import { isSubmitBlocked } from "@/lib/submit-guard";
+import { isSubmitBlocked, submitRefusal, submitRefusalMessage } from "@/lib/submit-guard";
 import { RunChips, RunMenu } from "@/components/pivots/RunControls";
 import { composerPrimary } from "@/lib/composer-primary";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -32,7 +32,6 @@ import {
   AUTO_RUN_MAX_CYCLES, AUTO_RUN_SETTLE_MS, CONTINUE_PROMPT, REPORT_PROMPT,
   autoRunStopMessage, canShowRunControls, decideAutoContinue,
 } from "@/lib/run-controls";
-import { interpretReadinessProbe, type ReadinessBody } from "@/lib/readiness-probe";
 import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
@@ -46,7 +45,10 @@ import { computePivots } from "@/lib/pivot-engine";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
 import { scrollBehavior } from "@/lib/motion";
 import { fetchWithRetry } from "@/lib/fetch-retry";
-import { deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone, isNetworkDropError } from "@/lib/tool-run";
+import {
+  deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone, describeTransportError,
+  isNetworkDropError, parseHttpStatusFromError, withHttpStatusInErrorBody,
+} from "@/lib/tool-run";
 import { isRunHeartbeatAlive } from "@/lib/stale-thread";
 import { shouldFollowChatScroll, shouldAdoptInitialMessages, CHAT_REENGAGE_THRESHOLD_PX } from "@/lib/chat-scroll";
 import {
@@ -76,44 +78,6 @@ const FUNCTIONS_URL = osintAgentUrl(SUPABASE_URL, SUPABASE_PROJECT_ID);
 const FAIL_PREFIX = "__STATUS__:failed:";
 const CACHE_BANNER_TYPE = "data-investigation-cache";
 
-
-// Cross-browser timeout helper. AbortSignal.timeout() is missing on
-// Safari ≤ 17.3, Firefox ESR, and Node 18 (used by Vitest), where the
-// very first probe would throw TypeError: AbortSignal.timeout is not
-// a function and prevent scans from starting. Manual AbortController
-// works everywhere.
-function signalWithTimeout(ms: number): { signal: AbortSignal; cancel: () => void } {
-  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
-    // Native fast path.
-    return { signal: AbortSignal.timeout(ms), cancel: () => {} };
-  }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new DOMException("TimeoutError", "TimeoutError")), ms);
-  return { signal: controller.signal, cancel: () => clearTimeout(timer) };
-}
-
-function parseHttpStatusFromError(err: unknown): number | null {
-  const msg = String((err as { message?: unknown })?.message ?? err ?? "");
-  const m = msg.match(/\bHTTP\s*([45]\d{2})\b/i) ?? msg.match(/\bstatus\s*[:=]\s*([45]\d{2})\b/i) ?? msg.match(/\b([45]\d{2})\b/);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isFinite(n) ? n : null;
-}
-
-function describeTransportError(err: unknown): string {
-  const msg = String((err as { message?: unknown })?.message ?? err ?? "").toLowerCase();
-  const status = parseHttpStatusFromError(err);
-  if (status === 401) return "Session expired — your login has timed out. Sign in again to continue.";
-  if (status === 402 || msg.includes("insufficient_credits") || msg.includes("out of credits"))
-    return "Out of beta credits — you've used your investigation allowance for now. Contact us to top up your account.";
-  if (status === 403) return "Access denied — this thread doesn't belong to your account. Open your own thread or create a new one.";
-  if (status === 404) return "Edge function not deployed — the OSINT agent backend wasn't found. Deploy the Supabase function and retry.";
-  if (status === 429) return "Rate limited by the scan backend — too many requests. Wait ~30 seconds and try again.";
-  if (status === 502 || status === 503 || status === 504) return "Scan backend temporarily unavailable — upstream provider or dependency is down. Retry in a minute.";
-  if (status && status >= 500) return `Backend error (HTTP ${status}) — the OSINT agent encountered a server fault. Check Supabase function logs for details.`;
-  if (/failed to fetch|networkerror|network request failed|load failed|dns/i.test(msg)) return "Network failure — cannot reach the scan backend. Verify your Supabase project is running and the function URL is correct.";
-  return "Scan request failed before the stream started — check the browser console for transport details.";
-}
 
 function copyToClipboard(text: string, label = "Copied") {
   navigator.clipboard.writeText(text).then(
@@ -1474,10 +1438,9 @@ function ChatWindowInner({
   const clearErrorRef = useRef<() => void>(() => {});
   const failSavedRef = useRef(false);
   const unmountedRef = useRef(false);
-  const readyProbedOnceRef = useRef(false);
   // Synchronous re-entrancy lock for scan submission. `status` (from useChat)
   // only flips to "submitted" once sendMessage() runs — which is AFTER the async
-  // cache lookup + readiness probe in send(). Without this ref a rapid double/
+  // cache lookup + case-start write in send(). Without this ref a rapid double/
   // triple-click fires multiple scans (each POST costs credits, and the duplicate
   // messages trigger React "duplicate key" warnings). Set synchronously before
   // any await; released in finally.
@@ -1574,7 +1537,8 @@ function ChatWindowInner({
       const { data } = await supabase.auth.getSession();
       const headers = new Headers(init?.headers);
       if (data.session) headers.set("Authorization", `Bearer ${data.session.access_token}`);
-      return fetchWithRetry(url, { ...init, headers });
+      // The SDK keeps only a failed response's BODY; this puts the status in it.
+      return withHttpStatusInErrorBody(await fetchWithRetry(url, { ...init, headers }));
     },
   }));
 
@@ -1964,7 +1928,14 @@ function ChatWindowInner({
   const send = async () => {
     const text = input.trim();
     const hasFiles = attachments.length > 0;
-    if ((!text && !hasFiles) || isSubmitBlocked(status, submitLockRef.current)) return;
+    // An empty box stays silent — the button is disabled and nothing was asked
+    // for. A refused submission does not: the analyst pressed a live control.
+    if (!text && !hasFiles) return;
+    const sendRefusal = submitRefusal(status, submitLockRef.current);
+    if (sendRefusal) {
+      toast.info(submitRefusalMessage(sendRefusal));
+      return;
+    }
     // The preflight decides what is sent: the request exactly as typed, plus one
     // Target line only when the analyst corrected the detected type.
     if (!preflight.canSubmit) return;
@@ -2045,46 +2016,11 @@ function ChatWindowInner({
       toast.error("Supabase function URL is not configured. Set VITE_SUPABASE_URL (or VITE_SUPABASE_PROJECT_ID) in .env.");
       return;
     }
-    // ── Pre-flight readiness probe (once per session) ──
-    // GET (not HEAD) so we can read the JSON body and distinguish
-    //   404 → function not deployed
-    //   200 + ok:true  → ready to scan
-    //   503 + ok:false → deployed but a required dep is missing (e.g. orchestrator key)
-    if (!readyProbedOnceRef.current) {
-      readyProbedOnceRef.current = true;
-      const { signal, cancel } = signalWithTimeout(5000);
-      try {
-        const probeRes = await fetch(`${FUNCTIONS_URL}?health=1`, { method: "GET", signal });
-        if (probeRes.status === 404) {
-          // NB: `supabase functions deploy` 403s on this Lovable-owned project —
-          // the real deploy path is the Lovable mirror sync, not a CLI command.
-          toast.error("Backend edge function is not deployed. Deploy osint-agent via the Lovable mirror to continue.");
-          return;
-        }
-        if (probeRes.status === 503 || probeRes.ok) {
-          let body: ReadinessBody | null = null;
-          try {
-            body = (await probeRes.json()) as ReadinessBody;
-          } catch {
-            body = null;
-          }
-          const decision = interpretReadinessProbe(probeRes.status, body);
-          if (decision.block) {
-            toast.error(decision.message);
-            return;
-          }
-        }
-      } catch (probeErr) {
-        if ((probeErr as Error)?.name === "TimeoutError" || (probeErr as Error)?.name === "AbortError") {
-          toast.error("Scan backend timed out — Supabase function may be cold-starting. Retry in a few seconds.");
-          readyProbedOnceRef.current = false; // allow retry
-          return;
-        }
-        // Network error — let it through; the real sendMessage will surface it
-      } finally {
-        cancel(); // always clear the manual timer so we don't leak it
-      }
-    }
+    // No pre-send `?health=1` probe. It awaited a health check that makes paid
+    // LLM pings (6.7 s TTFB measured 2026-09-30) under a 5 s timeout, so a
+    // HEALTHY backend could refuse the first Send as "cold-starting". The POST
+    // now explains its own failure: the transport puts the HTTP status into the
+    // error (`withHttpStatusInErrorBody`), so a 404 still reads "not deployed".
     setInput("");
     setAttachments([]);
     setControls(DEFAULT_CONTROLS);
@@ -2185,7 +2121,14 @@ function ChatWindowInner({
   const artifactsCountRef = useRef(artifacts.length);
   artifactsCountRef.current = artifacts.length;
   const sendCycle = useCallback(async (prompt: string, countAsAutoCycle: boolean) => {
-    if (isSubmitBlocked(status, submitLockRef.current)) return;
+    // Continue / Write report / arming Auto-run all land here, and all three are
+    // buttons the analyst just pressed. A bare `return` is what made Continue
+    // look broken — see submit-guard.ts for the operator report this comes from.
+    const refusal = submitRefusal(status, submitLockRef.current);
+    if (refusal) {
+      toast.info(submitRefusalMessage(refusal));
+      return;
+    }
     stoppedByAnalystRef.current = false;
     setAutoRun((prev) => ({
       ...prev,
@@ -2438,7 +2381,11 @@ function ChatWindowInner({
     // The same synchronous lock the composer and the pivot rail hold. Retry used
     // to skip it, so a double-click on "Retry investigation" started two billed
     // runs: the server has no idempotency key and does not reject overlaps.
-    if (isSubmitBlocked(status, submitLockRef.current)) return;
+    const retryRefusal = submitRefusal(status, submitLockRef.current);
+    if (retryRefusal) {
+      toast.info(submitRefusalMessage(retryRefusal));
+      return;
+    }
     const lastUser = [...messages].reverse().find((m) => m.role === "user") as UIMessage | undefined;
     if (!lastUser) return toast.error("No previous message to retry");
     const text = (lastUser.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
