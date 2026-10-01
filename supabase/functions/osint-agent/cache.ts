@@ -765,7 +765,7 @@ export function wrapToolsWithCache(
             if (page >= DEAD_TARGET_MAX_PAGES) { truncated = true; break; }
             const { data, error } = await adminDb
               .from("tool_usage_log")
-              .select("tool_name,outcome,input_json,created_at")
+              .select("tool_name,outcome,input_json,created_at,cached")
               .eq("thread_id", ctx.investigationId)
               .in("outcome", DEAD_TARGET_READ_OUTCOMES)
               .order("created_at", { ascending: true })
@@ -1416,9 +1416,11 @@ export function wrapToolsWithCache(
         // It still sits ABOVE the tool-call cap, the circuit and the paid-call
         // reservation, so a refusal reserves no budget slot and leaves no circuit
         // state — the same free-refusal placement as the correlate gates below.
-        // `force` overrides: an analyst deliberately re-running a pivot card is the
-        // one legitimate reason to try a dead target again.
-        if (deadTargetMemoryEnabled() && !force && !ALWAYS_ALLOW_TOOLS.has(name)) {
+        // An analyst override is the one legitimate reason to try a dead target
+        // again: the documented "manual override: <selector>" flow (manualOverride,
+        // computed above) — the path an analyst can actually reach, since tool
+        // schemas do not expose `force` (Codex P2 on #673) — or an explicit force.
+        if (deadTargetMemoryEnabled() && !force && !manualOverride && !ALWAYS_ALLOW_TOOLS.has(name)) {
           const prior = deadTargetCount(await loadDeadTargets(), name, sel);
           if (prior >= DEAD_TARGET_FLOOR) {
             await logUsage(false, false, Date.now() - t0, DEAD_TARGET_REFUSAL_ERROR, null, true, {

@@ -66,6 +66,8 @@ export type UsageRow = {
   outcome?: unknown;
   input_json?: unknown;
   created_at?: unknown;
+  /** A cache replay: the provider was never called. */
+  cached?: unknown;
 };
 
 /**
@@ -113,6 +115,11 @@ export function buildDeadTargets(
 
   const out = new Map<string, number>();
   for (const { row: r } of ordered) {
+    // A cache replay never reached the provider, so it proves nothing about
+    // whether the target is reachable NOW. It neither counts nor resets — else a
+    // free replay (the key omits params) would clear two live failures and buy
+    // another paid attempt (Codex P2 on #673).
+    if (r.cached === true) continue;
     const outcome = typeof r.outcome === "string" ? r.outcome : "";
     const failed = outcome === "failed";
     const reset = RESET_OUTCOMES.has(outcome);

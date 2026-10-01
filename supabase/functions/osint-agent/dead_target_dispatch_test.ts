@@ -29,6 +29,7 @@ type UsageRowFixture = {
   outcome: string;
   input_json: Record<string, unknown>;
   created_at?: string;
+  cached?: boolean;
 };
 
 /**
@@ -91,13 +92,13 @@ function countingTool(calls: { n: number }): Tool {
 }
 
 let threadSeq = 0;
-function wrap(calls: { n: number }, db: SupabaseClient) {
+function wrap(calls: { n: number }, db: SupabaseClient, extra: { manualOverrideSelector?: string } = {}) {
   threadSeq += 1;
   const investigationId = `33333333-4444-4555-8666-${String(threadSeq).padStart(12, "0")}`;
   clearRuntime(investigationId);
   circuit.clearThread(investigationId);
   return wrapToolsWithCache({ socialfetch_web_read: countingTool(calls) }, {
-    investigationId, userId: "u1", supabase: db,
+    investigationId, userId: "u1", supabase: db, ...extra,
   });
 }
 type Exec = { execute: (i: unknown, o: unknown) => Promise<unknown> };
@@ -227,4 +228,32 @@ Deno.test("a CACHE HIT on a dead target is still served — the gate sits below 
   assertEquals(r.ok, true, "the cached result is returned, NOT a dead-target refusal");
   assertEquals(r.refused_by, undefined);
   assertEquals((r.data as unknown), "cached page");
+});
+
+// Codex P2 on #673: tool schemas do not expose `force`, so the override an
+// analyst can actually reach is the "manual override: <selector>" flow.
+Deno.test("the analyst's manual override for this selector retries a dead target", async () => {
+  const calls = { n: 0 };
+  const w = wrap(calls, fakeSupabase({ failures: 5 }), { manualOverrideSelector: DEAD_URL });
+  await (w.socialfetch_web_read as unknown as Exec).execute({ url: DEAD_URL }, {});
+  assertEquals(calls.n, 1);
+});
+
+Deno.test("a manual override for a DIFFERENT selector does not open this one", async () => {
+  const calls = { n: 0 };
+  const w = wrap(calls, fakeSupabase({ failures: 5 }), { manualOverrideSelector: LIVE_URL });
+  await (w.socialfetch_web_read as unknown as Exec).execute({ url: DEAD_URL }, {});
+  assertEquals(calls.n, 0);
+});
+
+// Codex P2 on #673: a cache replay never reached the provider.
+Deno.test("a cached replay after two live failures does not clear the streak", async () => {
+  const rows = [
+    ...failures(2),
+    { tool_name: "socialfetch_web_read", outcome: "ok", cached: true, input_json: { url: DEAD_URL }, created_at: new Date(Date.UTC(2026, 8, 20, 0, 1, 0)).toISOString() },
+  ];
+  const calls = { n: 0 };
+  const w = wrap(calls, fakeSupabase({ rows }));
+  await (w.socialfetch_web_read as unknown as Exec).execute({ url: DEAD_URL }, {});
+  assertEquals(calls.n, 0, "still dead: the replay proved nothing about reachability");
 });
