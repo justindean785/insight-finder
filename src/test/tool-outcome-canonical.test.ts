@@ -203,3 +203,87 @@ describe("aggregateToolHealth — honest per-tool rollup (Issue #1)", () => {
     }
   });
 });
+
+describe("aggregateToolHealth — repeated failure on one case is attention-worthy", () => {
+  const at = (tool: string, outcome: string | null, error_msg: string | null, status_code: number | null, ok: boolean | null, created_at: string) =>
+    ({ tool_name: tool, outcome, error_msg, status_code, ok, created_at });
+
+  it("three cancelled attempts with no data back flag the tool, whatever the category", () => {
+    // Production 2026-09-20: socialfetch_web_read aborted 7× on one YouTube
+    // channel and Health showed "Cancelled 3 · Needs attention 0".
+    const { attention, rows } = aggregateToolHealth([
+      at("socialfetch_web_read", "failed", "AbortError: The signal has been aborted", null, false, "2026-09-20T11:58:43Z"),
+      at("socialfetch_web_read", "failed", "AbortError: The signal has been aborted", null, false, "2026-09-20T11:59:13Z"),
+      at("socialfetch_web_read", "failed", "AbortError: The signal has been aborted", null, false, "2026-09-20T11:59:39Z"),
+    ]);
+    expect(attention.map((r) => r.toolName)).toEqual(["socialfetch_web_read"]);
+    expect(rows[0].lastIssue?.message).toMatch(/3 attempts on this case, none returned data/);
+  });
+
+  it("two attempts, or one success among them, do not trip it", () => {
+    const two = aggregateToolHealth([
+      at("socialfetch_web_read", "failed", "AbortError: The signal has been aborted", null, false, "2026-09-20T11:58:43Z"),
+      at("socialfetch_web_read", "failed", "AbortError: The signal has been aborted", null, false, "2026-09-20T11:59:13Z"),
+    ]);
+    expect(two.attention).toHaveLength(0);
+    const mixed = aggregateToolHealth([
+      at("jina_reader_scrape", "failed", "jina_reader_scrape exceeded 12000ms tool timeout", null, false, "2026-09-20T11:58:43Z"),
+      at("jina_reader_scrape", "failed", "jina_reader_scrape exceeded 12000ms tool timeout", null, false, "2026-09-20T11:59:13Z"),
+      at("jina_reader_scrape", "empty", "no usable result", 200, true, "2026-09-20T11:59:39Z"),
+    ]);
+    expect(mixed.attention).toHaveLength(0);
+  });
+});
+
+describe("the Faulted tile and the Needs attention list count different things", () => {
+  // Production 2026-09-30, screenshotted by the operator: a Complete case with
+  // 175 tool calls rendered a "0 — Needs attention" stat tile directly above a
+  // red "Needs attention (1)" card for rapidapi_breach_search (Denied 3). Both
+  // numbers were correct for what they measured and both were labelled "Needs
+  // attention", so the panel contradicted itself on one screen.
+  //
+  // These pin the two quantities apart. The tile is a member of a five-way
+  // partition of CALLS; the list counts TOOLS and escalates on repetition.
+  const at = (tool: string, outcome: string | null, error_msg: string | null, status_code: number | null, ok: boolean | null, created_at: string) =>
+    ({ tool_name: tool, outcome, error_msg, status_code, ok, created_at });
+
+  const faultedCalls = (t: Record<string, number>) => t.config_error + t.failed + t.unknown;
+
+  it("a tool denied every time has ZERO faulted calls and still needs attention", () => {
+    const { totals, attention } = aggregateToolHealth([
+      at("rapidapi_breach_search", "failed", "upstream returned HTTP 403", 403, false, "2026-09-30T00:35:32Z"),
+      at("rapidapi_breach_search", "failed", "upstream returned HTTP 403", 403, false, "2026-09-30T01:56:06Z"),
+      at("rapidapi_breach_search", "failed", "upstream returned HTTP 403", 403, false, "2026-09-30T03:23:34Z"),
+    ]);
+    expect(totals.http_denied).toBe(3);
+    expect(faultedCalls(totals)).toBe(0);      // the tile
+    expect(attention).toHaveLength(1);          // the list
+    expect(attention[0].toolName).toBe("rapidapi_breach_search");
+  });
+
+  it("a single hard fault puts the same tool in both", () => {
+    const { totals, attention } = aggregateToolHealth([
+      at("ip_intel", "failed", "HTTP 200 ip-api lookup failed", 500, false, "2026-09-30T02:10:00Z"),
+    ]);
+    expect(faultedCalls(totals)).toBe(1);
+    expect(attention.map((r) => r.toolName)).toEqual(["ip_intel"]);
+  });
+
+  it("the five tiles stay a partition of every call", () => {
+    const { totals } = aggregateToolHealth([
+      at("a", "ok", null, 200, true, "2026-09-30T00:00:01Z"),
+      at("b", "empty", "no record found", 200, true, "2026-09-30T00:00:02Z"),
+      at("c", "skipped", "duplicate call", null, true, "2026-09-30T00:00:03Z"),
+      at("d", "failed", "AbortError: the signal was aborted", null, false, "2026-09-30T00:00:04Z"),
+      at("e", "failed", "exceeded 18000ms tool timeout", null, false, "2026-09-30T00:00:05Z"),
+      at("f", "failed", "upstream returned HTTP 403", 403, false, "2026-09-30T00:00:06Z"),
+      at("g", "failed", "upstream returned HTTP 503", 503, false, "2026-09-30T00:00:07Z"),
+    ]);
+    const succeeded = totals.success;
+    const empty = totals.empty;
+    const skipped = totals.skipped + totals.cancelled;
+    const degraded = totals.timeout + totals.rate_limited + totals.http_denied + totals.blocked;
+    expect(succeeded + empty + skipped + degraded + faultedCalls(totals)).toBe(totals.total);
+    expect(totals.total).toBe(7);
+  });
+});

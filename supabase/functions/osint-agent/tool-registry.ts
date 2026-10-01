@@ -26,6 +26,8 @@ import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDom
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
 import { collisionPeerSignal, type CollisionPeer } from "./lib/quarantine.ts";
+import { loadRefusedArtifacts, type QuarantineRow } from "./lib/dispatch-quarantine.ts";
+import { inheritedNameQuarantine, quarantinedPersonNames, recordNameQuarantineEnabled, type QuarantinedName, type ThreadRow } from "./lib/record-name-quarantine.ts";
 import {
   isQueuedPlaceholder,
   stripStatusAssertions,
@@ -162,6 +164,11 @@ export interface ToolContext {
   detectedSeedType: string;
   messages: UIMessage[];
   manualOverrideSelector: string | null;
+  /** The request's PERSON seed, normalized ("" when not a person seed). A getter
+   *  because index.ts derives it after buildTools is called; tools only execute
+   *  later. `triageState.seed` cannot stand in for it: triage_seed accepts only
+   *  email/username. Optional so existing callers and tests keep working. */
+  getSubjectSeedName?: () => string;
 }
 
 // Hosts that reliably return 451/403 THROUGH r.jina.ai — scraping them is a
@@ -372,6 +379,10 @@ export const SOCIALFETCH_YOUTUBE_HOSTS = ["youtube.com", "youtu.be"] as const;
 export const SOCIALFETCH_YOUTUBE_FAST_TIMEOUT_MS = 6_000;
 export const SOCIALFETCH_DEFAULT_TIMEOUT_MS = 18_000;
 
+/** Characters of converted document returned per `markdown_extract` call.
+ *  Bounded to protect the turn's context budget; `next_offset` pages past it. */
+export const MARKDOWN_EXTRACT_WINDOW = 12_000;
+
 export type SocialfetchHostDecision =
   | { action: "skip"; hint: string }
   | { action: "fast_timeout"; timeoutMs: number }
@@ -458,6 +469,55 @@ export function normalizeSocialPlatform(platform: unknown): string {
 
 export function buildTools(ctx: ToolContext) {
   const { supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector } = ctx;
+
+  // ── record-name-quarantine: request-local state + one loader for BOTH writers ──
+  // Quarantined findings extracted in THIS request, noted synchronously by
+  // index.ts's onStepFinish BEFORE the detached auto-persist write lands. Without
+  // it, a record_artifacts call in the very next step races that insert, reads no
+  // quarantined name, and writes the same-name rows at full authority.
+  const pendingQuarantineRows: ThreadRow[] = [];
+  const noteQuarantinedFindings = (
+    findings: ReadonlyArray<{ kind: string; value: string; context?: Record<string, unknown> }>,
+  ): void => {
+    for (const f of findings ?? []) {
+      if (f?.context?.subject_unlinked === true) {
+        pendingQuarantineRows.push({ kind: f.kind, value: f.value, metadata: f.context });
+      }
+    }
+  };
+  /** The seed the exemption compares against: the request's PERSON seed, or none.
+   *  Never triageState.seed: that is whatever email/username the model passed to
+   *  triage_seed, and tokens() splits "jordan.vale@…" into the name "Jordan Vale",
+   *  so a namesake escaped. The auto-persist gate exempts a person seed only. */
+  const quarantineSeed = (): string | null => ctx.getSubjectSeedName?.() || null;
+  /** Thread + pending quarantined person names. Fails OPEN on a read error: an
+   *  authority stamp must not turn a DB blip into stamping every row. */
+  const loadQuarantinedNames = async (): Promise<QuarantinedName[]> => {
+    let rows: ThreadRow[] = [];
+    try {
+      const res = await loadRefusedArtifacts(
+        async (from, to) => {
+          const { data, count, error } = await supabase
+            .from("artifacts")
+            .select("kind,value,metadata", { count: "exact" })
+            .eq("thread_id", threadId)
+            .in("kind", ["name", "person", "source_person"])
+            .order("created_at", { ascending: true })
+            .order("id", { ascending: true })
+            .range(from, to);
+          return { data: (data ?? null) as QuarantineRow[] | null, count, error };
+        },
+        () => "",
+      );
+      rows = res.rows;
+      if (!res.complete) {
+        console.warn(JSON.stringify({ event: "record_name_quarantine_read_incomplete", thread_id: threadId, rows: res.rows.length, reason: res.reason }));
+      }
+    } catch (e) {
+      console.warn(JSON.stringify({ event: "record_name_quarantine_read_failed", thread_id: threadId, error: String(e).slice(0, 200) }));
+    }
+    return quarantinedPersonNames([...rows, ...pendingQuarantineRows]);
+  };
 
   const tools = {
     list_tools: tool({
@@ -2608,8 +2668,13 @@ export function buildTools(ctx: ToolContext) {
             message: "url must be http or https",
           })
           .describe("Public http(s) URL of the document or page to convert"),
+        // Character offset into the converted document. The window is capped so
+        // one call cannot flood the turn's context; `next_offset` in the result
+        // is how you read the rest. See MARKDOWN_EXTRACT_WINDOW.
+        offset: z.number().int().min(0).optional()
+          .describe("Character offset to read from (default 0). Use next_offset from the previous call to page through a long document."),
       })),
-      execute: async ({ url }) => {
+      execute: async ({ url, offset }) => {
         try {
           const r = await fetchT("https://markdown.new/", {
             method: "POST",
@@ -2623,14 +2688,36 @@ export function buildTools(ctx: ToolContext) {
             return { error: `markdown.new ${r.status}: ${data?.error ?? "conversion failed"}`, status: r.status };
           }
           const content = String(data.content ?? "");
+          // PAGINATE, don't silently truncate. This used to return
+          // `content.slice(0, 12000)` with a bare `truncated: true` and no way
+          // to reach the rest — a 41,842-char upload arrived as 29% of itself
+          // and the model had no signal that the other 71% was retrievable, so
+          // it reasoned over a fragment as though it were the document.
+          //
+          // The window stays 12k ON PURPOSE. Raising it would trade a
+          // truncation bug for a context-growth bug, and context growth is the
+          // measured cause of the 180s invocation ceiling (27 of 54
+          // invocations forced-finalize at ~182s). Windowing gives full
+          // document access at a bounded per-turn cost; the model asks for
+          // more only when the first window justifies it.
+          const start = Math.min(Math.max(0, offset ?? 0), content.length);
+          const slice = content.slice(start, start + MARKDOWN_EXTRACT_WINDOW);
+          const end = start + slice.length;
           return {
             ok: true,
             source: "markdown.new",
             url,
             title: data.title,
             tokens: data.tokens,
-            truncated: content.length > 12000,
-            content: content.slice(0, 12000),
+            total_chars: content.length,
+            offset: start,
+            returned_chars: slice.length,
+            // Null when this window reached the end — the model's signal to stop.
+            next_offset: end < content.length ? end : null,
+            // Retained for back-compat with anything reading the old shape:
+            // true whenever this response is not the whole document.
+            truncated: content.length > end || start > 0,
+            content: slice,
           };
         } catch (e) { return { error: String(e) }; }
       },
@@ -4504,20 +4591,46 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: memoSchema("github_code_search", () => z.object({ query: z.string() })),
       execute: async ({ query }) => {
         try {
-          const headers: Record<string, string> = {
-            "User-Agent": "Proximity-OSINT",
-            Accept: "application/vnd.github.v3.text-match+json",
+          const url = `https://api.github.com/search/code?q=${encodeURIComponent(query)}&per_page=20`;
+          const call = async (authed: boolean) => {
+            const headers: Record<string, string> = {
+              "User-Agent": "Proximity-OSINT",
+              Accept: "application/vnd.github.v3.text-match+json",
+            };
+            if (authed && GITHUB_API_TOKEN) headers.Authorization = `Bearer ${GITHUB_API_TOKEN}`;
+            const res = await fetchT(url, { headers });
+            const body = await res.text();
+            let parsed: GitHubCodeSearchResponse = {};
+            try { parsed = JSON.parse(body); } catch { parsed = { raw: body.slice(0, 500) }; }
+            return { res, body, parsed };
           };
-          if (GITHUB_API_TOKEN) headers.Authorization = `Bearer ${GITHUB_API_TOKEN}`;
-          const r = await fetchT(`https://api.github.com/search/code?q=${encodeURIComponent(query)}&per_page=20`, { headers });
-          const text = await r.text();
-          let data: GitHubCodeSearchResponse = {};
-          try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 500) }; }
+
+          let authenticated = !!GITHUB_API_TOKEN;
+          let { res: r, body: text, parsed: data } = await call(authenticated);
+
+          // A CONFIGURED-BUT-REJECTED token must not make this tool worse than
+          // no token at all. This tool's own description promises an
+          // unauthenticated fallback (60 req/hr), but that fallback only ever
+          // covered "no token set" — a stale or revoked GITHUB_API_TOKEN 401ed
+          // and the call was simply lost. Observed on the 2026-09-12
+          // `baig_azhar` case: `github_code_search` reported "Config 1 — HTTP
+          // 401" on the Health tab and persisted a `weak_lead` artifact saying
+          // the search FAILED, while the same query unauthenticated would have
+          // answered. Retry ONCE, without the credential, and report which
+          // mode produced the result.
+          let staleToken = false;
+          if (!r.ok && (r.status === 401 || r.status === 403) && authenticated) {
+            console.warn(`[github_code_search] token rejected (HTTP ${r.status}) — retrying unauthenticated`);
+            staleToken = true;
+            authenticated = false;
+            ({ res: r, body: text, parsed: data } = await call(false));
+          }
+
           if (!r.ok) {
             const remaining = r.headers.get("x-ratelimit-remaining");
             const reset = r.headers.get("x-ratelimit-reset");
-            console.warn(`[github_code_search] HTTP ${r.status} authed=${!!GITHUB_API_TOKEN} remaining=${remaining} reset=${reset} msg=${(data?.message ?? "").slice(0, 200)}`);
-            return { error: `github ${r.status}`, status: r.status, authenticated: !!GITHUB_API_TOKEN, rate_remaining: remaining, message: data?.message, snippet: text.slice(0, 300) };
+            console.warn(`[github_code_search] HTTP ${r.status} authed=${authenticated} stale_token=${staleToken} remaining=${remaining} reset=${reset} msg=${(data?.message ?? "").slice(0, 200)}`);
+            return { error: `github ${r.status}`, status: r.status, authenticated, token_rejected: staleToken, rate_remaining: remaining, message: data?.message, snippet: text.slice(0, 300) };
           }
           const items = (data?.items ?? []).map((i: GitHubCodeMatch) => {
             const textMatches = Array.isArray(i.text_matches) ? (i.text_matches as Array<{ fragment?: unknown }>) : [];
@@ -4526,7 +4639,7 @@ export function buildTools(ctx: ToolContext) {
               matches: textMatches.map((m) => m.fragment).slice(0, 3),
             };
           });
-          return { ok: true, authenticated: !!GITHUB_API_TOKEN, total: data?.total_count, items };
+          return { ok: true, authenticated, token_rejected: staleToken || undefined, total: data?.total_count, items };
         } catch (e) { return { error: String(e) }; }
       },
     }),
@@ -4905,6 +5018,14 @@ export function buildTools(ctx: ToolContext) {
         // row the thread already has.
         const { keys: priorByKey, truncated: threadDedupPartial } =
           await loadThreadArtifactIdentities(supabase, threadId, triageState.seed ?? null);
+        // Write-path linkage gate for MODEL-AUTHORED rows (lib/record-name-quarantine.ts):
+        // a row naming a person this thread has ACTIVELY quarantined inherits that
+        // quarantine. `loadQuarantinedNames` reads the thread completely and merges
+        // quarantines extracted earlier in THIS request (see its definition).
+        let quarantinedNames: QuarantinedName[] = [];
+        let nameQuarantineStamped = 0;
+        const nameQuarantineOn = recordNameQuarantineEnabled();
+        if (nameQuarantineOn) quarantinedNames = await loadQuarantinedNames();
         /** Confidence differences on rows declined as thread-wide duplicates.
          *  DISCLOSED, never applied — see the note at the rejection site. */
         const confidenceDeltasSuppressed: Array<{
@@ -5048,6 +5169,16 @@ export function buildTools(ctx: ToolContext) {
             // Spread LAST so a corrected `note` overrides the model-supplied one.
             ...dateSanity.metaPatch,
           };
+          if (nameQuarantineOn && !collisionExcluded) {
+            const inherited = inheritedNameQuarantine(v.value, quarantinedNames, quarantineSeed());
+            if (inherited) {
+              Object.assign(meta, inherited);
+              // Release is an ANALYST decision (src/lib/quarantine-release.ts). The
+              // model cannot pre-release its own row by writing the flag.
+              delete meta.linkage_confirmed;
+              nameQuarantineStamped++;
+            }
+          }
           // One observation is identified only by its authority-bearing surface.
           // Model-authored metadata labels remain persisted for disclosure, but
           // cannot manufacture another observation row or corroboration.
@@ -5367,6 +5498,16 @@ export function buildTools(ctx: ToolContext) {
           // A dedup gate that quietly stopped deduping would be worse than one
           // that says so: a partial scan means a duplicate may have been let in.
           ...(threadDedupPartial ? { thread_dedup_partial: true } : {}),
+          // Told, not hidden: the model must not re-assert these as the subject's.
+          ...(nameQuarantineStamped > 0
+            ? {
+                name_quarantined: nameQuarantineStamped,
+                name_quarantine_note:
+                  "Some rows name a person this investigation has NOT linked to the subject (a quarantined same-name identity). " +
+                  "They were recorded with subject_unlinked and carry no subject authority. Do not describe them as the subject; " +
+                  "link the name with an independent selector (shared handle, email, photo, location) before relying on it.",
+              }
+            : {}),
           ...(memory_hits.length > 0
             ? {
                 memory_hits,
@@ -5481,7 +5622,19 @@ export function buildTools(ctx: ToolContext) {
           ...(listingAgent ? { contact_type: "real_estate_listing_agent" } : {}),
           ...(bioName ? { bio_cross_link: true } : {}),
           ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
-        };
+        } as Record<string, unknown>;
+        // Same write-path linkage gate as record_artifacts: this shim is a full
+        // duplicate implementation and is advertised in the catalog, so gating only
+        // the plural tool would leave the bypass one spelling away.
+        let singleNameQuarantined = false;
+        if (!collisionExcluded && recordNameQuarantineEnabled()) {
+          const inherited = inheritedNameQuarantine(v.value, await loadQuarantinedNames(), quarantineSeed());
+          if (inherited) {
+            Object.assign(enrichedMeta, inherited);
+            delete enrichedMeta.linkage_confirmed;
+            singleNameQuarantined = true;
+          }
+        }
         // THREAD-WIDE dedup, same gate as record_artifacts (2026-08-28). This
         // shim is a full duplicate implementation, not a delegation, and it is
         // advertised in the catalog — so deduping only the plural tool would
@@ -5557,7 +5710,20 @@ export function buildTools(ctx: ToolContext) {
           _content_snapshot: JSON.stringify(meta).slice(0, 1500),
           _metadata: meta,
         }).then(() => {}, (e: unknown) => console.warn("[record_artifact] append_evidence:", e));
-        return { ok: true, kind: row.kind, value: row.value, ...(minor ? { minor_safety_flag: true } : {}) };
+        return {
+          ok: true,
+          kind: row.kind,
+          value: row.value,
+          ...(minor ? { minor_safety_flag: true } : {}),
+          ...(singleNameQuarantined
+            ? {
+                name_quarantined: 1,
+                name_quarantine_note:
+                  "This row names a person this investigation has NOT linked to the subject (a quarantined same-name identity). " +
+                  "It was recorded with subject_unlinked and carries no subject authority.",
+              }
+            : {}),
+        };
       },
     }),
     record_evidence: tool({
@@ -6129,5 +6295,5 @@ export function buildTools(ctx: ToolContext) {
     },
   });
 
-  return { tools, availableToolsForAudit };
+  return { tools, availableToolsForAudit, noteQuarantinedFindings };
 }

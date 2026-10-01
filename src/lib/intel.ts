@@ -1198,9 +1198,17 @@ export function inferToolGaps(audit: ToolAudit): { kind: string; suggested: stri
   const used = new Set(
     audit.tools.flatMap((t) => [t.tool.toLowerCase(), ...t.kinds.map((k) => k.toLowerCase())]),
   );
+  // Match the covered kinds through the alias table, not on their raw spelling.
+  // `SUGGESTED_TOOLS_BY_KIND` is keyed by selector CLASS (`ip`, `username`,
+  // `domain`), while `kindsCovered` holds whatever each write path recorded —
+  // the auto-persist path writes `ip_address`/`social_account`, the model's
+  // record_artifacts path writes `ip`/`username`. On the 2026-09-12
+  // `baig_azhar` export that left eight `ip_address` rows invisible to gap
+  // inference while a single `ip` row drove it, from the same case.
+  const covered = new Set([...audit.kindsCovered].map((k) => KIND_TO_PIVOT[k] ?? k));
   const gaps: { kind: string; suggested: string[] }[] = [];
   for (const [kind, tools] of Object.entries(SUGGESTED_TOOLS_BY_KIND)) {
-    if (!audit.kindsCovered.has(kind)) continue;
+    if (!covered.has(kind)) continue;
     const missing = tools.filter((t) => !used.has(t.toLowerCase()));
     if (missing.length) gaps.push({ kind, suggested: missing });
   }
@@ -1369,7 +1377,21 @@ export function buildReportMarkdown(input: ReportInput): string {
   // A "next step" is a recommendation to spend money on a selector. It must be
   // inferred from the kinds still IN the working set: recommending email tools
   // off a rejected email is the product arguing with the analyst.
-  const gaps = inferToolGaps(buildToolAudit(artifacts.filter((a) => !isOutOfSet(a)), reviews));
+  //
+  // A QUARANTINED row is out of the working set for the same reason and one
+  // stronger: since #518/#519 the dispatch guard REFUSES a `subject_unlinked`
+  // selector before the live call, so a tool recommended off one cannot run at
+  // all. On the 2026-09-12 `baig_azhar` export the case's only `url` artifact
+  // was a name-only collision hit, and the report still recommended
+  // http_fingerprint, archive_url, wayback_snapshots and urlscan_search
+  // against it — four spend recommendations, all of them guaranteed refusals.
+  // `isClusterIneligible` is the shared authority predicate (it honours a
+  // `linkage_confirmed` release), the same one the clusters, graph and report
+  // sections already consult.
+  const gaps = inferToolGaps(buildToolAudit(
+    artifacts.filter((a) => !isOutOfSet(a) && !isClusterIneligible(a)),
+    reviews,
+  ));
   const clusterReport = buildIdentityClusters(artifacts, seedValue, reviews);
   const isNameSearch = !!detectNameLocationSeed(seedValue);
 
@@ -1416,7 +1438,11 @@ export function buildReportMarkdown(input: ReportInput): string {
     attested: attested.length,
   });
   const keyFindings = (() => {
-    const strong = [...confirmed, ...attested].filter((a) => !isOutOfSet(a));
+    // An exclusion the analyst confirmed is an attested NON-finding: "this is not
+    // the subject". It already has a home in the Collision section below; leading
+    // Key Findings with it (production export 2026-09-20: the only Key Finding
+    // was the excluded namesake) inverts what the heading promises.
+    const strong = [...confirmed, ...attested].filter((a) => !isOutOfSet(a) && !isCollisionArtifact(a));
     if (strong.length) {
       return [
         ...(keyFindingsHeading.lead ? [keyFindingsHeading.lead, ""] : []),
@@ -2137,6 +2163,38 @@ function collectStrings(...vals: unknown[]): string[] {
   return out;
 }
 
+/**
+ * Phone merge key: digits only, with a leading US/CA country code stripped, so
+ * a breach row's `phones: ["8087838763"]` and the standalone `+18087838763`
+ * artifact land on ONE key. Measured 2026-09-20 on thread d72fa44a: the Serus
+ * row carried both 808 phones as bare digits, the phone artifacts carried them
+ * in E.164, and the two never merged — two of the fifteen singleton clusters
+ * that case produced for one person. Below 7 digits nothing is a phone.
+ */
+export function phoneMergeKey(raw: string): string | null {
+  let digits = raw.replace(/\D/g, "");
+  if (digits.length < 7) return null;
+  if (digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
+  return `phone:${digits}`;
+}
+
+/**
+ * `parent:`-namespaced key for "this row came from a lookup on selector X" (the
+ * auto-persist `queried_selector`) and for X's own row, so the two union under
+ * the weakest signal. Shape-gated: anything with whitespace is a person name
+ * and is never a merge key; emails and phones are normalised like their
+ * value-based keys so the namespaces cannot drift apart.
+ */
+export function recordMateKey(raw: string): string | null {
+  const t = raw.trim().toLowerCase();
+  if (!t || /\s/.test(t) || t.length < 5) return null;
+  if (t.includes("@")) return `parent:${t}`;
+  const pk = phoneMergeKey(t);
+  if (pk && /^[\d\s()+.-]+$/.test(t)) return `parent:${pk.slice("phone:".length)}`;
+  const h = normalizeHandle(t);
+  return h ? `parent:${h}` : null;
+}
+
 function normalizePersonName(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -2193,7 +2251,10 @@ export function buildIdentityClusters(
       const eh = emailHandleKey(v);
       if (eh) hits.push({ key: `handle:${eh}`, signal: "HANDLE_MATCH", raw: v, platform, derived: true });
     }
-    if (kind === "phone" && v) hits.push({ key: `phone:${v.toLowerCase()}`, signal: "PHONE_MATCH", raw: v, platform });
+    if (kind === "phone" && v) {
+      const pk = phoneMergeKey(v);
+      if (pk) hits.push({ key: pk, signal: "PHONE_MATCH", raw: v, platform });
+    }
 
     // Handle-bearing signals: the value of username/handle artifacts, plus a
     // `metadata.handle` on any artifact (social_profile, avatar, …). Display
@@ -2211,6 +2272,23 @@ export function buildIdentityClusters(
     }
     const parent = String(meta.parent ?? meta.parent_seed ?? meta.seed ?? "").trim().toLowerCase();
     if (parent) hits.push({ key: `parent:${parent}`, signal: "SHARED_INFRASTRUCTURE", raw: parent, platform });
+    // The auto-persist path stamps `queried_selector` — the selector the tool was
+    // called on — on every row it writes (21 of 79 rows on thread d72fa44a,
+    // 2026-09-20). Rows yielded by ONE lookup on one durable selector are
+    // record-mates and union under the same weakest signal as `parent`. Gated on
+    // shape, not kind: a selector with whitespace is a person name (the 19-identity
+    // name-only harvest), and name equality is never linkage (T1-2 §8).
+    const queriedKey = recordMateKey(String(meta.queried_selector ?? ""));
+    if (queriedKey && queriedKey !== `parent:${parent}`) {
+      hits.push({ key: queriedKey, signal: "SHARED_INFRASTRUCTURE", raw: String(meta.queried_selector), platform });
+    }
+    // …and the selector's OWN row publishes the same key, so the email/phone/
+    // username artifact and the rows a lookup on it yielded land together. Still
+    // shared-infra: it says "came from the same lookup", never "corroborated".
+    if (kind === "email" || kind === "phone" || kind === "username" || kind === "handle") {
+      const own = recordMateKey(v);
+      if (own) hits.push({ key: own, signal: "SHARED_INFRASTRUCTURE", raw: v, platform });
+    }
 
     // Cross-link selectors carried in metadata: a breach/profile row commonly
     // names the OTHER concrete selectors of the same person (the email row lists
@@ -2228,13 +2306,26 @@ export function buildIdentityClusters(
       if (eh) hits.push({ key: `handle:${eh}`, signal: "HANDLE_MATCH", raw: e, platform, derived: true });
     }
     for (const p of collectStrings(meta.phone, meta.phones)) {
-      if (p.replace(/\D/g, "").length >= 7) hits.push({ key: `phone:${p.toLowerCase()}`, signal: "PHONE_MATCH", raw: p, platform });
+      const pk = phoneMergeKey(p);
+      if (pk) hits.push({ key: pk, signal: "PHONE_MATCH", raw: p, platform });
     }
-    for (const h of collectStrings(meta.instagram_handle, meta.instagram, meta.twitter, meta.username, meta.github, meta.tiktok)) {
+    // Breach extractors write the owner's OTHER handles as `usernames[]` and the
+    // record-mate as `associated_username` / `associated_email` (the MyFitnessPal
+    // row: "username LilDee808, email cnnamongirl90@…"). Same signal class as the
+    // singular keys; reading them is what lets a handle seed reach the email it
+    // co-occurs with in one breach record. Names stay out (T1-2 §8).
+    for (const e of collectStrings(meta.associated_email, meta.associated_emails)) {
+      if (!e.includes("@")) continue;
+      hits.push({ key: `email:${e.toLowerCase()}`, signal: "EMAIL_MATCH", raw: e, platform });
+    }
+    for (const h of collectStrings(
+      meta.instagram_handle, meta.instagram, meta.twitter, meta.username, meta.github, meta.tiktok,
+      meta.usernames, meta.handles, meta.associated_username, meta.associated_usernames,
+    )) {
       const norm = normalizeHandle(h);
       if (norm) hits.push({ key: `handle:${norm}`, signal: "HANDLE_MATCH", raw: h, platform });
     }
-    for (const ad of collectStrings(meta.address)) {
+    for (const ad of collectStrings(meta.address, meta.current_address)) {
       if (ad.length >= 6) hits.push({ key: `address:${ad.toLowerCase()}`, signal: "SHARED_INFRASTRUCTURE", raw: ad, platform });
     }
     return hits;

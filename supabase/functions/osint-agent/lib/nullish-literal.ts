@@ -16,6 +16,19 @@ const NULLISH_LITERALS: ReadonlySet<string> = new Set([
   "null", "nil", "none", "undefined", "nan", "n/a", "na", "n.a.", "-", "--", "—", "–",
   "unknown", "not found", "not available", "not provided", "unavailable", "empty", "void", "missing",
   "[null]", "(null)", "<null>", "{}", "[]", "0000-00-00", "false", "true",
+  // The ABSENT-FIELD spellings breach aggregators put in a name column rather
+  // than omitting it. OathNet returns the literal `No Name` for a record with
+  // no name, and on the 2026-09-12 `baig_azhar` export that persisted as a
+  // `name` artifact at confidence 40, formed its own identity cluster, and the
+  // analyst had to Dismiss it by hand — the same incident this module was
+  // written for, one vocabulary short.
+  //
+  // Exact match only (the caller trims, lower-cases and unwraps first), so a
+  // real observation that merely CONTAINS one of these phrases — "baig_azhar -
+  // no breach hits" — is untouched.
+  "no name", "noname", "no_name", "no name provided", "name not provided",
+  "not set", "notset", "not specified", "unspecified", "not applicable",
+  "no data", "no value", "no record", "no results", "no result",
 ]);
 
 /**

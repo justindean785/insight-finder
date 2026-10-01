@@ -103,6 +103,74 @@ describe("buildConfidenceProfile — honest, deterministic confidence axes", () 
     expect(reviewed.value).toBeGreaterThan(base.value);
   });
 
+  // The defect these pin, in one line: an excluded row can never reach the
+  // readiness NUMERATOR, so counting it in the DENOMINATOR made adjudication —
+  // the analyst's most valuable act — lower the score. Each case drives
+  // buildConfidenceProfile and asserts on the emitted axis, not on the formula.
+  it("rejecting a false positive does not LOWER report readiness", () => {
+    // Both rows start report-safe, so readiness is 100%. The analyst then finds
+    // row 2 is a false positive. Dividing by TOTAL dropped this to 50% — the
+    // analyst removed a wrong claim and the case scored HALF as report-ready.
+    // Row 1's evidence never changed, so the share of REPORTABLE rows that are
+    // report-safe must not move.
+    const arts = [
+      A({ id: "1", metadata: { reviewed: true } }),
+      A({ id: "2", kind: "phone", value: "555-1", metadata: { reviewed: true } }),
+    ];
+    const before = dim(buildConfidenceProfile({ artifacts: arts, seedValue: null, nowMs: NOW }), "readiness");
+    const after = dim(
+      buildConfidenceProfile({ artifacts: arts, seedValue: null, reviews: { "2": "wrong" }, nowMs: NOW }),
+      "readiness",
+    );
+    expect(before.value).toBe(100);
+    expect(after.value).toBe(100);
+  });
+
+  it("a dismissed row leaves the readiness denominator entirely", () => {
+    const arts = [
+      A({ id: "1", metadata: { reviewed: true } }),
+      A({ id: "2", kind: "phone", value: "555-1" }),
+      A({ id: "3", kind: "username", value: "bob" }),
+    ];
+    const profile = buildConfidenceProfile({
+      artifacts: arts,
+      seedValue: null,
+      reviews: { "2": "dismissed", "3": "dismissed" },
+      nowMs: NOW,
+    });
+    const readiness = dim(profile, "readiness");
+    // One eligible row, and it is report-safe -> a full share, not 1-of-3.
+    expect(readiness.value).toBe(100);
+    expect(readiness.reason).toContain("1 of 1");
+    expect(readiness.reason).toContain("2 excluded rows not counted");
+  });
+
+  it("excluding rows never manufactures readiness from unverified evidence", () => {
+    // Every remaining row is an ordinary unverified lead. Shrinking the
+    // denominator must not promote them: the numerator is still zero.
+    const arts = [
+      A({ id: "1" }),
+      A({ id: "2", kind: "phone", value: "555-1" }),
+      A({ id: "3", kind: "username", value: "bob" }),
+    ];
+    const readiness = dim(
+      buildConfidenceProfile({ artifacts: arts, seedValue: null, reviews: { "3": "wrong" }, nowMs: NOW }),
+      "readiness",
+    );
+    expect(readiness.value).toBe(0);
+  });
+
+  it("reports no reportable findings when every row is excluded", () => {
+    const arts = [A({ id: "1" }), A({ id: "2", kind: "phone", value: "555-1" })];
+    const readiness = dim(
+      buildConfidenceProfile({ artifacts: arts, seedValue: null, reviews: { "1": "wrong", "2": "dismissed" }, nowMs: NOW }),
+      "readiness",
+    );
+    expect(readiness.value).toBe(0);
+    expect(readiness.sufficient).toBe(false);
+    expect(readiness.reason).toBe("No reportable findings yet");
+  });
+
   it("selectors axis grows with distinct selector types present", () => {
     const one = dim(buildConfidenceProfile({ artifacts: [A({ id: "1", kind: "email" }), A({ id: "2", kind: "email", value: "b@c.com" }), A({ id: "3", kind: "email", value: "d@e.com" })], seedValue: null, nowMs: NOW }), "selectors");
     const many = dim(buildConfidenceProfile({ artifacts: [A({ id: "1", kind: "email" }), A({ id: "2", kind: "phone", value: "555" }), A({ id: "3", kind: "username", value: "bob" })], seedValue: null, nowMs: NOW }), "selectors");

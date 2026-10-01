@@ -18,6 +18,7 @@ import {
   deepseekGateway, DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL, DEEPSEEK_VENDOR_HOST,
   degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
+  promptBudgetHardCeilingEnabled,
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
@@ -44,11 +45,14 @@ import { selectOrchestratorProvider } from "./orchestrator_select.ts";
 import { FINDING_LABELS } from "./catalog.ts";
 import { SYSTEM_PROMPT_FULL } from "./system-prompt.ts";
 import { wrapToolsWithCache } from "./cache.ts";
-import { beginCycle, clearRuntime } from "./runtime-policy.ts";
+import { paidBudgetTier } from "./cache.ts";
+import { costForTool } from "./costs.ts";
+import { priorSpendEvent, summarizePriorSpend } from "./lib/run-budget.ts";
+import { beginCycle, clearRuntime, runtimeLimits } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
-  capTotalToBudget, deadlineReached, isToolBudgetExhausted, buildIntermediateStepPlan,
+  capTotalToBudget, reportBudgetCeiling, deadlineReached, isToolBudgetExhausted, buildIntermediateStepPlan,
 } from "./orchestrator-budget.ts";
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective, shouldDeferFinalizeForCorrelate,
@@ -61,6 +65,7 @@ import {
   hasNoFindingsDecision, resolveTerminalState,
 } from "./orchestrator-finalize.ts";
 import { contextCharsFromMessages, createInvocationTelemetry } from "./telemetry.ts";
+import { measurePromptTerms, measureToolDescriptions, promptSizeEvent } from "./prompt-size.ts";
 import {
   loadReviewsForThread, applyReviewsToArtifacts, dropRejectedArtifacts,
   renderAnalystDecisionsBlock, REVIEW_STATE_UNAVAILABLE_NOTE,
@@ -78,6 +83,9 @@ import {
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
+import { geminiPreflightPivotEnabled, shouldPivotOnPreflight } from "./lib/preflight-pivot.ts";
+import { redactErrorMessage } from "./lib/redact-error.ts";
+import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
 // Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
@@ -234,8 +242,10 @@ Deno.serve(async (req) => {
       console.warn("[credits] pre-gate check failed (allowing run):", e);
     }
 
-    const { tools, availableToolsForAudit } = buildTools({
+    const { tools, availableToolsForAudit, noteQuarantinedFindings } = buildTools({
       supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector,
+      // Getter: `subjectSeedName` is derived below. Tools only execute after it is set.
+      getSubjectSeedName: () => subjectSeedName,
     });
 
     const modelMessages = await convertToModelMessages(messages);
@@ -303,7 +313,9 @@ Deno.serve(async (req) => {
       });
       return { ...m, content } as ModelMessage;
     });
-    trimmedMessages = capTotalToBudget(trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW);
+    trimmedMessages = capTotalToBudget(
+      trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW, promptBudgetHardCeilingEnabled(),
+    );
     // Bound individual tool-result outputs (a few giant results were holding the
     // prompt at the ~250k schema/length ceiling) and then HARD-GUARANTEE the
     // array is structurally valid for the AI SDK: every tool-result has a
@@ -318,6 +330,13 @@ Deno.serve(async (req) => {
     trimmedMessages = sanitizeModelMessages(
       capToolResultOutputs(trimmedMessages, MAX_TOOL_RESULT_CHARS),
     );
+    // Measure the ceiling on the FINAL array, AFTER sanitize+cap — never before.
+    // sanitizeModelMessages can GROW the array (pass 3 appends a whole tool
+    // message per unpaired tool-call) and capToolResultOutputs can grow a message
+    // too (JSON-escaping an 8k truncated string re-serializes larger), so a
+    // reading taken before them describes something that is never sent. See the
+    // matching call site in prepareStep below; they must stay in step.
+    reportBudgetCeiling(trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, "initial");
 
     // Cumulative cost tracker for this run.
     let runCostMicroUsd = 0;
@@ -329,6 +348,49 @@ Deno.serve(async (req) => {
     // debit failure being silently discarded while paid tool calls continue.
     let creditExhaustReason: string | null = null;
     clearRuntime(threadId);
+    // ---- Per-investigation spend instrument (A2a) ------------------------------
+    // `clearRuntime` above zeroes paidCalls/totalCalls/toolCounts on EVERY request,
+    // even though runtime-policy.ts documents those counters as lifetime-of-run and
+    // says only "a brand-new investigation" clears them. An investigation is 2-12
+    // invocations, so MAX_PAID_CALLS = 12 is really 24-144 paid calls per case.
+    //
+    // This MEASURES that; it does not change it. Turning a per-isolate cap into a
+    // per-investigation one means a case's fifth analyst turn can find the budget
+    // already spent, and choosing that number from an estimate would repeat the
+    // error this codebase keeps making — reading a partial window and acting on it.
+    // Enforcement lands separately, on the distribution this produces.
+    //
+    // Fire-and-forget so it cannot add latency to the run, and fail open: a
+    // telemetry read must never be able to stop an investigation.
+    void (async () => {
+      try {
+        const { data, error, count } = await supabaseAdmin
+          .from("tool_usage_log")
+          .select("tool_name,cached,outcome,cost_micro_usd", { count: "exact" })
+          .eq("thread_id", threadId);
+        if (error) {
+          console.warn("[run_budget_prior] read failed:", error.message);
+          return;
+        }
+        const rows = (data ?? []) as Array<Record<string, unknown>>;
+        const spend = summarizePriorSpend(
+          rows,
+          (name) => paidBudgetTier(costForTool(name), name) !== "free",
+        );
+        // An unbounded PostgREST select returns at most `db-max-rows` with NO error
+        // — a well-formed short 200. That silently biases this measurement LOW,
+        // which is the same shape as the bug #519 fixed at the dispatch boundary.
+        // Comparing against the exact count is what makes the number trustworthy.
+        const truncated = typeof count === "number" && count > rows.length;
+        console.log(priorSpendEvent(threadId, spend, {
+          invocation_paid_cap: runtimeLimits.maxPaidCallsPerRun,
+          rows_available: typeof count === "number" ? count : null,
+          truncated,
+        }));
+      } catch (e) {
+        console.warn("[run_budget_prior] read threw:", e);
+      }
+    })();
     // Seed breadcrumb for the cycle log — the first user message's text.
     const seedValueRaw = (() => {
       const fu = ((messages ?? []) as Array<{ role?: string; parts?: Array<{ type?: string; text?: string }> }>)
@@ -670,11 +732,22 @@ Deno.serve(async (req) => {
       // Explicit HTTP failure (status >= 400, incl. an invalid/renamed model id
       // → 400/404) pivots the run; a bare timeout (status 0) does not — same
       // ambiguity policy as the MiniMax preflight.
-      if (!lastDeepseekProbe.ok && lastDeepseekProbe.status >= 400) {
+      // …and a pivot to gemini-direct additionally needs GEMINI_PREFLIGHT_PIVOT_ENABLED:
+      // it finished 0 of 16 runs, so pivoting turned a preflight error into a dead run
+      // (lib/preflight-pivot.ts). Without it the run keeps DeepSeek.
+      if (shouldPivotOnPreflight(lastDeepseekProbe, fallbackTarget, geminiPreflightPivotEnabled())) {
         useFallback = true;
         console.warn(
-          `[orchestrator] deepseek preflight failed after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts (status=${lastDeepseekProbe.status}) → Gemini fallback for thread ${threadId}`,
+          `[orchestrator] deepseek preflight failed after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts (status=${lastDeepseekProbe.status}) → ${fallbackTarget.label} for thread ${threadId}`,
         );
+      } else if (!lastDeepseekProbe.ok && lastDeepseekProbe.status >= 400) {
+        console.warn(JSON.stringify({
+          event: "preflight_pivot_suppressed",
+          thread_id: threadId,
+          status: lastDeepseekProbe.status,
+          fallback: fallbackTarget.provider,
+          reason: "gemini-direct pivot disabled; keeping DeepSeek primary",
+        }));
       } else if (!lastDeepseekProbe.ok) {
         console.info(
           `[orchestrator] deepseek preflight ambiguous (status=${lastDeepseekProbe.status}) after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts — keeping DeepSeek primary for thread ${threadId}`,
@@ -766,6 +839,29 @@ Deno.serve(async (req) => {
     const baseSystemPrompt =
       SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary
       + analystDecisionsBlock;
+    // ---- Prompt-size instrument (A1) -----------------------------------------
+    // `approxPromptChars` above stays exactly as it is: it is an INPUT TO PROVIDER
+    // ROUTING (the MiniMax pre-pivot and the DeepSeek safety budget), so inflating
+    // it would re-route runs that route fine today. This is the MEASUREMENT, and it
+    // counts the terms that figure silently drops — the workflow addendum, the
+    // analyst-decisions block (0 to ~30k on a reviewed thread) and the tool
+    // descriptions. The serialized tool input schemas stay uncounted and are named
+    // in `unmeasured` rather than guessed: zod@3 exposes no JSON-Schema export, so
+    // any number here would be invented. Read the total as "everything countable".
+    const promptTermBaseline = {
+      systemStatic: SYSTEM_PROMPT_FULL.length,
+      findingLabels: FINDING_LABELS.length,
+      workflowAddendum: buildWorkflowAddendum(detectedSeedType).length,
+      visionIntake: visionIntakeSummary.length,
+      analystDecisions: analystDecisionsBlock.length,
+      ...measureToolDescriptions(tools as unknown as Record<string, unknown>),
+    };
+    console.log(promptSizeEvent(
+      "prompt_size_initial",
+      threadId,
+      measurePromptTerms({ ...promptTermBaseline, messages: contextCharsFromMessages(trimmedMessages) }),
+      { routing_approx_prompt_chars: approxPromptChars },
+    ));
     // The two decision tools exist in the registry so forced-finalize can select them,
     // but they must never be available during ordinary investigation steps.
     const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));
@@ -884,10 +980,50 @@ Deno.serve(async (req) => {
         // Same hardening as the initial prompt: cap oversized tool results and
         // guarantee a schema-valid, tool-paired array on every in-stream step so
         // a mid-run trim can't sever a tool-call/result pair and wedge the run.
-        const budgeted = capTotalToBudget(trimmed, TOTAL_PROMPT_CHAR_BUDGET, STEP_RECENT_WINDOW);
+        const budgeted = capTotalToBudget(
+          trimmed, TOTAL_PROMPT_CHAR_BUDGET, STEP_RECENT_WINDOW, promptBudgetHardCeilingEnabled(),
+        );
         const stepMessagesOut = sanitizeModelMessages(
           capToolResultOutputs(budgeted, MAX_TOOL_RESULT_CHARS),
         );
+        // Measure `stepMessagesOut` — the array this step actually sends — not
+        // `budgeted`. Both sanitizeModelMessages and capToolResultOutputs run
+        // after capTotalToBudget and both can ADD chars, so measuring `budgeted`
+        // reported a size that was never on the wire.
+        reportBudgetCeiling(stepMessagesOut, TOTAL_PROMPT_CHAR_BUDGET, "prepare_step");
+        // A1 instrument, per step. It must measure THE PROMPT THIS STEP ACTUALLY
+        // SENDS, not the registry-wide baseline: `prepareStep` narrows the tool set
+        // per branch (the persistence nudge exposes only record_artifacts, the
+        // report phase exposes none) and appends a different directive to the
+        // system string each time. Measuring before the branch would overcount tool
+        // descriptions by tens of thousands of chars and report `stepDirective` as
+        // zero while a directive is appended — reporting a number that is not the
+        // prompt, which is the exact defect this instrument exists to correct.
+        // So it is called from each return path, with that path's own system string
+        // and active-tool set.
+        const logPromptSize = (systemStr: string, activeTools?: readonly string[]) => {
+          const active: Record<string, unknown> = activeTools
+            ? Object.fromEntries(
+              activeTools
+                .filter((n) => n in (tools as Record<string, unknown>))
+                .map((n) => [n, (tools as Record<string, unknown>)[n]]),
+            )
+            : (tools as Record<string, unknown>);
+          console.log(promptSizeEvent(
+            "prompt_size_step",
+            threadId,
+            measurePromptTerms({
+              ...promptTermBaseline,
+              ...measureToolDescriptions(active),
+              // The directive is whatever this branch appended to baseSystemPrompt.
+              // Derived by difference rather than re-deriving which builder ran, so
+              // it cannot drift from the string actually sent.
+              stepDirective: Math.max(0, systemStr.length - baseSystemPrompt.length),
+              messages: contextCharsFromMessages(stepMessagesOut),
+            }),
+            { step_number: stepNumber ?? 0, active_tool_count: activeTools ? activeTools.length : undefined },
+          ));
+        };
         // Force the closing synthesis step when ANY run budget is exhausted:
         //  • P0 fix A — the wall-clock reserve window opened, or we hit the last step.
         //  • Run tool-call cap — MAX_TOOL_CALLS_PER_RUN genuine live calls reached
@@ -973,6 +1109,7 @@ Deno.serve(async (req) => {
           finalizeStepsRun++;
           finalizeDecisionSucceededThisStep = false;
           const finalizePlan = buildFinalizeStepPlan(finalizePhase);
+          logPromptSize(baseSystemPrompt + finalizePlan.directive, [...finalizePlan.activeTools]);
           return {
             messages: stepMessagesOut,
             activeTools: [...finalizePlan.activeTools],
@@ -1005,14 +1142,16 @@ Deno.serve(async (req) => {
             tool_calls: nudgeToolCalls, record_artifact_calls: nudgeRecordCalls,
             nudge_count: persistenceNudgeCount,
           }));
+          const nudgePlan = buildIntermediateStepPlan({
+            nudgePersistence: true,
+            normalActiveTools,
+            openingPhase: false,
+          });
+          logPromptSize(intermediateSystem, nudgePlan.activeTools);
           return {
             messages: stepMessagesOut,
             system: intermediateSystem,
-            ...buildIntermediateStepPlan({
-              nudgePersistence: true,
-              normalActiveTools,
-              openingPhase: false,
-            }),
+            ...nudgePlan,
           };
         }
         // Opening phase = this RUN has admitted no tool call yet (run-scoped by
@@ -1025,14 +1164,16 @@ Deno.serve(async (req) => {
             event: "opening_tool_gate", thread_id: threadId, step_number: stepNumber ?? 0,
           }));
         }
+        const intermediatePlan = buildIntermediateStepPlan({
+          nudgePersistence: false,
+          normalActiveTools,
+          openingPhase,
+        });
+        logPromptSize(intermediateSystem, intermediatePlan.activeTools);
         return {
           messages: stepMessagesOut,
           system: intermediateSystem,
-          ...buildIntermediateStepPlan({
-            nudgePersistence: false,
-            normalActiveTools,
-            openingPhase,
-          }),
+          ...intermediatePlan,
         };
       };
 
@@ -1196,6 +1337,10 @@ Deno.serve(async (req) => {
           const stepFindings = stepToolResults.length > 0
             ? extractStepFindings(stepToolResults, subjectSeedName, { escalated })
             : [];
+          // SYNCHRONOUSLY, before the detached auto-persist below: record_artifacts'
+          // name-quarantine gate must see a name quarantined in THIS step even when
+          // the model records the same-name rows before that insert lands.
+          noteQuarantinedFindings(stepFindings);
           // PRE-NUDGE BUFFER. The gate above can only open AFTER the nudge fires,
           // and the nudge fires only after several unrecorded fan-out steps — so
           // everything the run found before that point was denied by the denylist
@@ -1391,7 +1536,9 @@ Deno.serve(async (req) => {
             // never let the (now correctly-false) overflow flag mask it.
             message_schema_invalid: isSchemaError,
             error_name: errName,
-            message: msg.slice(0, 600),
+            // Redacted: a provider error can echo our key, and this line is kept in
+            // the edge logs (lib/redact-error.ts).
+            message: redactErrorMessage(msg).slice(0, 600),
           }),
         );
         invocationTelemetry.finish({
@@ -1856,7 +2003,10 @@ Deno.serve(async (req) => {
               record_artifact_calls: recordCalls,
               tool_calls: toolCalls,
               in_memory_artifacts: routingGuard.artifactsTotal,
-              seed: seedValueRaw.slice(0, 120),
+              // The seed's KIND and length, never its text: this is a log line, and the
+              // seed is a person's selector. thread_id recovers it from the DB.
+              seed_kind: detectSeedServer(seedValueRaw)?.kind ?? "unknown",
+              seed_chars: seedValueRaw.length,
               // ran lookups but never recorded → almost certainly the record gap,
               // not a genuinely empty case.
               findings_likely: toolCalls > 3 && recordCalls === 0,
@@ -1946,12 +2096,7 @@ Deno.serve(async (req) => {
         }
         const friendly = classifyStreamProviderError(m, name);
         if (friendly) return friendly;
-        const redacted = m
-          .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-          .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
-          .replace(/xai-[A-Za-z0-9._-]+/g, "xai-[REDACTED]")
-          .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
-        return redacted.slice(0, 300) || "Provider stream error";
+        return redactErrorMessage(m).slice(0, 300) || "Provider stream error";
       },
       onFinish: persistFinalMessages,
     });
@@ -1960,12 +2105,8 @@ Deno.serve(async (req) => {
     releaseRunState();
     // setupRequest throws Response objects for 401/403/400 — return them directly
     if (e instanceof Response) return e;
-    console.error("osint-agent error", e);
-    const message = e instanceof Error ? e.message : String(e);
-    return new Response(JSON.stringify({ error: "Internal Server Error", code: "ORCHESTRATOR_FAULT", detail: message }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    // Redacted before it is logged or returned (lib/orchestrator-fault.ts).
+    return orchestratorFaultResponse(e, corsHeaders);
   }
 
 });

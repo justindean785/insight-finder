@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeEvidence, deriveWorkspaceStatus, pickEvidenceCount } from "@/components/workspace/WorkspaceHeader";
+import { describeEvidence, deriveRunState, pickEvidenceCount } from "@/lib/case-snapshot";
 
 // ── The header must not report a number the analyst cannot interpret ─────────
 //
@@ -86,123 +86,101 @@ describe("pickEvidenceCount — header 'N evidence'", () => {
   });
 });
 
-describe("deriveWorkspaceStatus", () => {
+// ── Run state ────────────────────────────────────────────────────────────────
+//
+// `deriveRunState` replaced the header's `deriveWorkspaceStatus`. The invariants
+// that function's tests pinned are carried over one for one; what changed is the
+// LIVENESS signal. The old function inferred "running" from a tool row landing in
+// the last 90s — but `tool_usage_log` is not in the realtime publication, so on a
+// long-lived header those rows were frozen at mount and a run opened mid-flight
+// read "Interrupted". Liveness is now the backend heartbeat, judged by the same
+// 75s bar the server recovers on.
+const NOW = Date.parse("2026-09-11T10:00:00Z");
+const ago = (s: number) => new Date(NOW - s * 1000).toISOString();
+const row = (over: Partial<Parameters<typeof deriveRunState>[0]["thread"] & object> = {}) => ({
+  status: "finished",
+  recovered_at: null,
+  recovery_reason: null,
+  run_started_at: ago(600),
+  last_heartbeat_at: ago(300),
+  ...over,
+});
+
+describe("deriveRunState", () => {
   it("lets a live browser stream override an early normal finished update", () => {
-    expect(deriveWorkspaceStatus({
-      threadStatus: "finished",
-      chatRunning: true,
-      recentlyActive: true,
-      hasEvidence: true,
-    })).toBe("active");
+    expect(deriveRunState({ thread: row(), chatRunning: true, nowMs: NOW })).toBe("running");
   });
 
-  it("does not paint a terminal run as RUNNING because of old tool activity", () => {
-    expect(deriveWorkspaceStatus({
-      threadStatus: "finished",
-      chatRunning: false,
-      recentlyActive: true,
-      hasEvidence: true,
-    })).toBe("completed");
+  it("does not paint a terminal run as RUNNING because of recent activity", () => {
+    expect(deriveRunState({ thread: row({ last_heartbeat_at: ago(5) }), chatRunning: false, nowMs: NOW })).toBe("completed");
   });
 
   // `finished` is written on three paths that are NOT the same thing: a clean
-  // finalize, the stream-error path (onError), and stale-run recovery. Painting all
-  // three green is how a fabricated "recovered run" stub and a genuine report became
-  // visually identical in production.
+  // finalize, the stream-error path (onError), and stale-run recovery.
   it("shows a recovered run as INTERRUPTED, never as a green COMPLETE", () => {
-    expect(deriveWorkspaceStatus({
-      threadStatus: "finished",
+    expect(deriveRunState({
+      thread: row({ recovered_at: "2026-07-26T00:20:43.070Z", recovery_reason: "stale heartbeat recovered by health sweep" }),
       chatRunning: false,
-      recentlyActive: false,
-      hasEvidence: false,
-      recoveredAt: "2026-07-26T00:20:43.070Z",
-      recoveryReason: "stale heartbeat recovered by health sweep",
+      nowMs: NOW,
     })).toBe("interrupted");
   });
 
   it("shows a stream-error run as INTERRUPTED (recovery_reason without recovered_at)", () => {
-    expect(deriveWorkspaceStatus({
-      threadStatus: "finished",
-      chatRunning: false,
-      recentlyActive: false,
-      hasEvidence: true,
-      recoveryReason: "stream_error: provider disconnected",
-    })).toBe("interrupted");
+    expect(deriveRunState({ thread: row({ recovery_reason: "stream_error: provider disconnected" }), chatRunning: false, nowMs: NOW }))
+      .toBe("interrupted");
   });
 
   it("shows a run that failed the completion contract as INTERRUPTED", () => {
-    expect(deriveWorkspaceStatus({
-      threadStatus: "finished",
-      chatRunning: false,
-      recentlyActive: false,
-      hasEvidence: true,
-      recoveryReason: "incomplete: run ended without a durable report",
-    })).toBe("interrupted");
+    expect(deriveRunState({ thread: row({ recovery_reason: "incomplete: run ended without a durable report" }), chatRunning: false, nowMs: NOW }))
+      .toBe("interrupted");
   });
 
   it("still shows a clean finalize as COMPLETE", () => {
-    expect(deriveWorkspaceStatus({
-      threadStatus: "finished",
-      chatRunning: false,
-      recentlyActive: false,
-      hasEvidence: true,
-      recoveredAt: null,
-      recoveryReason: null,
-    })).toBe("completed");
+    expect(deriveRunState({ thread: row(), chatRunning: false, nowMs: NOW })).toBe("completed");
   });
 
-  // ── An `active` row is NOT a completed run ────────────────────────────────
-  //
-  // Production 2026-08-06, thread 6bdf7e55: the database row was status='active'
-  // while the UI badge read COMPLETE. `active` was never handled here — after
-  // chatRunning and recentlyActive both failed, it fell through to
-  // `hasEvidence ? "completed" : "idle"`, so a run that started and died without
-  // ever finalizing was painted green. That is invariant I-2 (a run may only
-  // present as complete if it actually completed) failing at the UI layer, on the
-  // one surface the analyst actually looks at.
+  // Production 2026-08-06, thread 6bdf7e55: status='active' in the database,
+  // COMPLETE in the header. I-2 at the UI layer.
   it("does NOT paint a stalled active run as COMPLETE", () => {
-    expect(deriveWorkspaceStatus({
-      threadStatus: "active",
-      chatRunning: false,
-      recentlyActive: false,
-      hasEvidence: true,
-    })).toBe("interrupted");
+    expect(deriveRunState({ thread: row({ status: "active", last_heartbeat_at: ago(400) }), chatRunning: false, nowMs: NOW }))
+      .toBe("interrupted");
   });
 
-  // I-1: a thread with no run marker is not an interrupted investigation. A blank
-  // thread is born status='active' with no evidence — it must stay IDLE, or every
-  // untouched new case renders as a failed run.
-  it("leaves a blank active thread IDLE, never interrupted", () => {
-    expect(deriveWorkspaceStatus({
-      threadStatus: "active",
+  // I-1: a blank thread is born status='active' with no run marker.
+  it("leaves a never-started active thread a DRAFT, never interrupted", () => {
+    expect(deriveRunState({
+      thread: row({ status: "active", run_started_at: null, last_heartbeat_at: null }),
       chatRunning: false,
-      recentlyActive: false,
-      hasEvidence: false,
-    })).toBe("idle");
+      nowMs: NOW,
+    })).toBe("draft");
   });
 
-  it("still shows a genuinely running active thread as ACTIVE", () => {
-    expect(deriveWorkspaceStatus({
-      threadStatus: "active",
-      chatRunning: false,
-      recentlyActive: true,
-      hasEvidence: true,
-    })).toBe("active");
-    expect(deriveWorkspaceStatus({
-      threadStatus: "active",
-      chatRunning: true,
-      recentlyActive: false,
-      hasEvidence: false,
-    })).toBe("active");
+  it("shows an active thread with a fresh heartbeat as RUNNING even when this tab is not streaming", () => {
+    // The page was opened mid-run: useChat has no stream to resume, but the
+    // backend is plainly alive. The old 90s tool-row window called this Interrupted.
+    expect(deriveRunState({ thread: row({ status: "active", last_heartbeat_at: ago(20) }), chatRunning: false, nowMs: NOW }))
+      .toBe("running");
+    expect(deriveRunState({ thread: row({ status: "active", run_started_at: null, last_heartbeat_at: null }), chatRunning: true, nowMs: NOW }))
+      .toBe("running");
   });
 
   it("a live stream still overrides an interrupted row", () => {
-    expect(deriveWorkspaceStatus({
-      threadStatus: "finished",
-      chatRunning: true,
-      recentlyActive: true,
-      hasEvidence: true,
-      recoveryReason: "stream_error: transient",
-    })).toBe("active");
+    expect(deriveRunState({ thread: row({ recovery_reason: "stream_error: transient" }), chatRunning: true, nowMs: NOW }))
+      .toBe("running");
+  });
+
+  // An analyst Stop writes status='stopped' and the server never stamps a reason
+  // on it, so it used to render as a green Complete.
+  it("shows an analyst stop as STOPPED — not complete, not interrupted", () => {
+    expect(deriveRunState({ thread: row({ status: "stopped" }), chatRunning: false, nowMs: NOW })).toBe("stopped");
+  });
+
+  it("treats a thread row that has not loaded as a draft, not a run", () => {
+    expect(deriveRunState({ thread: null, chatRunning: false, nowMs: NOW })).toBe("draft");
+  });
+
+  it("treats a legacy or failure-named terminal status honestly", () => {
+    expect(deriveRunState({ thread: row({ status: "completed" }), chatRunning: false, nowMs: NOW })).toBe("completed");
+    expect(deriveRunState({ thread: row({ status: "failed_context_limit" }), chatRunning: false, nowMs: NOW })).toBe("interrupted");
   });
 });

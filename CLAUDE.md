@@ -13,14 +13,210 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
-> **Dated state — 2026-09-08T07:05Z.** `main` = `4a5eb1c` (#529 merged as `42d8609`,
-> #519 as `e50db9e`, stamp `4a5eb1c`; ledger commit lands via the PR carrying this
-> edit). Live `osint-agent` build = **`e50db9e`**, `deploy/live` → `e50db9e`, ledger
-> recorded (VERIFIED, marker provenance; bytes unverified as always). Mirror `main` =
-> `571cb9e`, tree `e854a98f4110` — equal to canonical.
+> **Dated state — 2026-09-22T16:30Z.** `main` = **`3b905b4`**. Live `osint-agent` build =
+> **`325daad`** — **DEPLOYED AND VERIFIED at 16:29Z.** `deploy/live` → `325daad`, ledger row
+> `3b905b4` with **zero problems and zero warnings**, `verify:deploy` **VERIFIED** with
+> `mirror tree -> equal` (`b83660e70bcf`), mirror `main` = `8aa6c1b`. Bytes unverified, as
+> always — read the scope line, not the green word.
 >
-> **Both `subject_unlinked` dispatch-boundary reopenings are now CLOSED IN THE
-> DEPLOYED BUILD** (#519, live at `e50db9e`). The refused-key read paged only as far
+> **This shipped the prompt char budget chain: #604 (`74e98ad`), #615 (`151b664`), #616
+> (`48acc71`).** Proof of deploy is the behavioural key, not the SHA:
+> **`checks.prompt_budget_ceiling`** = `{ok, "hard ceiling 220000 chars, tail=summarize"}`.
+> Read `tail=summarize` specifically — it proves **#615** is in the bundle, because the
+> pre-#615 code referenced the tail instead of summarizing it. A marker can never prove that.
+>
+> ⚠️ **The 2026-09-22 audit in #614 says "#604 is merged and must not be deployed as-is."
+> That verdict is STALE and was already stale when it was written down.** #614 was opened at
+> 10:51Z recording two unrepaired findings; **#615 merged 11:33Z and #616 merged 11:50Z**,
+> against exactly those two findings, in exactly the files they named, both with tests, and
+> #616's wiring test is negative-control verified (it fails against pre-fix `index.ts`). Do
+> not let #614 merge carrying that instruction — it would write a false deploy blocker into
+> this file, which is the same failure mode #614's own body warns about for #564.
+>
+> **The one-commit offset bit, as it always does, and the ordering that avoided it is worth
+> copying.** The stamp (#619) had to merge while `main` was at `325daad` so its parent IS the
+> marker; #618 (docs) was deliberately held behind it. Had the docs merged first the gate
+> would have reported a false `marker_offset_mismatch`. Sequence stamp → sync → gate → deploy
+> → ledger, and hold every unrelated PR until the stamp lands.
+>
+> **#617 itself needed no edge cycle at all** — it touches ZERO files under
+> `supabase/functions/`, which is why the edge sat at `4bb19d9` until this deploy.
+>
+> **The frontend DID ship, and was verified the hard way.** Vercel production deployment
+> `dpl_BhatGqZjQNjQnCi3xuci2bUei51Z`, `state: READY`, `target: production`,
+> `githubCommitSha: 325daad`. A green Vercel check on a PR is a PREVIEW (`target: null`) and
+> proves nothing, so the check that counts was done on the live alias: fetch
+> `insight-finder-sandy.vercel.app`, pull its stylesheet, and look for keys only the new code
+> introduces — `stat-rule`, `panel-flat`, `panel-primary`, `case-mark`, `subtle-foreground`,
+> `faint-foreground`, all present, and `.chat-label-chip` carrying `border:1px dashed`.
+> **This is the frontend equivalent of `/health`'s behavioural proof key, and it works.** Use
+> it; the JS bundle hash is NOT usable for this (Vercel builds independently, so a local
+> build's hash never matches and a mismatch means nothing).
+>
+> **⚠️ Re-measured baselines. The three figures in the 09-20 block below are STALE, and that
+> block's `main` = `ad4937b` was already stale before #617 — the real tip was `48acc71`.**
+> On `main` at `325daad`: frontend **2178 passed / 1 skipped / 181 files** (`npx vitest run`;
+> CI's own Frontend job agrees on 181), edge **1898 passed / 0 failed / 6 ignored** (CI, and
+> unchanged by #617 since it touches no edge file — the 1885 → 1898 move came from #615/#616),
+> e2e **51 passed / 2 skipped**, unchanged.
+>
+> ⚠️ **`npx tsc --noEmit` IS NOT THIS PROJECT'S TYPECHECK and will tell you everything is
+> fine when it is not.** Bare, it resolves the root `tsconfig.json` and checks nothing: it
+> returned exit 0 on a file containing an outright JSX syntax error, which `eslint` then
+> caught. The real command is **`npm run typecheck`**
+> (`tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json`). Every
+> "typecheck clean" claim in this repo's history that used the bare form is worth nothing.
+>
+> ⚠️ **A green check board on this repo currently has NO review behind it.** `Devin Review`
+> passes while reporting *"Full review skipped: trial expired and no credits remaining"*, and
+> `Cursor Automation` reports `skipping`. Since II's §2.1 records that every defect caught in
+> review here was a timeline or identity error that passed the full suite, typecheck, lint and
+> build, treat green as "CI found nothing", never as "reviewed".
+>
+> ⚠️ **`npm run test:e2e` cannot run in a fresh worktree until the pinned browser is
+> installed.** It had NEVER run in this one: all 53 specs failed with
+> `browserType.launch: Executable doesn't exist`. `npx playwright install chromium` fixes it
+> (~94 MB). Worse, the failure is easy to miss — `npm run test:e2e | tail -25; echo $?`
+> reports TAIL's exit code, not Playwright's, so the run looks green. Redirect to a file and
+> read the real status.
+>
+> **The merge queue is still the bottleneck, and it got worse:** **13 of 18 open PRs are
+> DRAFT.** #617 was opened READY on purpose for that reason.
+
+> **Dated state — 2026-09-20T12:00Z.** `main` = **`ad4937b`**. Live `osint-agent` build =
+> **`4bb19d9`** — UNCHANGED; nothing merged and nothing deployed on 2026-09-19.
+> ⚠️ **Three finished, green, mergeable PRs are sitting in DRAFT** — #602 and #603 (frontend,
+> ship on merge) and **#604 (edge, does NOT ship on merge)**. #604's proof-of-deploy key is
+> **`checks.prompt_budget_ceiling`**; only one edge PR may be in flight, so it blocks the rest
+> of the edge plan. This is the documented bottleneck, live again.
+>
+> **⚠️ The three baselines below this block were measured at `4bb19d9` and are STALE.** On clean
+> `main` at `ad4937b`: edge **1885** / 0 / 6, frontend **2106** / 1 / **173 files**, e2e **51** / 2.
+> Stash your branch and re-measure before crediting or blaming a diff for a suite-total change.
+>
+> **Highest-value unfixed defect:** `sanitizeModelMessages` pass 3 keys `resolved` by tool-call id
+> GLOBALLY while the AI SDK validates POSITIONALLY, so an overlapping run that delivers its result
+> late leaves the earlier duplicate call unpaired and the run dies with `MissingToolResultsError`
+> before any provider call. Reproduced end to end AND observed in production (thread `bfa55610`,
+> 2026-09-12: two invocations dead in 85 ms with the SAME tool call id). Overlap runs at **12.2%
+> of invocations**. Fix = resolve per POSITION. Detail: the 2026-09-20 handoff §4.
+>
+> **`stop_reason='unknown'` is explained** and is not a failure: `budgetExhausted` is never passed
+> by `deriveStopReason`'s only call site (`telemetry.ts:423`), so `budget_exhausted` is
+> unreachable and every tool-calls run that neither stream-errored nor force-finalized is labelled
+> `unknown` by construction. One-line fix, own PR.
+>
+> **Dated state — 2026-09-15T00:20Z.** `main` = `06328a9`. `BUILD_MARKER` = `4bb19d9`.
+> Live `osint-agent` build = **`4bb19d9`**, `ok: true`, `deploy/live` → `4bb19d9`,
+> mirror `main` = `898a3a3`, `diff -rq` **empty for all four function dirs**.
+> Edge baseline: **1879 passed / 0 failed / 6 ignored** — the number moved because #597 fixed the
+> test glob, not because tests were added.
+> Proof-of-deploy key for this build: **`checks.tool_cache_version`** =
+> `{ok, "username_sweep=v2, username_search=v2"}`.
+>
+> ✅ **`github_code_search` is RECOVERED.** `checks.credentials` now lists it under `recovered`
+> rather than `refusing`. JD's `GITHUB_API_TOKEN` fix took. The remaining refusals are
+> `deepfind_email_breach`, `reddit_user`, `deepfind_disposable_email`, `deepfind_telegram_channel`
+> — and a 403 is not a dead credential, see the section at the bottom of this file.
+>
+> ⚠️ **CORRECTION — the 2026-09-14 handoff (#596) merged STALE and its §1 is wrong.** It was
+> written against `ff6ad26` / live `0a04e1b` and merged after four newer commits had already
+> landed, so it records a state that was three deploys old on arrival. #597, #598 and #599 below
+> are all things that handoff lists as *future* work. Take the state from THIS block, never from
+> that handoff's §1 — which is the standing rule for every handoff in the series.
+>
+> **What landed between `0a04e1b` and `4bb19d9`:**
+> - **#597** — `test:edge` globbed `*_test.ts` at the osint-agent top level only, so **five test
+>   files had never been executed by CI or by the documented local command**, including
+>   `lib/cluster_test.ts`, the suite guarding against false identity merges. All 34 pass. The
+>   script now passes directories so Deno discovers recursively. Baseline 1845 → **1879**.
+> - **#598** — **Scope & controls removed from the composer.** It enforced nothing (the endpoint
+>   accepts `{messages, threadId}` and nothing else) and its `— Scope & controls (analyst
+>   instructions) —` block was stored as part of the seed and truncated into the Timeline and
+>   Activity Log. A corrected target still reaches the agent as ONE `Target: <value> (<kind>)` line.
+> - **#599** — ⛔ **read this before trusting any tool-behaviour fix.** `tool_call_cache` is keyed on
+>   `sha256({selector_type, selector, tool, params})` with **nothing in the key saying which
+>   interpretation produced the row**, so a fix to how a tool decides its result stays invisible
+>   until old rows expire. Measured: #594 went live ~16:30Z and a **17:19Z re-scan still narrated
+>   "3 confirmed hits (Mixcloud, Telegram, HackerRank)"** — `tool_usage_log.cached` was true,
+>   replaying a 13:44Z row. `lib/tool-cache-version.ts` now folds a per-tool
+>   result-interpretation version into BOTH hashes. Kill switch `TOOL_CACHE_VERSION_DISABLED`.
+>
+> **The lesson, generalised: a deployed fix to how a tool INTERPRETS a result is invisible while
+> the cache can replay a pre-fix row.** Bump the tool's version in `lib/tool-cache-version.ts` in
+> the same PR, or the verification scan will look like the deploy failed.
+>
+> **Previous dated state — 2026-09-14T17:05Z.** `main` = `ff6ad26`, live `0a04e1b`
+> (#592 `eaf0191` → #594 `0a04e1b` → #595 stamp `584da1b` → ledger `ff6ad26`), mirror `5f01506`,
+> tree `422991e39c8b`, edge 1845/0/6 under the old glob.
+>
+> **What shipped:** #594 gave six platforms an `echoUnsafe` marker — HackerRank, Mixcloud, Spotify,
+> Telegram, Trakt and NameMC answer 2xx for ANY string and echo it back, so `accountIsProven`'s
+> generic echo fallback proved a registration for every username ever swept (309 HackerRank
+> artifacts across 114 threads). #592 made `foldWords` fold URL path segments, so a URL artifact no
+> longer needs a `metadata.handle` key to join its cluster.
+>
+> **Previous dated state, for the record — 2026-09-13T00:30Z.** `main` = `811c2cd` (#587 `c87c07b` →
+> #588 stamp `4bdd1b4` → ledger `95b8d50` → #589 docs → #590 docs `811c2cd`).
+> Re-confirmed at 00:30Z: **nothing is undeployed** — the only `supabase/functions/` change
+> between `c87c07b` and `main` is `build-info.ts` itself, which is the stamp offset, not code.
+> Mirror `main` = `71b79c4` — surgical sync of 11 `osint-agent/` files (10 + `build-info.ts`),
+> landed as mirror PR #84; `diff -rq` empty for all four function dirs.
+> Live `osint-agent` build = **`c87c07b`** — DEPLOYED AND VERIFIED 2026-09-13T00:02Z:
+> `/health` moved `2864860` → `c87c07b`, `deploy/live` → `c87c07b`, ledger `95b8d50`,
+> `verify:deploy` **VERIFIED** with `mirror tree -> equal` (`e0330dd1bf66`). Bytes
+> unverified, as always — read the scope line, not the green word. Orchestrator
+> `selected_provider: deepseek`, `orchestrator_reason: pinned`,
+> `reveal_breach_data: true`.
+>
+> **`/health` now carries THREE behavioural keys**, and the newest one is
+> **`checks.credentials`** (#587) — the proof-of-deploy key for this build, and the first
+> one that reports a *fault* rather than a state. On its first probe it read
+> `{"ok": false, "detail": "refusing: github_code_search (3x), deepfind_email_breach (2x),
+> reddit_user (1x) · recovered: indicia_person, jina_reader_scrape, wayback_cdx_search"}`.
+> That is correct behaviour, not a broken deploy: `ok:false` is what "a provider is refusing
+> us" is supposed to look like, and a read failure reports `ok:false` too, because "cannot
+> tell" is not healthy. The other two are `checks.synthesis` = `{ok, "disabled"}` and
+> `checks.rejected_cluster_sweep` = `{ok, "clean: 361 rejected review(s), 0 stale
+> assignment(s)"}`. **The next build's proof key must be a key that build introduces** — the
+> marker alone can never prove a bundle.
+>
+> ⚠️ **`github_code_search` is genuinely 401 and JD's fix did NOT take** — measured against
+> `tool_usage_log`, not inferred. Every call in the 21-day window failed `github 401`,
+> **including 2026-09-12T20:53Z**, hours after the token was reported fixed; there is not one
+> `ok` row in the window. The secret the code reads is `GITHUB_API_TOKEN`, falling back to
+> `GITHUB_TOKEN` (`env.ts:256`), set in **Supabase function settings**, not Vercel or the repo.
+> By contrast `rapidapi_breach_search` is **19 ok / 0 failed over 7 days** — that fix is
+> confirmed. `reddit_user`'s single failure is 2026-09-07 (datacenter-IP block, expected) and
+> `deepfind_email_breach` is 3 ok / 2 failed, listed only because its most recent event was a
+> failure. Do not treat the `/health` list as four dead providers; that is the exact mistake
+> the "A 403 is not a dead credential" section below exists to stop.
+>
+> Previous verified state, for the ledger: live `2864860`, stamp `5cbd7b0`, `deploy/live` →
+> `2864860`, ledger `c50f383`, `verify:deploy` VERIFIED with `mirror tree -> equal`
+> (`3da3b6a7d702`); before that live `7c7888f`, stamp `5807c31`, tree `c9edfe634fcf`.
+>
+> **⚠️ `subject_unlinked` is a PROMOTION gate as of #581 — the dispatch half of
+> #518/#519 is deliberately reversed.** A quarantined selector is now LOOKED UP, and
+> everything it yields inherits the quarantine (`lib/unproven-linkage.ts`). Analyst
+> rejection still refuses dispatch. Kill switch, read at call time:
+> `PROMOTION_QUARANTINE_DISABLED=true`. The table further down is updated; do not act
+> on any older text that says quarantine blocks a tool call.
+>
+> ⚠️ A fresh sandbox clone has **not** fetched the `deploy/live` ref, which leaves that
+> axis of the gate blind and can surface as a false `ledger_ref_divergence`. Run
+> `git fetch origin refs/heads/deploy/live:refs/heads/deploy/live` first — confirmed
+> necessary again on 2026-09-12.
+>
+> Mirror function dirs, enumerated rather than trusted: `_shared`, `evidence-export`,
+> `mcp`, `osint-agent`, `security-test-lab`.
+>
+> **Both `subject_unlinked` dispatch-boundary reopenings were CLOSED by #519** —
+> kept as history. ⚠️ Read it knowing #581 has since made quarantine a PROMOTION
+> gate, so the "every quarantined selector dispatched normally" failure it
+> describes is no longer a failure for quarantine; the paging correctness it won
+> still matters, because an incomplete read now means a missed TAINT rather than a
+> missed refusal, and the rejected-selector half of the guard is unchanged. The refused-key read paged only as far
 > as PostgREST chose to answer — an unbounded select returns at most `db-max-rows`
 > rows with NO error, a well-formed short 200 — so past that cap every quarantined
 > selector dispatched normally. And the refusal text interpolated the
@@ -56,7 +252,9 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 > condition to read at that moment is `mirror tree -> equal`, nothing else. It flips
 > to VERIFIED on its own once `/health` moves.
 >
-> Previous dated states, kept for the record: `main` = `8691e55` / live `4e6888a`
+> Previous dated states, kept for the record: `main` = `4a5eb1c` / live `e50db9e`
+> (#529 as `42d8609`, #519 as `e50db9e`; mirror `571cb9e`, tree `e854a98f4110`);
+> `main` = `8691e55` / live `4e6888a`
 > (#549 + #547 + #550; stamp `57c0912`); `main` = `43ae2db` / live `eab3668` (#542's
 > backend half; stamp `8bec158`); `main` = `35ff20b` / live `7b0138d` (stamp
 > `cfbb404`); `main` = `550fd60` / live `7cd74b5`.
@@ -71,7 +269,9 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 > echoes about itself. It reads `{"ok": true, "detail": "disabled"}`, and `disabled` is
 > correct: synthesis ships dark behind two independently-defaulted-OFF flags. If you need to
 > confirm a future deploy landed, look for a key the new code introduces, not only the SHA.
-> The next such key is **`checks.rejected_cluster_sweep`** (2026-09-02): the health path now
+> The successor keys are **`checks.rejected_cluster_sweep`** (2026-09-02) and
+> **`checks.credentials`** (#587, live in `c87c07b` — see the dated state above). On
+> `rejected_cluster_sweep`: the health path now
 > clears stale `cluster_id`/`subject_id` on analyst-rejected rows every probe — bounded,
 > idempotent, converging to one read, kill switch `REJECTED_CLUSTER_SWEEP_DISABLED` — so a
 > Dismiss binds on the persisted columns within a probe interval instead of at the next
@@ -153,8 +353,10 @@ There is **ONE place to work: this repo, `justindean785/insight-finder`** (produ
 
 ## Edge function internals (gotchas)
 - **Live tool defs are in `supabase/functions/osint-agent/tool-registry.ts`** (`buildTools`), **not** inline in `index.ts` (which now only orchestrates the request). The god-file refactor moved them; `index.ts` has zero tool defs. The catalog↔runtime contract test (`src/test/catalog-guidance.test.ts`) reads `tool-registry.ts` (with an `index.ts` fallback) to assert every `catalog.ts` entry has a runtime def — keep `catalog.ts` and `tool-registry.ts` in sync when adding a tool. (Any older `tools/*.ts` files are stale mirrors, not the runtime source.)
-- Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read *_test.ts`). **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail.) **Edge baseline: 1634 passed / 0 failed / 5 ignored** (re-measured 2026-09-08 locally on `main` at `4a5eb1c` with an installed Deno 2.9.6 and `--no-lock`, and agreed by CI's `Edge functions (deno test)` job on the same head; the 1624/`57c0912`, 1613/`2026-09-02`, 1539, 1517/`3b6fc44`, 1461/`3c2ef26`, 1446/`cf06cbb`, 1407/`03f64e4`, 1279/`5cc1940` and 1178/`394cd0b` figures are all stale). The 24 environmental failures are GONE — do not treat any failure as "probably environmental"; that excuse is retired. **Deno is NOT preinstalled** in the web/remote sandbox: `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y` (verified working 2026-08-28 — `dl.deno.land` answers 200 now, so the npm-registry workaround in `mem/ops/deno-tests-in-web-sandbox.md` is a fallback, not the only route). Pass `--no-lock`: an unqualified `deno test` rewrites `deno.lock` and drops four real dependency entries — or skip the install entirely and **use CI as the edge instrument**: any PR gives a clean `deno test` on a provisioned toolchain, and a red PR is still a usable measuring device if you read the per-job conclusions rather than the top-level X. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
-- **Frontend baseline: 1957 passed / 1 skipped / 159 files** (`npx vitest run`, re-measured 2026-09-08 on `main` at `4a5eb1c`; #529 added 30 tests in 1 file over the previous figure, which reconciles exactly. The 1927/158 (`57c0912`), 1818/149 (2026-09-02), 1803/148, 1775/143 (`3b6fc44`), 1695/136, 1611/131, 1629/133, 1587/130, 1585/130, 1422/115 and 1288/105 figures are all stale). ⚠️ **Test FILES are the suite's own figure, not the coverage upload count.** CI's `Frontend (vitest + build)` job prints `there will be 137 files uploaded` immediately after the suite — that is the *coverage artifact* file count, and mistaking it for the suite figure already put a wrong number in one commit message. **If a run reports ~10 React failures, re-measure in an isolated worktree with its own `npm ci`** before believing them — a shared `node_modules` can produce a duplicate-React artifact that fabricates exactly that (this cost a session; PR #481's body still cites them as real). It is a *symptom to check*, not a rule that a shared tree always lies: the 1695 above was measured in the primary checkout with 0 failures, and CI's own `Frontend (vitest + build)` job agreed on the same head. Re-measure rather than trust it — this number moved three times in one session. The package manager is **npm** — there is no `pnpm-lock.yaml` and no `test:e2e` script. Use `npm ci`, `npm run typecheck|lint|test|build|test:edge`.
+- Tests: `npm run test:edge` (= `cd supabase/functions/osint-agent && deno test --no-check --allow-net --allow-env --allow-sys --allow-read . ../evidence-export`). ⚠️ **It passes DIRECTORIES, not a `*_test.ts` glob** — #597 changed this because the glob matched the osint-agent top level only and five test files had never run. Do not "simplify" it back to a glob, and put new edge tests wherever they belong rather than at the top level. **`--allow-read` is required** — the source-level wiring tests (`reviews_wiring_test.ts`) read `index.ts`/`cluster.ts`/`recovery.ts` off disk to assert the call sites exist, and without it they abort with `NotCapable` before any assertion runs, which reads like a code failure and is not. (The old `--allow-net --no-check` form left env/sys perms off, inflating the failure count — measured 2026-07-25: `--allow-net --no-check` = 546 pass/57 fail vs `--allow-net --allow-env` = 754 pass/24 fail.) **Edge baseline: 1885 passed / 0 failed / 6 ignored** on `main` at `ad4937b` (re-measured 2026-09-19 by stashing a branch; the **1879** figure below was measured at `4bb19d9` and is stale) (post-#597, which widened the runner to directories; the 1845/`0a04e1b` figure was the same suite under the old glob, so that jump is COVERAGE, not new tests. Re-measured with `--no-lock`; the 1845/`0a04e1b`, 1832/`95b8d50`, 1802/`c5a0467`, 1762/`d11f2f9`, 1634/`4a5eb1c`, 1624/`57c0912`, 1613/`2026-09-02`, 1539, 1517/`3b6fc44`, 1461/`3c2ef26`, 1446/`cf06cbb`, 1407/`03f64e4`, 1279/`5cc1940` and 1178/`394cd0b` figures are all stale, INCLUDING the "1778" this line briefly carried — that was the mid-branch figure before the promotion-quarantine tests landed). The 24 environmental failures are GONE — do not treat any failure as "probably environmental"; that excuse is retired. **Deno is NOT preinstalled** in the web/remote sandbox: `DENO_INSTALL=/usr/local sh <(curl -fsSL https://deno.land/install.sh) -y` (verified working 2026-08-28 — `dl.deno.land` answers 200 now, so the npm-registry workaround in `mem/ops/deno-tests-in-web-sandbox.md` is a fallback, not the only route). Pass `--no-lock`: an unqualified `deno test` rewrites `deno.lock` and drops four real dependency entries — or skip the install entirely and **use CI as the edge instrument**: any PR gives a clean `deno test` on a provisioned toolchain, and a red PR is still a usable measuring device if you read the per-job conclusions rather than the top-level X. `deno check index.ts` has ~12–157 **pre-existing** AI-SDK/Supabase type-graph errors — not a gate; verify your change adds none.
+- **Frontend baseline: 2106 passed / 1 skipped / 173 files** (`npx vitest run`, re-measured 2026-09-19 on `main` at `ad4937b`; the 2104/1/172 figure was measured at `95b8d50` and is stale) (previously re-measured 2026-09-13T00:05Z on `main` at `95b8d50`, post-#587/#588. The 2087/171 (`c5a0467`), 2071/169 (`d11f2f9`), 1957/159 (`4a5eb1c`), 1927/158 (`57c0912`), 1818/149 (2026-09-02), 1803/148, 1775/143 (`3b6fc44`), 1695/136, 1611/131, 1629/133, 1587/130, 1585/130, 1422/115 and 1288/105 figures are all stale). ⚠️ **Test FILES are the suite's own figure, not the coverage upload count.** CI's `Frontend (vitest + build)` job prints `there will be 137 files uploaded` immediately after the suite — that is the *coverage artifact* file count, and mistaking it for the suite figure already put a wrong number in one commit message. **If a run reports ~10 React failures, re-measure in an isolated worktree with its own `npm ci`** before believing them — a shared `node_modules` can produce a duplicate-React artifact that fabricates exactly that (this cost a session; PR #481's body still cites them as real). It is a *symptom to check*, not a rule that a shared tree always lies: the 1695 above was measured in the primary checkout with 0 failures, and CI's own `Frontend (vitest + build)` job agreed on the same head. Re-measure rather than trust it — this number moved three times in one session. The package manager is **npm** — there is no `pnpm-lock.yaml`. Use `npm ci`, `npm run typecheck|lint|test|build|test:edge`.
+- **⚠️ `npm run test:e2e` EXISTS and PR CI does not run it — run it by hand before merging any workspace change.** This line used to say the script did not exist; it does (`playwright test`, 54 specs over `e2e/workspace-tabs.spec.ts` and `e2e/case-integrity.spec.ts`, driving the harness build). The `e2e` job in `ci.yml` is `if: github.event_name == 'push'` — a deliberate cost call after #483 drained the Actions allowance — so it runs on pushes to `main` **only**. The workflow header states the trade plainly: *a PR can go green and merge while breaking the tab-reachability contract, and the failure surfaces on main AFTER the merge — a revert, not a block.* Measured 2026-09-12: a change that passed vitest, typecheck, lint, build AND the full edge suite still broke `case-integrity.spec.ts → next steps › 9`. **Baseline: 51 passed / 2 skipped** on `main` at `ad4937b` (re-measured 2026-09-19; the 52/2 figure is stale). Deno-style gotcha for the web sandbox — Chromium is pinned and must not be re-downloaded:
+  `PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium-1194/chrome-linux/chrome npm run test:e2e`
 - **The orchestrator is DeepSeek-slot-pinned, not MiniMax-primary.** `/health` reports `selected_provider: deepseek`, `orchestrator_reason: "pinned"`, with MiniMax as **fallback**. Since #449 the slot is vendor-agnostic via `DEEPSEEK_BASE_URL`, and the live model is **`glm-5.2` served by Z.AI**. Anywhere this file or `AGENTS.md` says MiniMax is primary, it is wrong.
 - Frontend tests: `npx vitest run` from repo root.
 
@@ -238,7 +440,7 @@ re-fix solved problems and miss the one thing still open.
 | **write** | #433 | a name-only collision root persisting unquarantined at confidence 65 |
 | **pivot** | #436 | a quarantined selector offered as an ordinary "Run this pivot" card |
 | **promote** | **#448** | a quarantined artifact entering identity clusters, graph edges, confidence dimensions, the report, the audit — or being labelled CONFIRMED |
-| **dispatch** | #518, hardened by **#519** | a quarantined or analyst-rejected selector reaching a live tool call. `force` does not override it |
+| **dispatch** | #518/#519, **REVERSED for quarantine by #581** | an ANALYST-REJECTED selector reaching a live tool call. A QUARANTINED selector is now dispatched and its results tainted — see below. `force` overrides neither |
 
 **There is now a RELEASE path, added by #529 (merged 2026-09-08).** `linkage_confirmed` was
 the documented escape hatch from quarantine and every boundary READ it, but nothing in the
@@ -282,14 +484,32 @@ Two things about it that must not be "simplified" later:
   *authority*, never their existence. Any future change that makes a quarantined row
   disappear is a regression, not a tightening.
 
-### ✅ The dispatch boundary BINDS — what is still open is its observability (P1)
+### ⚠️ The dispatch boundary now refuses ANALYST REJECTION ONLY (#581)
+
+**Read this before acting on anything above or below about dispatch.** As of #581
+(2026-09-12, operator decision) `subject_unlinked` is a PROMOTION gate, not a dispatch
+gate. Do NOT "restore" the quarantine refusal — it was opened deliberately.
 
 **Do not re-derive this from the old grep.** `grep -rn "isSubjectUnlinked" tool-registry.ts index.ts tools/`
 is still empty *and that is fine*: the guard lives in **`cache.ts`** (`wrapToolsWithCache`,
-the pre-flight block at ~:866-899), keyed by `dispatchKey` (`lib/dispatch-quarantine.ts`)
-and `buildRejectedDispatchKeys` (`lib/dispatch-rejection.ts`), and refuses a quarantined or
-analyst-rejected selector before budget, circuit, cache or the live call. `force` does not
-override it. Pinned by `quarantine_dispatch_test.ts` / `rejected_dispatch_test.ts`.
+the pre-flight block), keyed by `dispatchKey` (`lib/dispatch-quarantine.ts`) and
+`buildRejectedDispatchKeys` (`lib/dispatch-rejection.ts`). What it does now:
+
+- **analyst-rejected selector → REFUSED**, before budget, circuit, cache or the live call.
+  `force` does not override it. Pinned by `rejected_dispatch_test.ts`.
+- **quarantined selector → DISPATCHED, and its result tainted** with an
+  `unproven_linkage` marker (`lib/unproven-linkage.ts`). `extractFindings` stamps
+  `subject_unlinked` on everything the call yields, so authority is never inherited.
+  `force` cannot shed the taint. Pinned by `quarantine_dispatch_test.ts` (rewritten) and
+  `unproven_linkage_test.ts`.
+- **kill switch** `PROMOTION_QUARANTINE_DISABLED=true`, read at call time, restores the
+  old refusal on the running build with no deploy.
+
+⚠️ **The taint is the safety case, not provenance decoration.** The write-path quarantine
+gate keys on QUERY SHAPE, and `username_sweep` on a harvested username is not a name-only
+query — so if the marker is ever dropped, a stranger's profiles persist at full subject
+authority, join identity clusters and reach the report. That is the hole #433 closed,
+re-opened from a different direction.
 
 What remains open — **and #519 did NOT close it, despite what this file used to say.**
 #519 merged 2026-09-08 (`e50db9e`, deployed) and this line previously claimed it "stamps
@@ -408,10 +628,24 @@ production corpus numbers that govern #477/#479/#482) →
 list, §7 the ordered plan) →
 `…_2026-09-03_evidence-board-and-pivot-quality` →
 `…_2026-09-07_drop-suppression-and-the-duplicate-pr` →
-**`SESSION_HANDOFF_2026-09-08_queue-drain-and-dispatch-deploy.md` (newest — read this one
-first)**. Its §3 is the trap list (three instruments that reported something other than what
-they named), §4 is the honest not-done list, and §5 says which open items are the operator's
-call rather than yours.
+`…_2026-09-08_queue-drain-and-dispatch-deploy.md` →
+`…_2026-09-12_promotion-quarantine-and-measured-audit.md` (its §2 is the
+promotion-quarantine switch, §3 the trap list of four instruments that lied) →
+`…_2026-09-13_instrument-truth-and-the-lineage-prerequisite.md` →
+`…_2026-09-14_sweep-false-positives-and-the-memory-retrieval-gap.md` →
+**`SESSION_HANDOFF_2026-09-20_prompt-ceiling-payload-store-and-the-overlap-wedge.md` (newest —
+read this one first)**. Its §2 is the stale-baseline correction, §4 the production overlap wedge
+(the highest-value unfixed defect), §5 the `unknown` stop reason, §6 the payload-store decision
+and why the store is a TABLE not the archive bucket, §7 the trap list, §9 the ordered plan.
+The 09-14 handoff. Its §2 is the sweep bug that was manufacturing evidence, §4 the
+memory-retrieval gap, §5 the built-and-dark synthesis layer, §7 the ruling on Lovable's audit
+prompt, §8 the trap list, §9 the one open decision, §11 the ordered plan.
+
+The 09-13 handoff. Its §3 carries the three verified findings that reorder the plan
+(the GitHub 401, the missing call-to-artifact lineage, telemetry durability), §5 states the
+goal, **§6 is the ordered roadmap**, **§7 is the small-PR discipline and why a large PR
+cannot be deployed or reverted here**, §8 the trap list, §9 the ruling on Codex's planning
+PR #586, §10 the open-PR queue.
 `NEXT_SESSION_PROMPT.md` is the companion entry point and is the more current of the two.
 Take the dated state from the top of THIS file rather than from any handoff's own §1 state
 table — every one of them has been overtaken by a later session, including the 09-07 pair,
@@ -430,6 +664,255 @@ and do not act on the superseded originals:
   error, and every one passed the full suite, typecheck, lint and build. **A behavioural
   test must DRIVE the shipped control flow, never re-describe it.**
 - The 08-09 handoff's three-boundary framing is right; its status is not.
+
+## ⛔ BUILT AND UNWIRED — check before you build (2026-09-12)
+
+Five separate times in one session, the thing a plan said to build turned out to be
+already built and either disconnected at the call site or mislabelled. The work in this
+repo is not missing; its **instruments and labels** have been reporting something else, so
+each session diagnosed from bad readings and built beside the thing that already worked.
+That is the real answer to "we do all these upgrades and it never changes the app."
+
+**Before implementing anything from a plan or audit, grep for it first.** Verified cases:
+
+| Thing | Status on `main` |
+|---|---|
+| `toolAgentRole()` / `toolActionLabel()` (`src/lib/tool-display.ts`) | exported, unit-tested, **zero component consumers** until #587 |
+| `tool_health` view → `scoreExpectedValue` reliability prior | fully wired and loaded per run — but `runtime-policy.ts:373` states EV is **advisory and never blocks a call**, so nothing is ever suppressed by it |
+| `shouldAllowToolCall` (`runtime-policy.ts:556`) | complete, tested, **unreferenced**. Has `QUERY_FAMILY_NO_YIELD_LIMIT = 3` → `action:"suppress"` — i.e. most of the "stop calling what never yields" feature |
+| `tool-routing-policy.ts` | **100% dead code**; `RouteContext` already carries `highYieldTools`, `failedQueryFamilies`, `duplicateQueryKeys` |
+| `circuit.applyBaselineDisables(threadId)` (`circuit.ts:634`) | an **explicitly empty hook**, already called once per thread, kept for a persisted skip list |
+| `capabilities.seedTypes` | the gate is **fully enforced** at `capabilities.ts:184` — and no tool declares it, AND `index.ts:441` passes `null` as the seed type, so it can never fire ⚠️ |
+| Evidence board "Leads drawer" | **already shipped** (#543). Default filter is `analyst`, hiding weak/quarantined/excluded, with Leads and Excluded chips. `STATUS_FILTER_GROUPS` warns that a kind-based filter beside the authority states would be "a second, drifting source of truth" — do not add one |
+| **finding synthesis** (`finding-synthesis.ts`, `finding-synthesis-sweep.ts`, `lib/finding-row.ts`) | **complete, deployed, and switched OFF** behind `FINDING_SYNTHESIS_ENABLED` / `_BACKFILL_ENABLED` / `_DRY_RUN`. Runs in the HEALTH SWEEP — a separate request — so it is structurally incapable of failing finalize. Its header measures the gap it closes: **9,615 artifacts / 181 threads / 13 `kind='finding'` rows in the product's lifetime**, because `workflow_prompt.ts:34` makes `record_finding` advisory and the model almost never calls it (the `@wopdell` run: 87 tool calls, **zero**). ⚠️ Prerequisite before any flag flips: confirm migration `20260907000000` (`artifacts_synthesis_cluster_uniq`) is applied **against the live DB** — the sweep is an unlocked read-then-write fired every 60s |
+| `useDensity` (`src/hooks/useDensity.ts`) | complete, persists to `localStorage`, applies `<html data-density>`, and has **ZERO consumers** — no control anywhere sets it. Worse, its CSS is not inert while dark: `[data-density-row]` sets symmetric `padding: … !important` UNLAYERED, so it beat `.ledger-row`'s own rule and pulled the evidence ledger's left inset from 1rem to 0.75rem while the column head and group rule stayed at 1rem. Fixed in #617 by giving the ledger back its horizontal inset; density still owns the vertical rhythm. Wiring a control is still unbuilt, and it is a global preference, so decide WHERE it lives (command palette is the cheap answer) before building one |
+| `SweepSite.confirm` | the documented lever for a platform whose not-found page echoes the handle — **and unreachable until #594**, since no site configured it. Populating it honestly needs a KNOWN-REAL profile per platform, which is why #594 encodes the measured NEGATIVE (`echoUnsafe`) instead |
+
+### ⚠️ Do NOT populate `seedTypes` to shrink the tool-schema payload
+
+It looks like the obvious fix for the ~95–105k chars of tool schemas re-serialized every
+step. It is the wrong mechanism: OSINT pivots **derive** new selector types mid-run — an
+email seed yields a domain, a username, a phone. Gating `crtsh_subdomains` off because the
+SEED was not a domain breaks the run's ability to follow the domain it just discovered.
+The real duplication is that `catalog.ts` exists to hold when-to-use guidance and is
+fetched once, while each tool's `description` still carries paragraphs of the same prose
+on every step. Cut there instead — and only after `prompt_size_step` reports the real
+number, not an estimate.
+
+### Instruments that were lying — #587 shipped in `c87c07b` 2026-09-13
+
+**Read the per-item status, not the heading.** #587 made all four *legible*; it repaired
+exactly one of them. Two now have an honest meter beside the broken reading, and the
+defect they measure is still there — which is the point, because the number that sets the
+cap has to come from production, not from an estimate.
+
+- **`approxPromptChars` — MEASURED, not fixed, deliberately.** It still omits the workflow
+  addendum, `analystDecisionsBlock` (0 → ~30k), the per-step directives and **every tool
+  schema**, so the ~175k average `initial_context_chars` in telemetry is still a floor.
+  `approxPromptChars` was left alone because it *routes providers*; changing it changes
+  behaviour. The honest meter is separate: `prompt-size.ts` → `prompt_size_initial` and
+  `prompt_size_step`, the latter logged from each of the three `prepareStep` return
+  branches so a nudge step reports the tool set it actually ships. It names
+  `tool_input_schemas_serialized` as unmeasured rather than estimating it — zod@3 has no
+  JSON-Schema export, so those bytes cannot be counted from inside the function.
+- **The run caps are per ISOLATE, not per investigation — STILL TRUE, now measured.**
+  `index.ts:331` calls `clearRuntime(threadId)` on every request and that is
+  `THREADS.delete(threadId)`, while `runtime-policy.ts:296-299` claims only "a brand-new
+  investigation" clears them. An investigation is 2–12 invocations, so `MAX_PAID_CALLS = 12`
+  is really **24–144 per case**. Production: 130 calls/12 invocations, 112/9, 102/6. This
+  also explains 74 `minimax_correlate` calls against a documented cap of 2. #587 adds
+  `run_budget_prior`, which classifies prior `tool_usage_log` rows into what actually
+  consumed a paid slot (cached replays and `outcome === "skipped"` consumed nothing; failed
+  and empty paid calls did), with the paid predicate **injected, not imported**, so it
+  cannot drift from the admission gate. **A2b — enforcing the per-investigation cap — is
+  deliberately NOT done and is blocked on a week of this data.** `MAX_PAID_CALLS` is a
+  settled operator decision; setting the replacement number from an estimate is the error
+  that condemned a healthy provider.
+- **`/health`'s tools line is STILL a PRESENCE test** (`has(env.X_API_KEY)`) and #587 did
+  not touch it. What it adds is **`checks.credentials`** beside it, which reads `outcome`
+  and `status_code` over a rolling 7 days and so can tell a dead key from a working one and
+  can confirm a rotation. It earned its keep on the first probe: it caught that
+  `github_code_search` is still 401 (see the dated state above). Read the two together —
+  the tools line says a secret is *set*, `checks.credentials` says whether it *works*.
+- **The cache sweep could not have drained a row — FIXED and deployed.** It handed all
+  5,000 identified ids to one `DELETE`, and PostgREST renders `.in()` into the URL query
+  string: a ~185 KB URL against a ~24 KB gateway cap. It now chunks at
+  `CACHE_SWEEP_DELETE_CHUNK = 300` and a chunk fault returns, so `deleted` reports only what
+  was actually removed. ⚠️ **`CACHE_SWEEP_ENABLED` is still OFF** — the chunking landed
+  first so that flipping the switch is a separate, reversible decision. ⚠️ **And it must be sequenced AFTER the payload store, never before:** measured 2026-09-19, `tool_call_cache` is the largest table at 47 MB / 12,701 rows back to 2026-06-25 with only 129 unexpired, so it is currently the only — accidental — copy of historical tool outputs. Draining it destroys them. Before tuning TTLs,
+  measure **key-miss vs expiry**: L2 is keyed on full-param `input_hash`, which may be the
+  real reason for the 1.6% hit rate.
+
+### ⚠️ Where each number DURABLY lives — measured 2026-09-13, before planning any week-long read
+
+A meter nobody can read a week later is not a meter. Checked against the live DB:
+
+| Store | Retention as measured | Holds |
+|---|---|---|
+| `tool_usage_log` | **15,136 rows back to 2026-06-08** — three months | every tool call: `outcome`, `status_code`, `cached`, cost. **Durable.** |
+| `evidence_log` / `artifacts` / `threads` | back to 2026-06-08 / 07-05 / 07-05 | case data. Durable. |
+| `orchestrator_invocations` / `orchestrator_step_metrics` | **only 2026-09-11 onward** (58 / 350 rows) | per-invocation and per-step timing + context |
+| `prompt_size_initial` / `prompt_size_step` / `run_budget_prior` | **nothing — `console.log` only** | the honest prompt terms and prior spend |
+
+**The two-day floor on the orchestrator tables is NOT a purge — do not report it as one.**
+There is no `pg_cron`, no trigger on either table, and every other table holds months. They
+are a two-day-old feature: `supabase/migrations/20260908000000_orchestrator_telemetry.sql`
+from #560, applied live around 2026-09-11. They accumulate normally from here. (Note the
+live migration ledger tops out at `20260825024640` and does **not** list it — more evidence
+for the rule above that `supabase/migrations/` is intent, not mechanism.)
+
+**The real gap is narrower and worse: the durable table records the WRONG number.**
+`orchestrator_invocations.initial_context_chars` and `orchestrator_step_metrics.context_chars`
+are fed by `approxPromptChars` (`telemetry.ts:175,223`) — the meter that omits the workflow
+addendum, the analyst-decisions block, the per-step directives and every tool schema. The
+honest measurement from #587 goes to `console.log` and therefore only to Supabase edge-function
+logs, which are short-lived and awkward to query. So a week from now the durable store will
+still hold the floor, and the accurate figure may be gone.
+
+Consequences for the ordered plan, so nobody mis-sequences it:
+
+- **A2b (per-investigation budget) is SAFE.** `run_budget_prior` classifies rows it reads from
+  `tool_usage_log`, which retains three months, so the week of evidence will be there even
+  though the log line is not. The plan stands.
+- **The context-size target is NOT safe to set from telemetry yet.** Before using
+  `prompt_size_step` for a threshold, give it a durable home — add the term breakdown to
+  `orchestrator_step_metrics` (a schema change, so **through Lovable and verified against the
+  live DB**, per the rule above), or persist it beside the existing row. Do **not** "fix"
+  `approxPromptChars` to close the gap: it routes providers, and changing it changes behaviour.
+  That is exactly why #587 left it alone.
+
+### ⚠️ OPEN mirror PR #41 — Lovable-authored, un-backported (as of 2026-09-13T00:55Z)
+
+`seeker-spark-search-5362c57c#41` — *"silence ai sdk warning spam and treat memory_save dedup as
+benign"* — is **open and not a draft**, and touches two real runtime files: `index.ts` (sets
+`AI_SDK_LOG_WARNINGS = false` on `globalThis`) and `tool-registry.ts` (a `memory_save` dedup
+collision returns `{ok:true, deduped:true}` rather than `{ok:false}`).
+
+The content looks correct — the second is arguably a finalize-wedge fix, since
+`resolveFinalizePhase` blocks the report phase until `memory_save` or `finalize_skip_memory`
+succeeds, and a collision is a genuine no-op rather than a laundered refusal. **The hazard is the
+channel, not the content:** it is authored where this repo cannot see it and **it does not touch
+`build-info.ts`**, so merging it on the mirror means the next deploy ships it while `/health`
+reports the SHA we stamped. That is the 2026-08-29 incident exactly.
+
+**Do not merge it on the mirror. Backport both hunks here** and let them flow through the normal
+pipeline; then close #41 as superseded. `diff -rq` is empty today only because #41 is unmerged —
+re-check it as part of the hard gate, and check `git log origin/main` in the mirror clone, not
+just `diff -rq`.
+
+### ⛔ There is NO call-to-artifact lineage — it blocks the whole learning layer
+
+**Measured 2026-09-13 against the live DB.** `artifacts` columns are exactly
+`id, thread_id, user_id, kind, value, confidence, source, metadata, created_at, cluster_id,
+subject_id`. **There is no join key to `tool_usage_log`.** The closest thing is `metadata.tool`,
+present on **714 of 1,868** recent artifacts — **38%**, and only on auto-persisted rows
+(`auto_persist_source` and `via` carry the identical count; anything from `record_finding` /
+`record_artifacts` has nothing). It stores a tool **name**, not a call id, so it cannot say which
+of 74 `minimax_correlate` calls produced a row and cannot be joined at all.
+
+**Consequence:** you can measure how often a tool returned HTTP 200, and how many artifacts exist —
+but not *how often a source produced something an analyst kept*. Operational memory, per-dork
+yield, EV ordering and the operator's "15 false positives" ask are **all blocked on this**. It is a
+prerequisite, not a nice-to-have, and it comes before any learning code.
+
+Fix shape: an `artifact_tool_lineage` **junction table**, plus `run_id` and a stable `call_id` on
+`tool_usage_log`, carrying selector **type** rather than raw selector value for cross-case
+analytics (privacy-correct, and it also fixes rejection keys being per-thread only).
+**Never an array of artifact ids on the call row** — that re-creates the exact failure that broke
+the cache sweep: PostgREST renders `.in()` into the URL query string, ~5,000 uuids is a ~185 KB URL
+against a ~24 KB cap. Schema first, through Lovable, verified against the live DB; then the write
+path behind a kill switch with a new `/health` key. Full detail:
+`mem://architecture/artifact-tool-lineage-gap`.
+
+### ⛔ Memory IS learning — the RETRIEVAL is what is broken (measured 2026-09-14)
+
+Do not rebuild the memory layer, and do not accept "it never learns" at face value. Measured against
+the live DB: **1,395 `agent_memory` rows back to 2026-05-27, 517 of them `kind='lesson'`, 246 of
+those about tool reliability.** It captures exactly the right things —
+
+> *"rapidapi_breach_search returned 0 hits for this email while breach_check (leakcheck) returned 21"*
+> *"Instagram profile could not be scraped (HTTP 451 block + SocialFetch not_found)"*
+
+— and then buries them. **`memory_recall` matches on `subject` only** (`tool-registry.ts:5707`,
+`.or(agentMemoryOrFilter(subj))`), so a lesson about a TOOL is filed under the SELECTOR it was
+learned on (`caseypritchard1@gmail.com`, `baig_azhar`). **101 tool-reliability lessons are filed
+under a case-specific subject and can never surface again.**
+
+Fix shape: a second recall axis — key tool lessons by tool name (`tool:rapidapi_breach_search`) and
+recall that set every run regardless of seed.
+
+**Do NOT conflate this with a broken detector.** A tool that is wrong by construction is a code
+defect and must be fixed in code; memory carries genuinely case-specific knowledge. Conflating them
+is why this has felt broken from both ends. Worked example: 12 lessons about HackerRank existed in
+memory while `sweeper.ts` had **no suppression input at all** (the platform list is a hardcoded
+array) and rejection keys were per-thread — so the lesson was recorded twelve times with no lever to
+act on it even once.
+
+### ✅ `lib/*_test.ts` now runs in CI — CLOSED by #597 (2026-09-14)
+
+Kept because the *shape* recurs. `test:edge` was `deno test … *_test.ts`, a shell glob matching the
+osint-agent **top level only**, so five test files had never been executed by CI or by the
+documented local command — `lib/cluster_test.ts` (the C-1 suite guarding against false identity
+merges), `lib/memory_save_test.ts`, `lib/memory_supersession_test.ts`, `tools/serus_core_test.ts`
+and `evidence-export/text-sanitize_test.ts`. All 34 passed on first run, so nothing was being
+hidden — but nothing was being *checked* either. The script now passes directories so Deno
+discovers recursively. **Baseline 1845 → 1879: the number moved because coverage moved, not
+because tests were added.** When a suite total jumps, check the runner before crediting the code.
+
+### ⛔ `promoteConfidence`'s corroboration branch is a mathematical no-op
+
+`lib/cluster.ts` advertises confidence promotion from cluster corroboration. The expression is
+`conf = Math.max(conf, Math.min(TIERS.LIKELY, member.confidence))`, and
+`Math.max(c, Math.min(75, c)) === c` for every `c`. It is an identity function. The branch can only
+ever CAP (contradicted → 40) or jump to 90 on a verified self-admission — confirmed across 64
+production rows, not one promoted upward. Either the expression is wrong or the comment is.
+**Evidence-ranking, so it needs explicit sign-off — do not "fix" it as a drive-by.**
+
+### ⛔ Report readiness punishes collection
+
+`confidence-dimensions.ts:196-201`: `readiness = reportSafe / TOTAL artifacts`, where report-safe
+means label ∈ `{CONFIRMED, ATTESTED, CORRELATED}`. The denominator includes `weak_lead`,
+`excluded_collision`, avatar placeholders and the engine's own notes — rows that can never be
+report-safe. **A more thorough run scores worse.** Measured: 7/64 = 11% on `@wopdell`, 2% on a
+120-artifact person case.
+
+### ⛔ Ship in SMALL PRs — a large PR cannot be deployed or reverted here
+
+This is not style advice; it follows from the deploy topology above.
+
+1. **`/health` proves a BUILD, not a change.** Ship six changes in one build and a regression
+   cannot be bisected — there is nothing finer-grained to look at.
+2. **The behavioural-proof-key trick is per-build.** One new key (`checks.synthesis` →
+   `checks.rejected_cluster_sweep` → `checks.credentials`) cannot prove six changes landed.
+3. **Edge deploys are serialized and manual.** Each edge PR needs its own stamp → surgical sync →
+   hard gate → Lovable message → `/health` verify → ledger cycle. Batching changes does not batch
+   the risk, it concentrates it.
+4. **Frontend and edge ship on different channels.** Frontend goes live on merge via Vercel; edge
+   does **not** ship on merge at all. **Never mix them in one PR** — it can be neither cleanly
+   deployed nor cleanly reverted.
+5. **Review catches what CI cannot.** Every defect caught in review here was a *timeline or
+   identity* error that passed the full suite, typecheck, lint and build. Large diffs hide exactly
+   that class.
+6. **The merge queue is the bottleneck.** Big PRs sit in draft; small ones merge.
+
+Rules: one PR = one behaviour change + its tests + its kill switch · never mix frontend and edge ·
+never mix a schema change with the code that depends on it (schema first, applied and verified,
+*then* the code) · every behaviour-changing edge PR adds one new `/health` key or durable log event ·
+at most one edge PR in flight, frontend PRs run in parallel · docs and ledger updates ride
+separately · run `npm run test:e2e` by hand for anything touching `src/`.
+
+A worked six-PR decomposition of the lineage work is in §7 of the 2026-09-13 handoff.
+
+### A 403 is not a dead credential
+
+The 2026-09-12 datasheet listed four "permanently dead" providers. One
+(`rapidapi_breach_search`) was serving **391 successful lookups**, most recent that same
+day. `reddit_user` 403s because Reddit blocks datacenter IPs; FOFA answers HTTP 200 with
+`{"error":true}` when the account PLAN lacks a queried field (handled correctly at
+`tool-registry.ts:2588`). Always measure on `outcome` over real attempts
+(`outcome IN ('ok','failed')`) with skips and empties excluded from both numerator and
+denominator — the `tool_health` migration header explains why, and counting them is what
+made `gravatar_profile` read 35% reliable when it was ~100%.
 
 ## Misc
 - Today's working topology + history is also in the user's agent memory (`canonical-deploy-topology.md`, `deploy-blocker-lovable-supabase.md`).

@@ -4,6 +4,7 @@ import { buildToolAudit, inferToolGaps } from "@/lib/intel";
 import { toolDisplayName, toolActionLabel } from "@/lib/tool-display";
 import { Wrench, AlertTriangle, RotateCcw, Compass, Lightbulb, Wallet, Pencil, Check } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
+import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { EmptyState } from "./EmptyState";
 import { cn } from "@/lib/utils";
 
@@ -24,6 +25,10 @@ function fmtUsd(micro: number) {
 }
 
 export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts: Artifact[] }) {
+  // The execution ledger's own figures, from the case snapshot when mounted in
+  // the workspace — so this secondary view can name the primary one.
+  const caseApi = useOptionalCaseSnapshot();
+  const ledger = caseApi?.snapshot?.hydrated ? caseApi.snapshot.tools : null;
   const audit = useMemo(() => buildToolAudit(artifacts), [artifacts]);
   const gaps = useMemo(() => inferToolGaps(audit), [audit]);
   const [spentMicro, setSpentMicro] = useState<number>(0);
@@ -81,6 +86,14 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
 
   return (
     <div className="p-3 space-y-4 text-xs">
+      {/* This view is read from ARTIFACT METADATA, not from the tool-call
+          ledger. It can say "Skipped / Failed 0" on a run whose ledger holds
+          failures, because a failed call writes no artifact. Say so. */}
+      <p className="rounded-md border border-white/[0.08] bg-surface-1 px-3 py-2 text-[13px] leading-snug text-muted-foreground">
+        Coverage here is derived from artifact metadata — secondary and incomplete. The execution record is the
+        tool-call ledger in <span className="text-foreground/90">Activity</span>
+        {ledger ? <> ({ledger.total} calls, {ledger.failed} failed)</> : null}.
+      </p>
       {threadId && (
         <Section icon={Wallet} title="Budget" count={undefined}>
           <div className="space-y-2">
@@ -104,7 +117,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
                         capError ? "border-destructive" : "border-border",
                       )}
                     />
-                    <button onClick={saveCap} className="text-primary hover:opacity-80"><Check className="w-3 h-3" /></button>
+                    <button onClick={saveCap} aria-label="Save budget cap" title="Save budget cap" className="text-primary hover:opacity-80"><Check className="w-3 h-3" /></button>
                   </span>
                 ) : (
                   <button onClick={() => { setCapDraft(capUsd.toFixed(2)); setCapError(null); setEditingCap(true); }}
@@ -125,7 +138,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
             <div className="h-1.5 rounded-full bg-secondary/60 overflow-hidden">
               <div
                 className={
-                  "h-full transition-all " +
+                  "h-full transition-[width] duration-slow ease-standard " +
                   (overCap
                     ? "bg-destructive"
                     : warn
@@ -314,7 +327,7 @@ function Section({
   icon: Icon, title, count, children,
 }: { icon: React.ComponentType<{ className?: string }>; title: string; count?: number; children: React.ReactNode }) {
   return (
-    <section className="rounded-lg border border-border bg-card/30 p-3 space-y-2">
+    <section className="panel p-3 space-y-2">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-micro font-semibold tracking-normal text-muted-foreground">
           <Icon className="w-3 h-3" /> {title}

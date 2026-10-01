@@ -16,6 +16,7 @@ import { wrapToolsWithCache, isIntentionalSkip, deriveOk } from "./cache.ts";
 import { clearRuntime } from "./runtime-policy.ts";
 import * as circuit from "./circuit.ts";
 import { dispatchKey, quarantineRefusal, isDispatchRefused, dispatchTypeCandidates, DISPATCH_REFUSAL_ERROR } from "./lib/dispatch-quarantine.ts";
+import { UNPROVEN_LINKAGE_KEY } from "./lib/unproven-linkage.ts";
 
 type SupabaseClient = ReturnType<typeof createClient>;
 
@@ -148,42 +149,99 @@ Deno.test("keying by value alone would restore authority to a quarantined select
   assert(isDispatchRefused(q, "name", "jordan vale"));
 });
 
-// ── the dispatch paths ────────────────────────────────────────────────────────
-Deno.test("DIRECT call on a quarantined selector never reaches the tool", async () => {
+// ── the dispatch paths: RUN, and taint what comes back ────────────────────────
+//
+// These four used to assert `calls.n === 0`. Since the 2026-09-12 switch to
+// PROMOTION quarantine the lookup is allowed — refusing it left person-seed
+// runs structurally unable to test the link they were investigating — and the
+// property that replaces "never runs" is "never promotes". Each case therefore
+// asserts BOTH halves: the tool ran, AND the result carries the taint that
+// stops anything it found from inheriting subject authority.
+
+/** The unproven-linkage marker the wrapper must attach, or null. */
+function taintOf(out: unknown): Record<string, unknown> | null {
+  const runtime = (out as Record<string, unknown>)?._runtime as Record<string, unknown> | undefined;
+  const raw = runtime?.[UNPROVEN_LINKAGE_KEY];
+  return raw && typeof raw === "object" ? raw as Record<string, unknown> : null;
+}
+
+Deno.test("DIRECT call on a quarantined selector RUNS, and its result is tainted", async () => {
   const calls = { n: 0 };
   const tools = wrap(calls);
   const out = await (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
     .execute({ type: "username", value: QUARANTINED_USER }, {});
-  assertEquals(calls.n, 0, "the tool body must not run");
-  assertEquals((out as Record<string, unknown>).ok, false);
+  assertEquals(calls.n, 1, "the lookup must happen — that is the point of the switch");
+  assertEquals((out as Record<string, unknown>).ok, true);
+  const taint = taintOf(out);
+  assert(taint, "a permitted quarantined dispatch MUST carry the unproven-linkage marker");
+  assertEquals(taint.parent_type, "username");
+  assertEquals(taint.parent_value, QUARANTINED_USER);
+  assertEquals(taint.parent_reason, "name-only echo", "the parent's own reason must travel with it");
 });
 
-Deno.test("REPEATED calls stay refused — no first-one-through leak", async () => {
+Deno.test("REPEATED calls stay tainted — the marker is not a first-call-only flag", async () => {
   const calls = { n: 0 };
   const tools = wrap(calls);
   const ex = (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> }).execute;
-  for (let i = 0; i < 3; i += 1) await ex({ type: "username", value: QUARANTINED_USER }, {});
-  assertEquals(calls.n, 0, "no repeat may slip through");
+  for (let i = 0; i < 3; i += 1) {
+    const out = await ex({ type: "username", value: QUARANTINED_USER }, {});
+    assert(taintOf(out), `call ${i + 1} lost the taint — a cached replay must not come back clean`);
+  }
 });
 
-Deno.test("a PIVOTED selector (same value, arriving under a different param) is refused", async () => {
+Deno.test("a PIVOTED selector (same value, different param) runs and is tainted", async () => {
   const calls = { n: 0 };
   const tools = wrap(calls);
   const out = await (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
     .execute({ username: QUARANTINED_USER }, {});
-  assertEquals(calls.n, 0);
-  assertEquals((out as Record<string, unknown>).ok, false);
+  assertEquals(calls.n, 1);
+  assert(taintOf(out), "arriving under a different param must not shed the taint");
 });
 
-Deno.test("a PAID tool is refused before any budget is consumed", async () => {
+Deno.test("a PAID tool now DOES consume budget — the accepted cost of the switch", async () => {
+  // Stated plainly rather than left implicit: allowing the lookup means paying
+  // for it. The spend is bounded by the ordinary paid-call cap, not by this
+  // boundary, and the run gets something testable for the money.
   const calls = { n: 0 };
   const budget = { genuine: 0, reserved: 0, capped: false };
   const tools = wrap(calls, undefined, { toolCallBudget: budget });
-  await (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
+  const out = await (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
     .execute({ type: "username", value: QUARANTINED_USER }, {});
-  assertEquals(calls.n, 0, "the tool body must not run");
-  assertEquals(budget.reserved, 0, "a refused call must not reserve budget");
-  assertEquals(budget.genuine, 0, "a refused call must not count as a genuine call");
+  assertEquals(calls.n, 1);
+  assert(taintOf(out), "spending on it does not buy it authority");
+});
+
+// ── the KILL SWITCH restores the old boundary, with no deploy ─────────────────
+Deno.test("PROMOTION_QUARANTINE_DISABLED=true restores the pre-2026-09-12 refusal", async () => {
+  Deno.env.set("PROMOTION_QUARANTINE_DISABLED", "true");
+  try {
+    const calls = { n: 0 };
+    const tools = wrap(calls);
+    const out = await (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
+      .execute({ type: "username", value: QUARANTINED_USER }, {});
+    assertEquals(calls.n, 0, "with the switch off the tool must not run");
+    assertEquals((out as Record<string, unknown>).ok, false);
+    assertEquals(taintOf(out), null, "a refusal is not a tainted result");
+  } finally {
+    Deno.env.delete("PROMOTION_QUARANTINE_DISABLED");
+  }
+});
+
+Deno.test("the switch is read at CALL time, so flipping it needs no redeploy", async () => {
+  const calls = { n: 0 };
+  const tools = wrap(calls);
+  const ex = (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> }).execute;
+  Deno.env.set("PROMOTION_QUARANTINE_DISABLED", "true");
+  try {
+    await ex({ type: "username", value: QUARANTINED_USER }, {});
+    assertEquals(calls.n, 0);
+  } finally {
+    Deno.env.delete("PROMOTION_QUARANTINE_DISABLED");
+  }
+  const tools2 = wrap(calls);
+  await (tools2.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
+    .execute({ type: "username", value: QUARANTINED_USER }, {});
+  assertEquals(calls.n, 1, "clearing the secret must re-enable dispatch on the same running build");
 });
 
 // ── legitimate artifacts are unaffected ───────────────────────────────────────
@@ -238,14 +296,18 @@ Deno.test("a quarantined username still does NOT block the same text as a name",
   assertEquals(calls.n, 1, "a NAME dispatch of the same text must still run");
 });
 
-Deno.test("`force` does not override the boundary", async () => {
-  // A manual re-run of a quarantined selector is the escape this exists to close.
+Deno.test("`force` cannot buy AUTHORITY — it runs either way, and stays tainted", async () => {
+  // `force` used to be the escape this boundary existed to close. Under
+  // promotion quarantine the lookup happens regardless, so `force` no longer
+  // decides anything about dispatch — and crucially it must not become a way
+  // to shed the taint instead. Clearing quarantine is a linkage decision on
+  // the artifact (`linkage_confirmed`), never a call-site flag.
   const calls = { n: 0 };
   const tools = wrap(calls);
   const out = await (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
     .execute({ type: "username", value: QUARANTINED_USER, force: true }, {});
-  assertEquals(calls.n, 0, "force must not bypass quarantine");
-  assertEquals((out as Record<string, unknown>).ok, false);
+  assertEquals(calls.n, 1);
+  assert(taintOf(out), "force must not strip the unproven-linkage marker");
 });
 
 // ── the PostgREST row cap: the boundary must read the WHOLE thread ────────────
@@ -340,12 +402,13 @@ Deno.test("a quarantined selector BEYOND the server row cap is still refused", a
   const tools = wrap(calls, db);
   const out = await (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
     .execute({ type: "username", value: QUARANTINED_USER }, {}) as Record<string, unknown>;
-  // Assert the REFUSAL specifically, not merely a non-run. A bare `calls.n === 0`
-  // would also pass if the circuit breaker or the budget had blocked the call, and
-  // this test would then be green for a reason that has nothing to do with paging.
-  assertEquals(out.refused_by, "subject_unlinked_dispatch_boundary", "must be refused BY THE QUARANTINE BOUNDARY");
-  assertEquals(out.ok, false);
-  assertEquals(calls.n, 0, "the tool body must not run");
+  // Assert the TAINT specifically, not merely that the call ran. Under promotion
+  // quarantine the paging failure mode INVERTED and got worse: an incomplete read
+  // used to mean "failed to refuse", and now means "failed to taint" — the result
+  // comes back clean and PROMOTES. So this is the assertion that matters.
+  assert(taintOf(out), "a row past the cap must still be found, or its results silently promote");
+  assertEquals(taintOf(out)!.parent_value, QUARANTINED_USER);
+  assertEquals(calls.n, 1, "the lookup itself is allowed");
   assert(windows.length >= 2, `the read must page past the cap — windows requested: ${JSON.stringify(windows)}`);
 });
 
@@ -375,8 +438,8 @@ Deno.test("the read advances by rows RETURNED, not by the window it asked for", 
   const tools = wrap(calls, db);
   const out = await (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
     .execute({ type: "username", value: QUARANTINED_USER }, {}) as Record<string, unknown>;
-  assertEquals(out.refused_by, "subject_unlinked_dispatch_boundary");
-  assertEquals(calls.n, 0);
+  assert(taintOf(out), "a row in the trimmed region must still be found");
+  assertEquals(calls.n, 1);
   assert(
     windows.some((w) => w.from > 0 && w.from < 1000),
     `the scan must resume inside the trimmed region — windows: ${JSON.stringify(windows)}`,
@@ -391,8 +454,10 @@ Deno.test("a COMPLETE read is loaded once and reused for the whole run", async (
   const db = pagingSupabase(pagedArtifactRows(1200, 1150), windows);
   const tools = wrap(calls, db);
   const ex = (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> }).execute;
-  for (let i = 0; i < 5; i += 1) await ex({ type: "username", value: QUARANTINED_USER }, {});
-  assertEquals(calls.n, 0, "every one of the five must stay refused");
+  for (let i = 0; i < 5; i += 1) {
+    const o = await ex({ type: "username", value: QUARANTINED_USER }, {});
+    assert(taintOf(o), "every one of the five must stay tainted");
+  }
   const afterFirst = windows.length;
   assert(afterFirst <= 2, `1200 rows behind a 1000-row cap is two pages, got ${afterFirst}`);
   await ex({ type: "username", value: QUARANTINED_USER }, {});
@@ -409,8 +474,7 @@ Deno.test("a PARTIAL read still refuses everything it did see", async () => {
   const tools = wrap(calls, db);
   const out = await (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
     .execute({ type: "username", value: QUARANTINED_USER }, {}) as Record<string, unknown>;
-  assertEquals(out.refused_by, "subject_unlinked_dispatch_boundary");
-  assertEquals(calls.n, 0);
+  assert(taintOf(out), "everything the partial read DID see must still be tainted");
 });
 
 Deno.test("an INCOMPLETE read is not cached, and the retry is bounded", async () => {
@@ -489,19 +553,26 @@ Deno.test("the refusal message is a CONSTANT — the reason survives as structur
   assertEquals(a.detail, undefined);
 });
 
-Deno.test("a refusal carrying a skip-shaped reason survives the REAL wrapper as ok:false", () => {
-  // The end-to-end form: the reason comes off a persisted artifact, not a literal.
-  const rows = [{
-    id: "a1", kind: "username", value: QUARANTINED_USER, confidence: 65, source: "minimax_web_search",
-    metadata: { subject_unlinked: true, subject_unlinked_reason: "unavailable: gated — provider disabled in config" },
-  }];
-  const calls = { n: 0 };
-  const tools = wrap(calls, fakeSupabase(rows));
-  return (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
-    .execute({ type: "username", value: QUARANTINED_USER }, {})
-    .then((out) => {
-      assertEquals(calls.n, 0);
-      assertEquals(deriveOk(out), false, "the shipped payload must log as a failure, not a no-op");
-      assertEquals((out as Record<string, unknown>).quarantine_reason, "unavailable: gated — provider disabled in config");
-    });
+Deno.test("KILL-SWITCH path: a refusal carrying a skip-shaped reason still logs as ok:false", async () => {
+  // #519's hardening, preserved for the path where refusals still happen. Under
+  // promotion quarantine this selector is dispatched, so the end-to-end refusal
+  // now only exists behind the kill switch — and it must keep the property that
+  // a caller-controlled reason cannot make a refusal vanish from the failure
+  // metric. Deleting this with the boundary would have quietly retired #519.
+  Deno.env.set("PROMOTION_QUARANTINE_DISABLED", "true");
+  try {
+    const rows = [{
+      id: "a1", kind: "username", value: QUARANTINED_USER, confidence: 65, source: "minimax_web_search",
+      metadata: { subject_unlinked: true, subject_unlinked_reason: "unavailable: gated — provider disabled in config" },
+    }];
+    const calls = { n: 0 };
+    const tools = wrap(calls, fakeSupabase(rows));
+    const out = await (tools.breach_check as { execute: (i: unknown, o: unknown) => Promise<unknown> })
+      .execute({ type: "username", value: QUARANTINED_USER }, {});
+    assertEquals(calls.n, 0);
+    assertEquals(deriveOk(out), false, "the shipped payload must log as a failure, not a no-op");
+    assertEquals((out as Record<string, unknown>).quarantine_reason, "unavailable: gated — provider disabled in config");
+  } finally {
+    Deno.env.delete("PROMOTION_QUARANTINE_DISABLED");
+  }
 });

@@ -299,6 +299,22 @@ export interface AuthorityLegendEntry {
   hint: string;
 }
 
+/**
+ * Short labels for the authority DISTRIBUTION (Overview, case sheet), in ladder
+ * order. One list, so the two surfaces that draw the distribution cannot
+ * disagree about which states appear or what they are called.
+ */
+export const AUTHORITY_DISTRIBUTION: { state: AuthorityState; short: string }[] = [
+  { state: "verified", short: "Verified" },
+  { state: "infrastructure", short: "Infra" },
+  { state: "probable", short: "Probable" },
+  { state: "review", short: "Review" },
+  { state: "conflict", short: "Conflict" },
+  { state: "quarantined", short: "Quarantined" },
+  { state: "weak", short: "Leads" },
+  { state: "failed", short: "Excluded" },
+];
+
 /** The canonical vocabulary, in ladder order, for every legend in the app. */
 export const AUTHORITY_LEGEND: AuthorityLegendEntry[] = [
   { state: "verified", label: LABEL.verified, hint: "Corroborated by 2+ independent source classes, or analyst-confirmed." },
@@ -330,6 +346,35 @@ export const AUTHORITY_LEGEND: AuthorityLegendEntry[] = [
  * them and reported a dismissed row as Verified while the ledger beside it said
  * Excluded. Pass `() => undefined` only where reviews genuinely cannot exist.
  */
+/**
+ * The states that put a row in front of an analyst: it is a finding, or it needs
+ * a decision. Everything else — weak leads, quarantined rows, excluded namesakes,
+ * failed lookups — is disclosure the board keeps one click away.
+ *
+ * ONE definition, because two would drift. The Evidence board's default filter
+ * and the Evidence TAB BADGE must agree: a badge reading 123 beside a board
+ * showing 12 is what makes a scan feel like "123 artifacts to sort through" when
+ * the board had already resolved the noise correctly. `STATUS_FILTER_GROUPS.analyst`
+ * imports this rather than restating it.
+ *
+ * Nothing is hidden by this: the board's "All" chip still carries the full count,
+ * and every row stays persisted and reviewable. This governs prominence only.
+ */
+export const ANALYST_ACTIONABLE_STATES: ReadonlySet<AuthorityState> = new Set<AuthorityState>([
+  "verified",
+  "infrastructure",
+  "probable",
+  "review",
+  "conflict",
+]);
+
+/** Rows that are findings or need a decision, from an authority tally. */
+export function countAnalystActionable(tally: Record<AuthorityState, number>): number {
+  let n = 0;
+  for (const state of ANALYST_ACTIONABLE_STATES) n += tally[state] ?? 0;
+  return n;
+}
+
 export function tallyAuthority(
   artifacts: readonly Artifact[],
   review: (id: string) => ReviewState,

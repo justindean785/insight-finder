@@ -25,6 +25,7 @@
 // ---- Confidence tiers (JD's schema) -------------------------------------------
 import { loadReviewsForThread, dropRejectedArtifacts } from "../reviews.ts";
 import { normPhoneE164 } from "./selector-normalize.ts";
+import { canonicalKind } from "./kind-alias.ts";
 
 export const TIERS = { CONFIRMED: 90, LIKELY: 75, POSSIBLE: 50, WEAK: 30 } as const;
 export function tierFor(conf: number): string {
@@ -86,6 +87,58 @@ const STOP = new Set([
   "tiktok", "twitter", "profile", "director", "photographer", "oakland", "visuals",
   "email", "breach", "password", "account", "linktree", "primary", "secondary",
 ]);
+
+/**
+ * URL structural separators. A URL carries its handle in a PATH SEGMENT, and
+ * `foldWords` below folds on whitespace only — so the whole URL became ONE
+ * unmatchable token ("https://soundcloud.com/wopdell" → "httpssoundcloudcomwopdell")
+ * and a URL artifact could join a subject ONLY when its metadata happened to
+ * carry a `handle` key.
+ *
+ * Measured on production thread 202d2756 (@wopdell, 2026-09-13): `audiomack.com/wop-dell`
+ * carried `metadata.handle` and joined the subject; `beatport.com/artist/wop-dell/1461425`
+ * did not and became a singleton — same artist, same handle spelling, opposite
+ * outcomes. 46 of 55 graph entities were isolated leads for this reason, including
+ * both Apple Music artist pages, SoundCloud, Trapaganda and Archodia. Those are the
+ * rows the corroboration bar needs, so the fragmentation also starved
+ * `finding-synthesis.ts` of eligible clusters.
+ */
+const URL_SEG_SEP = /[/:?&=#]+/;
+
+/**
+ * Stop words applied ONLY to URL path segments, never to the prose pass.
+ *
+ * Kept separate from STOP on purpose: STOP is shared with the established prose
+ * path, so adding words to it could DELETE a token a previous build produced and
+ * silently drop an existing join. This set only ever filters tokens this change
+ * introduces, which keeps the whole edit additive.
+ */
+const URL_PATH_STOP = new Set([
+  "artist", "artists", "user", "users", "channel", "channels", "track", "tracks",
+  "album", "albums", "playlist", "playlists", "watch", "video", "videos", "reel",
+  "reels", "status", "post", "posts", "search", "page", "pages", "about", "home",
+  "index", "embed", "share", "music", "apple", "spotify", "soundcloud", "audiomack",
+  "beatport", "threads", "telegram", "facebook", "reddit", "github", "linkedin",
+  "shazam", "iheart", "medium", "discogs", "genius", "bandcamp", "mixcloud",
+]);
+
+/**
+ * Kill switch, read at CALL TIME so it takes effect on the running build the
+ * moment the secret changes — no deploy cycle. Default ON.
+ *
+ * Deliberately a local read rather than an import from `env.ts`: that module
+ * constructs the AI gateway at load, and this one is unit-tested as a pure
+ * function over CSV fixtures. `Deno.env` is guarded because the fixture CLI path
+ * may run without `--allow-env`; a denied read falls back to ON, matching the
+ * default rather than silently disabling the join.
+ */
+export function urlHandleTokensEnabled(): boolean {
+  try {
+    return (Deno.env.get("CLUSTER_URL_HANDLE_TOKENS_DISABLED") ?? "").trim().toLowerCase() !== "true";
+  } catch {
+    return true;
+  }
+}
 
 export function normEmail(v: string): string | null {
   const m = String(v ?? "").toLowerCase().match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/);
@@ -171,9 +224,24 @@ export function isVerifiedSelfAdmission(a: Artifact): boolean {
   const signal = !!selfAdmissionQuote(a) || !!ownershipProof(a) || /=\s*same/i.test(a.value);
   return signal && !isLlmAssertedUnverified(a);
 }
+/** An EXPLICIT contradiction signal only: the collision detector's `contradiction`
+ *  row (which carries `collision_value`), `contradiction: true`, or a model-written
+ *  `status: "contradicted"`. NOT `status: "needs_review"`: the model stamps that on
+ *  every unverified row, and reading it as a contradiction capped 1,348 of 1,528 such
+ *  rows at <=40 and cut them off from the subject (measured 2026-09-24, against 155
+ *  real contradiction rows). Unverified is not contradicted. */
 function isContradictionArtifact(a: Artifact): boolean {
-  return a.kind === "contradiction" || /"status"\s*:\s*"needs_review"/i.test(a.metaRaw) ||
-    metaBoolTrue(a.metaRaw, "contradiction");
+  return a.kind === "contradiction" || metaBoolTrue(a.metaRaw, "contradiction") ||
+    !!metaStr(a.metaRaw, "collision_value") || /"status"\s*:\s*"contradicted"/i.test(a.metaRaw) ||
+    (legacyNeedsReviewContradiction() && /"status"\s*:\s*"needs_review"/i.test(a.metaRaw));
+}
+
+/** Kill switch, read at CALL TIME: `CLUSTER_LEGACY_NEEDS_REVIEW_CONTRADICTION=true`
+ *  restores the old rule (needs_review ⇒ contradicted) on the running build. */
+export function legacyNeedsReviewContradiction(
+  env: (k: string) => string | undefined = (k) => Deno.env.get(k),
+): boolean {
+  return (env("CLUSTER_LEGACY_NEEDS_REVIEW_CONTRADICTION") ?? "").trim().toLowerCase() === "true";
 }
 /** The selector a contradiction artifact is about (e.g. hamzashakoor@gmail.com). */
 function contradictedSelector(a: Artifact): string | null {
@@ -209,16 +277,38 @@ export function strongTokens(a: Artifact, knownHandles: Set<string>): string[] {
   if (isExcluded(a)) return [];
   const t = new Set<string>();
 
-  // Primary selector by kind.
+  // Primary selector by KIND — read through the alias table (lib/kind-alias.ts),
+  // never off the raw spelling.
+  //
+  // This module was the last selector keyspace the alias table had not reached.
+  // The write path (`artifactDedupKey`), the read path (`normalizeArtifactKey`)
+  // and the dispatch guard all canonicalise; clustering compared `a.kind`
+  // literally, so every alias spelling the rest of the pipeline treats as the
+  // same selector class contributed NOTHING here and its row could only ever
+  // become a singleton "unattributed cluster":
+  //
+  //   handle / social / social_account / github_account → no handle: token
+  //   subdomain                                          → no domain: token
+  //   person                                             → no reclassified-handle path
+  //
+  // Measured on the 2026-09-12 `baig_azhar` export: `ip_address` (auto-persist)
+  // and `ip` (record_artifacts) for one value sat in two different clusters.
+  //
+  // NOTE ON `ip`: an IP is deliberately still NOT a strong token. Shared NAT,
+  // CGNAT and hosting make IP equality a false-link hazard, the same reason
+  // names are excluded above — `detectContradictions` speaks to shared infra
+  // instead. Canonicalising the kind does not admit IPs to union-find; it only
+  // stops the alias spellings of the kinds that ARE strong from being dropped.
+  const kind = canonicalKind(a.kind, a.value);
   const email = normEmail(a.value);
   if (email) t.add(`email:${email}`);
-  if (a.kind === "phone") { const p = normPhoneE164(a.value); if (p) t.add(`phone:${p}`); }
-  if (a.kind === "username") t.add(`handle:${foldHandle(a.value)}`);
-  if (a.kind === "domain") { const r = domainRoot(a.value); if (r) { t.add(`domain:${r}`); t.add(`handle:${r}`); } }
-  if (a.kind === "name" && metaStr(a.metaRaw, "reclassified_from") === "username") {
+  if (kind === "phone") { const p = normPhoneE164(a.value); if (p) t.add(`phone:${p}`); }
+  if (kind === "username") t.add(`handle:${foldHandle(a.value)}`);
+  if (kind === "domain") { const r = domainRoot(a.value); if (r) { t.add(`domain:${r}`); t.add(`handle:${r}`); } }
+  if (kind === "name" && metaStr(a.metaRaw, "reclassified_from") === "username") {
     t.add(`handle:${foldHandle(a.value)}`); // reclassified username misfiled as a name
   }
-  if (a.kind === "account_id") { const id = (a.value.match(/\d{5,}/) ?? [])[0]; if (id) t.add(`acct:${id}`); }
+  if (kind === "account_id") { const id = (a.value.match(/\d{5,}/) ?? [])[0]; if (id) t.add(`acct:${id}`); }
 
   // Metadata-asserted handles.
   for (const k of ["associated_handle", "seed_association", "instagram", "handle", "github"]) {
@@ -245,7 +335,24 @@ function foldWords(value: string): string[] {
   // Split on whitespace + brackets + commas only — NOT on '_'/'@'/'.' — so a handle like
   // "@manza_visuals" stays one token and folds to "manzavisuals" (matching the known
   // handle), instead of splitting into "manza"+"visuals" which match nothing.
-  return String(value ?? "").split(/[\s,()[\]{}|"']+/).map(foldHandle).filter((w) => w.length >= 3 && !STOP.has(w));
+  const chunks = String(value ?? "").split(/[\s,()[\]{}|"']+/);
+  const out = new Set<string>();
+  for (const chunk of chunks) {
+    const w = foldHandle(chunk);
+    if (w.length >= 3 && !STOP.has(w)) out.add(w);
+    // SECOND, ADDITIVE pass: also fold each URL path segment of this chunk. The
+    // whole-chunk token above is still emitted, so no token a previous build
+    // produced can disappear and no existing join can regress — this can only ADD
+    // candidates. Safety is unchanged because the CALLER (`strongTokens`) only
+    // keeps a word that matches an ESTABLISHED distinctive handle, so "us",
+    // "1575104299" or an 11-character video id still link nothing.
+    if (!urlHandleTokensEnabled() || !URL_SEG_SEP.test(chunk)) continue;
+    for (const seg of chunk.split(URL_SEG_SEP)) {
+      const s = foldHandle(seg);
+      if (s.length >= 3 && !STOP.has(s) && !URL_PATH_STOP.has(s)) out.add(s);
+    }
+  }
+  return [...out];
 }
 
 // ---- Union-find ---------------------------------------------------------------
@@ -327,9 +434,13 @@ export function clusterArtifacts(arts: Artifact[]): ClusterResult {
 
   // Group contradicted-by-same-selector artifacts into one needs_review cluster each.
   const contradictedGroup = new Map<string, number>(); // selector → representative index
+  // Identity of each contradicted member's GROUP, for its cluster id (see below).
+  const contraKey: Array<string | null> = arts.map(() => null);
   for (let i = 0; i < arts.length; i++) {
     if (!memberContradicted[i] || isExcluded(arts[i])) continue;
-    const sel = normEmail(arts[i].value) ?? contradictedSelector(arts[i]) ?? `idx${i}`;
+    const found = normEmail(arts[i].value) ?? contradictedSelector(arts[i]);
+    const sel = found ?? `idx${i}`;
+    contraKey[i] = found ? `sel:${found}` : `id:${arts[i].id ?? i}`;
     if (!contradictedGroup.has(sel)) contradictedGroup.set(sel, i);
     else uf.union(i, contradictedGroup.get(sel)!);
   }
@@ -350,7 +461,14 @@ export function clusterArtifacts(arts: Artifact[]): ClusterResult {
   const subjects: ClusterResult["subjects"] = [];
   for (const [root, idxs] of byRoot) {
     const selectors = [...new Set(idxs.flatMap((i) => tokensPer[i]))].sort();
-    const hash = stableHash(selectors.join("|") || `root${root}`);
+    // A JOINED cluster's selector set is unique: any shared token would have unioned
+    // the two. Contradicted groups are never unioned on tokens, so two of them can
+    // carry the same set; hashing that set gave twenty unrelated singletons one
+    // `clus_…`. Key a contradicted cluster by its group identity instead.
+    const contraKeys = [...new Set(idxs.map((i) => contraKey[i]).filter((k): k is string => !!k))].sort();
+    const hash = contraKeys.length
+      ? stableHash(`contra|${contraKeys.join("|")}`)
+      : stableHash(selectors.join("|") || `root${root}`);
     const subjectId = `subj_${hash}`, clusterId = `clus_${hash}`;
     const clusterArts = idxs.map((i) => arts[i]);
     const isContra = idxs.some((i) => memberContradicted[i]);
@@ -549,6 +667,12 @@ export async function applyClusteringToThread(
       subject_count: subjects.length,
       merge_count: decisions.length,
       artifacts_updated: updated,
+      // The number this line exists to make readable after a deploy: a subject of
+      // one is an artifact that reached the graph as an isolated lead, contributed
+      // no source class to any cluster, and so could never clear finding
+      // synthesis's >=2-independent-class bar. Production thread 202d2756 ran at
+      // 46 isolated of 55 entities.
+      singleton_count: subjects.filter((s) => s.members.length === 1).length,
       decisions: decisions.slice(0, 60),
     }));
   }

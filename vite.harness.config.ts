@@ -25,6 +25,15 @@ export default defineConfig({
         find: /^@\/integrations\/supabase\/client$/,
         replacement: path.resolve(__dirname, "./src/dev/supabase-mock.ts"),
       },
+      // Lets the harness render a RUNNING investigation. `isLoading` is useChat's
+      // status, and the transport POSTs to a `harness.local` host that does not
+      // resolve — so without this the live run state cannot be previewed at all,
+      // and every UI change to it ships unscreenshotted. Same scope rule as the
+      // client stub above: dev-only, nothing under src/ imports it.
+      {
+        find: /^@\/lib\/fetch-retry$/,
+        replacement: path.resolve(__dirname, "./src/dev/fetch-retry-mock.ts"),
+      },
       { find: "@", replacement: path.resolve(__dirname, "./src") },
     ],
   },

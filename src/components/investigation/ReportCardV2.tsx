@@ -50,7 +50,12 @@ export function ReportCardV2(props: ReportCardV2Props) {
     { label: "CLEAN", tone: "ok" as const };
 
   return (
-    <div className="overflow-hidden rounded-md border border-border-subtle bg-surface-1 shadow-[0_24px_64px_rgba(0,0,0,0.45),inset_0_1px_0_hsl(var(--film)/0.04)]">
+    // The dossier's identity is its typography and its internal bands, not a
+    // different plate colour. `bg-surface-1` is a solid navy (rgb 8,14,27) while
+    // every other top-level surface in the workspace is `.panel` glass over true
+    // black, so this card read as the blue one. The material is shared now; the
+    // document still looks like a document.
+    <div className="panel overflow-hidden">
       <Hero
         status={props.status}
         cost={props.cost}

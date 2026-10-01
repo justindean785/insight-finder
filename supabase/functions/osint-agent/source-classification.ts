@@ -295,10 +295,74 @@ export function splitSourceLabels(label: string | null | undefined): string[] {
 const BREACH_SLUG_RE =
   /(?:^|[/+|,;\s])(?:breach(?:[_-]?(?:check|data|exposure))?|leakcheck|hibp|serus[_-]?darkweb[_-]?scan|deepfind[_-]?(?:email[_-]?breach|dark[_-]?web[_-]?link|ransomware[_-]?exposure)|stolentax[_-]?footprint)(?:$|[/+|,;\s])/i;
 
+// ── Origin identity vs source reliability (PR: source classification by origin) ──
+//
+// ORIGIN INDEPENDENCE and SOURCE RELIABILITY are two different questions and
+// this module deliberately keeps them on separate axes:
+//   - origin identity  = WHERE the content came from (a hostname: asec.ahnlab.com,
+//     x.com). Used for INDEPENDENCE counting (countIndependentClasses below) so
+//     the same origin reached through different tools/wrappers, or on two
+//     different pages, never manufactures corroboration.
+//   - source reliability = WHAT KIND of evidence it is (a SourceClass: breach,
+//     independent_public, social_profile_active, …). Used for confidence CAPS.
+// A new hostname is never, by itself, a new trustworthy corroboration class —
+// only origins EXPLICITLY mapped below get a reliability override; every other
+// origin "fails conservatively" through to the existing tool-slug/free-text
+// classification unchanged.
+//
+// THE DEFECT THIS CLOSES. classifySource's slug fast path strips a trailing
+// parenthetical qualifier BEFORE classifying, so "socialfetch_web_read
+// (asec.ahnlab.com/en/94918)" and "socialfetch_web_read (x.com/DarkWebInformer/…)"
+// both reduced to the bare tool slug and classified identically as
+// social_profile_active — a security vendor's published threat report read the
+// same as viewing an active social media profile, purely because a generic
+// web-read tool fetched both.
+
+/** Extract a normalized origin (hostname) from a URL-bearing parenthetical
+ *  qualifier at the END of a source string, e.g. "socialfetch_web_read
+ *  (asec.ahnlab.com/en/94918)" -> "asec.ahnlab.com". Returns null when there is
+ *  no trailing parenthetical, or its content is not a URL / bare hostname —
+ *  e.g. "socialfetch_lookup (instagram)" or "serus_darkweb_scan (reveal:true)"
+ *  both -> null, which is what PRESERVES today's tool-slug classification for
+ *  those shapes (a required behavior, not an oversight). */
+function extractOriginId(source: string): string | null {
+  const match = source.match(/\(([^)]*)\)\s*$/);
+  if (!match) return null;
+  const inner = match[1].trim();
+  if (!inner) return null;
+  const withScheme = /^https?:\/\//i.test(inner) ? inner : `https://${inner}`;
+  let host: string;
+  try {
+    host = new URL(withScheme).hostname.toLowerCase();
+  } catch {
+    return null; // not a parseable URL/host — e.g. "reveal:true" (invalid port)
+  }
+  // Same shape as BARE_DOMAIN_RE further down this file: at least one
+  // dot-separated label plus an alphabetic TLD of 2+ chars. Rejects bare
+  // words ("instagram"), IP addresses, and junk that happened to parse as a
+  // URL host without looking like a real domain.
+  if (!/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i.test(host)) return null;
+  return host.replace(/^www\./, "");
+}
+
+/** Explicit ORIGIN -> SourceClass overrides, consulted BEFORE the tool-slug
+ *  fallback in classifySource. Hand-curated and deliberately small: an origin
+ *  NOT listed here is UNMAPPED and falls straight through to today's
+ *  classification (the "fail conservatively" requirement) — this map only
+ *  ever RAISES precision for origins someone has actually vetted, it never
+ *  invents a class from an unrecognized hostname. */
+const ORIGIN_CLASS_MAP: Readonly<Record<string, SourceClass>> = {
+  // AhnLab ASEC — a security vendor's published threat research. Distinct in
+  // kind from an active social-media profile view, even when both are
+  // fetched by the same generic web-read tool.
+  "asec.ahnlab.com": "independent_public",
+};
+
 /** Classify ONE source token (internal slug or a single free-text label) into a
  *  single SourceClass. Returns "unknown" only when nothing matches.
  *
  *  Order is load-bearing:
+ *   0. origin identity (ORIGIN_CLASS_MAP), BEFORE slug stripping — see above;
  *   1. internal-slug fast path (TOOL_CLASS, split-infra) — post-#56 contract;
  *   2. shared-host / reverse-IP free-text → infra_shared_host (#56 guard);
  *   3. #56's court / news free-text regexes (keep their exact behavior);
@@ -322,6 +386,16 @@ export function classifySource(toolOrSource: string | null | undefined): SourceC
   // source grants no evidence class and therefore no cap increase.
   if (typeof toolOrSource !== "string") return "unknown";
   if (!toolOrSource) return "unknown";
+
+  // Origin identity, BEFORE the slug strip below. Only fires when (a) the
+  // parenthetical is a real URL/hostname (a bare word like "instagram" or a
+  // non-URL qualifier like "reveal:true" -> extractOriginId returns null, so
+  // behavior for those is UNCHANGED) AND (b) that origin is explicitly
+  // mapped. An unmapped origin — including one nobody has vetted yet — falls
+  // straight through to the tool-slug fast path below, unchanged.
+  const originId = extractOriginId(toolOrSource);
+  if (originId && ORIGIN_CLASS_MAP[originId]) return ORIGIN_CLASS_MAP[originId];
+
   // Internal-slug fast path: strip a trailing parenthetical qualifier
   // ("socialfetch_lookup (instagram)" → "socialfetch_lookup") so the slug lookup
   // still hits — without this, breach/passive-social hits leaked to unknown.
@@ -418,6 +492,27 @@ export function classifySource(toolOrSource: string | null | undefined): SourceC
   return "unknown";
 }
 
+/** Classify ONE source token AND capture its origin identity in one pass, for
+ *  callers that count INDEPENDENT corroboration rather than reliability alone.
+ *
+ *  `countIndependentClasses` takes these objects directly and dedups on the
+ *  origin when one is present, so the same hostname reached through two
+ *  different tools/wrappers — or on two different pages of the same site —
+ *  collapses to ONE independent source instead of manufacturing corroboration.
+ *  `originId` is null for every source without a URL-bearing trailing
+ *  parenthetical (the overwhelming majority); those keep dedup-by-class
+ *  exactly as before. */
+export function classifySourceWithOrigin(
+  toolOrSource: string | null | undefined,
+): { originId: string | null; sourceClass: SourceClass } {
+  return {
+    originId: typeof toolOrSource === "string" && toolOrSource
+      ? extractOriginId(toolOrSource)
+      : null,
+    sourceClass: classifySource(toolOrSource),
+  };
+}
+
 /** Classify a source string into ALL of its source classes. Splits mixed labels
  *  ("D&B / Redfin" → ["business_directory","real_estate_listing"]) and returns
  *  [] for wrapper labels (so the caller falls back to metadata.sources). */
@@ -492,9 +587,105 @@ export const NON_CORROBORATING_CLASSES: ReadonlySet<SourceClass> = new Set<Sourc
   "threat_intel",
 ]);
 
-/** Count distinct source classes that can independently corroborate. */
-export function countIndependentClasses(classes: readonly SourceClass[]): number {
-  return new Set(classes.filter((c) => !NON_CORROBORATING_CLASSES.has(c))).size;
+/** One entry for `countIndependentClasses`: either a bare class (deduped by
+ *  class — the historical behavior every pre-existing caller relies on) or a
+ *  class carrying the origin it came from (deduped by origin — see
+ *  `classifySourceWithOrigin`). */
+export type IndependentSourceEntry =
+  | SourceClass
+  | { originId: string | null; sourceClass: SourceClass };
+
+/** Count distinct source classes that can independently corroborate.
+ *
+ *  Entries carrying an `originId` are deduped BY ORIGIN rather than by class:
+ *  two reads of the same hostname through different tools are ONE source,
+ *  however each one happened to classify. That asymmetry is the point — an
+ *  unmapped origin (one nobody has vetted into ORIGIN_CLASS_MAP) still must not
+ *  corroborate itself just because two different tools fetched it and resolved
+ *  to two different default classes.
+ *
+ *  Direction of the change is deliberately DEFLATIONARY: origin tracking may
+ *  only ever collapse sources together, never split one apart into two. Hence
+ *  `covered` — a class already represented by an origin-keyed entry does not
+ *  also get counted through an origin-less entry, which would let the same
+ *  site counted once by hostname reappear as a second "class" and inflate
+ *  corroboration. Plain `SourceClass` input (no origin objects at all) is
+ *  byte-identical to the pre-origin behavior.
+ *
+ *  NON_CORROBORATING_CLASSES is filtered FIRST in both cases, so a
+ *  non-corroborating class is excluded no matter which origin produced it. */
+export function countIndependentClasses(
+  classes: readonly IndependentSourceEntry[],
+): number {
+  const keys = new Set<string>();
+  const covered = new Set<SourceClass>();
+  const originless: SourceClass[] = [];
+
+  for (const entry of classes) {
+    const sourceClass = typeof entry === "string" ? entry : entry.sourceClass;
+    if (NON_CORROBORATING_CLASSES.has(sourceClass)) continue;
+    const originId = typeof entry === "string" ? null : entry.originId;
+    if (originId) {
+      keys.add(`origin:${originId}`);
+      covered.add(sourceClass);
+    } else {
+      originless.push(sourceClass);
+    }
+  }
+  // Second pass: `covered` must be complete before any origin-less entry is
+  // judged, otherwise the answer would depend on input ORDER.
+  for (const sourceClass of originless) {
+    if (covered.has(sourceClass)) continue;
+    keys.add(`class:${sourceClass}`);
+  }
+  return keys.size;
+}
+
+/** Attribute an ALREADY-DECIDED set of source classes to the origins they came
+ *  from, so a downstream independence count honours the origin boundary without
+ *  re-deciding what the classes are.
+ *
+ *  WHY THIS EXISTS. `buildFindingRow` has two authority paths over the same
+ *  evidence: `computeAxes` takes the origin-aware corroboration count, while the
+ *  PERSISTED status goes through the cap engine and `deriveStatus`, which
+ *  recounted `cap.source_classes` with no origin information. A same-origin pair
+ *  read by two tools that classify differently — `socialfetch_web_read
+ *  (x.com/…)` (social_profile_active) and `jina_reader_scrape (x.com/…)`
+ *  (independent_public) — counted 1 in the first path and 2 in the second, and
+ *  the row persisted as `needs_corroboration` with two authoritative source
+ *  categories instead of the single-source `observed`.
+ *
+ *  DELIBERATELY NOT A CLAMP. The cap engine can legitimately derive MORE classes
+ *  than there are source labels — #497's breach-split recovers infra classes from
+ *  one joined label, and breach metadata appends a class with no label at all —
+ *  so ceiling-ing the cap count by the per-label count would re-break #497.
+ *  Instead each cap class keeps its identity and merely gains the origin that
+ *  produced it.
+ *
+ *  STRICTLY DEFLATIONARY, by construction: `capClasses` is already unique, each
+ *  one yields exactly one entry, and the only possible effect is two classes
+ *  sharing an origin key and collapsing. The count can never rise. A class is
+ *  attributed only when the sources producing it name EXACTLY ONE distinct
+ *  origin; a class produced from several origins, or from none, stays a bare
+ *  class and is counted exactly as it is today. */
+export function attributeClassesToOrigins(
+  capClasses: readonly SourceClass[],
+  sources: readonly string[],
+): IndependentSourceEntry[] {
+  const originsByClass = new Map<SourceClass, Set<string>>();
+  for (const source of sources) {
+    const { originId, sourceClass } = classifySourceWithOrigin(source);
+    if (!originId) continue;
+    let set = originsByClass.get(sourceClass);
+    if (!set) originsByClass.set(sourceClass, (set = new Set<string>()));
+    set.add(originId);
+  }
+  return capClasses.map((sourceClass) => {
+    const origins = originsByClass.get(sourceClass);
+    return origins && origins.size === 1
+      ? { originId: [...origins][0], sourceClass }
+      : sourceClass;
+  });
 }
 
 /** Classes that are official/government public records (highest source quality). */

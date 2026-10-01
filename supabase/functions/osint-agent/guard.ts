@@ -24,7 +24,56 @@ export const guard = {
    *  correlate pass resets the cycle, so it cannot ride on every subsequent tool
    *  result and inflate the carried context. */
   correlateHintDelivered: false,
+  /** LIVE minimax_correlate dispatches admitted during THIS request. Counts
+   *  attempts, not successes — see MAX_CORRELATE_CALLS_PER_RUN. */
+  correlateCalls: 0,
 };
+
+/**
+ * Hard ceiling on LIVE minimax_correlate dispatches per request.
+ *
+ * THE GAP THIS CLOSES. `shouldSkipRedundantCorrelate` bounds the SUCCESS path
+ * only — it keys on `lastCorrelateOutcome === "ok"` and says so: "it never
+ * blocks the run's first correlate call or a retry after a failed one". So a
+ * correlate that fails or times out is retried without limit, and each attempt
+ * may hold a step open for the full 60s wrapper cap
+ * (TOOL_TIMEOUT_OVERRIDE_MS.minimax_correlate).
+ *
+ * Measured in production over 2026-09-09..12: 30 correlate calls, 696s total —
+ * 40% of ALL tool wall time — at 23.2s average and 46.2s max, with ZERO cache
+ * hits. Two single runs account for 387s of that: thread d4873abc spent 206s
+ * across 7 calls and ba58d6fd 181s across 8. Neither is the freshness gate
+ * failing; both are the failure path it deliberately does not cover.
+ *
+ * TWO is the budget because correlation is worth attempting and worth
+ * re-attempting once, and a provider that has failed twice in one
+ * investigation does not succeed on the seventh — the same reasoning
+ * `circuit.ts` already applies when it suppresses a provider for the whole
+ * investigation on its first 5xx.
+ *
+ * Counts ATTEMPTS, not successes, and counts only calls that reach live
+ * dispatch: every cache layer returns before this, and a freshness skip never
+ * reaches the increment, so a replay costs nothing against the budget.
+ */
+export const MAX_CORRELATE_CALLS_PER_RUN = 2;
+
+/** True once this request has spent its live correlate budget. */
+export function correlateBudgetExhausted(): boolean {
+  return guard.correlateCalls >= MAX_CORRELATE_CALLS_PER_RUN;
+}
+
+/** Reason text for a refusal, phrased so the model stops retrying and moves on. */
+export function correlateBudgetReason(): string {
+  return `correlate budget spent: ${guard.correlateCalls} of ${MAX_CORRELATE_CALLS_PER_RUN} ` +
+    `correlation passes already ran this investigation. Do not call minimax_correlate again — ` +
+    `clustering falls back to the deterministic local engine (lib/cluster.ts). Continue with ` +
+    `gathering and reporting.`;
+}
+
+/** Record a live correlate dispatch against the per-run budget. */
+export function bumpCorrelateCall(): void {
+  guard.correlateCalls += 1;
+}
 
 // ---- Correlation auto-fire (audit F1, 2026-07-08) ------------------------------
 // The 2026-07-08 pipeline audit found minimax_correlate NEVER fired in the main run
@@ -121,6 +170,10 @@ export function resetCorrelateCycle() {
 export function resetCorrelateRun() {
   resetCorrelateCycle();
   guard.lastCorrelateOutcome = null;
+  // The per-run budget MUST reset here and nowhere else. `guard` is
+  // module-scoped and survives on a warm isolate, so leaving this set would
+  // let Run A's spend refuse Run B's very first correlate.
+  guard.correlateCalls = 0;
 }
 
 /**

@@ -1,6 +1,7 @@
 import { detectSeed } from "@/lib/seed";
 import { isInfraDomain, type Pivot, type PivotType } from "@/lib/intel";
 import { looksLikeReasoning, stripInlineTags, stripReasoningMarkup } from "@/lib/sanitize-agent-text";
+import { isWellFormedTarget, type PivotTargetType } from "@/lib/pivot-target-shape";
 
 export type RecommendedPivot = {
   label: string;
@@ -16,6 +17,13 @@ export type RecommendedPivot = {
 const HEADING_RE = /recommended\s+(?:next\s+)?pivots?/i;
 const NEXT_HEADING_RE = /^(?:#{1,6}\s+|(?:summary|findings|network|sources|limitations|conclusion|next steps)\s*:?\s*$)/i;
 
+/** A markdown table delimiter row: `|---|:--:|`. */
+const TABLE_DELIM_RE = /^[\s|:_-]*-[\s|:_-]*$/;
+/** A horizontal rule on its own line: `---`, `***`, `___`, `- - -`. */
+const HR_RE = /^(?:[-*_][ \t]*){3,}$/;
+/** A line that is entirely italic (`*note*`, `_note_`) — never a bullet ("* x") or bold ("**x**"). */
+const ITALIC_NOTE_RE = /^([*_])(?![*_\s]).*[^*_\s]\1$/;
+
 function cleanLine(line: string): string {
   return line
     .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "")
@@ -29,11 +37,33 @@ const USERNAME_RE = /@[a-z0-9_.-]{2,40}\b/i;
 const URL_RE = /\bhttps?:\/\/[^\s)]+/i;
 const DOMAIN_RE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b/i;
 const PHONE_RE = /\b(?:\+?1[-.\s]*)?(?:\(?\d{3}\)?[-.\s]*)\d{3}[-.\s]*\d{4}\b/;
+const PHONE_RE_G = new RegExp(PHONE_RE.source, "g");
+/** A calendar date — digit-and-dash shaped, so detectSeed() reads it as a phone. */
+const DATE_RE = /^(?:\d{4}[-./]\d{1,2}[-./]\d{1,2}|\d{1,2}[-./]\d{1,2}[-./]\d{2,4})$/;
+/** Words that make a bare, unseparated digit run read as a phone number. */
+const PHONE_CONTEXT_RE = /\b(?:phone|tel|telephone|cell|cellphone|mobile|landline|sms|whatsapp|caller)\b/i;
 const STREET_RE = /\b\d{1,6}\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,5}\s(?:St|Street|Ave|Avenue|Rd|Road|Dr|Drive|Ln|Lane|Blvd|Boulevard|Ct|Court|Way|Place|Pl|Pkwy|Parkway)\b[^.;]*/i;
 const WALLET_RE = /\b(?:0x[a-f0-9]{40}|[13][a-km-zA-HJ-NP-Z1-9]{25,34}|bc1[a-z0-9]{20,})\b/i;
 const SECRET_RE = /\b(password|passcode|plaintext|secret|token|cookie|session|ssid|credential|hash|2fa|otp|cvv|ssn)\b/i;
 const MINOR_RE = /\b(minor|underage|child|teen)\b/i;
 const COLLISION_RE = /\b(excluded|collision|namesake|unrelated|wrong person|not the same person)\b/i;
+
+/**
+ * A line that NAMES the selector class and puts the value right after it:
+ * "Corroborate username jdoe88 across platforms", "Check ip address
+ * 203.0.113.44". Without this the value reads as the whole action clause
+ * ("username jdoe88 across platforms"), which is neither a runnable selector
+ * nor matchable against the tool log's already-searched keys.
+ *
+ * SINGLE-TOKEN KINDS ONLY. `name` is deliberately absent: a name is several
+ * words, so "the name Jordan Vale" would be truncated to "Jordan".
+ */
+const KIND_LED_RE = /\b(username|handle|alias|email|domain|wallet|ip|phone)\s+(?:address\s+|number\s+|for\s+|of\s+|:\s*)?["\u2018\u2019'`@]?([^\s,;:"'`]+)/i;
+
+const KIND_LED_TYPE: Record<string, PivotTargetType> = {
+  username: "username", handle: "username", alias: "username",
+  email: "email", domain: "domain", wallet: "wallet", ip: "ip", phone: "phone",
+};
 
 function compact(text: string): string {
   return text.replace(/\s+/g, " ").replace(/\s+([,.;:])/g, "$1").trim();
@@ -43,17 +73,70 @@ function stripTrailingPunctuation(value: string): string {
   return value.replace(/[),.;:]+$/, "").trim();
 }
 
+/**
+ * Whether a phone-shaped value in `label` is plausibly a phone number and not
+ * an id or a date. Measured case (2026-09-24): a scheme-less Apple Music link
+ * produced a HIGH-priority "Check phone association <track id>" card for the
+ * 10-digit catalogue id in its path — URL_RE needs `https?://`, so PHONE_RE
+ * was the first pattern to claim the digits.
+ *
+ *  - never when the digits sit inside a path/query token (`/`, `=`, `#`, `?`);
+ *  - never a date ("2023-02-02"), which detectSeed() otherwise calls a phone;
+ *  - a NANP-shaped number (`+1…`, or 10 / 1+10 digits with no `+`) must have
+ *    an area code and exchange starting 2–9, so `123…` / `180…` are not US
+ *    numbers. Other lengths (7-digit local, national formats abroad) and
+ *    non-`+1` international numbers keep their previous treatment;
+ *  - a bare, unseparated digit run also needs the line to SAY phone. A
+ *    formatted number ("925-642-7442", "(916) 555-0142") carries that signal
+ *    in its own punctuation; a catalogue id carries none.
+ */
+export function isPlausiblePhone(value: string, label: string): boolean {
+  const trimmed = value.trim();
+  const tokenHoldingValue = label.split(/\s+/).find((token) => token.includes(trimmed));
+  if (tokenHoldingValue && /[/=#?]/.test(tokenHoldingValue)) return false;
+  if (DATE_RE.test(trimmed)) return false;
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length < 7 || digits.length > 15) return false;
+  const nanpShaped = trimmed.startsWith("+1") ||
+    (!trimmed.startsWith("+") && (digits.length === 10 || (digits.length === 11 && digits.startsWith("1"))));
+  if (nanpShaped) {
+    const national = digits.length === 11 ? digits.slice(1) : digits;
+    if (!/^[2-9]\d{2}[2-9]\d{6}$/.test(national)) return false;
+  }
+  const bare = /^\+?\d+$/.test(trimmed);
+  return !bare || PHONE_CONTEXT_RE.test(label);
+}
+
+function firstPlausiblePhone(label: string): string | undefined {
+  for (const match of label.matchAll(PHONE_RE_G)) {
+    // `\b` cannot sit before "(", so "(916) 555-0199" matches as "916) 555-0199".
+    const value = label[(match.index ?? 0) - 1] === "(" && /^\d{3}\)/.test(match[0]) ? `(${match[0]}` : match[0];
+    if (isPlausiblePhone(value, label)) return value;
+  }
+  return undefined;
+}
+
 function extractTarget(label: string): string {
   const directIdentifier =
     label.match(EMAIL_RE)?.[0] ??
     label.match(IPV4_RE)?.[0] ??
     label.match(URL_RE)?.[0] ??
     label.match(USERNAME_RE)?.[0] ??
-    label.match(PHONE_RE)?.[0] ??
+    firstPlausiblePhone(label) ??
     label.match(STREET_RE)?.[0] ??
     label.match(WALLET_RE)?.[0] ??
     label.match(DOMAIN_RE)?.[0];
   if (directIdentifier) return stripTrailingPunctuation(directIdentifier);
+
+  // The line names its own selector class — take the token after it, but only
+  // if that token is actually well-formed FOR that class, so "Verify email
+  // ownership" does not yield the selector "ownership".
+  const led = label.match(KIND_LED_RE);
+  if (led) {
+    const candidate = stripTrailingPunctuation(led[2]);
+    const ledType = KIND_LED_TYPE[led[1].toLowerCase()];
+    if (ledType && isWellFormedTarget(ledType, candidate)) return candidate;
+  }
 
   // Two additions here, both of which decide whether a pivot can EVER be marked
   // already-run. `computePivots` keys "have we searched this?" on
@@ -153,15 +236,43 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
 
   const pivots: RecommendedPivot[] = [];
   const seen = new Set<string>();
-  for (const rawLine of lines.slice(start + 1)) {
-    const line = cleanLine(rawLine);
+  const body = lines.slice(start + 1);
+  for (let i = 0; i < body.length; i++) {
+    const raw = body[i].trim();
+    if (!raw) continue;
+    // Skip markdown table delimiter rows (|---|---|…) — table formatting, not
+    // pivot data. Checked BEFORE the horizontal-rule test below, which a bare
+    // "---" delimiter row would otherwise also match.
+    if (raw.includes("|") && TABLE_DELIM_RE.test(raw)) continue;
+    // A horizontal rule ENDS the section. It used to be skipped like a table
+    // delimiter, so whatever followed it — measured 2026-09-25: the report's
+    // closing "*Investigation conducted by …*" footer — was parsed as a pivot
+    // and rendered as a "Suggestion needs repair" card on every run. A rule
+    // before any pivot has been read is still skipped, so "## Pivots\n---\n- …"
+    // keeps working.
+    if (HR_RE.test(raw)) {
+      if (pivots.length > 0) break;
+      continue;
+    }
+    // A line that is entirely italic is a note or a footer, never an action.
+    if (ITALIC_NOTE_RE.test(raw)) continue;
+    let line: string;
+    if (raw.startsWith("|")) {
+      // A pivots TABLE: read it by cell. The raw row used to be parsed whole,
+      // so the header row ("| Pivot | Rationale | Tool |") and every
+      // "| action | reason | tool |" row became a pivot whose target was the
+      // entire row — rejected downstream as "a Markdown table cell" and shown
+      // to the analyst as a broken card. First cell = the pivot, second = why.
+      const next = body.slice(i + 1).find((l) => l.trim());
+      if (next && TABLE_DELIM_RE.test(next.trim())) continue; // header row
+      const cells = raw.replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => cleanLine(c));
+      if (!cells[0]) continue;
+      line = cells[1] ? `${cells[0]} — ${cells[1]}` : cells[0];
+    } else {
+      line = cleanLine(raw);
+    }
     if (!line) continue;
     if (NEXT_HEADING_RE.test(line)) break;
-    // Skip markdown table delimiter rows (|---|---|…), column-separator rows, and
-    // horizontal rules — they are table formatting, not pivot data. When the
-    // report renders recommended pivots as a table, the separator row otherwise
-    // leaks through as a bogus pivot whose Target/Reason render as "|---|---|---|".
-    if (/^[\s|:_-]*-[\s|:_-]*$/.test(line)) continue;
     // Defense-in-depth: drop any first-person reasoning line that survived
     // block stripping (e.g. a malformed/unterminated think block).
     if (looksLikeReasoning(line)) continue;
@@ -176,6 +287,11 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
     seen.add(key);
     const split = splitReason(line);
     const type = pivotType(value);
+    // detectSeed() calls any 7+ char run of digits and dashes a phone, so an id
+    // or a date that reached `value` through the action-clause fallback
+    // ("Check 4155550142 — listing id", "Check 2023-02-02 — join date") would
+    // still become a phone pivot. Not a runnable selector — drop it.
+    if (type === "phone" && !isPlausiblePhone(value, line)) continue;
     // Report-recommended domains that are OSINT source infrastructure
     // (linkedin.com, bizfileonline.sos.ca.gov, opencorporates.com…) bypass
     // buildPivots' filter, so drop them here too — they are never actionable

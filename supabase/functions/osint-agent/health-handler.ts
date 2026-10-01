@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { describeCredentialHealth, summarizeCredentialHealth } from "./lib/credential-health.ts";
 import {
   corsHeaders, MINIMAX_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
@@ -12,14 +13,22 @@ import {
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL,
   ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY, OPENADAPTER_API_KEY, OPENADAPTER_BASE_URL,
+  promptBudgetHardCeilingEnabled,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
+import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
 import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
+import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
+import { recordNameQuarantineEnabled } from "./lib/record-name-quarantine.ts";
+import { geminiPreflightPivotEnabled, preflightPivotHealthDetail } from "./lib/preflight-pivot.ts";
+import { positionalPairingSelfTest } from "./message-sanitize.ts";
+import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
+import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -340,6 +349,69 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // diagnostic. So MiniMax is never labeled active when DeepSeek is selected.
   r.checks.deepseek = { ...deepseekCheck, role: providerRole(selected.provider, "deepseek") };
   r.checks.minimax = { ...minimaxCheck, role: providerRole(selected.provider, "minimax") };
+  // Which tools' cache keys carry a result-interpretation version. Pure, no DB, so it is
+  // reported on every probe — and its PRESENCE is the behavioural proof that the build
+  // with versioned cache keys is the one running (see lib/tool-cache-version.ts).
+  r.checks.tool_cache_version = describeToolCacheVersions();
+  // Is the prompt char budget a CEILING, or only a target the recent-window tail is
+  // exempt from? Pure, no DB. Its PRESENCE is the behavioural proof that the build
+  // carrying the second elision pass is the one running — the BUILD_MARKER is a
+  // static string the running code echoes about itself and can never prove a bundle.
+  // `ok` tracks the kill switch: false means the ceiling has been turned OFF and long
+  // threads can ride over budget again, which is a state worth seeing at a glance.
+  {
+    const hardCeiling = promptBudgetHardCeilingEnabled();
+    r.checks.prompt_budget_ceiling = {
+      ok: hardCeiling,
+      // `tail=summarize` is the proof-of-deploy token for the 2026-09-22 fix: the
+      // build that elided the unconsumed tail by bare reference cannot emit it.
+      // Read the STRATEGY, not just the key — the key alone only proves #604.
+      detail: hardCeiling
+        ? `hard ceiling ${TOTAL_PROMPT_CHAR_BUDGET} chars, tail=summarize`
+        : `DISABLED via PROMPT_BUDGET_HARD_CEILING_DISABLED — tail exempt above ${TOTAL_PROMPT_CHAR_BUDGET} chars`,
+    };
+  }
+
+  // Does record_artifacts inherit an active same-name quarantine onto the rows the
+  // MODEL writes (lib/record-name-quarantine.ts)? Pure, no DB. Its PRESENCE is the
+  // behavioural proof that the build carrying that gate is the one running; `ok`
+  // tracks the kill switch so a disabled gate is visible at a glance.
+  {
+    const on = recordNameQuarantineEnabled();
+    r.checks.record_name_quarantine = {
+      ok: on,
+      detail: on
+        ? "record_artifacts inherits active person-name quarantine; exempt=person-seed-only"
+        : "DISABLED via RECORD_NAME_QUARANTINE_DISABLED — model-authored rows can name unlinked persons at full authority",
+    };
+  }
+
+  // May a failed DeepSeek preflight pivot the run to gemini-direct
+  // (lib/preflight-pivot.ts)? Pure, no network. Its PRESENCE is the behavioural proof
+  // that the build gating that pivot is live. `ok` is true either way: both settings
+  // are deliberate operator choices, and the detail names which one is in force.
+  r.checks.preflight_pivot = { ok: true, detail: preflightPivotHealthDetail(geminiPreflightPivotEnabled()) };
+
+  // Does the DEPLOYED sanitizer pair tool-calls by POSITION (message-sanitize.ts)?
+  // A self-test, not a label: it runs the live sanitizer on a fixed synthetic
+  // overlap probe and checks the result the way the AI SDK does. Pure and
+  // silent, so health probes never emit sanitize_positional_pair_repair. Its
+  // PRESENCE proves this build is live; ok:false means the pairing rule regressed.
+  r.checks.message_sanitize = positionalPairingSelfTest();
+
+  // Which rule marks a clustered artifact CONTRADICTED (lib/cluster.ts)? Pure. Its
+  // PRESENCE proves the build with the explicit-signal rule is live.
+  r.checks.cluster_contradiction_rule = legacyNeedsReviewContradiction()
+    ? { ok: true, detail: "LEGACY via CLUSTER_LEGACY_NEEDS_REVIEW_CONTRADICTION — needs_review counts as contradicted" }
+    : { ok: true, detail: "explicit signals only; group-keyed contradicted cluster ids" };
+
+  // SSRF guard coverage (safety.ts isPrivateHost). Its PRESENCE proves the build
+  // that also blocks the IPv6 forms of internal addresses is live.
+  r.checks.ssrf_guard = { ok: true, detail: ssrfGuardHealthDetail(ssrfGuardLegacy()) };
+
+  // Error hygiene (lib/redact-error.ts). Its PRESENCE proves the build that redacts
+  // the catch-all 500 detail and keeps the seed text out of the log is live.
+  r.checks.error_redaction = { ok: true, detail: "500 detail and fault/stream logs redacted (configured keys + shapes); seed text not logged" };
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure
@@ -393,6 +465,54 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
         r.checks.rejected_cluster_sweep = { ok: swept.ok, detail: describeSweep(swept) };
       } catch (e) {
         r.checks.rejected_cluster_sweep = { ok: false, detail: String(e).slice(0, 160) };
+      }
+      // Provider authorization health. The `tools` line above is a PRESENCE test
+      // (`has(env.X_API_KEY)`), so it read "17/20 optional tool APIs configured"
+      // throughout the period github_code_search answered 401 on every call — and
+      // it does not move when a secret's VALUE is rotated, so it cannot confirm a
+      // fix either. This reports what providers actually answered: who refused us,
+      // and who has succeeded SINCE refusing (the signal a rotation took).
+      //
+      // `ok` is allowed to go false here on purpose. A refusing provider is
+      // actionable, and if this line sits permanently red for a tool that 403s by
+      // policy rather than by credential (reddit_user blocks datacenter IPs), that
+      // is itself the signal to take it off the default sweep. Top-level `ok`
+      // is orchestrator+core only, so this never fails the probe.
+      try {
+        const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const { data, error, count } = await admin
+          .from("tool_usage_log")
+          .select("tool_name,status_code,outcome,created_at", { count: "exact" })
+          .gte("created_at", since)
+          .order("created_at", { ascending: false })
+          .limit(5000);
+        if (error) {
+          // NOT ok. An unreadable instrument is not a clean bill of health, and
+          // `ok:true` beside "unavailable" is the precise trap CLAUDE.md names:
+          // ok:true is not "it ran". The analyst-review path already sets this
+          // precedent — "verdicts unreadable: say so rather than implying nothing
+          // was rejected". Top-level `r.ok` is decided before this block, so this
+          // surfaces the lost evidence without failing the probe. (Codex review.)
+          r.checks.credentials = {
+            ok: false,
+            detail: `unavailable — cannot tell whether any provider is refusing us: ${error.message.slice(0, 100)}`,
+          };
+        } else {
+          const rows = (data ?? []) as Array<Record<string, unknown>>;
+          const health = summarizeCredentialHealth(rows);
+          // An unbounded or capped select returns short with NO error. Saying so
+          // keeps the counts readable as a floor rather than as the whole truth.
+          const truncated = typeof count === "number" && count > rows.length;
+          r.checks.credentials = {
+            ok: health.failing.length === 0,
+            detail: describeCredentialHealth(health, truncated),
+          };
+        }
+      } catch (e) {
+        r.checks.credentials = {
+          ok: false,
+          detail: `unavailable — cannot tell whether any provider is refusing us: ${String(e).slice(0, 100)}`,
+        };
       }
       // Finding synthesis. Deliberately AFTER recovery and inside the same
       // try/catch: a thread must be marked finished before it is a candidate, and

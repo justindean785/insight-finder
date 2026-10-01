@@ -52,9 +52,26 @@
  * production data; it does not get to start doing that because a deploy landed.
  */
 
-/** Rows removed per invocation. Small enough to be a short statement, large
- *  enough that a ~11k backlog clears in a couple of days of ordinary probes. */
+/** Expired rows IDENTIFIED per invocation. This bounds a `select … limit`, which
+ *  PostgREST sends as a short query string, so it is safe at this size. Small
+ *  enough to be a short statement, large enough that a ~12k backlog clears in a
+ *  couple of days of ordinary probes. */
 export const CACHE_SWEEP_BATCH = 5_000;
+
+/** Ids per DELETE statement.
+ *
+ *  ⚠️ This is NOT a tuning knob. PostgREST renders `.in("id", ids)` into the URL
+ *  QUERY STRING, so a delete carrying the full 5,000-id batch builds a ~185 KB
+ *  URL and the gateway rejects anything past roughly 24 KB. Measured: 600 ids =
+ *  22.3 KB → 200; 700 ids = 26 KB → 400. With one unchunked statement, flipping
+ *  `CACHE_SWEEP_ENABLED` would have errored on EVERY probe and drained nothing —
+ *  a sweep that reports a fault forever while the 12k backlog sits untouched.
+ *
+ *  300 is the figure `lib/rejected-cluster-sweep.ts` already uses for the same
+ *  reason; that sweep converged 216 → 0 in production, so it is a measured
+ *  precedent rather than a guess. Identification stays at CACHE_SWEEP_BATCH;
+ *  only the removal is chunked. */
+export const CACHE_SWEEP_DELETE_CHUNK = 300;
 
 export interface CacheSweepResult {
   /** Expired rows found by this invocation (capped at the batch bound). */
@@ -146,19 +163,30 @@ export async function sweepExpiredCache(
   out.more = ids.length >= batch;
   if (ids.length === 0 || dryRun) return out;
 
-  // 2) Remove by explicit id set. Idempotent and concurrency-safe: a row another
-  //    invocation already took is simply absent from the delete's effect.
-  try {
-    const res = await db.from("tool_call_cache")
-      .delete()
-      .in("id", ids) as { error?: unknown };
-    if (res?.error) {
+  // 2) Remove by explicit id set, CHUNKED — see CACHE_SWEEP_DELETE_CHUNK for why a
+  //    single statement cannot carry the whole batch. Idempotent and
+  //    concurrency-safe: a row another invocation already took is simply absent
+  //    from the delete's effect.
+  //
+  //    A chunk fault STOPS the loop rather than continuing. `deleted` then reports
+  //    what was actually removed, the rows that remain are still expired, and the
+  //    next probe retries them — which is strictly better than pressing on against
+  //    what is probably a systemic fault and reporting a number nobody can trust.
+  for (let i = 0; i < ids.length; i += CACHE_SWEEP_DELETE_CHUNK) {
+    const slice = ids.slice(i, i + CACHE_SWEEP_DELETE_CHUNK);
+    try {
+      const res = await db.from("tool_call_cache")
+        .delete()
+        .in("id", slice) as { error?: unknown };
+      if (res?.error) {
+        out.errors++;
+        return out;
+      }
+      out.deleted += slice.length;
+    } catch {
       out.errors++;
       return out;
     }
-    out.deleted = ids.length;
-  } catch {
-    out.errors++;
   }
   return out;
 }

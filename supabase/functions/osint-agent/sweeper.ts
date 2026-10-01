@@ -14,6 +14,22 @@ interface SweepSite {
   name: string;
   url: string;
   absent?: number | string;
+  /** The generic username-echo test carries NO information on this platform:
+   *  measured against a guaranteed-nonexistent handle, the site answered 2xx
+   *  AND echoed the requested handle into a high-signal region, so
+   *  `bodyEvidencesAccount` proved a registration that cannot exist.
+   *
+   *  Set ONLY from that measurement, never from a guess. A site marked here can
+   *  still be proven — by a `confirm` marker — but it can never again be proven
+   *  by echo alone. Without a marker it reports `unverified`, which is the
+   *  honest answer for a platform that cannot distinguish absence.
+   *
+   *  Why this and not a `confirm` marker: the comment below is right that a
+   *  marker must be measured against a live profile, and measuring "this page
+   *  proves a real account" needs a known-real account on each platform. The
+   *  negative is what was actually measured, so the negative is what is encoded.
+   */
+  echoUnsafe?: true;
   /** Optional body marker that PROVES a real profile (beats the generic
    *  username-echo test below). Use when a platform renders a profile without
    *  echoing the handle, or echoes it on its not-found page.
@@ -283,11 +299,16 @@ function bodyEvidencesAccount(body: string, username: string): boolean {
  * is the whole test.
  */
 export function accountIsProven(
-  site: Pick<SweepSite, "confirm">,
+  site: Pick<SweepSite, "confirm" | "echoUnsafe">,
   body: string,
   username: string,
 ): boolean {
-  return site.confirm ? body.includes(site.confirm) : bodyEvidencesAccount(body, username);
+  if (site.confirm) return body.includes(site.confirm);
+  // Measured-unsafe echo: proving by handle-echo here is proving nothing, so
+  // the honest result is "unverified", never a counted hit. Checked AFTER
+  // `confirm` so a measured marker still promotes the site back to provable.
+  if (site.echoUnsafe) return false;
+  return bodyEvidencesAccount(body, username);
 }
 
 /**
@@ -315,14 +336,14 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
     { name: "Behance", url: `https://www.behance.net/${u}`, absent: 404 },
     { name: "Dribbble", url: `https://dribbble.com/${u}`, absent: 404 },
     { name: "Flickr", url: `https://www.flickr.com/people/${u}`, absent: 404 },
-    { name: "Spotify", url: `https://open.spotify.com/user/${u}`, absent: 404 },
+    { name: "Spotify", url: `https://open.spotify.com/user/${u}`, absent: 404, echoUnsafe: true },
     { name: "SoundCloud", url: `https://soundcloud.com/${u}`, absent: 404 },
     { name: "Bandcamp", url: `https://${u}.bandcamp.com`, absent: 404 },
     { name: "Patreon", url: `https://www.patreon.com/${u}`, absent: 404 },
     { name: "Steam", url: `https://steamcommunity.com/id/${u}`, absent: "The specified profile could not be found" },
     { name: "Roblox", url: `https://www.roblox.com/user.aspx?username=${u}`, absent: "Page cannot be found" },
     { name: "Wikipedia", url: `https://en.wikipedia.org/wiki/User:${u}`, absent: "Wikipedia does not have a" },
-    { name: "Telegram", url: `https://t.me/${u}`, absent: "tgme_page_title" },
+    { name: "Telegram", url: `https://t.me/${u}`, absent: "tgme_page_title", echoUnsafe: true },
     { name: "About.me", url: `https://about.me/${u}`, absent: 404 },
     { name: "Gravatar", url: `https://en.gravatar.com/${u}`, absent: 404 },
     { name: "Replit", url: `https://replit.com/@${u}`, absent: 404 },
@@ -334,7 +355,7 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
     { name: "DeviantArt", url: `https://www.deviantart.com/${u}`, absent: 404 },
     { name: "Snapchat", url: `https://www.snapchat.com/add/${u}`, absent: 404 },
     { name: "Last.fm", url: `https://www.last.fm/user/${u}`, absent: 404 },
-    { name: "Mixcloud", url: `https://www.mixcloud.com/${u}/`, absent: 404 },
+    { name: "Mixcloud", url: `https://www.mixcloud.com/${u}/`, absent: 404, echoUnsafe: true },
     { name: "Discogs", url: `https://www.discogs.com/user/${u}`, absent: 404 },
     { name: "Genius", url: `https://genius.com/${u}`, absent: 404 },
     { name: "RateYourMusic", url: `https://rateyourmusic.com/~${u}`, absent: 404 },
@@ -342,7 +363,7 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
     { name: "Letterboxd", url: `https://letterboxd.com/${u}/`, absent: 404 },
     { name: "MyAnimeList", url: `https://myanimelist.net/profile/${u}`, absent: 404 },
     { name: "AniList", url: `https://anilist.co/user/${u}`, absent: 404 },
-    { name: "Trakt", url: `https://trakt.tv/users/${u}`, absent: 404 },
+    { name: "Trakt", url: `https://trakt.tv/users/${u}`, absent: 404, echoUnsafe: true },
     { name: "IMDb", url: `https://www.imdb.com/user/${u}/`, absent: 404 },
     { name: "Quora", url: `https://www.quora.com/profile/${u}`, absent: 404 },
     { name: "Disqus", url: `https://disqus.com/by/${u}/`, absent: 404 },
@@ -365,7 +386,7 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
     { name: "Lichess", url: `https://lichess.org/@/${u}`, absent: 404 },
     { name: "Codeforces", url: `https://codeforces.com/profile/${u}`, absent: 404 },
     { name: "LeetCode", url: `https://leetcode.com/${u}/`, absent: 404 },
-    { name: "HackerRank", url: `https://www.hackerrank.com/${u}`, absent: 404 },
+    { name: "HackerRank", url: `https://www.hackerrank.com/${u}`, absent: 404, echoUnsafe: true },
     { name: "HackTheBox", url: `https://app.hackthebox.com/profile/${u}`, absent: 404 },
     { name: "TryHackMe", url: `https://tryhackme.com/p/${u}`, absent: 404 },
     { name: "Kaggle", url: `https://www.kaggle.com/${u}`, absent: 404 },
@@ -390,7 +411,7 @@ export async function sweepUsername(username: string): Promise<SweepResult> {
     { name: "Read.cv", url: `https://read.cv/${u}`, absent: 404 },
     { name: "Substack", url: `https://${u}.substack.com`, absent: 404 },
     { name: "Mastodon.social", url: `https://mastodon.social/@${u}`, absent: 404 },
-    { name: "Minecraft (NameMC)", url: `https://namemc.com/profile/${u}`, absent: 404 },
+    { name: "Minecraft (NameMC)", url: `https://namemc.com/profile/${u}`, absent: 404, echoUnsafe: true },
     { name: "Xbox Gamertag", url: `https://account.xbox.com/profile?gamertag=${u}`, absent: 404 },
     { name: "OK.ru", url: `https://ok.ru/${u}`, absent: 404 },
     { name: "VK", url: `https://vk.com/${u}`, absent: 404 },

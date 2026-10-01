@@ -26,6 +26,13 @@ describe("print wiring", () => {
     expect(src).not.toMatch(/setTimeout\(\(\) => \{\s*window\.print\(\)/);
   });
 
+  it("the workspace arms the report's print handling only while Report is the tab on screen", () => {
+    // Visited panels stay mounted (hidden). Behaviour is driven in
+    // case-snapshot-provider.test.tsx; this pins the one call site that must pass it.
+    const src = read("src/pages/ChatPage.tsx");
+    expect(src).toMatch(/<ReportTab\b[^>]*\bprintActive=\{tab === "report"\}/);
+  });
+
   it("the print stylesheet unclamps the workspace ancestors that clip the report", () => {
     const css = read("src/index.css");
     const start = css.indexOf("@media print");

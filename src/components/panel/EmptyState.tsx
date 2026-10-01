@@ -73,7 +73,7 @@ export function EmptyState({
 
       {eyebrow && (
         <div className="mb-2 flex items-center gap-2 font-mono text-eyebrow uppercase tracking-[0.28em] text-[hsl(var(--intel-blue))]">
-          <span className="h-1 w-1 animate-pulse rounded-full bg-[hsl(var(--intel-blue))]" />
+          <span aria-hidden className="h-1 w-1 rounded-full bg-[hsl(var(--intel-blue))]" />
           {eyebrow}
         </div>
       )}

@@ -56,6 +56,17 @@ export default {
       },
       transitionTimingFunction: {
         premium: "cubic-bezier(0.32, 0.72, 0, 1)",
+        // THE motion curve for the workspace: fast out, gentle settle. Every
+        // state transition (tabs, menus, drawers, disclosure) uses this one.
+        standard: "cubic-bezier(0.2, 0.7, 0.2, 1)",
+      },
+      // Motion tokens. Three durations, no others: `fast` for hover/press
+      // feedback, `standard` for state changes and menus, `slow` for panels
+      // entering. Declared here so `duration-standard` means one thing.
+      transitionDuration: {
+        fast: "120ms",
+        standard: "180ms",
+        slow: "240ms",
       },
       boxShadow: {
         // The primary CTA casts a shadow AND a faint signal bloom, so a white
@@ -94,6 +105,10 @@ export default {
           DEFAULT: "hsl(var(--muted))",
           foreground: "hsl(var(--muted-foreground))",
         },
+        // Ink levels 3 and 4. Reach for these instead of stacking an opacity
+        // modifier on muted-foreground; see the ink ramp note in index.css.
+        subtle: { foreground: "hsl(var(--subtle-foreground))" },
+        faint: { foreground: "hsl(var(--faint-foreground))" },
         accent: {
           DEFAULT: "hsl(var(--accent))",
           foreground: "hsl(var(--accent-foreground))",
