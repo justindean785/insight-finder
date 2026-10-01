@@ -36,6 +36,7 @@ import {
 } from "./lib/preflight-pivot.ts";
 import { positionalPairingSelfTest } from "./message-sanitize.ts";
 import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
+import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 
 /**
@@ -364,6 +365,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // reported on every probe — and its PRESENCE is the behavioural proof that the build
   // with versioned cache keys is the one running (see lib/tool-cache-version.ts).
   r.checks.tool_cache_version = describeToolCacheVersions();
+  // Per-case dead-target memory (lib/dead-target.ts). Pure, no DB. Its PRESENCE is the
+  // behavioural proof that the build carrying the gate is the one running.
+  r.checks.dead_target_memory = describeDeadTargetMemory();
   // Is the prompt char budget a CEILING, or only a target the recent-window tail is
   // exempt from? Pure, no DB. Its PRESENCE is the behavioural proof that the build
   // carrying the second elision pass is the one running — the BUILD_MARKER is a
