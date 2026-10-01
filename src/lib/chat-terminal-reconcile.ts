@@ -52,6 +52,77 @@ function contentSignature(message: { role?: unknown; parts?: unknown }): string 
   return JSON.stringify([message.role ?? null, parts.map(partSignature)]);
 }
 
+/** The ordered tool-call ids of a message. Each is unique to one call and is not
+ *  touched by the stream -> Postgres round trip, so two copies of a tool-bearing
+ *  message share them exactly. Empty for a message with no tool parts. */
+function toolCallIdsOf(message: { parts?: unknown }): string[] {
+  const parts = Array.isArray(message.parts) ? message.parts : [];
+  const ids: string[] = [];
+  for (const part of parts) {
+    if (part && typeof part === "object" && typeof (part as Record<string, unknown>).toolCallId === "string") {
+      ids.push((part as Record<string, string>).toolCallId);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Does `persisted` differ from `live` only by the ONE edit the server makes after
+ * the stream ends? lib/evidence-record-persist.ts appends the "Evidence Record —
+ * authoritative" block to the LAST text part (or adds a text part when there was
+ * none). Every other part must match by partSignature.
+ */
+function extendsStreamedMessage(
+  live: { role?: unknown; parts?: unknown },
+  persisted: { role?: unknown; parts?: unknown },
+): boolean {
+  if (live.role !== persisted.role) return false;
+  const a = Array.isArray(live.parts) ? live.parts : [];
+  const b = Array.isArray(persisted.parts) ? persisted.parts : [];
+  const isText = (p: unknown) => !!p && typeof p === "object" && (p as Record<string, unknown>).type === "text";
+  let lastText = -1;
+  for (let i = a.length - 1; i >= 0; i--) if (isText(a[i])) { lastText = i; break; }
+  if (lastText === -1) {
+    // No text part to merge into: the server pushes one at the end.
+    return a.length > 0 && b.length === a.length + 1 && isText(b[b.length - 1]) &&
+      a.every((p, i) => partSignature(p) === partSignature(b[i]));
+  }
+  if (a.length !== b.length) return false;
+  return a.every((p, i) => {
+    if (i !== lastText) return partSignature(p) === partSignature(b[i]);
+    const liveText = String((p as Record<string, unknown>).text ?? "");
+    const storedText = isText(b[i]) ? String((b[i] as Record<string, unknown>).text ?? "") : null;
+    // The server appends `\n\n<block>`; anything else is a different message.
+    return storedText !== null && liveText.trim() !== "" && storedText.startsWith(`${liveText}\n\n`);
+  });
+}
+
+/**
+ * Are these two copies of ONE chat message — the live AI-SDK copy and its
+ * durable row? Production 2026-10-01 (spearheadlab case): the whole run flow
+ * rendered twice under "Superseded report", because the server appends the
+ * Evidence Record block AFTER streaming, so the stored row's text no longer
+ * matched the streamed copy and was appended as a second message.
+ *
+ * In order: the same id; the same part signatures; the same non-empty ordered
+ * tool-call ids (unique per call, and the server never alters them); or the
+ * stored copy is the streamed one plus the server's post-stream append.
+ */
+export function isSameChatMessage(
+  a: { id?: unknown; role?: unknown; parts?: unknown },
+  b: { id?: unknown; role?: unknown; parts?: unknown },
+): boolean {
+  if (a.id !== undefined && a.id === b.id) return true;
+  if (a.role !== b.role) return false;
+  if (contentSignature(a) === contentSignature(b)) return true;
+  const idsA = toolCallIdsOf(a);
+  if (idsA.length > 0) {
+    const idsB = toolCallIdsOf(b);
+    if (idsA.length === idsB.length && idsA.every((id, i) => id === idsB[i])) return true;
+  }
+  return extendsStreamedMessage(a, b);
+}
+
 /** Merge durable DB messages into the live AI SDK store without discarding tool
  * activity that has streamed locally but has not been persisted as a message.
  *
@@ -76,7 +147,10 @@ export function mergePersistedChatMessages<T extends { id: string; role?: unknow
     const byId = persistedById.get(message.id);
     if (byId) { adopted.add(byId.id); return byId; }
     const bySignature = persistedBySignature.get(contentSignature(message));
-    if (bySignature) { adopted.add(bySignature.id); return bySignature; }
+    if (bySignature && !adopted.has(bySignature.id)) { adopted.add(bySignature.id); return bySignature; }
+    // Same message, but the server edited it after the stream (Evidence Record).
+    const extended = persisted.find((row) => !adopted.has(row.id) && isSameChatMessage(message, row));
+    if (extended) { adopted.add(extended.id); return extended; }
     return message;
   });
 

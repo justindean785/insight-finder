@@ -142,12 +142,9 @@ export function humanizeStage(stage: string | null | undefined): string {
  * and prose where the full role prefix would be redundant.
  */
 export function toolActionLabel(toolName: string): string {
-  const full = DISPLAY[toolName];
-  if (full) {
-    const idx = full.indexOf(" — ");
-    return idx >= 0 ? full.slice(idx + 3) : full;
-  }
-  return fallbackDisplay(toolName);
+  const full = DISPLAY[toolName] ?? fallbackDisplay(toolName);
+  const idx = full.indexOf(" — ");
+  return idx >= 0 ? full.slice(idx + 3) : full;
 }
 
 /**
@@ -162,11 +159,27 @@ export function toolAgentRole(toolName: string): string {
   return "Analyst";
 }
 
+/** A real tool name is an identifier. */
+const TOOL_IDENT_RE = /^[a-z0-9_]+$/i;
+
+function titleCaseTool(name: string): string {
+  return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Anything that is not an identifier is a MALFORMED call, and is labelled as
+ * one. Production 2026-10-01: GLM wrote its `<arg_key>/<arg_value>` call
+ * markup into the tool NAME; the server sank the call, but the stored part kept
+ * the name and this fallback title-cased it into
+ * "Minimax Correlate</Arg Value>Artifacts</Arg Key>…" — model markup, and the
+ * case's selectors, shown as a cycle label.
+ */
 function fallbackDisplay(name: string): string {
-  const action = name
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-  return `Analyst — ${action}`;
+  if (!TOOL_IDENT_RE.test(name)) {
+    const head = name.match(/^[a-z0-9_]+/i)?.[0];
+    return `Analyst — Malformed call${head ? ` (${titleCaseTool(head)})` : ""}`;
+  }
+  return `Analyst — ${titleCaseTool(name)}`;
 }
 
 /**

@@ -65,6 +65,7 @@ import {
   mergePersistedChatMessages,
   shouldAbortClientStream,
   type TerminalThreadUpdate,
+  isSameChatMessage,
 } from "@/lib/chat-terminal-reconcile";
 
 const SUPABASE_PROJECT_ID = (import.meta.env.VITE_SUPABASE_PROJECT_ID as string | undefined)?.trim();
@@ -1764,12 +1765,11 @@ function ChatWindowInner({
             created_at?: string;
           };
           if (!row.id || !row.role || !Array.isArray(row.parts)) return;
-          const serialized = JSON.stringify(row.parts);
           setMessages((current) => {
-            const alreadyPresent = current.some((message) =>
-              message.id === row.id ||
-              (message.role === row.role && JSON.stringify(message.parts) === serialized)
-            );
+            // The same predicate as the terminal reconcile: a plain JSON compare
+            // missed the server's post-stream Evidence Record append and added the
+            // stored row as a second copy of the run (2026-10-01).
+            const alreadyPresent = current.some((message) => isSameChatMessage(message, row));
             if (alreadyPresent) return current;
             return [...current, {
               id: row.id,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isSameChatMessage,
   isTerminalThreadUpdate,
   mergePersistedChatMessages,
   shouldAbortClientStream,
@@ -123,5 +124,75 @@ describe("mergePersistedChatMessages — the stream/DB duplicate", () => {
     const merged = mergePersistedChatMessages(localTools, db);
     expect(merged).toHaveLength(2);
     expect(merged.some((m) => m.id === "tools-only")).toBe(true);
+  });
+});
+
+/**
+ * Production 2026-10-01 (spearheadlab case): the run flow rendered twice under
+ * "Superseded report". The DB held ONE assistant message; the server had
+ * appended the Evidence Record block to its last text part AFTER streaming, so
+ * the stored row no longer matched the streamed copy by text and was appended.
+ */
+describe("the server's post-stream Evidence Record append is the same message", () => {
+  const EVIDENCE = "\n\n## Evidence Record — authoritative\n\nNo authoritative finding rows were recorded for this run.";
+  const live = {
+    id: "client-1",
+    role: "assistant",
+    parts: [
+      { type: "step-start" },
+      { type: "text", text: "Starting." },
+      { type: "tool-whois_lookup", toolCallId: "call_a", state: "output-available" },
+      { type: "tool-dns_records", toolCallId: "call_b", state: "output-available" },
+      { type: "text", text: "## Report\n\nFindings." },
+    ],
+  };
+  const stored = {
+    id: "8d4f0000-0000-4000-8000-00000000c48b",
+    role: "assistant",
+    parts: [
+      { type: "step-start" },
+      { text: "Starting.", type: "text" },
+      { type: "tool-whois_lookup", toolCallId: "call_a" },
+      { type: "tool-dns_records", toolCallId: "call_b" },
+      { type: "text", text: `## Report\n\nFindings.${EVIDENCE}` },
+    ],
+  };
+
+  it("reconcile adopts the stored row in place: one message, durable id, the appended block", () => {
+    const merged = mergePersistedChatMessages([live], [stored]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].id).toBe(stored.id);
+    expect(JSON.stringify(merged[0].parts)).toContain("Evidence Record");
+  });
+
+  it("the realtime-insert predicate agrees", () => {
+    expect(isSameChatMessage(live, stored)).toBe(true);
+  });
+
+  it("matches a tool-bearing copy by its tool-call ids even when text was also capped", () => {
+    const capped = { ...stored, parts: stored.parts.map((p) => (p.type === "text" ? { ...p, text: "[truncated]" } : p)) };
+    expect(mergePersistedChatMessages([live], [capped])).toHaveLength(1);
+  });
+
+  it("a text-only reply that gained the block is the same message too", () => {
+    const a = { id: "c", role: "assistant", parts: [{ type: "text", text: "Answer." }] };
+    const b = { id: "d", role: "assistant", parts: [{ type: "text", text: `Answer.${EVIDENCE}` }] };
+    expect(mergePersistedChatMessages([a], [b])).toHaveLength(1);
+  });
+
+  // Over-match guards — none of these may collapse.
+  it("different tool-call ids are different messages", () => {
+    const other = { ...stored, id: "other", parts: stored.parts.map((p) => ("toolCallId" in p ? { ...p, toolCallId: `${p.toolCallId}-2` } : p)) };
+    expect(isSameChatMessage(live, { ...other, parts: other.parts.map((p) => (p.type === "text" ? { ...p, text: "different" } : p)) })).toBe(false);
+  });
+
+  it("a later message that merely continues the text is a different message", () => {
+    const a = { id: "c", role: "assistant", parts: [{ type: "text", text: "Starting." }] };
+    const b = { id: "d", role: "assistant", parts: [{ type: "text", text: "Starting. Then a second report." }] };
+    expect(mergePersistedChatMessages([a], [b])).toHaveLength(2);
+  });
+
+  it("the same tool ids under a different role never match", () => {
+    expect(isSameChatMessage(live, { ...stored, role: "user" })).toBe(false);
   });
 });
