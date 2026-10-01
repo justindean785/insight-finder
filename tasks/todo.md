@@ -783,3 +783,17 @@ main bottleneck — the request architecture is.**
 - **Gaps:** no TTFT, no client timings, salvage/preflight console-only, cache-hit rate unknown,
   19-day window, 1 health sample, request type inferred from prompt text.
 - **No production changes made.** SELECT-only DB access; one paid 4-token health ping.
+
+### Implementation status (2026-10-01T04:35Z — JD approved the plan, then "Go")
+- **S1** (edge): PR #657 `claude/latency-s1-skip-dead-preflight`, CI green (edge 1972/0/6).
+  NOT merged/deployed — waits behind #653 in the one-edge-PR lane, then the full stamp → sync →
+  gate → Lovable deploy → `/health` cycle. Proof key: `checks.preflight_policy`.
+- **S2b** (frontend): PR #658 `claude/latency-s2b-probe-off-send-path`. First Send no longer awaits
+  `/health`; pre-stream HTTP failures carry status + server code (`withHttpStatusInErrorBody`).
+  vitest 2293/1/185 (main re-measured 2271/1/185), e2e 52/2. Ships on merge — JD's call.
+- **S3**: discarded at JD's instruction (client pre-stamps the heartbeat, so a failed POST would
+  lock Send for ~75 s). Belongs with a server-owned lease.
+- **S0a/S0b** (schema + telemetry), **S4** (salvage, needs sign-off), **S2a** (edge `?ping`),
+  **S5–S8**: not started; S0 and S4 await JD.
+- PR queue cleared the same session: #654, #655, #623, #610, #574 merged and verified live
+  (main CI incl. e2e green through `cf6b6f2`, Vercel production READY).
