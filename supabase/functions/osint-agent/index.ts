@@ -76,7 +76,7 @@ import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
 import { buildTools, TOOL_NAME_ALIASES } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
-import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
+import { isMessageSchemaError, classifyStreamProviderError, describeStreamError } from "./stream-error-classify.ts";
 import {
   shouldFallbackAfterMinimaxPreflight,
   minimaxPreflightFailureLabel,
@@ -1541,6 +1541,18 @@ Deno.serve(async (req) => {
       // they come in, and save the final assistant message via onFinish.
       onError: async ({ error }) => {
         const msg = error instanceof Error ? error.message : String(error);
+        // What gets RECORDED: the reason-phrase plus the provider's HTTP status and
+        // enum-like error code, so a fallback "Bad Request" is diagnosable from the
+        // ledger (14/14 gemini-direct fallbacks died as a bare "Bad Request").
+        // The raw body is NOT included — it is persisted text and a 4xx body echoes
+        // the request, which here is the investigation. STREAM_ERROR_BODY_DETAIL=true
+        // opts in for a debugging session, read at call time.
+        // Classification below keeps reading `msg`: the overflow test matches a
+        // bare "2013", which a body SIZE in `detail` could otherwise supply.
+        const detail = describeStreamError(
+          error,
+          (Deno.env.get("STREAM_ERROR_BODY_DETAIL") ?? "").trim().toLowerCase() === "true",
+        );
         const errName = error instanceof Error ? error.name : "";
         const isCtxOverflow =
           /context window|context length|2013|invalid params.*context|exceeds limit/i.test(msg);
@@ -1569,7 +1581,7 @@ Deno.serve(async (req) => {
             error_name: errName,
             // Redacted: a provider error can echo our key, and this line is kept in
             // the edge logs (lib/redact-error.ts).
-            message: redactErrorMessage(msg).slice(0, 600),
+            message: redactErrorMessage(detail).slice(0, 600),
           }),
         );
         invocationTelemetry.finish({
@@ -1578,7 +1590,7 @@ Deno.serve(async (req) => {
           finalizeStarted,
           hadStreamError: true,
           creditsMicroUsd: runCostMicroUsd,
-          errorMessage: msg,
+          errorMessage: detail,
           budgetExhausted: budgetCeiling.fired,
         });
         // A terminal stream error means onFinish never fires, so without this the
@@ -1595,7 +1607,7 @@ Deno.serve(async (req) => {
           heartbeat?.stop();
           const { error: updErr } = await supabase
             .from("threads")
-            .update({ status: "finished", recovery_reason: `stream_error: ${msg.slice(0, 220)}`, updated_at: new Date().toISOString() })
+            .update({ status: "finished", recovery_reason: `stream_error: ${detail.slice(0, 220)}`, updated_at: new Date().toISOString() })
             .eq("id", threadId)
             .eq("status", "active");
           if (updErr) console.warn("[thread status] error-path update failed:", updErr.message);

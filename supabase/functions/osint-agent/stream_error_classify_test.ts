@@ -38,3 +38,92 @@ Deno.test("classifyStreamProviderError: does not fire on schema faults (those ar
   assert(isMessageSchemaError("Tool results are missing for tool calls call_a_1"));
   assertEquals(classifyStreamProviderError("Tool results are missing for tool calls call_a_1"), null);
 });
+
+Deno.test("describeStreamError: status and enum code, and the raw body NEVER rides the string", async () => {
+  const { describeStreamError } = await import("./stream-error-classify.ts");
+  const apiErr = Object.assign(new Error("Bad Request"), {
+    statusCode: 400,
+    responseBody: '{ "error": { "message": "Invalid JSON payload: tools[3].function.parameters.anyOf is not supported",\n  "status": "INVALID_ARGUMENT" } }',
+  });
+  const out = describeStreamError(apiErr);
+  if (!out.startsWith("Bad Request [HTTP 400 INVALID_ARGUMENT")) throw new Error(`unexpected: ${out}`);
+  if (out.includes("anyOf is not supported")) throw new Error(`free text leaked: ${out}`);
+  if (!/body=\d+B/.test(out)) throw new Error(`body size missing: ${out}`);
+  if (out.includes("\n")) throw new Error("must be single-line");
+});
+
+Deno.test("describeStreamError: an ECHOED INPUT in the body cannot reach the persisted string", async () => {
+  const { describeStreamError } = await import("./stream-error-classify.ts");
+  // This is the defect the review named: a 4xx body routinely quotes the request
+  // back, and the request here is the investigation. Nothing from it may survive.
+  const echoed = Object.assign(new Error("Bad Request"), {
+    statusCode: 400,
+    responseBody: JSON.stringify({
+      error: {
+        code: "invalid_request_error",
+        message: "Invalid value for contents[0].parts[0].text",
+        param: "leoseyes86@gmail.com / hunter2 / +1 703 795 5364",
+      },
+    }),
+  });
+  const out = describeStreamError(echoed);
+  for (const secret of ["leoseyes86", "gmail.com", "hunter2", "703", "contents[0]"]) {
+    if (out.includes(secret)) throw new Error(`echoed input leaked (${secret}): ${out}`);
+  }
+  if (!out.includes("invalid_request_error")) throw new Error(`enum code lost: ${out}`);
+});
+
+Deno.test("describeStreamError: a free-text code is DROPPED, not truncated", async () => {
+  const { describeStreamError } = await import("./stream-error-classify.ts");
+  const err = Object.assign(new Error("Bad Request"), {
+    statusCode: 400,
+    responseBody: JSON.stringify({ error: { status: "the value leoseyes86@gmail.com was rejected" } }),
+  });
+  const out = describeStreamError(err);
+  if (out.includes("leoseyes86")) throw new Error(`free-text code leaked: ${out}`);
+  if (out !== `Bad Request [HTTP 400 body=${JSON.stringify({ error: { status: "the value leoseyes86@gmail.com was rejected" } }).length}B]`) {
+    throw new Error(`unexpected: ${out}`);
+  }
+});
+
+Deno.test("describeStreamError: includeBody is the explicit opt-in, and it is bounded", async () => {
+  const { describeStreamError, STREAM_ERROR_DETAIL_MAX } = await import("./stream-error-classify.ts");
+  const apiErr = Object.assign(new Error("Bad Request"), {
+    statusCode: 400,
+    responseBody: '{ "error": { "message": "anyOf is not supported", "status": "INVALID_ARGUMENT" } }',
+  });
+  if (describeStreamError(apiErr, false).includes("anyOf")) throw new Error("body included by DEFAULT");
+  if (!describeStreamError(apiErr, true).includes("anyOf")) throw new Error("opt-in did not include the body");
+  const huge = Object.assign(new Error("Bad Request"), { statusCode: 400, responseBody: "x".repeat(5000) });
+  if (describeStreamError(huge, true).length > STREAM_ERROR_DETAIL_MAX + 40) throw new Error("not bounded");
+});
+
+Deno.test("describeStreamError: a body with no status still reports its size, never its content", async () => {
+  const { describeStreamError } = await import("./stream-error-classify.ts");
+  const err = Object.assign(new Error("fetch failed"), { responseBody: "upstream said leoseyes86@gmail.com" });
+  const out = describeStreamError(err);
+  if (out.includes("leoseyes86")) throw new Error(`leaked: ${out}`);
+  if (out !== "fetch failed [body=34B]") throw new Error(`unexpected: ${out}`);
+});
+
+Deno.test("describeStreamError: a plain Error or non-Error is the message alone", async () => {
+  const { describeStreamError } = await import("./stream-error-classify.ts");
+  if (describeStreamError(new Error("Investigation stopped by analyst")) !== "Investigation stopped by analyst") throw new Error("plain error changed");
+  if (describeStreamError("boom") !== "boom") throw new Error("string changed");
+});
+
+Deno.test("streamErrorDetailSelfTest: passes on the shipped describeStreamError", async () => {
+  const { streamErrorDetailSelfTest } = await import("./stream-error-classify.ts");
+  const r = streamErrorDetailSelfTest();
+  assertEquals(r.ok, true, r.detail);
+});
+
+Deno.test("wiring: onError records the detail, classifies on the raw reason, and /health reports the key", async () => {
+  const idx = await Deno.readTextFile(new URL("./index.ts", import.meta.url));
+  assert(idx.includes("const detail = describeStreamError("), "onError builds the recorded detail");
+  assert(idx.includes("errorMessage: detail,"), "the invocation row records the detail");
+  assert(idx.includes("recovery_reason: `stream_error: ${detail.slice(0, 220)}`"), "the thread row records the detail");
+  assert(/isCtxOverflow =\s*\/[^\n]*\/i\.test\(msg\)/.test(idx), "overflow is classified on the raw reason, never the detail");
+  const hh = await Deno.readTextFile(new URL("./health-handler.ts", import.meta.url));
+  assert(hh.includes("r.checks.stream_error_detail = streamErrorDetailSelfTest();"));
+});
