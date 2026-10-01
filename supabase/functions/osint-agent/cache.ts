@@ -25,6 +25,11 @@ import { unprovenLinkageMarker, UNPROVEN_LINKAGE_KEY, type UnprovenLinkage } fro
 import { promotionQuarantineEnabled } from "./env.ts";
 import type { QuarantineRow } from "./lib/dispatch-quarantine.ts";
 import { buildRejectedDispatchKeys, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
+import {
+  buildDeadTargets, deadTargetMemoryEnabled, deadTargetCount, deadTargetRefusal,
+  DEAD_TARGET_FLOOR, DEAD_TARGET_REFUSAL_ERROR,
+  DEAD_TARGET_PAGE, DEAD_TARGET_MAX_PAGES, DEAD_TARGET_READ_OUTCOMES,
+} from "./lib/dead-target.ts";
 import { loadReviewsForThread, type ReviewDb } from "./reviews.ts";
 import {
   guard, takeCorrelateHint, shouldSkipRedundantCorrelate,
@@ -737,6 +742,67 @@ export function wrapToolsWithCache(
     }
     return toolHealthPromise;
   };
+  // ---- Dead-target memory (lib/dead-target.ts) -----------------------------------
+  // The circuit breaker forgets everything between requests; tool_usage_log does
+  // not. Loaded ONCE per run: only this case's FAILED rows, so the read is small.
+  // FAILS OPEN on any error, like loadToolHealth — a cost control, not authorization.
+  let deadTargetsPromise: Promise<Map<string, number>> | null = null;
+  const loadDeadTargets = (): Promise<Map<string, number>> => {
+    if (!deadTargetsPromise) {
+      deadTargetsPromise = (async () => {
+        try {
+          // ⚠️ PAGED, and it has to be. An unbounded PostgREST select returns at most
+          // `db-max-rows` with NO error — a well-formed short 200 — which is exactly
+          // how the quarantine read silently stopped binding (#519). Here a short read
+          // is worse than a missing refusal: the streak resets on a success, so a page
+          // that carries a pair's failures but not its LATER success inverts the
+          // answer and refuses a live target. So: read chronologically, advance by rows
+          // actually returned, and stop only on a short/empty page.
+          const rows: Array<Record<string, unknown>> = [];
+          let from = 0;
+          let truncated = false;
+          for (let page = 0; ; page++) {
+            if (page >= DEAD_TARGET_MAX_PAGES) { truncated = true; break; }
+            const { data, error } = await adminDb
+              .from("tool_usage_log")
+              .select("tool_name,outcome,input_json,created_at,cached")
+              .eq("thread_id", ctx.investigationId)
+              .in("outcome", DEAD_TARGET_READ_OUTCOMES)
+              .order("created_at", { ascending: true })
+              .range(from, from + DEAD_TARGET_PAGE - 1);
+            if (error) {
+              console.warn("[dead-target] load failed (gate open):", error.message);
+              return new Map();
+            }
+            const got = (data ?? []) as Array<Record<string, unknown>>;
+            rows.push(...got);
+            if (got.length < DEAD_TARGET_PAGE) break;   // short page ⇒ end of the set
+            from += got.length;                          // advance by rows RETURNED
+          }
+          if (truncated) {
+            // Fail OPEN on an incomplete read, deliberately. A partial history can
+            // only ever manufacture a false refusal (failures seen, later success
+            // missed), and this is a cost control, not an authorization boundary.
+            console.warn(JSON.stringify({
+              event: "dead_target_read_incomplete",
+              thread_id: ctx.investigationId,
+              rows_read: rows.length,
+              reason: "page_cap",
+            }));
+            return new Map();
+          }
+          return buildDeadTargets(
+            rows,
+            (input) => circuit.normalizeSelector(detectSelectorType(input), detectSelectorValue(input)),
+          );
+        } catch (e) {
+          console.warn("[dead-target] load threw (gate open):", e);
+          return new Map();
+        }
+      })();
+    }
+    return deadTargetsPromise;
+  };
   // ---- subject_unlinked DISPATCH boundary --------------------------------------
   // Quarantine binds at write and read-back; without this it never bound at
   // DISPATCH, so a quarantined selector could still start its own paid tool
@@ -1336,6 +1402,41 @@ export function wrapToolsWithCache(
             }
           } catch (error) {
             console.warn(`[tool_call_cache] selector-reuse lookup failed for ${name}:`, error);
+          }
+        }
+
+        // ---- Dead-target memory: this (tool, selector) is failing in THIS case ----
+        // ⚠️ Placed HERE, below every cache layer, and that placement is the fix for
+        // the first cut of this gate. A cache hit is free and already paid for, so
+        // refusing one saved nothing and threw away a usable result — a pure
+        // regression. Everything above this line is a free replay; nothing below it
+        // is. So the gate refuses exactly what it exists to refuse: a LIVE call on a
+        // target that keeps failing.
+        //
+        // It still sits ABOVE the tool-call cap, the circuit and the paid-call
+        // reservation, so a refusal reserves no budget slot and leaves no circuit
+        // state — the same free-refusal placement as the correlate gates below.
+        // An analyst override is the one legitimate reason to try a dead target
+        // again: the documented "manual override: <selector>" flow (manualOverride,
+        // computed above) — the path an analyst can actually reach, since tool
+        // schemas do not expose `force` (Codex P2 on #673) — or an explicit force.
+        if (deadTargetMemoryEnabled() && !force && !manualOverride && !ALWAYS_ALLOW_TOOLS.has(name)) {
+          const prior = deadTargetCount(await loadDeadTargets(), name, sel);
+          if (prior >= DEAD_TARGET_FLOOR) {
+            await logUsage(false, false, Date.now() - t0, DEAD_TARGET_REFUSAL_ERROR, null, true, {
+              input: inputJson,
+              runtime: { ...runtimeMetaBase, rejection_reason: "dead_target", rejection_source: "case_memory", prior_failures: prior },
+            });
+            console.log(JSON.stringify({
+              event: "dead_target_refused", thread_id: ctx.investigationId, tool: name, selector: sel, prior_failures: prior,
+            }));
+            return attachRuntimeMeta(deadTargetRefusal(name, sel, prior), {
+              ...runtimeMetaBase,
+              rejection_reason: "dead_target",
+              stage: "TRIAGE",
+              cache_layer: "miss",
+              stale_cache: !!staleRecord,
+            });
           }
         }
 
