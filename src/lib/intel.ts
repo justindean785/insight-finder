@@ -2233,18 +2233,44 @@ export function recordCorroboratesSelector(
 ): boolean {
   const needle = selector.trim().toLowerCase();
   if (!needle) return false;
-  if (value.trim().toLowerCase().includes(needle)) return true;
+  if (namesSelector(value, needle)) return true;
   const meta = metadata ?? {};
   for (const [k, v] of Object.entries(meta)) {
     if (PROVENANCE_META_KEYS.has(k)) continue;
-    if (typeof v === "string" && v.trim().toLowerCase().includes(needle)) return true;
+    if (typeof v === "string" && namesSelector(v, needle)) return true;
     // One level of nesting: providers commonly nest the matched record.
     if (v && typeof v === "object" && !Array.isArray(v)) {
       for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) {
         if (PROVENANCE_META_KEYS.has(k2)) continue;
-        if (typeof v2 === "string" && v2.trim().toLowerCase().includes(needle)) return true;
+        if (typeof v2 === "string" && namesSelector(v2, needle)) return true;
       }
     }
+  }
+  return false;
+}
+
+/** Anything outside a selector's own character set separates two tokens. */
+const SELECTOR_TOKEN_SPLIT = /[^a-z0-9_.%+@-]+/;
+
+/**
+ * Does `text` name `needle` as a WHOLE selector token?
+ *
+ * ⚠️ Never a substring test. `"johnsmith2".includes("johnsmith")` and
+ * `"xa@example.com".includes("a@example.com")` are both true, so substring
+ * corroboration lets a lookup on one identity publish its record-mate key on a
+ * row about a different one — the union this gate exists to stop. `text` is
+ * split on characters a selector cannot contain (spaces, `/`, `:`, `,`, …), so
+ * a profile URL or a prose sentence still yields the selector as one token;
+ * prose punctuation at a token's edge (`a@example.com.`) is trimmed, and an
+ * `@handle` mention also names `handle`.
+ */
+function namesSelector(text: string, needle: string): boolean {
+  for (const raw of text.toLowerCase().split(SELECTOR_TOKEN_SPLIT)) {
+    const t = raw.replace(/^[.-]+|[.-]+$/g, "");
+    if (!t) continue;
+    if (t === needle) return true;
+    if (t.startsWith("@") && t.slice(1) === needle) return true;
+    if (needle.startsWith("@") && t === needle.slice(1)) return true;
   }
   return false;
 }

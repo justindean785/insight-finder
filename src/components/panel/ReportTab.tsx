@@ -61,8 +61,11 @@ type ExportFormat = "copy-md" | "md" | "pdf" | "matrix" | "json";
 //
 //  1. Masking is not uniform by FORMAT. Markdown and JSON run through
 //     `markMarkdown` / `wrapJsonExport` → redactSecretsInText /
-//     redactSecretsDeep. PDF and Ctrl+P render CaseReport straight from raw
-//     artifacts and mask nothing.
+//     redactSecretsDeep. PDF and Ctrl+P get no export redaction pass: they
+//     print CaseReport AS DISPLAYED, so they mask exactly what the on-screen
+//     display policy masks — `MaskedValue` under VITE_MASK_BREACH_VALUES, and
+//     minor-related breach rows always. "Nothing masked" would over-claim in
+//     the other direction (Codex P2 on #609), so the label says "as displayed".
 //  2. Masking is narrow in SCOPE. `SECRET_KEY_RE` and the password regexes
 //     cover passwords, passcodes and hashes — nothing else. SSNs, DOBs and
 //     partial card numbers pass through every format untouched. Verified on a
@@ -77,7 +80,7 @@ type ExportFormat = "copy-md" | "md" | "pdf" | "matrix" | "json";
 const FORMAT_LABEL: Record<ExportFormat, string> = {
   "copy-md": "Copy markdown · passwords masked",
   md: "Markdown (.md) · passwords masked",
-  pdf: "PDF (print) · nothing masked",
+  pdf: "PDF (print) · as displayed",
   matrix: "Evidence matrix",
   json: "JSON · passwords masked",
 };

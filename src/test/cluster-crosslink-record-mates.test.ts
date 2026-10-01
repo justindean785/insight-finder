@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildIdentityClusters, phoneMergeKey } from "@/lib/intel";
+import { buildIdentityClusters, phoneMergeKey, recordCorroboratesSelector } from "@/lib/intel";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 
 /**
@@ -191,5 +191,46 @@ describe("queried_selector unions only when the record corroborates the selector
     const report = buildIdentityClusters([a, stray], "a@example.com");
     const merged = report.clusters.find((c) => ids(c).has("a") && ids(c).has("stray"));
     expect(merged, "provenance fields must be excluded from the corroboration scan").toBeFalsy();
+  });
+});
+
+/**
+ * Codex P1 on #609: corroboration was a SUBSTRING test, so a lookup on
+ * `johnsmith` that returned an unrelated `johnsmith2` row still published
+ * `parent:johnsmith` beside its own key and merged the two identities. The
+ * selector must appear as a whole token.
+ */
+describe("record corroboration is a whole-token match, never a substring", () => {
+  it("UNRELATED: a lookup on johnsmith returning a johnsmith2 row does NOT merge them", () => {
+    const seed = mk({ id: "seed", kind: "username", value: "johnsmith" });
+    const other = mk({ id: "other", kind: "username", value: "johnsmith2" });
+    const stray = mk({
+      id: "stray",
+      kind: "url",
+      value: "https://github.com/johnsmith2",
+      metadata: { queried_selector: "johnsmith", handle: "johnsmith2" },
+      source: "username_sweep",
+    });
+    const report = buildIdentityClusters([seed, other, stray], "johnsmith");
+    const merged = report.clusters.find((c) => ids(c).has("seed") && ids(c).has("other"));
+    expect(merged, "johnsmith and johnsmith2 must NOT share a cluster").toBeFalsy();
+    const strayWithSeed = report.clusters.find((c) => ids(c).has("seed") && ids(c).has("stray"));
+    expect(strayWithSeed, "a johnsmith2 row does not corroborate johnsmith").toBeFalsy();
+  });
+
+  it("rejects superstrings in the value and in (nested) metadata", () => {
+    expect(recordCorroboratesSelector("johnsmith2", null, "johnsmith")).toBe(false);
+    expect(recordCorroboratesSelector("xa@example.com", null, "a@example.com")).toBe(false);
+    expect(recordCorroboratesSelector("a@example.com.au", null, "a@example.com")).toBe(false);
+    expect(recordCorroboratesSelector("row", { handle: "johnsmith_alt" }, "johnsmith")).toBe(false);
+    expect(recordCorroboratesSelector("row", { record: { email: "xa@example.com" } }, "a@example.com")).toBe(false);
+  });
+
+  it("still accepts the selector as a whole token inside URLs, prose and mentions", () => {
+    expect(recordCorroboratesSelector("https://github.com/johnsmith", null, "johnsmith")).toBe(true);
+    expect(recordCorroboratesSelector("Breach exposure: a@example.com (oathnet_db)", null, "a@example.com")).toBe(true);
+    expect(recordCorroboratesSelector("seen at a@example.com.", null, "a@example.com")).toBe(true);
+    expect(recordCorroboratesSelector("mentioned @JohnSmith in a post", null, "johnsmith")).toBe(true);
+    expect(recordCorroboratesSelector("row", { record: { email: "A@Example.com" } }, "a@example.com")).toBe(true);
   });
 });
