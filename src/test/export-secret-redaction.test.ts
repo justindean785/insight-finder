@@ -71,3 +71,36 @@ describe("export wrappers apply the masking", () => {
     expect(json).toContain(SECRET_MASK);
   });
 });
+
+/**
+ * ⚠️ SCOPE PIN — what masking does NOT cover.
+ *
+ * `SECRET_KEY_RE` and the password regexes cover passwords, passcodes and
+ * hashes. Nothing else. SSNs, DOBs and partial card numbers pass through every
+ * export format untouched. Verified against a real production export
+ * (2026-09-22): a 9-digit SSN carried in an NPD breach row survived the JSON
+ * path intact while the passwords in the same document were masked.
+ *
+ * This is not asserted as desirable — it is asserted so the export LABELS stay
+ * truthful. The menu says "passwords masked" because that is what is true; if
+ * anyone widens the label to "secrets", this test must be updated in the same
+ * change, which is the point.
+ */
+describe("masking scope is passwords only — labels must not over-claim", () => {
+  it("does NOT mask an SSN, a DOB, or a partial card number", () => {
+    const row =
+      "NPD (2024) — name JANE DOE, ssn 123456789, dob 1970-02-03, cc last4 4321, password hunter2";
+    const out = redactSecretsInText(row);
+    expect(out, "password must be masked").toContain(SECRET_MASK);
+    expect(out, "SSN is NOT masked — label says passwords, not secrets").toContain("123456789");
+    expect(out, "DOB is NOT masked").toContain("1970-02-03");
+    expect(out, "partial card is NOT masked").toContain("4321");
+  });
+
+  it("deep redaction masks a password key but leaves an ssn key alone", () => {
+    const out = redactSecretsDeep({ password: "hunter2", ssn: "123456789", dob: "1970-02-03" });
+    expect(out.password).toBe(SECRET_MASK);
+    expect(out.ssn).toBe("123456789");
+    expect(out.dob).toBe("1970-02-03");
+  });
+});

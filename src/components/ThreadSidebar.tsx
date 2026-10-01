@@ -462,12 +462,10 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           aria-label="Home"
           className="flex min-w-0 items-center gap-2 rounded-lg group focus:outline-none focus:ring-2 focus:ring-primary/40"
         >
-          {/* The one saturated object in the chrome. Everything else on this
-              surface is black, glass or grey, so a single filled tile carries
-              the whole brand without competing with any evidence colour. */}
-          <div className="relative grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-[10px] bg-[linear-gradient(145deg,hsl(var(--brand)),hsl(var(--brand-deep)))] shadow-[0_0_0_1px_hsl(var(--brand)/0.45),0_6px_18px_-8px_hsl(var(--brand)/0.75)] transition-transform duration-200 group-hover:scale-[1.04]">
-            <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-1/2 bg-[linear-gradient(180deg,hsl(var(--film)/0.28),transparent)]" />
-            <SwarmMark className="relative h-4 w-4 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.4)]" />
+          {/* 3a register: a flat plate, no glow. The
+              gradient fill, bloom and specular were the chrome's last glow. */}
+          <div className="grid h-8 w-8 shrink-0 place-items-center rounded-[10px] border border-border bg-surface-3">
+            <SwarmMark glow={false} className="h-4 w-4" />
           </div>
           <div className="min-w-0">
             <div className="font-display text-sm font-semibold leading-none tracking-tight text-foreground">Insight Finder</div>

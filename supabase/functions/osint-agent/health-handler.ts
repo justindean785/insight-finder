@@ -13,6 +13,7 @@ import {
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL,
   ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY, OPENADAPTER_API_KEY, OPENADAPTER_BASE_URL,
+  lovableGateway, geminiDirectGateway, ALLOW_LOVABLE_FALLBACK,
   promptBudgetHardCeilingEnabled,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
@@ -26,7 +27,13 @@ import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-c
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
 import { recordNameQuarantineEnabled } from "./lib/record-name-quarantine.ts";
-import { geminiPreflightPivotEnabled, preflightPivotHealthDetail } from "./lib/preflight-pivot.ts";
+import {
+  deepseekPreflightAlways,
+  geminiPreflightPivotEnabled,
+  preflightPivotHealthDetail,
+  preflightPolicyHealthDetail,
+  resolveFallbackProvider,
+} from "./lib/preflight-pivot.ts";
 import { positionalPairingSelfTest } from "./message-sanitize.ts";
 import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
@@ -396,6 +403,24 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // are deliberate operator choices, and the detail names which one is in force.
   r.checks.preflight_pivot = { ok: true, detail: preflightPivotHealthDetail(geminiPreflightPivotEnabled()) };
 
+  // Does the run skip a DeepSeek preflight whose answer cannot change routing
+  // (lib/preflight-pivot.ts → shouldRunPreflight)? Pure, no network. Its PRESENCE is
+  // the behavioural proof that this build is live; the detail names the policy in force.
+  const preflightFallback = resolveFallbackProvider({
+    orchestratorProvider: ORCHESTRATOR_PROVIDER,
+    hasLovableGateway: !!lovableGateway,
+    hasGeminiDirect: !!geminiDirectGateway,
+    allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
+  });
+  r.checks.preflight_policy = {
+    ok: true,
+    detail: preflightPolicyHealthDetail(
+      preflightFallback ? { provider: preflightFallback } : null,
+      deepseekPreflightAlways(),
+      geminiPreflightPivotEnabled(),
+    ),
+  };
+
   // Is Opsis configured, switched off, or absent (lib/opsis.ts)? Presence only, no
   // network call. Its PRESENCE is the behavioural proof that the build carrying
   // the opsis_* tools is live; the detail says whether they can run.
@@ -407,6 +432,16 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // silent, so health probes never emit sanitize_positional_pair_repair. Its
   // PRESENCE proves this build is live; ok:false means the pairing rule regressed.
   r.checks.message_sanitize = positionalPairingSelfTest();
+
+  // Is `stop_reason = budget_exhausted` attributed per INVOCATION (#611)? The
+  // ceiling latch is request-owned (index.ts `budgetCeiling`, set by
+  // wrapToolsWithCache from startCall's refusal), so an overlapping run on the
+  // same thread can neither erase it nor inherit it. Pure, no network. Its
+  // PRESENCE is the behavioural proof that this build is live.
+  r.checks.stop_reason_attribution = {
+    ok: true,
+    detail: "budget_exhausted only from a ceiling refusal observed by this invocation (request-owned latch)",
+  };
 
   // Which rule marks a clustered artifact CONTRADICTED (lib/cluster.ts)? Pure. Its
   // PRESENCE proves the build with the explicit-signal rule is live.

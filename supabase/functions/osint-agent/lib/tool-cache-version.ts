@@ -20,6 +20,16 @@ export const TOOL_CACHE_VERSION: Readonly<Record<string, number>> = {
   username_sweep: 2,
   // Deprecated alias that returns the same sweepUsername() result under its own cache key.
   username_search: 2,
+  // v2 — the socialfetch host-policy + failure-taxonomy change. Three separate
+  // reinterpretations of the SAME (url) key, all of which a v1 row contradicts:
+  //   • a skipped host (youtube/roblox/steam/…) is `host_unsupported`, not a read;
+  //   • a 2xx under the 200-char floor is `empty_body`, not `ok:true` with `data`;
+  //   • a timeout / 5xx / thin body may now answer via the free jina fallback.
+  // Without the bump the wrapper serves the pre-fix row before this code runs, so
+  // a blank page keeps entering cases as page evidence for the full TTL and the
+  // deploy looks like it failed. This is the #599 lesson applied in the same PR
+  // that changes the interpretation, which is the only time it is cheap.
+  socialfetch_web_read: 2,
 };
 
 /**

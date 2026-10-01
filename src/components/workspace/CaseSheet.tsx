@@ -1,11 +1,9 @@
-import { useMemo } from "react";
 import { ArrowRight } from "lucide-react";
-import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
-import { useReviewStates } from "@/lib/review";
+import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
 import { AuthorityChip, AuthorityCaveat } from "@/components/ui/authority";
 import { AUTHORITY_LEGEND, type AuthorityState } from "@/lib/authority";
 import { isProseValue } from "@/lib/evidence-bands";
-import { buildCaseSheet, ASK_LABEL, type CaseSheetModel } from "@/lib/case-sheet";
+import { ASK_LABEL, type CaseSheetModel } from "@/lib/case-sheet";
 import { cn } from "@/lib/utils";
 
 /**
@@ -195,18 +193,6 @@ export function CaseSheetView({
 }
 
 export function CaseSheet({ threadId }: { threadId: string }) {
-  const { snapshot } = useCaseSnapshot();
-  const review = useReviewStates(threadId);
-  const items = snapshot?.items;
-  const tally = snapshot?.authority;
-  const model = useMemo(
-    () => buildCaseSheet(items ?? [], review.map, tally ?? {
-      verified: 0, infrastructure: 0, probable: 0, review: 0, weak: 0, quarantined: 0, conflict: 0, failed: 0,
-    }),
-    // `review.revision` bumps on every verdict change, including a rollback.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items, tally, review.map, review.revision],
-  );
-  return <CaseSheetView model={model} hydrated={Boolean(snapshot?.hydrated) && review.availability !== "unknown"}
-    reviewsUnavailable={review.availability === "unavailable"} />;
+  const { model, hydrated, reviewsUnavailable } = useCaseSheetModel(threadId);
+  return <CaseSheetView model={model} hydrated={hydrated} reviewsUnavailable={reviewsUnavailable} />;
 }

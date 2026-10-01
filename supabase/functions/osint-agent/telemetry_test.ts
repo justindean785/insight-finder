@@ -597,3 +597,58 @@ Deno.test("FK ordering: the step buffer is bounded and reports what it dropped",
   const stepRows = written.filter((w) => w.table === "orchestrator_step_metrics");
   assertEquals(stepRows.length, MAX_BUFFERED_STEP_ROWS, "the buffer must not grow without bound");
 });
+
+// ---- budget_exhausted reachability ----------------------------------------
+//
+// `budget_exhausted` was UNREACHABLE: deriveStopReason's only production call
+// site (telemetry.ts finish()) never passed `budgetExhausted`, so every
+// tool-calls run that neither stream-errored nor force-finalized was labelled
+// `unknown` BY CONSTRUCTION. The column named something other than what the
+// runtime observed — and "unknown" on a run that hit its own cap is the kind of
+// reading that sends the next session diagnosing the wrong thing.
+//
+// The fix is NOT to infer it from finishReason. runtime-policy now sets a flag
+// the moment a ceiling actually refuses a call, and that flag is what travels.
+
+Deno.test("deriveStopReason: tool-calls + a fired ceiling is budget_exhausted", () => {
+  assertEquals(
+    deriveStopReason({
+      hadStreamError: false,
+      finalizeStarted: false,
+      lastFinishReason: "tool-calls",
+      budgetExhausted: true,
+    }),
+    "budget_exhausted",
+  );
+});
+
+Deno.test("deriveStopReason: tool-calls WITHOUT a fired ceiling stays unknown", () => {
+  // The SDK reports "tool-calls" for the last step of every tool-using run,
+  // including runs that finalize normally. Never infer a cause from it.
+  assertEquals(
+    deriveStopReason({
+      hadStreamError: false,
+      finalizeStarted: false,
+      lastFinishReason: "tool-calls",
+      budgetExhausted: false,
+    }),
+    "unknown",
+  );
+});
+
+Deno.test("deriveStopReason: a fired ceiling never overrides a stream error or a forced finalize", () => {
+  assertEquals(
+    deriveStopReason({ hadStreamError: true, finalizeStarted: false, lastFinishReason: "tool-calls", budgetExhausted: true }),
+    "stream_error",
+  );
+  assertEquals(
+    deriveStopReason({ hadStreamError: false, finalizeStarted: true, lastFinishReason: "tool-calls", budgetExhausted: true }),
+    "finalize_forced",
+  );
+  // A clean text-only finish is a natural stop even if a ceiling fired earlier
+  // in the run — the run still ended on its own terms.
+  assertEquals(
+    deriveStopReason({ hadStreamError: false, finalizeStarted: false, lastFinishReason: "stop", budgetExhausted: true }),
+    "natural_stop",
+  );
+});

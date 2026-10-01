@@ -29,6 +29,9 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   wayback_cdx_search: 0,    // web.archive.org CDX — free, unauth
   crtsh_lookup: 0,          // crt.sh — free, unauth
   census_geocode: 0,        // US Census geocoder — free, unauth
+  youtube_oembed: 0,        // YouTube oEmbed — free, unauth
+  roblox_user: 0,           // users.roblox.com public API — free, unauth
+  steam_profile: 0,         // steamcommunity.com ?xml=1 — free, unauth
   nominatim_geocode: 0,     // OSM Nominatim — free, unauth (1 req/sec policy)
   hibp_pwned_passwords_kanon: 0, // pwnedpasswords range API — free, no key
   gleif_lei_search: 0,           // api.gleif.org LEI registry — free, no key

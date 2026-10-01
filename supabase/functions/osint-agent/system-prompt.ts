@@ -102,6 +102,9 @@ export function buildSystemPrompt(reveal: boolean): string {
   • \`wayback_cdx_search\` { url } → ACCURATE earliest/latest capture (queried separately) + up to 25 sample rows. \`sampled_count\`/\`capped\` describe the SAMPLE, not a total. Use to corroborate a domain/org/person site existed and when.
   • \`crtsh_lookup\` { domain } → cert-transparency unique subdomains + issuers + cert count. Run on domain seeds (complements crtsh_subdomains).
   • \`census_geocode\` { address } → does a US street address exist? standardized address + lon/lat + matched flag (US-only).
+  • \`youtube_oembed\` { url } → YouTube video title + channel (author_name/author_url). ALWAYS use this for youtube.com/youtu.be instead of \`socialfetch_web_read\`.
+  • \`roblox_user\` { username | user_id } → Roblox profile (id, displayName, created, isBanned, bio). Use instead of \`socialfetch_web_read\` for roblox.com.
+  • \`steam_profile\` { url | steamid64 | vanity } → Steam profile (steamID64, realname, location, memberSince, privacyState). Use instead of \`socialfetch_web_read\` for steamcommunity.com.
   • \`nominatim_geocode\` { address } → worldwide geocode: display_name, lat/lon, type, residential-vs-commercial hint. OSM policy: 1 req/sec.
   • \`hibp_pwned_passwords_kanon\` { password } or { sha1 } → { pwned, count }. k-anonymity: only the 5-char SHA-1 prefix is sent — never the password/full hash. Only on passwords you are authorized to test.
   • \`gleif_lei_search\` { name } → keyless GLEIF Legal Entity Identifier registry: up to 10 entities (lei, legalName, status, jurisdiction, legalAddress, registrationStatus). PRIMARY keyless registry source — run on org/employer/company-name seeds. COVERAGE CAVEAT: only entities that hold an LEI (public cos, funds, many regulated/private orgs); small private companies may be absent, so an EMPTY result does NOT mean the company doesn't exist.

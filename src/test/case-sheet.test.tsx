@@ -167,8 +167,8 @@ describe("case sheet — view", () => {
 
 describe("case sheet — review availability wiring", () => {
   it("passes an UNAVAILABLE review read to the view instead of treating it as loaded", () => {
-    const src = readFileSync(resolve(process.cwd(), "src/components/workspace/CaseSheet.tsx"), "utf8");
-    expect(src).toMatch(/reviewsUnavailable=\{review\.availability === "unavailable"\}/);
+    const src = readFileSync(resolve(process.cwd(), "src/hooks/useCaseSheetModel.ts"), "utf8");
+    expect(src).toMatch(/reviewsUnavailable: review\.availability === "unavailable"/);
   });
 });
 

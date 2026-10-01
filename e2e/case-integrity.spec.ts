@@ -76,7 +76,7 @@ test.describe("canonical case snapshot", () => {
     page.on("request", (r) => { if (r.method() === "POST") posts.push(r.url()); });
     await open(page, THREAD);
     await page.getByRole("button", { name: "Refresh case data" }).click();
-    await expect(page.getByRole("region", { name: "Case summary" })).toContainText(/Synced|Updated/);
+    await expect(page.getByRole("region", { name: "Case summary" })).toContainText(/Updated|Up to date/);
     expect(posts).toEqual([]);
   });
 });

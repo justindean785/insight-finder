@@ -83,7 +83,13 @@ import {
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
-import { geminiPreflightPivotEnabled, shouldPivotOnPreflight } from "./lib/preflight-pivot.ts";
+import {
+  deepseekPreflightAlways,
+  geminiPreflightPivotEnabled,
+  resolveFallbackProvider,
+  shouldPivotOnPreflight,
+  shouldRunPreflight,
+} from "./lib/preflight-pivot.ts";
 import { redactErrorMessage } from "./lib/redact-error.ts";
 import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
 
@@ -613,12 +619,18 @@ Deno.serve(async (req) => {
     // Lovable gateway only participates when the operator pinned it as primary
     // (ORCHESTRATOR_PROVIDER=lovable) or opted in via ALLOW_LOVABLE_FALLBACK.
     // Grok/xAI is never a fallback (primary pin only).
-    const fallbackTarget = lovablePinned
+    // The precedence lives in resolveFallbackProvider (lib/preflight-pivot.ts) so
+    // /health's checks.preflight_policy reports the same target routing resolves.
+    const fallbackProvider = resolveFallbackProvider({
+      orchestratorProvider: ORCHESTRATOR_PROVIDER,
+      hasLovableGateway: !!lovableGateway,
+      hasGeminiDirect: !!geminiDirectGateway,
+      allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
+    });
+    const fallbackTarget = fallbackProvider === "lovable-gateway"
       ? { gateway: lovableGateway!, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
-      : geminiDirectGateway
-      ? { gateway: geminiDirectGateway, modelId: GEMINI_FALLBACK_MODEL_ID, label: "Gemini direct fallback", provider: "gemini-direct" as const }
-      : (lovableGateway && ALLOW_LOVABLE_FALLBACK)
-      ? { gateway: lovableGateway, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
+      : fallbackProvider === "gemini-direct"
+      ? { gateway: geminiDirectGateway!, modelId: GEMINI_FALLBACK_MODEL_ID, label: "Gemini direct fallback", provider: "gemini-direct" as const }
       : null;
     // Pre-flight MiniMax health probe. The fallback selection above only fires
     // when MiniMax's key is missing or the prompt would overflow — it does NOT
@@ -690,7 +702,22 @@ Deno.serve(async (req) => {
     // id (400), or an upstream outage would previously commit the whole run to
     // DeepSeek and die mid-stream with no failover, instead of a clean pivot
     // to Gemini.
-    if (deepseekIsPrimary && !useFallback && fallbackTarget) {
+    //
+    // Skipped when no outcome can pivot (lib/preflight-pivot.ts → shouldRunPreflight):
+    // with the gemini-direct pivot disabled the probe's only output is a log line, and
+    // it sat serially on the path to the first byte (up to 2×12s + 250ms).
+    // DEEPSEEK_PREFLIGHT_ALWAYS=true restores it on every request.
+    const runDeepseekPreflight = deepseekIsPrimary && !useFallback &&
+      shouldRunPreflight(fallbackTarget, geminiPreflightPivotEnabled(), deepseekPreflightAlways());
+    if (deepseekIsPrimary && !useFallback && fallbackTarget && !runDeepseekPreflight) {
+      console.log(JSON.stringify({
+        event: "preflight_skipped",
+        thread_id: threadId,
+        fallback: fallbackTarget.provider,
+        reason: "no outcome can pivot",
+      }));
+    }
+    if (runDeepseekPreflight && fallbackTarget) {
       const DEEPSEEK_PREFLIGHT_TIMEOUT_MS = 12_000;
       const DEEPSEEK_PREFLIGHT_ATTEMPTS = 2;
       const probeDeepseekOnce = async (): Promise<{ ok: boolean; status: number }> => {
@@ -877,6 +904,9 @@ Deno.serve(async (req) => {
     // `capped` once the cap is hit; prepareStep reads it to force finalize. Owned by
     // this per-request closure so concurrent runs on a warm isolate never share it.
     const toolCallBudget = { genuine: 0, reserved: 0, capped: false };
+    // Request-owned: set by wrapToolsWithCache when a budget ceiling refuses a call
+    // in THIS invocation; read by both telemetry finish() calls for budget_exhausted.
+    const budgetCeiling = { fired: false };
     // Separate one-shot latch for the run_capped telemetry: `capped` is now flipped at
     // ADMISSION (reserveToolCall), before this prepareStep closure runs, so the old
     // `capReached && !capped` gate would never log. This latch fires the event exactly
@@ -1221,6 +1251,7 @@ Deno.serve(async (req) => {
         onCost,
         manualOverrideSelector,
         toolCallBudget,
+        budgetCeiling,
         shouldStopLiveLookups: () =>
           shouldForceFinalize(Date.now() - runStartedAt, 0),
         // See cache.ts's ctx field comment: the correlate exemption in the
@@ -1548,6 +1579,7 @@ Deno.serve(async (req) => {
           hadStreamError: true,
           creditsMicroUsd: runCostMicroUsd,
           errorMessage: msg,
+          budgetExhausted: budgetCeiling.fired,
         });
         // A terminal stream error means onFinish never fires, so without this the
         // thread row stays "active" forever (UI stuck on "running"). Write the
@@ -2045,6 +2077,7 @@ Deno.serve(async (req) => {
           hadStreamError: false,
           creditsMicroUsd: runCostMicroUsd,
           errorMessage: null,
+          budgetExhausted: budgetCeiling.fired,
         });
         heartbeat?.stop();
         releaseRunState();
