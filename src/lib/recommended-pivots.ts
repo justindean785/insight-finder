@@ -31,7 +31,12 @@ function cleanLine(line: string): string {
     .trim();
 }
 
-const EMAIL_RE = /[^\s@]+@[^\s@]+\.[^\s@]+/i;
+/**
+ * Quotes, backticks and brackets are Markdown around a selector, never part of
+ * it. `[^\s@]` used to swallow them, so "`jane@uni.example`" became a target
+ * WITH its backticks (measured 2026-10-01, spearheadlab case).
+ */
+const EMAIL_RE = /[^\s@`'"()<>[\],;]+@[^\s@`'"()<>[\],;]+\.[^\s@`'"()<>[\],;]+/i;
 const IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/;
 const USERNAME_RE = /@[a-z0-9_.-]{2,40}\b/i;
 const URL_RE = /\bhttps?:\/\/[^\s)]+/i;
@@ -116,7 +121,39 @@ function firstPlausiblePhone(label: string): string | undefined {
   return undefined;
 }
 
-function extractTarget(label: string): string {
+/**
+ * An example is not an observation. Report prose hedges with "may contain the
+ * student's university email (e.g., `jane@uni.example` or `@campus.example`)":
+ * the address is the MODEL'S GUESS at a format. Parsed as a selector it became a
+ * HIGH-priority "email" card with a Run button (measured 2026-10-01) — a breach
+ * lookup on an address nobody observed, about a private person.
+ *
+ * So identifiers are never taken from an example clause: a parenthetical that
+ * carries an example marker is dropped whole, and an unbracketed one is dropped
+ * up to the next clause break. "i.e." is deliberately NOT a marker — it restates
+ * the thing itself rather than offering a sample of it.
+ */
+const EXAMPLE_PAREN_RE = /\([^()]*\b(?:e\.\s?g\.|eg\.|for example|for instance|such as)[^()]*\)/gi;
+const EXAMPLE_CLAUSE_RE = /\b(?:e\.\s?g\.|eg\.|for example|for instance|such as)[^;—–)]*/gi;
+
+function withoutExamples(label: string): string {
+  return label.replace(EXAMPLE_PAREN_RE, " ").replace(EXAMPLE_CLAUSE_RE, " ");
+}
+
+/**
+ * The first domain that is a domain, not the host of a scheme-less URL. In
+ * "`repo.example.edu/pub/2025/1234/...`" the subject is a PAGE; offering
+ * "Review domain footprint repo.example.edu" pivots onto whoever hosts it.
+ */
+function firstBareDomain(label: string): string | undefined {
+  for (const match of label.matchAll(new RegExp(DOMAIN_RE.source, "gi"))) {
+    if (label[(match.index ?? 0) + match[0].length] !== "/") return match[0];
+  }
+  return undefined;
+}
+
+function extractTarget(rawLabel: string): string {
+  const label = withoutExamples(rawLabel);
   const directIdentifier =
     label.match(EMAIL_RE)?.[0] ??
     label.match(IPV4_RE)?.[0] ??
@@ -125,7 +162,7 @@ function extractTarget(label: string): string {
     firstPlausiblePhone(label) ??
     label.match(STREET_RE)?.[0] ??
     label.match(WALLET_RE)?.[0] ??
-    label.match(DOMAIN_RE)?.[0];
+    firstBareDomain(label);
   if (directIdentifier) return stripTrailingPunctuation(directIdentifier);
 
   // The line names its own selector class — take the token after it, but only
@@ -208,7 +245,9 @@ function splitReason(label: string): { title: string; reason: string } {
 
 function actionLabelForRecommendation(label: string, value: string, type: PivotType): string {
   if (COLLISION_RE.test(label)) return "Review excluded collision";
-  if (type === "email") return "Verify email ownership";
+  // "Investigate", not "Verify … ownership": the run is a lookup (breach,
+  // profile, provider) and none of those proves who owns the address.
+  if (type === "email") return "Investigate email";
   if (type === "phone") return "Check phone association";
   if (isAddressLike(value, label)) return "Corroborate address";
   if (type === "domain" || type === "url") return "Review domain footprint";
