@@ -132,7 +132,9 @@ function priorityForFinding(type: PivotType, confidence: number): PivotPriority 
 /** Action headline for an artifact-derived finding, matching the former ChatWindow fallback. */
 function actionLabelForFinding(type: PivotType): string {
   switch (type) {
-    case "email": return "Verify email ownership";
+    // Same wording as a report recommendation (recommended-pivots.ts): the run
+    // is a lookup, and no lookup proves who owns an address.
+    case "email": return "Investigate email";
     case "phone": return "Check phone association";
     case "domain":
     case "url": return "Review domain footprint";
