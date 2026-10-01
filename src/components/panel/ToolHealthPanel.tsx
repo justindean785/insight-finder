@@ -116,7 +116,16 @@ export function ToolHealthPanel({ threadId }: { threadId: string }) {
 
   const degraded = sum(totals, ["timeout", "rate_limited", "http_denied", "blocked"]);
   const skipped = sum(totals, ["skipped", "cancelled"]);
-  const attentionCount = sum(totals, ["config_error", "failed", "unknown"]);
+  // CALLS whose category is a hard fault. Deliberately NOT the same number as
+  // the "Needs attention" section below, which counts TOOLS and also escalates
+  // on repetition (REPEAT_FAILURE_FLOOR) — a tool denied 3× has zero faulted
+  // calls and still belongs in that list. Both numbers were previously labelled
+  // "Needs attention", so a case with 3 rapidapi 403s rendered a "0" tile
+  // directly above a red "Needs attention (1)" card. They answer different
+  // questions; they now say which. Keep this one a member of the five-tile
+  // partition (success + empty + skipped + degraded + faulted == totals.total)
+  // — swapping in the tool count silently breaks that sum.
+  const faultedCalls = sum(totals, ["config_error", "failed", "unknown"]);
 
   return (
     <div className="p-3 space-y-3">
@@ -125,13 +134,23 @@ export function ToolHealthPanel({ threadId }: { threadId: string }) {
         <StatCount icon={MinusCircle} label="No record" value={totals.empty} tone="empty" hint="Ran fine, target has no data (expected)" />
         <StatCount icon={CircleSlash} label="Skipped" value={skipped} tone="skipped" hint="Governance / dedup / cancelled — intentionally not run" />
         <StatCount icon={Clock} label="Degraded" value={degraded} tone="degraded" hint="Timed out / rate-limited / denied / blocked — transient, not breakage" />
-        <StatCount icon={ShieldAlert} label="Needs attention" value={attentionCount} tone="failed" hint="Config/key errors, genuine provider faults, or opaque unknowns" />
+        <StatCount
+          icon={ShieldAlert}
+          label="Faulted"
+          value={faultedCalls}
+          tone="failed"
+          hint={
+            "Calls that hit a config/key error, a genuine provider fault, or an opaque unknown. " +
+            "Tools to act on are listed under Needs attention below — a tool can need attention " +
+            "with zero faulted calls (e.g. denied every time)."
+          }
+        />
       </div>
 
       {attention.length > 0 && (
         <div className="space-y-1.5">
           <div className="text-micro font-semibold tracking-normal text-destructive/80 flex items-center gap-1.5">
-            <XCircle className="h-3 w-3" /> Needs attention ({attention.length}) — config or provider faults
+            <XCircle className="h-3 w-3" /> Needs attention ({attention.length}) — faults, or tried repeatedly with nothing back
           </div>
           {attention.map((r) => <HealthRow key={`att-${r.toolName}`} row={r} />)}
         </div>

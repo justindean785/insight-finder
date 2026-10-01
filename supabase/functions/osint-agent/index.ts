@@ -83,6 +83,9 @@ import {
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
+import { geminiPreflightPivotEnabled, shouldPivotOnPreflight } from "./lib/preflight-pivot.ts";
+import { redactErrorMessage } from "./lib/redact-error.ts";
+import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
 // Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
@@ -729,11 +732,22 @@ Deno.serve(async (req) => {
       // Explicit HTTP failure (status >= 400, incl. an invalid/renamed model id
       // → 400/404) pivots the run; a bare timeout (status 0) does not — same
       // ambiguity policy as the MiniMax preflight.
-      if (!lastDeepseekProbe.ok && lastDeepseekProbe.status >= 400) {
+      // …and a pivot to gemini-direct additionally needs GEMINI_PREFLIGHT_PIVOT_ENABLED:
+      // it finished 0 of 16 runs, so pivoting turned a preflight error into a dead run
+      // (lib/preflight-pivot.ts). Without it the run keeps DeepSeek.
+      if (shouldPivotOnPreflight(lastDeepseekProbe, fallbackTarget, geminiPreflightPivotEnabled())) {
         useFallback = true;
         console.warn(
-          `[orchestrator] deepseek preflight failed after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts (status=${lastDeepseekProbe.status}) → Gemini fallback for thread ${threadId}`,
+          `[orchestrator] deepseek preflight failed after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts (status=${lastDeepseekProbe.status}) → ${fallbackTarget.label} for thread ${threadId}`,
         );
+      } else if (!lastDeepseekProbe.ok && lastDeepseekProbe.status >= 400) {
+        console.warn(JSON.stringify({
+          event: "preflight_pivot_suppressed",
+          thread_id: threadId,
+          status: lastDeepseekProbe.status,
+          fallback: fallbackTarget.provider,
+          reason: "gemini-direct pivot disabled; keeping DeepSeek primary",
+        }));
       } else if (!lastDeepseekProbe.ok) {
         console.info(
           `[orchestrator] deepseek preflight ambiguous (status=${lastDeepseekProbe.status}) after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts — keeping DeepSeek primary for thread ${threadId}`,
@@ -1522,7 +1536,9 @@ Deno.serve(async (req) => {
             // never let the (now correctly-false) overflow flag mask it.
             message_schema_invalid: isSchemaError,
             error_name: errName,
-            message: msg.slice(0, 600),
+            // Redacted: a provider error can echo our key, and this line is kept in
+            // the edge logs (lib/redact-error.ts).
+            message: redactErrorMessage(msg).slice(0, 600),
           }),
         );
         invocationTelemetry.finish({
@@ -1987,7 +2003,10 @@ Deno.serve(async (req) => {
               record_artifact_calls: recordCalls,
               tool_calls: toolCalls,
               in_memory_artifacts: routingGuard.artifactsTotal,
-              seed: seedValueRaw.slice(0, 120),
+              // The seed's KIND and length, never its text: this is a log line, and the
+              // seed is a person's selector. thread_id recovers it from the DB.
+              seed_kind: detectSeedServer(seedValueRaw)?.kind ?? "unknown",
+              seed_chars: seedValueRaw.length,
               // ran lookups but never recorded → almost certainly the record gap,
               // not a genuinely empty case.
               findings_likely: toolCalls > 3 && recordCalls === 0,
@@ -2077,12 +2096,7 @@ Deno.serve(async (req) => {
         }
         const friendly = classifyStreamProviderError(m, name);
         if (friendly) return friendly;
-        const redacted = m
-          .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-          .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
-          .replace(/xai-[A-Za-z0-9._-]+/g, "xai-[REDACTED]")
-          .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
-        return redacted.slice(0, 300) || "Provider stream error";
+        return redactErrorMessage(m).slice(0, 300) || "Provider stream error";
       },
       onFinish: persistFinalMessages,
     });
@@ -2091,12 +2105,8 @@ Deno.serve(async (req) => {
     releaseRunState();
     // setupRequest throws Response objects for 401/403/400 — return them directly
     if (e instanceof Response) return e;
-    console.error("osint-agent error", e);
-    const message = e instanceof Error ? e.message : String(e);
-    return new Response(JSON.stringify({ error: "Internal Server Error", code: "ORCHESTRATOR_FAULT", detail: message }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    // Redacted before it is logged or returned (lib/orchestrator-fault.ts).
+    return orchestratorFaultResponse(e, corsHeaders);
   }
 
 });
