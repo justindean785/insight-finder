@@ -224,9 +224,24 @@ export function isVerifiedSelfAdmission(a: Artifact): boolean {
   const signal = !!selfAdmissionQuote(a) || !!ownershipProof(a) || /=\s*same/i.test(a.value);
   return signal && !isLlmAssertedUnverified(a);
 }
+/** An EXPLICIT contradiction signal only: the collision detector's `contradiction`
+ *  row (which carries `collision_value`), `contradiction: true`, or a model-written
+ *  `status: "contradicted"`. NOT `status: "needs_review"`: the model stamps that on
+ *  every unverified row, and reading it as a contradiction capped 1,348 of 1,528 such
+ *  rows at <=40 and cut them off from the subject (measured 2026-09-24, against 155
+ *  real contradiction rows). Unverified is not contradicted. */
 function isContradictionArtifact(a: Artifact): boolean {
-  return a.kind === "contradiction" || /"status"\s*:\s*"needs_review"/i.test(a.metaRaw) ||
-    metaBoolTrue(a.metaRaw, "contradiction");
+  return a.kind === "contradiction" || metaBoolTrue(a.metaRaw, "contradiction") ||
+    !!metaStr(a.metaRaw, "collision_value") || /"status"\s*:\s*"contradicted"/i.test(a.metaRaw) ||
+    (legacyNeedsReviewContradiction() && /"status"\s*:\s*"needs_review"/i.test(a.metaRaw));
+}
+
+/** Kill switch, read at CALL TIME: `CLUSTER_LEGACY_NEEDS_REVIEW_CONTRADICTION=true`
+ *  restores the old rule (needs_review ⇒ contradicted) on the running build. */
+export function legacyNeedsReviewContradiction(
+  env: (k: string) => string | undefined = (k) => Deno.env.get(k),
+): boolean {
+  return (env("CLUSTER_LEGACY_NEEDS_REVIEW_CONTRADICTION") ?? "").trim().toLowerCase() === "true";
 }
 /** The selector a contradiction artifact is about (e.g. hamzashakoor@gmail.com). */
 function contradictedSelector(a: Artifact): string | null {
@@ -419,9 +434,13 @@ export function clusterArtifacts(arts: Artifact[]): ClusterResult {
 
   // Group contradicted-by-same-selector artifacts into one needs_review cluster each.
   const contradictedGroup = new Map<string, number>(); // selector → representative index
+  // Identity of each contradicted member's GROUP, for its cluster id (see below).
+  const contraKey: Array<string | null> = arts.map(() => null);
   for (let i = 0; i < arts.length; i++) {
     if (!memberContradicted[i] || isExcluded(arts[i])) continue;
-    const sel = normEmail(arts[i].value) ?? contradictedSelector(arts[i]) ?? `idx${i}`;
+    const found = normEmail(arts[i].value) ?? contradictedSelector(arts[i]);
+    const sel = found ?? `idx${i}`;
+    contraKey[i] = found ? `sel:${found}` : `id:${arts[i].id ?? i}`;
     if (!contradictedGroup.has(sel)) contradictedGroup.set(sel, i);
     else uf.union(i, contradictedGroup.get(sel)!);
   }
@@ -442,7 +461,14 @@ export function clusterArtifacts(arts: Artifact[]): ClusterResult {
   const subjects: ClusterResult["subjects"] = [];
   for (const [root, idxs] of byRoot) {
     const selectors = [...new Set(idxs.flatMap((i) => tokensPer[i]))].sort();
-    const hash = stableHash(selectors.join("|") || `root${root}`);
+    // A JOINED cluster's selector set is unique: any shared token would have unioned
+    // the two. Contradicted groups are never unioned on tokens, so two of them can
+    // carry the same set; hashing that set gave twenty unrelated singletons one
+    // `clus_…`. Key a contradicted cluster by its group identity instead.
+    const contraKeys = [...new Set(idxs.map((i) => contraKey[i]).filter((k): k is string => !!k))].sort();
+    const hash = contraKeys.length
+      ? stableHash(`contra|${contraKeys.join("|")}`)
+      : stableHash(selectors.join("|") || `root${root}`);
     const subjectId = `subj_${hash}`, clusterId = `clus_${hash}`;
     const clusterArts = idxs.map((i) => arts[i]);
     const isContra = idxs.some((i) => memberContradicted[i]);

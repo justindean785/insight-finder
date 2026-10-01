@@ -24,6 +24,12 @@ type SupabaseClient = ReturnType<typeof createClient>;
 const REJECTED_EMAIL = "Wrong.Person@Example.test";
 const CLEAN_EMAIL = "real@example.test";
 const REJECTED_HANDLE = "jordan.vale";
+// Platform account ids. These exist because `steam_profile { steamid64 }` and
+// `roblox_user { user_id }` name their selector with fields the central
+// detector did not recognize, which produced an EMPTY selector — and an empty
+// selector fails open at every one of these checks (pinned two tests below).
+const REJECTED_STEAMID = "76561197960287930";
+const REJECTED_ROBLOX_ID = "12345";
 
 function makeChain(resolveValue: { data: unknown; error: unknown }): Record<string, unknown> {
   const node: Record<string, unknown> = {};
@@ -43,10 +49,14 @@ function fakeSupabase(opts?: { reviewsError?: boolean; reviewRows?: Array<Record
     { id: "a1", kind: "email", value: REJECTED_EMAIL, confidence: 70, source: "hibp", metadata: {} },
     { id: "a2", kind: "email", value: CLEAN_EMAIL, confidence: 90, source: "hibp", metadata: {} },
     { id: "a3", kind: "handle", value: REJECTED_HANDLE, confidence: 60, source: "sherlock", metadata: {} },
+    { id: "a4", kind: "account_id", value: REJECTED_STEAMID, confidence: 55, source: "steam", metadata: {} },
+    { id: "a5", kind: "account_id", value: REJECTED_ROBLOX_ID, confidence: 55, source: "roblox", metadata: {} },
   ];
   const reviewRows = opts?.reviewRows ?? [
     { artifact_id: "a1", state: "dismissed", note: null },
     { artifact_id: "a3", state: "wrong", note: null },
+    { artifact_id: "a4", state: "dismissed", note: null },
+    { artifact_id: "a5", state: "wrong", note: null },
   ];
   const inert = makeChain({ data: [], error: null });
   inert.insert = () => Promise.resolve({ error: null });
@@ -247,4 +257,62 @@ Deno.test("`force` cannot override a mid-run rejection on the next dispatch", as
   const out = await bc.execute({ type: "email", value: REJECTED_EMAIL, force: true }, {});
   assertEquals(calls.n, 1, "force must not override the analyst");
   assertEquals((out as Record<string, unknown>).refused_by, REJECTED_DISPATCH_REFUSAL_MARKER);
+});
+
+// ── the selector-field gap (Codex review, 2026-10-01) ─────────────────────────
+// A tool that invents a parameter name is not merely uncached, it is UNGOVERNED:
+// `detectSelectorType`/`detectSelectorValue` recognized only a fixed set of
+// field names, so `steam_profile { vanity | steamid64 }` and
+// `roblox_user { user_id }` produced selector `""` — and the test above pins
+// that an empty selector FAILS OPEN. The rejection check, the `subject_unlinked`
+// quarantine check and the `unproven_linkage` taint all silently matched
+// nothing. These drive the real wrapper, so they fail against the pre-fix
+// detector.
+
+Deno.test("⛔ a rejected handle is still refused when it arrives as `vanity`", async () => {
+  // `vanity` is a username in everything but spelling — a Steam /id/<name>
+  // segment. Without the alias an analyst could reject a handle and the planner
+  // could still read that same handle's profile at full subject authority.
+  const calls = { n: 0 };
+  const tools = wrap(calls);
+  const out = await (tools.breach_check as Exec).execute({ vanity: "@Jordan.Vale" }, {});
+  assertEquals(calls.n, 0, "the tool body must not run");
+  assertEquals((out as Record<string, unknown>).refused_by, REJECTED_DISPATCH_REFUSAL_MARKER);
+});
+
+Deno.test("⛔ a rejected platform account id is refused as `steamid64` and as `user_id`", async () => {
+  const calls = { n: 0 };
+  const tools = wrap(calls);
+  await (tools.breach_check as Exec).execute({ steamid64: REJECTED_STEAMID }, {});
+  // Numeric, as the roblox_user schema accepts (z.union([string, number])) —
+  // the detector must stringify rather than drop it.
+  await (tools.breach_check as Exec).execute({ user_id: Number(REJECTED_ROBLOX_ID) }, {});
+  assertEquals(calls.n, 0, "neither id form may reach the tool");
+});
+
+Deno.test("an account id the analyst never rejected still dispatches", async () => {
+  // The control: the fix must not refuse everything that carries one of the new
+  // fields — only the selector the analyst actually ruled out.
+  const calls = { n: 0 };
+  const tools = wrap(calls);
+  const out = await (tools.breach_check as Exec).execute({ steamid64: "76561197960000000" }, {}) as Record<string, unknown>;
+  assertEquals(calls.n, 1);
+  assertEquals(out.refused_by, undefined);
+});
+
+Deno.test("an account id is NOT folded into the username namespace", async () => {
+  // `normalizeTarget` collapses non-alphanumerics, so distinct selector kinds
+  // can normalize equal — which is why `lib/dispatch-quarantine.ts` keys by
+  // type AND value. Mapping a numeric id to `username` would let an unrelated
+  // handle of the same digits refuse it, or vice versa.
+  const keys = buildRejectedDispatchKeys(
+    [{ id: "a4", kind: "account_id", value: REJECTED_STEAMID }],
+    circuit.normalizeSelector,
+  );
+  assertEquals(isRejectedDispatch(keys, ["account_id"], REJECTED_STEAMID), "account_id");
+  assertEquals(
+    isRejectedDispatch(keys, ["username"], REJECTED_STEAMID),
+    null,
+    "a USERNAME spelled with the same digits is a different selector",
+  );
 });

@@ -127,17 +127,21 @@ export function PivotPreview({
  * would hide that the generator produced something malformed — but inert.
  */
 export function RepairNotice({ action, target, problems }: { action: string; target: string; problems: string[] }) {
+  // Two columns: the wrench hangs in the first, centred on the title line, and
+  // every line of text shares the second, so the target and the reason sit
+  // under the title rather than under the icon. Detail rhythm (mt-1) matches the
+  // runnable rows beside it.
   return (
-    <div className="min-w-0 flex-1" data-suggestion-state="needs-repair">
+    <div className="grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2" data-suggestion-state="needs-repair">
+      <Wrench className="h-3.5 w-3.5 self-center text-muted-foreground" aria-hidden />
       <div className="flex min-w-0 items-center gap-2">
-        <Wrench className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
         <span className="text-[14px] font-medium text-foreground/85">Suggestion needs repair</span>
         <span className="truncate text-[13px] text-muted-foreground">· {action}</span>
       </div>
       {target && (
-        <p className="mt-0.5 truncate font-mono text-[12px] text-muted-foreground" title={target}>{target}</p>
+        <p className="col-start-2 mt-1 truncate font-mono text-[12px] text-muted-foreground" title={target}>{target}</p>
       )}
-      <p className="mt-0.5 text-[13px] leading-snug text-muted-foreground">
+      <p className="col-start-2 mt-1 text-[13px] leading-snug text-muted-foreground">
         Not runnable: {problems.join("; ")}.
       </p>
     </div>

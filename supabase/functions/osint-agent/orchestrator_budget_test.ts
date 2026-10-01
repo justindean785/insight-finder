@@ -66,7 +66,14 @@ Deno.test("capTotalToBudget: old tool results are forwarded BY REFERENCE, not ra
   assertEquals(typeof val, "string", "elided output value should be a reference string");
   const s = String(val);
   assertStringIncludes(s, "tool_0", "reference must name the source tool");
-  assertStringIncludes(s, "memory_recall", "reference must point at the retrieval path");
+  // 2026-09-22: this used to assert the reference names `memory_recall` as "the
+  // retrieval path". It is not a retrieval path — memory_recall reads only
+  // agent_memory, and no tool reads tool_call_cache — so the assertion was
+  // pinning a promise the system cannot keep. Pin its ABSENCE instead.
+  assert(
+    !s.includes("memory_recall"),
+    "pass-1 reference must NOT promise a memory_recall retrieval that does not exist",
+  );
   assert(!s.includes("xxxxxxxxxx"), "raw payload must NOT survive in an elided result");
   // Discriminator preserved so the AI SDK schema still validates.
   assertEquals(oldest.content[0].output.type, "json");
@@ -105,11 +112,20 @@ Deno.test("capTotalToBudget: also caps huge latest user paste", () => {
   assert(approxMsgChars(capped) <= 30_000, "user paste must not bypass the total budget");
 });
 
-Deno.test("elidedToolResultRef: names tool, size and retrieval path", () => {
+Deno.test("elidedToolResultRef: names tool and size, and promises NO retrieval", () => {
   const ref = elidedToolResultRef("gemini_deep_dork", "y".repeat(1234));
   assertStringIncludes(ref, "gemini_deep_dork");
   assertStringIncludes(ref, "1234");
-  assertStringIncludes(ref, "memory_recall");
+  // NEGATIVE CONTROL for the 2026-09-22 fix. This assertion was
+  // `assertStringIncludes(ref, "memory_recall")`. That named a retrieval path
+  // the product does not have: memory_recall queries only `agent_memory`
+  // (tool-registry.ts) and nothing in the registry reads `tool_call_cache`, so
+  // the model was told to fetch data it can never reach. Fails on any build
+  // that re-adds the promise.
+  assert(
+    !ref.includes("memory_recall"),
+    "must not advertise memory_recall — it cannot return a raw tool result",
+  );
   // A missing/blank tool name degrades to a generic label, never throws.
   assertStringIncludes(elidedToolResultRef(undefined, { a: 1 }), "tool");
 });
@@ -284,4 +300,207 @@ Deno.test("reportBudgetCeiling: reports the overage rather than letting it pass 
   const out = capTotalToBudget(many, tiny, RECENT_WINDOW);
   const over = reportBudgetCeiling(out, tiny, "test");
   assert(over > 0, "an unmeetable ceiling is reported, not hidden");
+});
+
+// ---- 2026-09-22: pass 2 must not destroy UNCONSUMED evidence ----------------
+//
+// #604 made the char budget a hard ceiling by letting elision continue into the
+// protected recent window. That window's last message, in `prepareStep`, is the
+// tool result of the call that JUST completed — the model has not read it yet.
+// Replacing it with a bare reference destroyed evidence the run still needed,
+// and the reference named a `memory_recall` retrieval path that does not exist,
+// so nothing was recoverable. Pass 2 now SUMMARIZES, preserving pivot selectors.
+//
+// Every test below is a negative control: each one fails against the pass-2
+// implementation that shipped in #604.
+
+/** A fresh tool result carrying pivot selectors inside a large payload. */
+function freshResultMessage(id: string, selectors: string[], padChars: number): ModelMessage {
+  return {
+    role: "tool",
+    content: selectors.map((sel, i) => ({
+      type: "tool-result",
+      toolCallId: `${id}_${i}`,
+      toolName: "breach_check",
+      output: {
+        type: "json",
+        value: { hit: sel, note: "z".repeat(padChars), source: `https://example-${i}.test/report` },
+      },
+    })),
+  } as unknown as ModelMessage;
+}
+
+/**
+ * An assistant tool-CALL message. Its `input` is NON-ELIDABLE — neither pass
+ * touches `tool-call` parts, and nothing else in the pipeline trims them — so a
+ * long enough run of these is a hard floor under the prompt size. This is the
+ * real production trigger for pass 2, not an exotic fan-out.
+ */
+function toolCallMessage(i: number, inputChars: number): ModelMessage {
+  return {
+    role: "assistant",
+    content: [{
+      type: "tool-call",
+      toolCallId: `call_${i}`,
+      toolName: "username_sweep",
+      input: { query: "q".repeat(inputChars) },
+    }],
+  } as unknown as ModelMessage;
+}
+
+/** Collect every tool-result value in a message as a string. */
+function resultValues(m: ModelMessage): string[] {
+  const parts = (m as unknown as { content: Array<{ type: string; output?: { value: unknown } }> }).content;
+  return parts
+    .filter((p) => p.type === "tool-result")
+    .map((p) => (typeof p.output?.value === "string" ? p.output.value : JSON.stringify(p.output?.value)));
+}
+
+Deno.test("pass 2: the newest unconsumed result keeps its pivot selectors", () => {
+  // Production-shaped: a long run whose tool-call INPUTS alone blow the budget,
+  // then a just-completed fan-out the model has not read.
+  const selectors = ["victim@example.com", "https://leak.example.test/dump", "203.0.113.42"];
+  const msgs: ModelMessage[] = [
+    ...Array.from({ length: 130 }, (_, i) => toolCallMessage(i, 2000)),
+    freshResultMessage("fresh", selectors, 12_000),
+  ];
+  const out = capTotalToBudget(msgs, 220_000, 10);
+
+  const newest = resultValues(out[out.length - 1]).join("\n");
+  for (const sel of selectors) {
+    assertStringIncludes(
+      newest, sel,
+      `pass 2 destroyed pivot selector ${sel} from a result the model had not read`,
+    );
+  }
+  // And this IS compaction, not a no-op. Note the summary deliberately keeps a
+  // HEAD SNIPPET of the raw payload, so asserting the absence of padding would
+  // be wrong; assert the size drop instead. 3 parts x ~12k originally.
+  assert(
+    newest.length < 6000,
+    `tail should be compacted, not passed through (got ${newest.length} chars)`,
+  );
+});
+
+Deno.test("pass 2: does not promise a retrieval path that does not exist", () => {
+  const msgs: ModelMessage[] = [
+    ...Array.from({ length: 130 }, (_, i) => toolCallMessage(i, 2000)),
+    freshResultMessage("fresh", ["someone@example.com"], 12_000),
+  ];
+  const out = capTotalToBudget(msgs, 220_000, 10);
+  const newest = resultValues(out[out.length - 1]).join("\n");
+  assert(
+    !newest.includes("memory_recall"),
+    "compacted tail must not tell the model to retrieve via memory_recall",
+  );
+});
+
+Deno.test("pass 2: one oversized result does not take its fan-out siblings with it", () => {
+  // Eight sibling results in ONE message. Compacting a couple is enough to get
+  // under budget, so the rest must survive verbatim. The shipped #604 pass 2
+  // wiped every part of a message in a single call, with the budget checked only
+  // once per MESSAGE — so all eight were collateral.
+  const msgs: ModelMessage[] = [
+    ...Array.from({ length: 40 }, (_, i) => toolCallMessage(i, 2000)),
+    freshResultMessage("fan", Array.from({ length: 8 }, (_, i) => `hit${i}@example.com`), 9000),
+  ];
+  const out = capTotalToBudget(msgs, 120_000, 10);
+
+  const vals = resultValues(out[out.length - 1]);
+  const untouched = vals.filter((v) => v.includes("z".repeat(500))).length;
+  assert(
+    untouched > 0,
+    `every sibling in the fan-out was compacted; at least one should survive verbatim (${vals.length} parts)`,
+  );
+  assert(approxMsgChars(out) <= 120_000, "and the array must still be under budget");
+});
+
+Deno.test("pass 1 still elides by reference — the two passes stay different", () => {
+  // Guard against 'simplifying' the two passes back into one shared helper.
+  const msgs: ModelMessage[] = Array.from({ length: 40 }, (_, i) => bigToolMessage(i, 5000));
+  const out = capTotalToBudget(msgs, 80_000, 10);
+  const oldest = resultValues(out[0]).join("");
+  assertStringIncludes(oldest, "dropped from this transcript", "pass 1 must still use a bare reference");
+});
+
+Deno.test("capTotalToBudget: pass 2 does not mutate the caller's array", () => {
+  // `out` holds SHALLOW message copies, so a naive in-place part edit would
+  // reach back into the input the caller still holds.
+  const msgs: ModelMessage[] = [
+    ...Array.from({ length: 130 }, (_, i) => toolCallMessage(i, 2000)),
+    freshResultMessage("fresh", ["keep@example.com"], 12_000),
+  ];
+  const before = JSON.stringify(msgs[msgs.length - 1]);
+  capTotalToBudget(msgs, 220_000, 10);
+  assertEquals(
+    JSON.stringify(msgs[msgs.length - 1]), before,
+    "input message must be unchanged after capTotalToBudget",
+  );
+});
+
+// ---- 2026-09-22: the ceiling must measure the FINAL outbound array ----------
+//
+// #604 added reportBudgetCeiling but called it BEFORE sanitizeModelMessages and
+// capToolResultOutputs at both index.ts call sites, while the array actually
+// handed to streamText is the one those two produce. Both can ADD chars, so
+// `prompt_budget_ceiling_unmet` described an array that is never sent — an
+// instrument reporting something other than what it observed, which is the
+// failure mode this repo keeps hitting.
+
+Deno.test("premise: sanitizeModelMessages GROWS an array with an unpaired tool-call", async () => {
+  const { sanitizeModelMessages } = await import("./message-sanitize.ts");
+  // An assistant tool-call with no matching tool-result. Pass 3 synthesizes a
+  // placeholder tool message for it — a whole new message, appended.
+  const msgs = [
+    { role: "user", content: [{ type: "text", text: "go" }] },
+    {
+      role: "assistant",
+      content: [{ type: "tool-call", toolCallId: "orphan_1", toolName: "breach_check", input: { q: "x" } }],
+    },
+  ] as unknown as ModelMessage[];
+
+  const before = approxMsgChars(msgs);
+  const after = approxMsgChars(sanitizeModelMessages(msgs));
+  assert(
+    after > before,
+    `sanitize must be able to grow the array (before ${before}, after ${after}) — ` +
+      "this is why the ceiling cannot be measured before it",
+  );
+});
+
+Deno.test("wiring: reportBudgetCeiling is called AFTER sanitize at BOTH index.ts call sites", async () => {
+  // Source-level wiring check, in the reviews_wiring_test.ts idiom: the defect is
+  // an ORDER of statements, which no pure-function test can observe. Requires
+  // --allow-read (already in the documented test:edge command).
+  const src = await Deno.readTextFile(new URL("./index.ts", import.meta.url));
+
+  // --- initial prompt ---
+  const initialSanitize = src.indexOf("trimmedMessages = sanitizeModelMessages(");
+  const initialReport = src.indexOf('reportBudgetCeiling(trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, "initial")');
+  assert(initialSanitize > 0, "initial-prompt sanitize call site not found — test needs updating");
+  assert(initialReport > 0, "initial-prompt reportBudgetCeiling call site not found");
+  assert(
+    initialReport > initialSanitize,
+    "initial: reportBudgetCeiling must run AFTER sanitizeModelMessages, or it measures " +
+      "an array that is never sent",
+  );
+
+  // --- prepareStep ---
+  const stepSanitize = src.indexOf("const stepMessagesOut = sanitizeModelMessages(");
+  const stepReport = src.indexOf('reportBudgetCeiling(stepMessagesOut, TOTAL_PROMPT_CHAR_BUDGET, "prepare_step")');
+  assert(stepSanitize > 0, "prepare_step sanitize call site not found — test needs updating");
+  assert(
+    stepReport > 0,
+    "prepare_step must report on stepMessagesOut (the array it sends), not on `budgeted`",
+  );
+  assert(
+    stepReport > stepSanitize,
+    "prepare_step: reportBudgetCeiling must run AFTER sanitizeModelMessages",
+  );
+
+  // And the pre-sanitize array must not be what gets measured.
+  assert(
+    !src.includes("reportBudgetCeiling(budgeted,"),
+    "reportBudgetCeiling must not measure `budgeted` — that is the pre-sanitize array",
+  );
 });
