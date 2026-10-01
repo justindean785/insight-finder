@@ -161,6 +161,11 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // asserted in tool_timeout_contract_test.ts. At the old 30s the wrapper fired
   // first and Serus kept polling unsupervised.
   serus_darkweb_scan: 45_000,
+  // Opsis polls to an internal 25s deadline (lib/opsis.ts OPSIS_POLL_DEADLINE_MS);
+  // the cap sits above it so the INTERNAL bound fires and returns partial results
+  // with a run_id, rather than the wrapper discarding a paid run.
+  opsis_search: 30_000,
+  opsis_results: 30_000,
   // minimax_correlate is the correlation engine — it sends the whole artifact batch
   // (up to 200 entries / 16k chars) to the smart-tier model for a 1500-token JSON
   // clustering+rescoring response. The 2026-07-08 pipeline audit caught it timing out
@@ -457,6 +462,10 @@ export function isCacheableToolResult(result: unknown): boolean {
     typeof r.ok !== "boolean" && typeof r.error !== "string"
   ) return false;
   if (isIntentionalSkip(r) || r.provider_unavailable === true) return false;
+  // A result that says it is PARTIAL (a provider run still in progress, e.g.
+  // opsis_search at its deadline) is a snapshot, not an answer. Replaying it for
+  // the TTL would hand back the snapshot instead of the finished run.
+  if (r.partial === true) return false;
   if (typeof r.ok === "boolean") return r.ok;
   if (typeof r.error === "string" && r.error.length > 0) return false;
   return true;

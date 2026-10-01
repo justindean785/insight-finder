@@ -1181,6 +1181,58 @@ export function extractFindings(
     }
   }
 
+  // 12b) opsis_search / opsis_results (lib/opsis.ts) — third-party account
+  //      enumeration across ~700 platforms. Treated exactly like a sweep, because
+  //      it IS one: a hit says a string is registered somewhere, nothing about who
+  //      owns it. Same collapse rule, same raw confidence, no new source class.
+  //
+  //      Deliberate choices, each an integrity decision rather than a style one:
+  //      - ONLY a completed run persists. A partial run's hits reach the model in
+  //        the tool result, and the run is finished with opsis_results; persisting
+  //        both would put two footprint rows on one selector.
+  //      - Opsis's own 0–1 `opsis_confidence` and its `module` are NOT carried
+  //        into confidence or into metadata.source — they are a vendor's module
+  //        score, not our evidence grade.
+  //      - Platform names go under `opsis_platforms`, never `platform`: metadata
+  //        `platform` is scanned for breach vocabulary (`last.fm` matches).
+  if ((toolName === "opsis_search" || toolName === "opsis_results") &&
+      o.source === "opsis" && o.complete === true && Array.isArray(o.results)) {
+    const rows = (o.results as unknown[]).filter((r): r is Record<string, unknown> => !!r && typeof r === "object");
+    const queried = String(o.value ?? "").trim();
+    const kind = String(o.kind ?? "").trim();
+    const urls: string[] = [];
+    const platforms: string[] = [];
+    for (const r of rows) {
+      const n = normalizeFinding("url", r.value);
+      if (n && !urls.includes(n.value)) urls.push(n.value);
+      const p = typeof r.platform === "string" ? r.platform.trim() : "";
+      if (p && !platforms.includes(p)) platforms.push(p);
+    }
+    // The headline counts what Opsis FOUND; `results` is capped at
+    // OPSIS_MAX_RESULTS_RETURNED for the prompt (Codex P2 on #659).
+    const total = typeof o.total_results === "number" && o.total_results >= rows.length ? o.total_results : rows.length;
+    if (queried && rows.length >= SWEEP_COLLAPSE_MIN_HITS) {
+      findings.push({
+        kind: "social_footprint",
+        value: `${queried} — ${total} Opsis result${total === 1 ? "" : "s"} (unverified)`,
+        context: {
+          tool: toolName,
+          via: "opsis",
+          ...(kind === "username" ? { handle: queried } : {}),
+          opsis_kind: kind,
+          opsis_run_id: typeof o.run_id === "string" ? o.run_id : null,
+          platform_count: total,
+          urls,
+          opsis_platforms: platforms,
+          ...(typeof o.results_truncated === "number" ? { opsis_results_truncated: o.results_truncated } : {}),
+        },
+        rawConfidence: 30,
+      });
+    } else {
+      for (const u of urls) pushUrl(findings, u, { tool: toolName, via: "opsis" });
+    }
+  }
+
   // 13) INFRASTRUCTURE payloads — the shapes a DOMAIN investigation actually returns.
   //
   // Every branch above targets a PERSON shape: breach corpora, emails, usernames,

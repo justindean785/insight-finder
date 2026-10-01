@@ -4,7 +4,7 @@ import {
   corsHeaders, MINIMAX_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED, REVEAL_BREACH_DATA,
-  HIBP_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
+  HIBP_API_KEY, OPSIS_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
   GITHUB_API_TOKEN, PERPLEXITY_API_KEY, IPQUALITYSCORE_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
   URLSCANNER_API_KEY, GEMINI_FALLBACK_MODEL_ID,
@@ -19,6 +19,7 @@ import {
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
+import { opsisHealthDetail, opsisKillSwitchOn } from "./lib/opsis.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
@@ -258,6 +259,7 @@ export function deriveReadiness(env: {
   URLSCANNER_API_KEY?: string | null;
   FOFA_API_KEY?: string | null;
   GEOSEER_API_KEY?: string | null;
+  OPSIS_API_KEY?: string | null;
 }): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> } {
   const has = (v: string | null | undefined) => !!(v && v.length > 0);
   const orchestratorOk = has(env.MINIMAX_API_KEY);
@@ -296,6 +298,7 @@ export function deriveReadiness(env: {
     // is the cheap, unauthenticated way to detect that a deploy actually shipped
     // new capability. Any tool added with a new key belongs here.
     geoseer: has(env.GEOSEER_API_KEY),
+    opsis: has(env.OPSIS_API_KEY),
   };
   const enabledOptional = Object.values(tools).filter(Boolean).length;
   const checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> = {
@@ -335,6 +338,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     RAPIDAPI_KEY: Deno.env.get("RAPIDAPI_KEY"),
     FOFA_API_KEY: Deno.env.get("FOFA_API_KEY"),
     GEOSEER_API_KEY: Deno.env.get("GEOSEER_API_KEY"),
+    OPSIS_API_KEY,
   });
   const u = new URL(req.url);
   const wantProbe = u.searchParams.get("probe") === "1";
@@ -416,6 +420,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       geminiPreflightPivotEnabled(),
     ),
   };
+
+  // Is Opsis configured, switched off, or absent (lib/opsis.ts)? Presence only, no
+  // network call. Its PRESENCE is the behavioural proof that the build carrying
+  // the opsis_* tools is live; the detail says whether they can run.
+  r.checks.opsis = opsisHealthDetail(!!OPSIS_API_KEY, opsisKillSwitchOn());
 
   // Does the DEPLOYED sanitizer pair tool-calls by POSITION (message-sanitize.ts)?
   // A self-test, not a label: it runs the live sanitizer on a fixed synthetic
