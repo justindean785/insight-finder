@@ -241,7 +241,9 @@ describe("ChatWindow transport wiring", () => {
   });
 
   it("routes the investigation transport through fetchWithRetry", () => {
-    expect(SOURCE).toContain("return fetchWithRetry(url, { ...init, headers });");
+    // Wrapped so a failed response keeps its HTTP status (first-send-no-probe.test.tsx);
+    // the request itself still goes out exactly once, through fetchWithRetry.
+    expect(SOURCE).toContain("return withHttpStatusInErrorBody(await fetchWithRetry(url, { ...init, headers }));");
   });
 
   it("no longer carries its own method-blind retry loop", () => {
