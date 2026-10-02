@@ -140,4 +140,19 @@ describe("malformed tool names", () => {
     expect(toolActionLabel("mystery_tool_xyz")).toBe("Mystery Tool Xyz");
     expect(toolActionLabel("<arg_key>")).toBe("Malformed call");
   });
+
+  // Production report 2026-10-01: Tool Coverage groups evidence by its RECORDED
+  // source, which is free text, and printed "Malformed call (Fbi)" for it.
+  it("shows a free-text source label as written, not as a malformed call", () => {
+    expect(toolActionLabel("FBI Wanted (fbi.gov/wanted/cac)")).toBe("FBI Wanted (fbi.gov/wanted/cac)");
+    expect(toolActionLabel("People profile (user-provided)")).toBe("People profile (user-provided)");
+    expect(toolActionLabel("Mercury News  (mercurynews.com)")).toBe("Mercury News (mercurynews.com)");
+    expect(toolActionLabel("x y".repeat(30))).toHaveLength(60);
+    expect(toolActionLabel("   ")).toBe("Unknown source");
+  });
+
+  it("still labels markup that merely starts like a source as malformed", () => {
+    expect(toolActionLabel('People search {"value":"site.example"}')).toBe("Malformed call (People)");
+    expect(toolActionLabel("lookup <arg_value>x</arg_value>")).toBe("Malformed call (Lookup)");
+  });
 });
