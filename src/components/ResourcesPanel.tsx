@@ -36,6 +36,8 @@ import {
 // and citation below reads `effective` — never `a.confidence`. See
 // src/lib/display-confidence.ts for why five pipelines became one.
 import { displayConfidence, effectiveConfidence, effectiveConfidenceOrZero } from "@/lib/display-confidence";
+import { analystConfirmedLabel, isAnalystConfirmed } from "@/lib/analyst-confirmed";
+import { AnalystConfirmedMark } from "@/components/AnalystConfirmedMark";
 import { bandCluster, isProseValue, provenanceOf as provFor } from "@/lib/evidence-bands";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { humanizeArtifactMetadata } from "@/lib/artifact-metadata";
@@ -680,7 +682,7 @@ function BulkCorpusGroupRow({
   );
 }
 
-function ArtifactRow({
+export function ArtifactRow({
   a, onSelect, review, hideProv,
 }: {
   a: Artifact;
@@ -710,6 +712,10 @@ function ArtifactRow({
   const prose = isProseValue(a.value) || isBulkCorpusHarvestArtifact(a);
   const bulkPreview = isBulkCorpusHarvestArtifact(a) ? harvestedIdentityPreview(a, 4) : [];
   const authority = authorityFor(a, rState);
+  // The label ladder's ATTESTED rung — an analyst decision the figure does not
+  // (and must not) reflect. The slot says so in words; the machine score moves
+  // to the slot's accessible name and the ⓘ popover. See lib/analyst-confirmed.ts.
+  const attested = isAnalystConfirmed(a, rState);
   return (
     <HoverCard openDelay={250} closeDelay={80}>
       <HoverCardTrigger asChild>
@@ -727,7 +733,9 @@ function ArtifactRow({
             `${a.kind} ${a.value}`,
             authority.label,
             authority.caveat ?? "",
-            shown.effective != null ? `${conf}% confidence` : "",
+            attested
+              ? analystConfirmedLabel(shown)
+              : shown.effective != null ? `${conf}% confidence` : "",
           ].filter(Boolean).join(". ")}
           data-density-row
           className={cn(
@@ -811,28 +819,36 @@ function ArtifactRow({
           </span>
 
           <span className="flex shrink-0 items-center justify-end gap-0.5" data-ledger-col="confidence">
-            {shown.effective != null && (
-              <>
-                <span className="flex flex-col items-end gap-1">
-                  <span className="conf-figure" style={{ color: confColor }}>{conf}</span>
-                  {/* The magnitude. A 2px rule whose LENGTH is the score — the
-                      one honest way to show a number at a glance. */}
-                  <span className="conf-rule" aria-hidden>
-                    <i style={{ width: `${Math.max(3, Math.min(100, conf))}%` }} data-authority={authority.state} />
-                  </span>
+            {/* An analyst-confirmed row shows the decision in words and no
+                rule: a magnitude bar beside "Analyst-confirmed" would re-assert
+                the very figure the words replace. The words wrap to two lines
+                inside the column rather than widening it. */}
+            {attested ? (
+              <AnalystConfirmedMark shown={shown} className="text-right" />
+            ) : shown.effective != null && (
+              <span className="flex flex-col items-end gap-1">
+                <span className="conf-figure" style={{ color: confColor }}>{conf}</span>
+                {/* The magnitude. A 2px rule whose LENGTH is the score — the
+                    one honest way to show a number at a glance. */}
+                <span className="conf-rule" aria-hidden>
+                  <i style={{ width: `${Math.max(3, Math.min(100, conf))}%` }} data-authority={authority.state} />
                 </span>
-                <ConfidenceExplain
-                  artifact={a}
-                  review={rState}
-                  className="text-muted-foreground/45 transition-colors group-hover/row:text-muted-foreground data-[state=open]:text-foreground"
-                />
-              </>
+              </span>
+            )}
+            {/* The ⓘ stays on every scored row — on an analyst-confirmed row it
+                is where the machine score is still read. */}
+            {shown.effective != null && (
+              <ConfidenceExplain
+                artifact={a}
+                review={rState}
+                className="text-muted-foreground/45 transition-colors group-hover/row:text-muted-foreground data-[state=open]:text-foreground"
+              />
             )}
           </span>
         </div>
       </HoverCardTrigger>
       <HoverCardContent side="left" align="start" className="w-72 overflow-hidden p-0 border-border-subtle">
-        <ArtifactPeek artifact={a} confColor={confColor} />
+        <ArtifactPeek artifact={a} confColor={confColor} attested={attested} />
       </HoverCardContent>
     </HoverCard>
   );
@@ -1231,7 +1247,9 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 /* Entity peek — compact on-hover preview surfaced from an artifact row.
    Mirrors detail surface (category, confidence, source, timestamp) plus
    a "Open detail" affordance hint. Click still routes through the row. */
-function ArtifactPeek({ artifact: a, confColor }: { artifact: Artifact; confColor: string }) {
+function ArtifactPeek({
+  artifact: a, confColor, attested,
+}: { artifact: Artifact; confColor: string; attested: boolean }) {
   const src = extractSourceInfo(a);
   const created = a.created_at ? new Date(a.created_at) : null;
   const shown = displayConfidence(a);
@@ -1245,13 +1263,17 @@ function ArtifactPeek({ artifact: a, confColor }: { artifact: Artifact; confColo
           <span className="text-muted-foreground">·</span>
           <span className="text-eyebrow font-mono uppercase text-muted-foreground">{a.kind}</span>
         </div>
-        {shown.effective != null && (
+        {/* The peek mirrors its row: an analyst-confirmed row reads the same
+            words here, never the bare machine figure it replaced. */}
+        {attested ? (
+          <AnalystConfirmedMark shown={shown} className="whitespace-nowrap" />
+        ) : shown.effective != null && (
           <span className="text-data font-mono tabular-nums" style={{ color: confColor }}>{conf}%</span>
         )}
       </div>
       <div className="px-3 py-2 space-y-2">
         <div className="font-mono text-data text-foreground break-all">{a.value}</div>
-        {shown.effective != null && (
+        {!attested && shown.effective != null && (
           <div className="confidence-track">
             <span
               className="confidence-fill"

@@ -36,6 +36,7 @@ import {
 } from "./lib/preflight-pivot.ts";
 import { positionalPairingSelfTest } from "./message-sanitize.ts";
 import { streamErrorDetailSelfTest } from "./stream-error-classify.ts";
+import { contradictionClaimSelfTest } from "./contradictions.ts";
 import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
 import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
@@ -442,6 +443,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Do stream errors record the provider's status and code WITHOUT the response
   // body (stream-error-classify.ts)? A self-test on a synthetic error, pure.
   r.checks.stream_error_detail = streamErrorDetailSelfTest();
+
+  // Do excluded rows, relatives and one-word names stay OUT of the name/location
+  // conflict check (contradictions.ts makesSubjectClaim)? A self-test on a fixed
+  // synthetic case, pure. Its PRESENCE proves this build is live.
+  r.checks.contradiction_claims = contradictionClaimSelfTest();
 
   // Are one-word Serus "names" kept out of name artifacts (auto-persist-findings.ts
   // serusNameAdmissible)? A pure self-test; its PRESENCE proves this build is live.

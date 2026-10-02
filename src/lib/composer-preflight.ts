@@ -21,6 +21,7 @@
  * `— Scope & controls (analyst instructions) —` block was concatenated into the
  * stored seed and then truncated into the Timeline and Activity Log.
  */
+import { readProviderExport } from "@/lib/provider-export";
 import { detectSeed, extractDisplaySeed, type SeedKind } from "@/lib/seed";
 
 export const KIND_LABEL: Record<SeedKind, string> = {
@@ -84,21 +85,30 @@ export function evaluatePreflight(input: PreflightInput): PreflightResult {
   const empty = !text && input.attachments === 0;
   // The whole request as one selector first (a bare seed); otherwise the
   // strongest selector inside the prose — "j.harker@… — who owns this?" — the
-  // same extraction the case header uses to title a thread.
+  // same extraction the case header uses to title a thread. For a pasted
+  // provider export that is the subject's labelled field, never the provider's
+  // own domain (see provider-export.ts).
   let detected: { raw: string; kind: SeedKind } | null = null;
+  // An export with no email/phone/handle field: the free-text target is what
+  // was read out of it (a person's name), never the "=== … ===" header line.
+  let exportedText: string | null = null;
   if (text) {
     const direct = detectSeed(text);
     if (direct && direct.kind !== "other") detected = { raw: direct.raw, kind: direct.kind };
     else {
       const extracted = extractDisplaySeed(text, null);
       if (extracted.kind !== "other") detected = { raw: extracted.selector, kind: extracted.kind };
+      else {
+        const exp = readProviderExport(text);
+        if (exp && (exp.pick || exp.scrubbed !== text) && extracted.selector !== "—") exportedText = extracted.selector;
+      }
     }
   }
   const detectedKind = detected?.kind ?? null;
   const kind: SeedKind = c.targetKind ?? detectedKind ?? "other";
   // With nothing detected, the request itself is the (free-text) target; an
   // analyst-chosen type then applies to its first token.
-  const value = detected?.raw ?? (text ? (c.targetKind ? text.split(/\s+/)[0] : text.slice(0, 80)) : "");
+  const value = detected?.raw ?? exportedText ?? (text ? (c.targetKind ? text.split(/\s+/)[0] : text.slice(0, 80)) : "");
   const target = value
     ? { value, kind, corrected: c.targetKind !== null && c.targetKind !== detectedKind, freeText: !detected && !c.targetKind }
     : null;

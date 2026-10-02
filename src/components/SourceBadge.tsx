@@ -38,7 +38,8 @@ export function SourceBadge({
           type="button"
           onClick={(e) => e.stopPropagation()}
           className={cn(
-            "inline-flex items-center gap-1 rounded-full border font-mono uppercase tracking-[0.06em] hover:bg-surface-3 transition-colors",
+            // `source-chip` is a print hook only (index.css, @media print) — no screen style.
+            "source-chip inline-flex items-center gap-1 rounded-full border font-mono uppercase tracking-[0.06em] hover:bg-surface-3 transition-colors",
             sz, cls, className,
           )}
           title={`Source: ${source}`}
