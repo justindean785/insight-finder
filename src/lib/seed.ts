@@ -2,6 +2,8 @@
 // (for the investigation cache lookup) and rendered banners.
 // Mirror logic on the edge function so cache keys match.
 
+import { readProviderExport } from "@/lib/provider-export";
+
 export type SeedKind = "email" | "username" | "phone" | "ip" | "domain" | "url" | "crypto" | "address" | "other";
 
 export type DetectedSeed = {
@@ -119,6 +121,26 @@ export function extractDisplaySeed(
     const direct = detectSeed(raw);
     if (direct && direct.kind !== "other" && direct.kind !== "address") {
       return { selector: direct.raw, kind: direct.kind, title: direct.raw };
+    }
+  }
+
+  // A pasted provider export (OathNet, IntelX, DeHashed …). Its attribution —
+  // "Found via oathnet.org", the "=== … ===" header, `dbname:` — is the first
+  // domain the scan below would meet, and the case was framed as the
+  // provider's domain. Read the labelled subject field instead; failing that,
+  // scan only what is left once attribution is removed. A name has no SeedKind
+  // of its own, so it travels as "other" with the name as its selector.
+  const exported = readProviderExport(raw);
+  if (exported) {
+    const tag = exported.provider ? ` · ${exported.provider} export` : "";
+    if (exported.pick) {
+      const kind: SeedKind = exported.pick.kind === "name" ? "other" : exported.pick.kind;
+      return { selector: exported.pick.value, kind, title: `${exported.pick.value}${tag}` };
+    }
+    if (exported.scrubbed !== raw) {
+      const inner = extractDisplaySeed(exported.scrubbed, seedType);
+      if (inner.selector === "—") return { ...inner, title: exported.provider ? `${exported.provider} export` : inner.title };
+      return { ...inner, title: `${inner.title}${tag}` };
     }
   }
 

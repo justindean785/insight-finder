@@ -36,9 +36,12 @@ import {
 } from "./lib/preflight-pivot.ts";
 import { positionalPairingSelfTest } from "./message-sanitize.ts";
 import { streamErrorDetailSelfTest } from "./stream-error-classify.ts";
+import { contradictionClaimSelfTest } from "./contradictions.ts";
+import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
 import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
+import { sourceOriginRulesSelfTest } from "./source-classification.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -442,6 +445,15 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // body (stream-error-classify.ts)? A self-test on a synthetic error, pure.
   r.checks.stream_error_detail = streamErrorDetailSelfTest();
 
+  // Do excluded rows, relatives and one-word names stay OUT of the name/location
+  // conflict check (contradictions.ts makesSubjectClaim)? A self-test on a fixed
+  // synthetic case, pure. Its PRESENCE proves this build is live.
+  r.checks.contradiction_claims = contradictionClaimSelfTest();
+
+  // Are one-word Serus "names" kept out of name artifacts (auto-persist-findings.ts
+  // serusNameAdmissible)? A pure self-test; its PRESENCE proves this build is live.
+  r.checks.serus_name_filter = serusNameFilterSelfTest();
+
   // Is `stop_reason = budget_exhausted` attributed per INVOCATION (#611)? The
   // ceiling latch is request-owned (index.ts `budgetCeiling`, set by
   // wrapToolsWithCache from startCall's refusal), so an overlapping run on the
@@ -465,6 +477,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Error hygiene (lib/redact-error.ts). Its PRESENCE proves the build that redacts
   // the catch-all 500 detail and keeps the seed text out of the log is live.
   r.checks.error_redaction = { ok: true, detail: "500 detail and fault/stream logs redacted (configured keys + shapes); seed text not logged" };
+
+  // Do pages on law-enforcement/court .gov hosts and news outlets get their class
+  // from the HOST (source-classification.ts classifyOriginHost)? Pure. Its PRESENCE
+  // proves the build is live; ok:false means a rule misclassified its own probe.
+  r.checks.source_origin_rules = sourceOriginRulesSelfTest();
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure

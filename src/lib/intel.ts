@@ -8,7 +8,7 @@ import {
   type AuthoritativeFindings,
 } from "@/lib/authoritative-findings";
 import { detectSeed, extractDisplaySeed } from "@/lib/seed";
-import { toolActionLabel } from "@/lib/tool-display";
+import { auditEntryToolName, toolActionLabel } from "@/lib/tool-display";
 import { humanizeSourceChain, primaryToolSlug, tokenizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
 import { isSubjectUnlinked, isQuarantined } from "@/lib/quarantine";
@@ -1728,7 +1728,7 @@ export function buildReportMarkdown(input: ReportInput): string {
   const toolCoverage = audit.tools.length === 0
     ? "_No tools produced artifacts._"
     : audit.tools.map((t) =>
-        `- ${toolActionLabel(t.tool)} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.attested ? `${t.attested} analyst-confirmed, ` : ""}${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
+        `- ${toolActionLabel(auditEntryToolName(t))} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.attested ? `${t.attested} analyst-confirmed, ` : ""}${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
       ).join("\n");
 
   const weakAreas = (() => {
@@ -1767,7 +1767,7 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const sourceAppendix = audit.tools.length === 0
     ? "_None._"
-    : audit.tools.map((t) => `- ${toolActionLabel(t.tool)} — produced ${t.kinds.join(", ") || "—"}`).join("\n");
+    : audit.tools.map((t) => `- ${toolActionLabel(auditEntryToolName(t))} — produced ${t.kinds.join(", ") || "—"}`).join("\n");
 
   if (reportType === "brief") {
     return [

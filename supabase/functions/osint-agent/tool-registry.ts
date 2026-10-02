@@ -9,6 +9,7 @@ import { tierOf, TIER_A, TIER_B } from "./tiers.ts";
 import { playbookFor, renderPlaybookForPrompt } from "./playbooks.ts";
 import { auditCoverage } from "./coverage.ts";
 import {
+  contradictionClaimFilterDisabled,
   detectContradictions,
   clusterScopedContradictionPatches,
   artifactsForFinding,
@@ -40,7 +41,7 @@ import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
-import { loadReviewsForThread, dropRejectedAndDerived, normalizeArtifactKey, type ReviewDb } from "./reviews.ts";
+import { loadReviewsForThread, dropRejectedAndDerived, dropRejectedArtifacts, normalizeArtifactKey, type ReviewDb } from "./reviews.ts";
 import { applyMemorySupersession, refuseConflictingMemoryWrites, rejectedSelectorsFromRows, type MemoryRow } from "./lib/memory-supersession.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
 
@@ -6697,10 +6698,21 @@ export function buildTools(ctx: ToolContext) {
       label: z.enum(["CONFIRMED","CORROBORATED","INFERRED","VERIFY","LOW","DISMISSED"]).default("INFERRED"),
     })),
     execute: async (i) => {
-      const { data: contraRows } = await supabase
+      const { data: threadRows } = await supabase
         .from("artifacts")
-        .select("kind,value,source,metadata,created_at")
+        .select("id,kind,value,source,metadata,created_at")
         .eq("thread_id", threadId);
+      // Rows the analyst DISMISSED stop testifying about the subject, exactly as
+      // on the synthesis path (finding-synthesis-sweep.ts), which already scored
+      // the same row shape on review-filtered rows while this path did not. These
+      // rows only feed the contradiction check, so an unreadable verdict set keeps
+      // every row: a missed dismissal costs a penalty, never invents confidence.
+      let contraRows = threadRows ?? null;
+      if (contraRows && !contradictionClaimFilterDisabled()) {
+        const reviews = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
+        if (reviews.ok) contraRows = dropRejectedArtifacts(contraRows, reviews);
+        else console.warn(JSON.stringify({ event: "record_finding_review_state_unavailable", thread_id: threadId, error: reviews.error }));
+      }
       // Scoring + row construction live in ONE place — see lib/finding-row.ts.
       // This block used to be 161 lines inline here; it was MOVED, not rewritten,
       // because finding synthesis needs the identical chain and two copies of a
@@ -6709,7 +6721,7 @@ export function buildTools(ctx: ToolContext) {
       const { row, axes, status: findingStatus } = buildFindingRow(i, {
         threadId,
         userId,
-        contraRows: contraRows ?? null,
+        contraRows,
       });
       const { data, error } = await supabase.from("artifacts").insert([row]).select("id").maybeSingle();
       if (error) return { ok: false, error: error.message };
