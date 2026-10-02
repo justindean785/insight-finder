@@ -415,6 +415,34 @@ describe("CaseSnapshotProvider — failed reads fail closed", () => {
     expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(true);
   }, 10_000);
 
+  it("a failure while hidden keeps its retry for a failed re-read on resume", async () => {
+    const tid = freshThread();
+    seedFor(tid);
+    mountFor(tid);
+    await flush();
+    m.errors.tool_usage_log = true;
+    let state: DocumentVisibilityState = "hidden";
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => state);
+    try {
+      await act(async () => { screen.getAllByRole("button", { name: "Refresh case data" })[0].click(); });
+      await flush(10);
+      await wait(RETRY_WAIT_MS); // the timer fires while hidden
+      await flush(10);
+      // The phone resumes; its first re-read fails as well.
+      state = "visible";
+      await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+      await flush(10);
+      expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(true);
+      // The network is back. The retry was not spent in the background.
+      m.errors.tool_usage_log = false;
+      await wait(RETRY_WAIT_MS);
+      await flush(10);
+      expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(false);
+    } finally {
+      visibility.mockRestore();
+    }
+  }, 10_000);
+
   it("a hidden tab does not retry; returning to it is the re-read", async () => {
     const tid = freshThread();
     seedFor(tid);
