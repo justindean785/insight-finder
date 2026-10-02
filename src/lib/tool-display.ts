@@ -199,6 +199,19 @@ function fallbackDisplay(name: string): string {
 }
 
 /**
+ * The name to label a `buildToolAudit` entry with. Its `tool` is a GROUPING key
+ * (`primaryToolSlug`): exact for a tool slug, but lossy for free text — it is
+ * lowercased and cut at the parenthesis, so "FBI Wanted (fbi.gov/wanted/cac)"
+ * keys as "fbi wanted". A real tool is labelled by its key; a free-text source
+ * by the first link of the chain it was RECORDED under.
+ */
+export function auditEntryToolName(entry: { tool: string; variants?: readonly string[] }): string {
+  if (DISPLAY[entry.tool] || entry.tool.includes("_")) return entry.tool;
+  const recorded = entry.variants?.find((v) => v.trim());
+  return recorded ? recorded.split(/\s+\+\s+/)[0].trim() : entry.tool;
+}
+
+/**
  * Short, plain-English source labels for primary card summaries (Next Steps,
  * pivot details). Raw tool IDs must never appear in a card summary — only in an
  * expandable provenance/detail pane. Concise on purpose, unlike the verbose
