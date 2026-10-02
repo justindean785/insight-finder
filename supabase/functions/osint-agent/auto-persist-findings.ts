@@ -825,19 +825,6 @@ function breachSubjectAnchor(o: Record<string, unknown>, input: unknown): string
   return fromOutput ? normalizeBreachSubject(fromOutput) : "";
 }
 
-/**
- * Extract findings from a single tool call's parsed output. Never throws.
- *
- * `input` is the tool-call arguments (the queried selector). Optional so the
- * per-tool unit tests can keep calling with two args; production threads it via
- * extractStepFindings so a breach exposure is scoped to the subject that was
- * actually queried.
- *
- * `subjectSeedName` is the investigation's PERSON seed, normalized — "" for a
- * run seeded on anything else. It is the only mechanism by which a queried-name
- * echo may retain subject authority (see seedLinksQueriedName). Omitting it fails
- * closed: the echo is quarantined like every other row from a name-only query.
- */
 function readEnvSafe(k: string): string | undefined {
   try {
     return (globalThis as { Deno?: { env: { get(key: string): string | undefined } } }).Deno?.env.get(k);
@@ -878,6 +865,19 @@ export function serusNameFilterSelfTest(
     : { ok: false, detail: "self-test failed" };
 }
 
+/**
+ * Extract findings from a single tool call's parsed output. Never throws.
+ *
+ * `input` is the tool-call arguments (the queried selector). Optional so the
+ * per-tool unit tests can keep calling with two args; production threads it via
+ * extractStepFindings so a breach exposure is scoped to the subject that was
+ * actually queried.
+ *
+ * `subjectSeedName` is the investigation's PERSON seed, normalized — "" for a
+ * run seeded on anything else. It is the only mechanism by which a queried-name
+ * echo may retain subject authority (see seedLinksQueriedName). Omitting it fails
+ * closed: the echo is quarantined like every other row from a name-only query.
+ */
 export function extractFindings(
   toolName: string,
   output: unknown,
