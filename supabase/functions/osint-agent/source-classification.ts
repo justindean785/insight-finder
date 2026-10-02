@@ -281,9 +281,19 @@ export function splitSourceLabels(label: string | null | undefined): string[] {
   const normalized = (label ?? "").trim();
   if (!normalized) return [];
   if (isWrapperLabel(normalized)) return [];
-  return normalized
+  // A URL qualifier belongs to ONE source, so the "/" in its path is not a
+  // delimiter. Split, "jina_reader_scrape (fbi.gov/news/stories/x)" became four
+  // fragments and took `news` from the word in the path, while the cap engine,
+  // which classifies the whole label first, said otherwise. Other parentheticals
+  // ("exa_search (DOJ release + CBS SF)") split exactly as before.
+  const kept: string[] = [];
+  const masked = sourceOriginRulesDisabled()
+    ? normalized
+    : normalized.replace(/\(([^()]*)\)/g, (group: string, inner: string) =>
+      qualifierHost(inner) ? `\uE000${kept.push(group) - 1}\uE000` : group);
+  return masked
     .split(MIXED_SOURCE_SPLIT_RE)
-    .map((part) => part.trim())
+    .map((part) => part.replace(/\uE000(\d+)\uE000/g, (_m: string, i: string) => kept[Number(i)]).trim())
     .filter(Boolean);
 }
 
@@ -328,7 +338,13 @@ const BREACH_SLUG_RE =
 function extractOriginId(source: string): string | null {
   const match = source.match(/\(([^)]*)\)\s*$/);
   if (!match) return null;
-  const inner = match[1].trim();
+  return qualifierHost(match[1]);
+}
+
+/** The normalized host a parenthetical qualifier's content names, or null when
+ *  it is not a URL / bare hostname. */
+function qualifierHost(content: string): string | null {
+  const inner = content.trim();
   if (!inner) return null;
   const withScheme = /^https?:\/\//i.test(inner) ? inner : `https://${inner}`;
   let host: string;
@@ -358,6 +374,116 @@ const ORIGIN_CLASS_MAP: Readonly<Record<string, SourceClass>> = {
   "asec.ahnlab.com": "independent_public",
 };
 
+// ── Authoritative hosts: law-enforcement / court .gov sites and news outlets ──
+//
+// Production 2026-10-01: a finding resting on a federal wanted notice, a DOJ
+// release and ~20 news reports sat at 45–50 because none of those sources had a
+// class. "Agency notice (fbi.gov/…)" and "Regional Paper (paper.example)" carry
+// no keyword the label regexes know, so they fell to `unknown` (cap 50), while
+// "Some News (…)" — the same kind of source — reached `news` only because the
+// outlet happens to have "news" in its name. artifact_hygiene_test.ts recorded
+// the same gap from the other side: the signal is in the URL HOST, and the
+// label path cannot see it.
+//
+// These rules read only the host of a trailing URL/hostname qualifier
+// (extractOriginId). Both lists are hand-curated, the same discipline as
+// ORIGIN_CLASS_MAP: an unlisted host changes nothing. `.gov` is used as the
+// authority signal because registration is restricted to US government bodies;
+// `.us` and `.org` are not, so they are deliberately absent.
+//
+// They apply to (a) a page a FETCH tool actually read and (b) a free-text label
+// whose own class is no stronger than a page observation. They never apply to
+// a search/summary tool — "minimax_web_search (justice.gov/…)" is a search
+// snippet that cites the host, not a read of it, and stays ai_summary — nor to a
+// breach, broker, sweep, archive or shared-host label. A fetched news page is
+// classed `news`, so the existing #17 rule (a name from news alone is a lead,
+// cap 55) now reaches it too; it used to escape as `independent_public` (75).
+//
+// Kill switch, read at call time: SOURCE_ORIGIN_RULES_DISABLED=true.
+
+/** Federal law-enforcement and court hosts. A subdomain matches its parent
+ *  (`cand.uscourts.gov`, `oig.justice.gov`). */
+const LAW_ENFORCEMENT_COURT_HOSTS: readonly string[] = [
+  "fbi.gov", "ic3.gov", "justice.gov", "usdoj.gov", "ojp.gov", "bop.gov",
+  "usmarshals.gov", "dea.gov", "atf.gov", "ice.gov", "secretservice.gov",
+  "uscourts.gov", "supremecourt.gov",
+];
+
+/** A state or local `.gov` host whose name says it is a court, judiciary,
+ *  sheriff or police body (`courts.ca.gov`, `nycourts.gov`). */
+const GOV_LAW_LABEL_RE = /(?:court|judiciary|sheriff|police)/;
+
+/** News outlets: wire services, national titles, and large regional papers and
+ *  broadcast stations. A subdomain matches its parent. */
+const NEWS_HOSTS: readonly string[] = [
+  // wires and national
+  "apnews.com", "reuters.com", "upi.com", "nytimes.com", "washingtonpost.com",
+  "wsj.com", "usatoday.com", "latimes.com", "npr.org", "cnn.com", "nbcnews.com",
+  "cbsnews.com", "abcnews.go.com", "foxnews.com", "nypost.com", "newsweek.com",
+  "time.com", "politico.com", "axios.com", "bloomberg.com", "theguardian.com",
+  "bbc.com", "bbc.co.uk", "theatlantic.com", "propublica.org", "thehill.com",
+  // regional papers
+  "sfchronicle.com", "sfgate.com", "mercurynews.com", "eastbaytimes.com",
+  "sacbee.com", "fresnobee.com", "modbee.com", "ocregister.com", "sandiegouniontribune.com",
+  "chicagotribune.com", "suntimes.com", "bostonglobe.com", "miamiherald.com",
+  "dallasnews.com", "houstonchronicle.com", "expressnews.com", "statesman.com",
+  "seattletimes.com", "oregonlive.com", "startribune.com", "denverpost.com",
+  "azcentral.com", "reviewjournal.com", "sltrib.com", "ajc.com", "inquirer.com",
+  "baltimoresun.com", "courant.com", "nj.com", "newsday.com", "cleveland.com",
+  "freep.com", "detroitnews.com", "jsonline.com", "indystar.com", "tennessean.com",
+  "courier-journal.com", "cincinnati.com", "dispatch.com", "post-gazette.com",
+  "tampabay.com", "orlandosentinel.com", "sun-sentinel.com", "kansascity.com",
+  "star-telegram.com", "charlotteobserver.com", "newsobserver.com", "nola.com",
+  "al.com", "mlive.com", "masslive.com", "pennlive.com", "stltoday.com",
+  // broadcast
+  "kcra.com", "kron4.com", "ktvu.com", "abc7news.com", "nbcbayarea.com",
+  "abc7.com", "nbclosangeles.com", "ktla.com", "abc7ny.com", "nbcnewyork.com",
+  "abc7chicago.com", "nbcchicago.com", "6abc.com", "fox5ny.com", "wral.com",
+];
+
+function hostMatches(host: string, list: readonly string[]): boolean {
+  return list.some((d) => host === d || host.endsWith(`.${d}`));
+}
+
+/** The class an authoritative host implies, or null for any host not listed. */
+export function classifyOriginHost(host: string): SourceClass | null {
+  const h = host.toLowerCase().replace(/^www\./, "");
+  if (hostMatches(h, LAW_ENFORCEMENT_COURT_HOSTS)) return "court_record";
+  if (h.endsWith(".gov") && GOV_LAW_LABEL_RE.test(h.slice(0, -4))) return "court_record";
+  if (hostMatches(h, NEWS_HOSTS)) return "news";
+  return null;
+}
+
+/** Tools that READ the page at the URL they are given (as opposed to searching
+ *  for it or summarising results that cite it). */
+const PAGE_FETCH_TOOLS: ReadonlySet<string> = new Set([
+  "jina_reader_scrape",
+  "exa_get_contents",
+  "minimax_extract",
+  "socialfetch_web_read",
+]);
+
+/** Label classes an authoritative host may replace: no stronger than a page
+ *  observation, and not a discovery, breach, broker or archive signal. */
+const HOST_REPLACEABLE: ReadonlySet<SourceClass> = new Set<SourceClass>([
+  "unknown",
+  "news",
+  "court_record",
+  "independent_public",
+]);
+
+function readEnvSafe(key: string): string | undefined {
+  try {
+    return (globalThis as { Deno?: { env: { get(k: string): string | undefined } } }).Deno?.env.get(key);
+  } catch {
+    return undefined;
+  }
+}
+
+export function sourceOriginRulesDisabled(env: (k: string) => string | undefined = readEnvSafe): boolean {
+  return (env("SOURCE_ORIGIN_RULES_DISABLED") ?? "").trim().toLowerCase() === "true";
+}
+
 /** Classify ONE source token (internal slug or a single free-text label) into a
  *  single SourceClass. Returns "unknown" only when nothing matches.
  *
@@ -367,8 +493,11 @@ const ORIGIN_CLASS_MAP: Readonly<Record<string, SourceClass>> = {
  *   2. shared-host / reverse-IP free-text → infra_shared_host (#56 guard);
  *   3. #56's court / news free-text regexes (keep their exact behavior);
  *   4. #16's richer free-text provider regexes (gov/registry/directory/etc.);
- *   5. #16's coarse infra free-text → "infra" (only for free-text, never slugs). */
-export function classifySource(toolOrSource: string | null | undefined): SourceClass {
+ *   5. #16's coarse infra free-text → "infra" (only for free-text, never slugs).
+ *
+ *  `classifySource` below runs this and then applies the authoritative-host
+ *  rules on top. */
+function classifySourceByLabel(toolOrSource: string | null | undefined): SourceClass {
   // TYPE guard, not just a falsy guard. The declared parameter type is a lie at
   // runtime: `metadata` reaches here from a `z.record(z.unknown())` blob the
   // model authors, so an array, object or number arrives truthy and then
@@ -490,6 +619,52 @@ export function classifySource(toolOrSource: string | null | undefined): SourceC
   }
 
   return "unknown";
+}
+
+/** Classify ONE source token (internal slug or a single free-text label) into a
+ *  single SourceClass. Returns "unknown" only when nothing matches.
+ *
+ *  The label classification above, then the authoritative-host rules: a page a
+ *  fetch tool read, or a weak free-text label, takes the class its host implies.
+ *  See LAW_ENFORCEMENT_COURT_HOSTS for what may and may not be replaced. */
+export function classifySource(toolOrSource: string | null | undefined): SourceClass {
+  const byLabel = classifySourceByLabel(toolOrSource);
+  if (typeof toolOrSource !== "string" || !toolOrSource) return byLabel;
+  const originId = extractOriginId(toolOrSource);
+  if (!originId) return byLabel;
+  const byHost = classifyOriginHost(originId);
+  if (!byHost || byHost === byLabel || sourceOriginRulesDisabled()) return byLabel;
+  const head = toolOrSource.replace(/\s*\([^)]*\)\s*$/, "").trim();
+  const slug = head.toLowerCase();
+  if (TOOL_CLASS[slug]) return PAGE_FETCH_TOOLS.has(slug) ? byHost : byLabel;
+  // "A (x.example) + B (fbi.gov/…)" is two sources: the host names only the last.
+  if (splitSourceLabels(head).length > 1) return byLabel;
+  return HOST_REPLACEABLE.has(byLabel) ? byHost : byLabel;
+}
+
+/** /health self-test: the rules engage for a fetched official page and a news
+ *  outlet's label, and leave search snippets and unlisted hosts alone. */
+export function sourceOriginRulesSelfTest(): { ok: boolean; detail: string } {
+  if (sourceOriginRulesDisabled()) {
+    return { ok: true, detail: "LEGACY via SOURCE_ORIGIN_RULES_DISABLED" };
+  }
+  const cases: Array<[string, SourceClass]> = [
+    ["jina_reader_scrape (https://www.fbi.gov/wanted/example)", "court_record"],
+    ["Agency notice (fbi.gov/wanted/example)", "court_record"],
+    ["State portal (courts.example-state.gov)", "court_record"],
+    ["Daily (latimes.com/example)", "news"],
+    ["minimax_web_search (justice.gov/usao/pr/example)", "ai_summary"],
+    ["Example Blog (unvetted-example.org/post)", "unknown"],
+    ["breach_check (nytimes.com)", "breach"],
+  ];
+  const wrong = cases.filter(([s, want]) => classifySource(s) !== want).map(([s]) => s);
+  return wrong.length
+    ? { ok: false, detail: `misclassified: ${wrong.join(" | ")}` }
+    : {
+      ok: true,
+      detail: `${LAW_ENFORCEMENT_COURT_HOSTS.length} law-enforcement/court + .gov court/police hosts -> court_record, ` +
+        `${NEWS_HOSTS.length} news hosts -> news; search tools unchanged`,
+    };
 }
 
 /** Classify ONE source token AND capture its origin identity in one pass, for
