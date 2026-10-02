@@ -37,6 +37,7 @@ import {
 import { positionalPairingSelfTest } from "./message-sanitize.ts";
 import { streamErrorDetailSelfTest } from "./stream-error-classify.ts";
 import { contradictionClaimSelfTest } from "./contradictions.ts";
+import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
 import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
@@ -447,6 +448,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // conflict check (contradictions.ts makesSubjectClaim)? A self-test on a fixed
   // synthetic case, pure. Its PRESENCE proves this build is live.
   r.checks.contradiction_claims = contradictionClaimSelfTest();
+
+  // Are one-word Serus "names" kept out of name artifacts (auto-persist-findings.ts
+  // serusNameAdmissible)? A pure self-test; its PRESENCE proves this build is live.
+  r.checks.serus_name_filter = serusNameFilterSelfTest();
 
   // Is `stop_reason = budget_exhausted` attributed per INVOCATION (#611)? The
   // ceiling latch is request-owned (index.ts `budgetCeiling`, set by

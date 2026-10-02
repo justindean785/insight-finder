@@ -825,6 +825,46 @@ function breachSubjectAnchor(o: Record<string, unknown>, input: unknown): string
   return fromOutput ? normalizeBreachSubject(fromOutput) : "";
 }
 
+function readEnvSafe(k: string): string | undefined {
+  try {
+    return (globalThis as { Deno?: { env: { get(key: string): string | undefined } } }).Deno?.env.get(k);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A Serus `extractedData.names` entry becomes a `name` artifact only when it has
+ * at least two words. Serus's parser labels breach-record TOKENS as names: on a
+ * production case (2026-10-01) one scan's `names` held a username fragment, a
+ * first name, a surname and a leaked PASSWORD, and the password then printed as
+ * an identity-cluster heading in the exported report. A one-word value cannot
+ * stand as a person's name — everywhere else it is the `thin_name` advisory —
+ * so it is not persisted as one. The breach row that carried it is untouched.
+ * Kill switch, read at call time: `SERUS_NAME_FILTER_DISABLED=true`.
+ */
+export function serusNameAdmissible(
+  n: unknown,
+  env: (k: string) => string | undefined = readEnvSafe,
+): boolean {
+  if ((env("SERUS_NAME_FILTER_DISABLED") ?? "").trim().toLowerCase() === "true") return true;
+  return typeof n === "string" && n.trim().split(/\s+/).filter(Boolean).length >= 2;
+}
+
+/** /health self-test for serusNameAdmissible. Pure; its PRESENCE proves this build is live. */
+export function serusNameFilterSelfTest(
+  env: (k: string) => string | undefined = readEnvSafe,
+): { ok: boolean; detail: string } {
+  if ((env("SERUS_NAME_FILTER_DISABLED") ?? "").trim().toLowerCase() === "true") {
+    return { ok: true, detail: "LEGACY via SERUS_NAME_FILTER_DISABLED — every Serus name token is persisted" };
+  }
+  const ok = serusNameAdmissible("Jane Example", () => undefined) &&
+    !serusNameAdmissible("Qwerty", () => undefined) && !serusNameAdmissible("  ", () => undefined);
+  return ok
+    ? { ok: true, detail: "Serus names need two or more words; one-word tokens are not persisted as names" }
+    : { ok: false, detail: "self-test failed" };
+}
+
 /**
  * Extract findings from a single tool call's parsed output. Never throws.
  *
@@ -1002,14 +1042,15 @@ export function extractFindings(
     }
   }
 
-  // 9) serus_darkweb_scan — extractedData holds the PARSED leak fields (never
-  //    passwords/hashes); breaches[] the breach names.
+  // 9) serus_darkweb_scan — extractedData holds Serus's PARSED leak fields;
+  //    breaches[] the breach names. Its parser is not trusted on `names`: it
+  //    has labelled a password as a name (see serusNameAdmissible).
   if (toolName === "serus_darkweb_scan") {
     const ed = o.extractedData as Record<string, unknown> | null;
     if (ed && typeof ed === "object") {
       if (Array.isArray(ed.emails)) for (const e of ed.emails) push("email", e, { via: "serus" }, 45);
       if (Array.isArray(ed.phones)) for (const p of ed.phones) push("phone", String(p ?? ""), { via: "serus" }, 45);
-      if (Array.isArray(ed.names)) for (const n of ed.names) push("name", n, { via: "serus" }, 40);
+      if (Array.isArray(ed.names)) for (const n of ed.names) if (serusNameAdmissible(n)) push("name", n, { via: "serus" }, 40);
       if (Array.isArray(ed.usernames)) for (const u of ed.usernames) push("username", u, { via: "serus" }, 45);
     }
     if (Array.isArray(o.breaches)) {
