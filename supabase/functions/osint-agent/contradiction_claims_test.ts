@@ -97,6 +97,7 @@ Deno.test("subject-claim predicates", () => {
   assertEquals(makesSubjectClaim({ kind: "name", value: "A B" }), true);
   assertEquals(makesSubjectClaim({ kind: "excluded_collision", value: "x" }), false);
   assertEquals(makesSubjectClaim({ kind: "name", value: "A B", metadata: { status: "excluded" } }), false);
+  assertEquals(makesSubjectClaim({ kind: "name", value: "A B", metadata: { status: " Excluded " } }), false);
   assertEquals(makesSubjectClaim({ kind: "name", value: "A B", metadata: { excluded_collision: true } }), false);
   assertEquals(makesSubjectClaim({ kind: "name", value: "A B", metadata: { false_positive: true } }), false);
   assertEquals(makesSubjectClaim({ kind: "name", value: "A B", metadata: { relationship: "Associate" } }), false);

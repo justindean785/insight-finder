@@ -354,7 +354,10 @@ const SELF_RELATIONSHIPS = new Set(["self", "subject", "same person"]);
 export function makesSubjectClaim(a: ArtifactLike): boolean {
   const m = a.metadata ?? {};
   if (a.kind === "excluded_collision") return false;
-  if (m.status === "excluded" || m.excluded_collision === true || m.false_positive === true) return false;
+  // Same exclusion signals lib/cluster.ts isExcluded reads (status compared
+  // case-insensitively, as its regex does), plus an explicit false_positive.
+  const status = typeof m.status === "string" ? m.status.trim().toLowerCase() : "";
+  if (status === "excluded" || m.excluded_collision === true || m.false_positive === true) return false;
   const rel = typeof m.relationship === "string" ? m.relationship.trim().toLowerCase() : "";
   if (rel && !SELF_RELATIONSHIPS.has(rel)) return false;
   return true;
