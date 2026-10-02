@@ -191,9 +191,9 @@ function BucketTable({ rows, empty, reviews }: { rows: Artifact[]; empty: string
   if (!rows.length) return <p className="text-muted-foreground italic text-data mt-2">{empty}</p>;
   return (
     <>
-    <p className="sm:hidden mt-2 -mb-1 text-eyebrow text-muted-foreground/70">Scroll horizontally to see all columns →</p>
+    <p className="no-print sm:hidden mt-2 -mb-1 text-eyebrow text-muted-foreground/70">Scroll horizontally to see all columns →</p>
     <div className="rounded-xl border border-white/[0.08] overflow-x-auto mt-2 bg-[hsl(var(--surface-1))/0.42] [scrollbar-width:thin]">
-      <table className="w-full min-w-[1024px] table-fixed [&_td]:align-top text-data">
+      <table className="report-evidence-table w-full min-w-[1024px] table-fixed [&_td]:align-top text-data">
         <thead>
           <tr className="bg-white/[0.035] text-micro font-medium tracking-normal text-muted-foreground">
             <th className="text-left font-normal px-3 py-2 w-[104px]">Kind</th>
@@ -217,7 +217,7 @@ function BucketTable({ rows, empty, reviews }: { rows: Artifact[]; empty: string
 /* ------------------------------------------------------------------ */
 function SectionHeader({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-2 mt-6 mb-3">
+    <div className="report-section-head flex items-center gap-2 mt-6 mb-3">
       <span className="w-[3px] h-4 bg-[hsl(var(--info))] rounded-sm shadow-[0_0_16px_hsl(var(--info)/0.55)]" />
       <h3 className="text-title font-semibold tracking-normal text-[hsl(var(--info))]">
         {children}
