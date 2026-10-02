@@ -1,5 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, cleanup, fireEvent, screen, within } from "@testing-library/react";
+import { explainConfidence } from "@/lib/confidence";
+import { displayConfidence } from "@/lib/display-confidence";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ReviewState } from "@/lib/review";
 import { labelForArtifact } from "@/lib/intel";
@@ -225,6 +227,18 @@ describe("Evidence board row — the confidence slot", () => {
     const { slot } = renderRow(art());
     openInfo(slot);
     expect(screen.getByText("Machine score: 50 (cap 50)")).toBeInTheDocument();
+  });
+
+  // Codex on #679: the header printed explainConfidence(...).final, a separate
+  // re-derivation, beside the canonical "Machine score" line — two competing
+  // numbers in the one place an analyst-confirmed row still shows its score.
+  it("the ⓘ popover headline IS the canonical score, never a re-derived total", () => {
+    const a = art();
+    expect(explainConfidence(a).final).not.toBe(displayConfidence(a).effective);
+    const { slot } = renderRow(a, "key");
+    openInfo(slot);
+    const headline = document.querySelector<HTMLElement>("[data-score-headline]")!;
+    expect(headline.textContent).toBe(String(displayConfidence(a).effective));
   });
 });
 
