@@ -1357,7 +1357,9 @@ All colors MUST be HSL.
     position: static !important;
     width: 100% !important;
     height: auto !important;
-    padding: 24px !important;
+    /* The page margin is the gutter. A 24px inset on top of it cost every
+       evidence table ~7% of the printable width. */
+    padding: 0 !important;
     background: white !important;
     color: black !important;
     font-size: 11pt !important;
@@ -1368,11 +1370,13 @@ All colors MUST be HSL.
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
-  /* Keep logical blocks intact across page breaks. */
+  /* Keep logical blocks intact across page breaks. A TABLE is deliberately not
+     in this list: a 30-row evidence bucket cannot fit one page, and asking it
+     to stay whole only pushed it to the next page, orphaning its heading and
+     leaving the rest of the page blank. It breaks between rows instead. */
   body.printing-report #case-report-print-root section,
   body.printing-report #case-report-print-root .report-kpi,
   body.printing-report #case-report-print-root .report-cover,
-  body.printing-report #case-report-print-root table,
   body.printing-report #case-report-print-root tr,
   body.printing-report #case-report-print-root li {
     break-inside: avoid;
@@ -1393,6 +1397,239 @@ All colors MUST be HSL.
     border: 2px solid #000 !important;
   }
   .no-print { display: none !important; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PRINT LEGIBILITY — the paper register (2026-10-02).
+
+   "PDF (print) · as displayed" is `window.print()` on the live page, and the
+   app is dark-only: every token above is ink-on-graphite. The print block above
+   paints the report root white but never touched the TOKENS, so every
+   `text-foreground` (93% lightness) printed as near-white on white paper, the
+   graphite shell printed as black bars down both sides of every page, source
+   chips printed as black pills clipped to one line, and the evidence tables
+   (min-width 1024px) ran off the right edge with the Reasoning column cut.
+
+   The fix is the token layer, not a per-element repaint: under print, :root
+   gets a light register, so every surface that reads a token follows it. Rules:
+     - Everything here is inside @media print. The screen register is untouched.
+     - Every ink token clears 4.5:1 on white AND on the lightest surface it can
+       land on. Nothing muted is lighter than #616161 (6.2:1 on white).
+     - Hue still belongs to authority. The confidence ramp stays neutral and
+       ORDINAL — on paper a stronger number is DARKER ink, not brighter.
+     - `--film` flips to black, because Tailwind's `white` is remapped onto it:
+       every `bg-white/5` wash and `border-white/10` hairline becomes a faint
+       grey wash and hairline on paper instead of an invisible white one.
+   Pinned by src/test/print-wiring.test.ts.
+   ══════════════════════════════════════════════════════════════════════════ */
+@media print {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 7%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 7%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 7%;
+    --primary: 0 0% 9%;
+    --primary-foreground: 0 0% 100%;
+    --primary-glow: 183 60% 26%;
+    --secondary: 0 0% 95%;
+    --secondary-foreground: 0 0% 7%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 27%;     /* #454545 — 9.7:1 on white */
+    --subtle-foreground: 0 0% 33%;    /* #545454 — 7.5:1 */
+    --faint-foreground: 0 0% 38%;     /* #616161 — 6.2:1, the floor */
+    --accent: 0 0% 94%;
+    --accent-foreground: 0 0% 7%;
+    --destructive: 352 78% 38%;
+    --destructive-foreground: 0 0% 100%;
+
+    --info: 0 0% 30%;
+    --success: 152 70% 24%;
+    --warning: 32 90% 28%;
+    --danger: 358 70% 40%;
+    --evidence: 215 16% 35%;
+    --info-muted: 191 40% 94%;
+    --success-muted: 152 40% 93%;
+    --warning-muted: 38 80% 92%;
+    --danger-muted: 352 60% 94%;
+
+    --confidence-high: 212 35% 18%;
+    --confidence-high-glow: 212 40% 24%;
+    --confidence-mid: 213 20% 32%;
+    --confidence-low: 214 14% 40%;
+    --highconf: 212 35% 18%;
+    --conf-confirmed: 212 35% 16%;
+    --conf-confirmed-glow: 212 40% 24%;
+    --conf-likely: 212 25% 26%;
+    --conf-possible: 213 18% 34%;
+    --conf-weak: 214 14% 40%;
+    --conf-unverified: 215 13% 44%;
+
+    --authority-verified: 152 60% 26%;
+    --authority-infrastructure: 206 75% 32%;
+    --authority-probable: 146 30% 30%;
+    --authority-review: 35 85% 30%;
+    --authority-weak: 0 0% 40%;
+    --authority-conflict: 358 70% 40%;
+    --authority-quarantine: 220 6% 38%;
+    --authority-failed: 216 13% 42%;
+
+    --surface-0: 0 0% 100%;
+    --surface-1: 0 0% 98.5%;
+    --surface-2: 0 0% 96%;
+    --surface-3: 0 0% 92%;
+    --surface-4: 0 0% 88%;
+    --border: 0 0% 80%;
+    --border-subtle: 0 0% 85%;
+    --border-strong: 0 0% 70%;
+    --input: 0 0% 96%;
+    --ring: 183 60% 30%;
+    --film: 0 0% 0%;
+    --brand: 183 60% 28%;
+    --brand-deep: 183 55% 22%;
+    --intel-blue: 0 0% 30%;
+    --intel-violet: 0 0% 30%;
+
+    --kind-identity: 213 70% 36%;
+    --kind-contact: 193 75% 28%;
+    --kind-social: 266 55% 42%;
+    --kind-infrastructure: 172 65% 24%;
+    --kind-breach: 352 75% 40%;
+    --kind-web: 128 50% 26%;
+    --kind-crypto: 36 90% 28%;
+    --kind-other: 215 13% 38%;
+
+    --speaker-analyst: 210 40% 15%;
+    --speaker-agent: 0 0% 30%;
+    --speaker-tool: 0 0% 33%;
+    --speaker-system: 0 0% 33%;
+    --speaker-failed: 0 0% 33%;
+
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 0 0% 20%;
+    --sidebar-border: 0 0% 85%;
+  }
+
+  /* No black page, no black bars. The shell's `bg-background` follows the token
+     above; html/body are pinned too because the body background propagates to
+     the whole canvas when "Background graphics" is on. */
+  html, body { background: #fff !important; color: #111 !important; }
+
+  /* Chrome off the page, not just invisible. The block above only sets
+     `visibility: hidden`, which still reserves layout space — the hidden case
+     bar and tab strip pushed the report down page one. Everything in the app
+     that neither contains the report nor sits inside it is removed, and the
+     report's own ancestors lose their padding, borders and fills so the report
+     uses the full printable width. */
+  body.printing-report #root *:not(:has(#case-report-print-root)):not(#case-report-print-root, #case-report-print-root *) {
+    display: none !important;
+  }
+  body.printing-report #root *:has(#case-report-print-root) {
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    max-width: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  /* Alpha ink. Tailwind's `/N` opacity modifier composites the ink toward the
+     paper, so `text-muted-foreground/70` — legible on graphite — lands near
+     #9a9a9a on white. On paper the token's own value is the hierarchy; the
+     modifier is dropped. Matched only as a bare class (start or after a space)
+     so a `hover:`-prefixed variant cannot repaint an element. */
+  #case-report-print-root :is([class^="text-foreground/"], [class*=" text-foreground/"]) { color: hsl(var(--foreground)) !important; }
+  #case-report-print-root :is([class^="text-muted-foreground/"], [class*=" text-muted-foreground/"]) { color: hsl(var(--muted-foreground)) !important; }
+  #case-report-print-root :is([class^="text-subtle-foreground/"], [class*=" text-subtle-foreground/"]) { color: hsl(var(--subtle-foreground)) !important; }
+  #case-report-print-root :is([class^="text-destructive/"], [class*=" text-destructive/"]) { color: hsl(var(--destructive)) !important; }
+  #case-report-print-root :is([class^="text-primary/"], [class*=" text-primary/"]) { color: hsl(var(--primary)) !important; }
+  #case-report-print-root :is([class^="text-white/"], [class*=" text-white/"]) { color: hsl(var(--foreground)) !important; }
+  /* Same for whole-element dimming (excluded rows are `opacity-55`): on paper
+     it greys the text below AA. The excluded row keeps its struck-through value
+     and its section heading, which is what says "excluded". */
+  #case-report-print-root [class*="opacity-"] { opacity: 1 !important; }
+
+  /* Source chips. On screen a fixed-height pill (`h-5`); a long label wrapped to
+     a second line that fell outside the pill and printed invisibly
+     ("minimax_web_search (nbcnews.com)" came out as "·RCH"). */
+  #case-report-print-root .source-chip {
+    height: auto !important;
+    min-height: 0 !important;
+    padding: 1px 4px !important;
+    white-space: normal !important;
+    overflow: visible !important;
+    overflow-wrap: anywhere !important;
+    line-height: 1.3 !important;
+    font-size: 7pt !important;
+    letter-spacing: 0.02em !important;
+    background: hsl(var(--surface-2)) !important;
+    color: hsl(var(--foreground)) !important;
+    border-color: hsl(var(--border)) !important;
+  }
+
+  /* Tables. On screen they scroll horizontally inside a min-width table; paper
+     cannot scroll, so the last column (Reasoning) was cut at the page edge.
+     Fit the page instead: no min-width, automatic column sizing, wrapping
+     cells and a smaller face. A row is never split across pages. */
+  #case-report-print-root table {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    table-layout: auto !important;
+    font-size: 8pt !important;
+  }
+  #case-report-print-root th,
+  #case-report-print-root td {
+    width: auto !important;
+    min-width: 0 !important;
+    padding: 3px 4px !important;
+    letter-spacing: 0 !important;
+  }
+  /* Body cells drop to 8pt; a cell already set in the eyebrow/micro face
+     (Kind) keeps its smaller size rather than growing to 8pt. */
+  #case-report-print-root :is(th, td):not(.text-eyebrow, .text-micro) { font-size: 8pt !important; }
+  #case-report-print-root td { overflow-wrap: anywhere; }
+  #case-report-print-root td * { letter-spacing: 0 !important; }
+  /* Chips and badges inside a cell may wrap; a short nowrap cell (a date) may not. */
+  #case-report-print-root td *,
+  #case-report-print-root th * {
+    white-space: normal !important;
+    max-width: 100% !important;
+  }
+  /* The evidence buckets (Confirmed / Probable / Leads / Excluded /
+     Contradictions) are seven columns. Left to automatic sizing, the long
+     Value column starves Captured and Reasoning; fixed shares keep Reasoning —
+     the column that was being cut — the widest after Value. */
+  #case-report-print-root table.report-evidence-table { table-layout: fixed !important; }
+  #case-report-print-root .report-evidence-table th:nth-child(1) { width: 11% !important; }
+  #case-report-print-root .report-evidence-table th:nth-child(2) { width: 16% !important; }
+  #case-report-print-root .report-evidence-table th:nth-child(3) { width: 17% !important; }
+  #case-report-print-root .report-evidence-table th:nth-child(4) { width: 16% !important; }
+  #case-report-print-root .report-evidence-table th:nth-child(5) { width: 10% !important; }
+  #case-report-print-root .report-evidence-table th:nth-child(6) { width: 9% !important; }
+  #case-report-print-root .report-evidence-table th:nth-child(7) { width: 21% !important; }
+  #case-report-print-root .report-evidence-table [class*="min-w-"] { min-width: 0 !important; }
+  #case-report-print-root thead { display: table-header-group; }
+  #case-report-print-root tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* Single-line truncation is a screen affordance; paper has no hover title.
+     The block above already lifts the clip, which let a nowrap URL run off the
+     page edge — so the full value wraps instead. */
+  #case-report-print-root .truncate {
+    white-space: normal !important;
+    overflow-wrap: anywhere !important;
+    text-overflow: clip !important;
+  }
+
+  /* Keep a heading with what it heads: a section title is never the last line
+     on a page, and the collapsible Analytics box does not print as an empty
+     bordered frame at the foot of one. */
+  #case-report-print-root .report-section-head,
+  #case-report-print-root summary { break-after: avoid; page-break-after: avoid; }
 }
 
 /* ============================================================
