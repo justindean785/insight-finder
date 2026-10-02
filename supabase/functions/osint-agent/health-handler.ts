@@ -36,6 +36,7 @@ import {
 } from "./lib/preflight-pivot.ts";
 import { positionalPairingSelfTest } from "./message-sanitize.ts";
 import { streamErrorDetailSelfTest } from "./stream-error-classify.ts";
+import { contradictionClaimSelfTest } from "./contradictions.ts";
 import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
@@ -441,6 +442,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Do stream errors record the provider's status and code WITHOUT the response
   // body (stream-error-classify.ts)? A self-test on a synthetic error, pure.
   r.checks.stream_error_detail = streamErrorDetailSelfTest();
+
+  // Do excluded rows, relatives and one-word names stay OUT of the name/location
+  // conflict check (contradictions.ts makesSubjectClaim)? A self-test on a fixed
+  // synthetic case, pure. Its PRESENCE proves this build is live.
+  r.checks.contradiction_claims = contradictionClaimSelfTest();
 
   // Is `stop_reason = budget_exhausted` attributed per INVOCATION (#611)? The
   // ceiling latch is request-owned (index.ts `budgetCeiling`, set by
