@@ -28,7 +28,7 @@ export type ToolOutcome = "ok" | "skipped" | "empty" | "failed";
 // Matching any of these means the tool did not really run (or its result was
 // intentionally discarded) — it must never count as a provider failure.
 const SKIP_RE =
-  /execution plan required|duplicate call|burst limit|same-tool (?:cycle limit|budget)|paid-call (?:cycle limit|budget)|internal (?:paid-call|run|per-tool) cap reached|active-call concurrency|internal concurrency cap|already has a call in-flight|high-cost tool already used|weak lead blocked|expected value\s+\d+\s+below|disabled after \d+ consecutive|degraded this run|suppressed for investigation|selector blacklisted|unavailable:\s*(?:disabled|missing_key|gated)|\bgated\b|not configured|provider disabled in config|rate-limited\s*[—-]\s*provider|provider\b[^]*?\bsuppressed|5xx\s*[—-]\s*provider|finalize window open|run tool-call cap reached|redundant correlate|dead target:/i;
+  /execution plan required|duplicate call|burst limit|same-tool (?:cycle limit|budget)|paid-call (?:cycle limit|budget)|internal (?:paid-call|run|per-tool) cap reached|active-call concurrency|internal concurrency cap|already has a call in-flight|high-cost tool already used|weak lead blocked|expected value\s+\d+\s+below|disabled after \d+ consecutive|degraded this run|suppressed for investigation|selector blacklisted|unavailable:\s*(?:disabled|missing_key|gated)|\bgated\b|not configured|provider disabled in config|rate-limited\s*[—-]\s*provider|provider\b[^]*?\bsuppressed|5xx\s*[—-]\s*provider|finalize window open|run tool-call cap reached|redundant correlate|dead target:|disabled for thread/i;
 
 // Tool ran, but the target has no record. A successful negative, not a failure.
 const EMPTY_RE = /no usable result|skipped\s*[—-]\s*no usable result|not found\b/i;
@@ -120,6 +120,15 @@ export const PROVEN_EMPTY_PREDICATES: Readonly<Record<string, EmptyPredicate>> =
   // an empty `records` array excludes it. Keep it that way.
   gleif_lei_search: (r) =>
     r.count === 0 && r.fuzzy !== true && isArr(r.records) && r.records.length === 0,
+
+  // `found:false` + `upstream_status:404` is emitted by lib/negative-lookup.ts on InternetDB's
+  // HTTP-404 branch ONLY — a 2xx never carries `found`. No parse overlap.
+  shodan_internetdb: (r) => r.found === false && r.upstream_status === 404,
+
+  // `found:false` + `target_status` 404/410 is emitted only when Jina's own header says the
+  // ORIGIN answered 404/410. Any other origin error is a failed read, never a negative.
+  jina_reader_scrape: (r) =>
+    r.found === false && (r.target_status === 404 || r.target_status === 410),
 
   oathnet_stealer_search: (r) => r.count === 0 && isArr(r.items) && r.items.length === 0,
   oathnet_victims_search: (r) => r.count === 0 && isArr(r.items) && r.items.length === 0,
