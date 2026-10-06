@@ -58,9 +58,14 @@ function fields(group: string): Field[] {
   return out;
 }
 
-// deno-lint-ignore no-explicit-any
-function schemaShape(schema: any): Record<string, any> | null {
-  let s = schema;
+type ZodLike = {
+  shape?: Record<string, ZodLike>;
+  isOptional?: () => boolean;
+  _def?: { schema?: ZodLike; innerType?: ZodLike };
+};
+
+function schemaShape(schema: unknown): Record<string, ZodLike> | null {
+  let s = schema as ZodLike | null | undefined;
   for (let i = 0; s && i < 4; i++) {
     if (s.shape && typeof s.shape === "object") return s.shape;
     s = s._def?.schema ?? s._def?.innerType ?? null; // ZodEffects / ZodOptional wrappers
