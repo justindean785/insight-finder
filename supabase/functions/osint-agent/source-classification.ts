@@ -323,19 +323,30 @@ export function negativeSourceQualifierRuleDisabled(
   return (env("NEGATIVE_QUALIFIER_CLASS_DISABLED") ?? "").trim().toLowerCase() === "true";
 }
 
+// Anchored to the START of the qualifier on purpose. An UNANCHORED "blocked"/"timeout"/"no" matched positive
+// observations whose parenthetical merely contained the word — "(VPN exit node, blocked by 3 blocklists)",
+// "(timeout on 1 of 4 sources, 2 breaches found)", "(no longer registered)" — and stripped their class, which is
+// a false deflation of a real finding (found in review of #693). Only the SHAPES a failed lookup actually writes
+// are matched: a leading count of zero, an HTTP 404/410, "no <result-noun>", a bare "not found", and the
+// pipeline's own markers.
 const NEGATIVE_QUALIFIER_BODY_RE = new RegExp(
   [
-    String.raw`^(?:0(?![\d.,])|no\b|zero\b|nil\b|none\b)`, // "0 hits", "no PTR", "none found"; NOT "0.92 match"
+    String.raw`^(?:0(?![\d.,])|zero\b|nil\b|none\b)`, // "0 hits", "none found"; NOT "0.92 match"
+    String.raw`^no\s+(?:hits?|results?|match(?:es)?|records?|data|ptr|open\b|findings?|entries|accounts?|subdomains?|snapshots?|breach(?:es)?)\b`, // "no PTR"; NOT "no longer registered"
     String.raw`^(?:http\s*)?(?:404|410)\b`, // "404", "404 — no open ports"
     String.raw`\bnot[ -]?found\b`,
     String.raw`\bnot completed\b`,
     String.raw`\bcircuit[- ]?broken\b`,
     String.raw`\bfinalize window\b`,
-    String.raw`\b(?:timed? ?out|timeout)\b`,
-    String.raw`\b(?:blocked|captcha)\b`,
+    String.raw`^(?:timed? ?out|timeout)\b`, // "(timeout)", "(timed out after 25s)"
+    String.raw`^(?:blocked|captcha)\s*(?:$|[—–:,;-])`, // "(blocked)", "(captcha)"; NOT "(blocked by 3 blocklists)"
   ].join("|"),
   "i",
 );
+
+/** A qualifier that ALSO reports something found is a mixed result, not a negative one:
+ *  "(timeout on 1 of 4 sources, 2 breaches found)". The positive part keeps the token. */
+const POSITIVE_COUNT_IN_QUALIFIER_RE = /\b[1-9]\d*\s+(?:hits?|breach(?:es)?|results?|matches?|accounts?|records?|profiles?)\b/i;
 
 /** Split on top-level source separators only — a separator inside a parenthetical
  *  ("exa_search (DOJ release + CBS SF)") belongs to ONE token. */
@@ -365,6 +376,7 @@ export function isNegativeSourceToken(token: string): boolean {
   if (!m) return false;
   const body = m[1].trim();
   if (!body || qualifierHost(body)) return false;
+  if (POSITIVE_COUNT_IN_QUALIFIER_RE.test(body)) return false;
   return NEGATIVE_QUALIFIER_BODY_RE.test(body);
 }
 

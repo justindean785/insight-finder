@@ -18,6 +18,8 @@
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { applyEvidenceCapsWithDistinctBreachIdentities, type CapResult } from "./confidence.ts";
 import {
+  classifySourceLabel,
+  isNegativeSourceToken,
   negativeSourceQualifierRuleDisabled,
   negativeSourceQualifierSelfTest,
   sanitizeSourceLabelForEvidence,
@@ -136,4 +138,35 @@ Deno.test("the /health self-test engages and reports ok", () => {
   const t = negativeSourceQualifierSelfTest();
   assert(t.ok, t.detail);
   assert(t.detail.length > 0);
+});
+
+// ── Review of #693: the rule must not strip POSITIVE observations ───────────────
+// The first version matched "blocked" / "timeout" / "captcha" / "no" ANYWHERE in the qualifier, so a real finding
+// whose parenthetical merely CONTAINED the word lost its source class. These are the shapes that proved it.
+
+Deno.test("review: a positive observation whose qualifier merely contains a negative-looking word is kept", () => {
+  const keep = [
+    "ip_intel (VPN exit node, blocked by 3 blocklists) + oathnet_lookup (3 hits)",
+    "serus_darkweb_scan (timeout on 1 of 4 sources, 2 breaches found) + ip_intel",
+    "whois_lookup (no longer registered) + crtsh_subdomains",
+    "exa_search (profile page behind a captcha wall, snippet matched) + username_sweep (hits 8/99)",
+  ];
+  for (const label of keep) assertEquals(sanitizeSourceLabelForEvidence(label), label, label);
+  // and the class the mixed token earned is still earned
+  const mixed = classifySourceLabel("serus_darkweb_scan (timeout on 1 of 4 sources, 2 breaches found) + ip_intel");
+  assert(mixed.includes("breach") && mixed.includes("infra_scan"), JSON.stringify(mixed));
+});
+
+Deno.test("review: the failure shapes a failed lookup actually writes are still negative", () => {
+  for (const q of [
+    "shodan_internetdb (404)", "oathnet_stealer_search (0 hits)", "hackertarget (no PTR)", "x (no results)", "x (no match)",
+    "x (no open ports)", "x (not found)", "x (timeout)", "x (timed out after 25s)", "x (blocked)", "x (captcha)",
+    "x (circuit-broken)", "x (finalize window — not completed)",
+  ]) assert(isNegativeSourceToken(q), q);
+});
+
+Deno.test("review: a qualifier that reports something found is mixed, not negative", () => {
+  for (const q of ["x (timeout on 1 of 4 sources, 2 breaches found)", "x (404 on one host, 3 accounts found)", "x (0 passwords, 5 records)"]) {
+    assert(!isNegativeSourceToken(q), q);
+  }
 });
