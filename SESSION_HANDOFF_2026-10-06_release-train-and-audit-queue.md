@@ -85,8 +85,10 @@ mechanical merge-of-`main` and a re-test before it can merge.
 
 **Recommended order, one release per go-ahead:** #693 (its Vercel effect is immediate — warn JD) →
 #694 → #667 (then #666) → #698 → #703 → **#701 last**. #701 must not be opted in until
-`scripts/ops/leakcheck-probe-verify.ts --spend-2` PASSES with the real key in JD's own shell (it spends
-exactly 2 lookups; the key must never be pasted into chat). Frontend PRs are independent — one at a time.
+`scripts/ops/leakcheck-probe-verify.ts --spend-2` PASSES with the real key in JD's own shell (it spends 2
+lookups for certain, plus at most 1 more if the probe itself costs quota — worst case 3 units; it exits 0 **only**
+on PASS; the key must never be pasted into chat; run it while no scan is running). Frontend PRs are independent —
+one at a time.
 
 ## 5. The release recipe, and every trap this session paid for
 

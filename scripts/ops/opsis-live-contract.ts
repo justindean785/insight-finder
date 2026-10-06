@@ -16,10 +16,21 @@ const KEY = Deno.env.get("OPSIS_API_KEY") ?? "";
 const argv = Deno.args;
 const searchArg = argv[argv.indexOf("--search") + 1];
 
+// Applied to EVERY logged response. A search response can already carry a terminal run with its accumulated results
+// (the production client supports that shape), so `results` is reduced to its shape at any depth, and the value-bearing
+// keys are withheld wherever else they appear. Only structure is printed — never account URLs or metadata.
+const WITHHELD_KEYS = new Set(["user_id", "value", "metadata"]);
 const redact = (v: unknown): unknown => {
   if (Array.isArray(v)) return v.map(redact);
   if (v && typeof v === "object") {
-    return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, k === "user_id" ? "<redacted>" : redact(x)]));
+    return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => {
+      if (WITHHELD_KEYS.has(k)) return [k, "<withheld>"];
+      if (k === "results" && Array.isArray(x)) {
+        const rows = x as Array<Record<string, unknown>>;
+        return [k, { count: rows.length, keys: [...new Set(rows.flatMap((r) => (r && typeof r === "object" ? Object.keys(r) : [])))].sort(), values_withheld: true }];
+      }
+      return [k, redact(x)];
+    }));
   }
   return v;
 };
@@ -47,16 +58,33 @@ if (!KEY) {
 
 await call("GET /v1/me", "/v1/me");
 const credits = await call("GET /v1/credits", "/v1/credits");
-const c = credits.body;
+const c = credits.body ?? {};
+// A verdict needs POSITIVE evidence of spendable credit. A failed request, a changed or missing shape, or a zero balance
+// with the fallback on but no subscription credits is NOT "accepted" — it is either UNKNOWN or a 402.
+const api = typeof c.api_credits_remaining === "number" ? c.api_credits_remaining : null;
+const sub = typeof c.credits_remaining === "number" ? c.credits_remaining : null;
+const fallback = c.use_subscription_credits;
+const verdict = credits.status !== 200 || api === null
+  ? `UNKNOWN — /v1/credits answered HTTP ${credits.status} without a numeric api_credits_remaining, so nothing is established about whether a search would be accepted.`
+  : api > 0
+    ? "A search should be accepted (API credits are available)."
+    : fallback === true
+      ? (sub === null
+        ? "UNKNOWN — the subscription fallback is on but credits_remaining is missing, so spendable credit is not established."
+        : sub > 0
+          ? "A search should be accepted via the subscription fallback (API credits are 0)."
+          : "A search will 402 (insufficient_api_credits): the fallback is on but subscription credits are also 0 — buy API credits or wait for the period to reset.")
+      : fallback === false
+        ? "A search will 402 (insufficient_api_credits): enable 'subscription fallback' in Opsis API settings, or buy API credits."
+        : "UNKNOWN — API credits are 0 and use_subscription_credits is missing or not a boolean, so fallback is not established.";
 console.log("\n## What lib/opsis.ts will conclude from /v1/credits");
 console.log({
+  http_status: credits.status,
   api_credits_remaining: c.api_credits_remaining,
   use_subscription_credits: c.use_subscription_credits,
   subscription_credits_remaining: c.credits_remaining,
   period_end: c.period_end,
-  verdict: c.api_credits_remaining === 0 && c.use_subscription_credits === false
-    ? "A search will 402 (insufficient_api_credits): enable 'subscription fallback' in Opsis API settings, or buy API credits."
-    : "A search should be accepted.",
+  verdict,
 });
 
 if (searchArg && searchArg.includes(":")) {
