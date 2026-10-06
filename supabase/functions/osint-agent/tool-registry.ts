@@ -137,6 +137,7 @@ import { trimExaResults, archiveAttachment } from "./archiver.ts";
 // model after the runtime has removed it.
 import { PROVIDER_REQUIREMENTS } from "./capabilities.ts";
 import { agentMemoryOrFilter } from "./pgrest.ts";
+import { shapeShodanResponse, shapeJinaBody } from "./lib/negative-lookup.ts";
 
 /**
  * The REAL tool vocabulary, for G1's queued-placeholder gate.
@@ -4668,7 +4669,9 @@ export function buildTools(ctx: ToolContext) {
         try {
           const r = await fetchT(`https://internetdb.shodan.io/${encodeURIComponent(ip)}`, {}, 12_000);
           const data = await r.json().catch(() => ({}));
-          return { ok: r.ok, status: r.status, data };
+          // 404 = "no InternetDB record for this IP": a proven negative, not a dead
+          // endpoint (see lib/negative-lookup.ts). Every other status is unchanged.
+          return shapeShodanResponse(r.status, r.ok, data);
         } catch (e) { return { error: String(e) }; }
       },
     }),
@@ -4749,7 +4752,9 @@ export function buildTools(ctx: ToolContext) {
             return { error: `jina ${r.status}`, status: r.status, url: clean, hint };
           }
           const text = await r.text();
-          return { ok: true, url: clean, markdown: text.slice(0, maxChars), truncated: text.length > maxChars };
+          // A 200 can wrap an ORIGIN error ("Warning: Target URL returned error 404").
+          // shapeJinaBody keeps that out of the evidence stream — see lib/negative-lookup.ts.
+          return shapeJinaBody(clean, text, maxChars);
         } catch (e) {
           // Include the URL on the timeout/abort path too — without it, a
           // failed scrape in the tool trace shows only "AbortError" with no
