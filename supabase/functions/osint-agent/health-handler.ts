@@ -38,7 +38,7 @@ import { positionalPairingSelfTest } from "./message-sanitize.ts";
 import { streamErrorDetailSelfTest } from "./stream-error-classify.ts";
 import { contradictionClaimSelfTest } from "./contradictions.ts";
 import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
-import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
+import { clusterBookkeepingSelfTest, legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 import { sourceOriginRulesSelfTest } from "./source-classification.ts";
@@ -482,6 +482,13 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // from the HOST (source-classification.ts classifyOriginHost)? Pure. Its PRESENCE
   // proves the build is live; ok:false means a rule misclassified its own probe.
   r.checks.source_origin_rules = sourceOriginRulesSelfTest();
+
+  // Are the agent's own setup rows (triage_decision / cluster_decision / coverage_audit /
+  // tool_audit) kept out of identity clusters? A row naming the seed handle used to join
+  // the subject's cluster and become the anchor every later merge was logged against.
+  // Pure. PRESENCE proves the deployed bundle; ok:false = the rule failed its own probe.
+  // Kill switch: CLUSTER_BOOKKEEPING_INERT_DISABLED.
+  r.checks.cluster_bookkeeping_inert = clusterBookkeepingSelfTest();
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure
