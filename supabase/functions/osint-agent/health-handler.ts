@@ -19,7 +19,7 @@ import {
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
-import { opsisHealthDetail, opsisKillSwitchOn } from "./lib/opsis.ts";
+import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn } from "./lib/opsis.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
@@ -432,7 +432,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Is Opsis configured, switched off, or absent (lib/opsis.ts)? Presence only, no
   // network call. Its PRESENCE is the behavioural proof that the build carrying
   // the opsis_* tools is live; the detail says whether they can run.
-  r.checks.opsis = opsisHealthDetail(!!OPSIS_API_KEY, opsisKillSwitchOn());
+  r.checks.opsis = opsisHealthDetail(!!OPSIS_API_KEY, opsisKillSwitchOn(), !opsisCreditHintDisabled());
 
   // Does the DEPLOYED sanitizer pair tool-calls by POSITION (message-sanitize.ts)?
   // A self-test, not a label: it runs the live sanitizer on a fixed synthetic

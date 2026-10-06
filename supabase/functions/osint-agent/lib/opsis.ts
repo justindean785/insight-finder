@@ -39,6 +39,11 @@ export const OPSIS_BASE_URL = "https://api.useopsis.com";
 export const OPSIS_API_KEY_ENV = "OPSIS_API_KEY";
 /** Kill switch, read at CALL TIME: `OPSIS_DISABLED=true` stops every opsis_* call. */
 export const OPSIS_DISABLED_ENV = "OPSIS_DISABLED";
+/**
+ * Kill switch, read at CALL TIME: `OPSIS_CREDIT_HINT_DISABLED=true` restores the bare 402 — no follow-up
+ * credit read, none of the `credit_state` fields.
+ */
+export const OPSIS_CREDIT_HINT_DISABLED_ENV = "OPSIS_CREDIT_HINT_DISABLED";
 
 /** Hard ceiling on one opsis_search / opsis_results call, start to return. */
 export const OPSIS_POLL_DEADLINE_MS = 25_000;
@@ -58,6 +63,8 @@ export const OPSIS_KINDS: readonly OpsisKind[] = ["username", "email", "domain"]
 export interface OpsisDeps {
   apiKey: string | undefined;
   disabled: boolean;
+  /** Explain a 402 with one free `/v1/credits` read. Undefined means ON; `opsisDepsFromEnv` sets it from the kill switch. */
+  creditHint?: boolean;
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   now: () => number;
   sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -86,11 +93,16 @@ export function opsisKillSwitchOn(env: (k: string) => string | undefined = (k) =
   return (env(OPSIS_DISABLED_ENV) ?? "").trim().toLowerCase() === "true";
 }
 
+export function opsisCreditHintDisabled(env: (k: string) => string | undefined = (k) => Deno.env.get(k)): boolean {
+  return (env(OPSIS_CREDIT_HINT_DISABLED_ENV) ?? "").trim().toLowerCase() === "true";
+}
+
 /** Production deps. Env is read here, at CALL time, so the kill switch needs no deploy. */
 export function opsisDepsFromEnv(signal?: AbortSignal): OpsisDeps {
   return {
     apiKey: Deno.env.get(OPSIS_API_KEY_ENV) || undefined,
     disabled: opsisKillSwitchOn(),
+    creditHint: !opsisCreditHintDisabled(),
     fetch: (url, init) => fetch(url, init),
     now: () => Date.now(),
     sleep: abortableSleep,
@@ -110,12 +122,15 @@ export function opsisGate(deps: Pick<OpsisDeps, "apiKey" | "disabled">): Out | n
 }
 
 /** `/health` detail for `checks.opsis`. Presence only — no network. */
-export function opsisHealthDetail(hasKey: boolean, disabled: boolean): { ok: true; detail: string } {
+export function opsisHealthDetail(hasKey: boolean, disabled: boolean, creditHint = true): { ok: true; detail: string } {
   if (disabled) return { ok: true, detail: `disabled via ${OPSIS_DISABLED_ENV}` };
   if (!hasKey) return { ok: true, detail: `not configured (${OPSIS_API_KEY_ENV} unset); opsis tools removed from the schema` };
   return {
     ok: true,
-    detail: `configured; search bounded at ${OPSIS_POLL_DEADLINE_MS / 1000}s, partial runs resume via opsis_results`,
+    // "402 credit hint on" is the proof-of-deploy string for the credit-reason change: it exists only in code that has it.
+    detail: `configured; search bounded at ${OPSIS_POLL_DEADLINE_MS / 1000}s, partial runs resume via opsis_results; ${
+      creditHint ? "402 credit hint on" : `402 credit hint off (${OPSIS_CREDIT_HINT_DISABLED_ENV})`
+    }`,
   };
 }
 
@@ -162,6 +177,51 @@ async function httpFailure(res: Response, extra: Out = {}): Promise<Out> {
     ...(providerMessage ? { provider_message: providerMessage } : {}),
     ...extra,
   };
+}
+
+// ── 402: which kind of "out of credits"? ─────────────────────────────────────
+//
+// Opsis spends the separate prepaid API balance first. Subscription credits are spendable on an API search
+// ONLY when "subscription fallback" is switched on in the Opsis API settings — it defaults OFF — and
+// otherwise an empty API balance is a 402 `insufficient_api_credits` even with subscription credits left
+// (https://useopsis.com/docs/api, "Credits"). The 402 body is the same either way, so the analyst could not
+// tell "buy credits" from "flip a setting". One FREE read of `/v1/credits` (lookups are always free, per the
+// docs) says which. Only constants and bounded integers come back — never provider text.
+
+const CREDIT_HINTS = {
+  subscription_fallback_off:
+    "API credits are 0 and subscription credits are not spendable on API searches until subscription fallback is enabled in the Opsis API settings (or API credits are bought)",
+  all_credits_exhausted: "API credits and subscription credits are both used up — buy API credits or wait for the monthly reset",
+} as const;
+
+function creditCount(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.min(Math.floor(v), 1_000_000) : null;
+}
+
+/** `{}` when the cause cannot be established; never throws, never costs a credit. */
+async function creditState(deps: OpsisDeps): Promise<Out> {
+  if (deps.creditHint === false) return {};
+  try {
+    const res = await request(deps, "/v1/credits", { method: "GET" }, Math.min(OPSIS_REQUEST_TIMEOUT_MS, 4_000));
+    if (!res.ok) return { credit_state: "unknown" };
+    const body = await res.json() as Record<string, unknown>;
+    const api = creditCount(body?.api_credits_remaining);
+    const sub = creditCount(body?.credits_remaining);
+    const fallback = typeof body?.use_subscription_credits === "boolean" ? body.use_subscription_credits : null;
+    if (api === 0 && fallback === false && sub !== null && sub > 0) {
+      return {
+        credit_state: "subscription_fallback_off",
+        subscription_credits_remaining: sub,
+        credit_hint: CREDIT_HINTS.subscription_fallback_off,
+      };
+    }
+    if (api === 0 && sub === 0) {
+      return { credit_state: "all_credits_exhausted", credit_hint: CREDIT_HINTS.all_credits_exhausted };
+    }
+    return { credit_state: "unknown" };
+  } catch {
+    return { credit_state: "unknown" };
+  }
 }
 
 /** One request, never retried (a retried POST is a second paid search). */
@@ -371,7 +431,11 @@ export async function opsisSearch(
       code: "start_failed",
     };
   }
-  if (!res.ok) return await httpFailure(res);
+  if (!res.ok) {
+    const failure = await httpFailure(res);
+    // Only the credit refusal is explained; a billing adjustment (negative balance) is a different problem.
+    return failure.code === "insufficient_api_credits" ? { ...failure, ...(await creditState(deps)) } : failure;
+  }
   let started: OpsisRun;
   try {
     started = await res.json() as OpsisRun;
@@ -446,7 +510,7 @@ export async function opsisAccount(which: "balance" | "status", deps: OpsisDeps)
   // Only documented, non-identifying fields; no user_id.
   const fields = which === "balance"
     ? ["tier", "available_api_credits", "api_credits_remaining", "use_subscription_credits", "credits_remaining", "credits_used", "credits_allowed", "period_end"]
-    : ["tier", "api_access", "available_api_credits", "rate_limit_per_minute", "supports_streaming", "search_types"];
+    : ["tier", "api_access", "available_api_credits", "api_credits_remaining", "use_subscription_credits", "rate_limit_per_minute", "supports_streaming", "search_types"];
   const data: Out = {};
   for (const f of fields) if (f in body) data[f] = body[f];
   return { ok: true, source: "opsis", data };
