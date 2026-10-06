@@ -297,6 +297,130 @@ export function splitSourceLabels(label: string | null | undefined): string[] {
     .filter(Boolean);
 }
 
+// ── Negative-result qualifiers are not evidence ────────────────────────────────
+// A model-written source string routinely lists every tool it TRIED, with a
+// parenthetical saying what came back: "shodan_internetdb (404)",
+// "oathnet_stealer_search (0 hits)", "hackertarget (no PTR)". Classifying every
+// token unioned those classes, so a lookup that found NOTHING supplied the second
+// "independent" class: 11 of 14 IP rows on a live case (2026-10-06) read
+// "corroborated across 2 source classes: breach, infra_scan" at confidence 75-80
+// on the strength of a 404 and a 0-hit search. Nothing "checked and empty" can
+// corroborate anything.
+//
+// Deliberately DEFLATIONARY: a mis-parse can only under-count, never over-count.
+// A label with no negative token is returned byte-identical; a label that is
+// ENTIRELY negative keeps ONE head token so the row still carries a provenance
+// class (it just can never corroborate itself). The lasting fix is
+// call-to-artifact lineage (join to the call's real outcome); this is the interim
+// guard. Kill switch, read at CALL TIME: NEGATIVE_QUALIFIER_CLASS_DISABLED=true.
+export function negativeSourceQualifierRuleDisabled(
+  env: (k: string) => string | undefined = (k) => Deno.env.get(k),
+): boolean {
+  return (env("NEGATIVE_QUALIFIER_CLASS_DISABLED") ?? "").trim().toLowerCase() === "true";
+}
+
+const NEGATIVE_QUALIFIER_BODY_RE = new RegExp(
+  [
+    String.raw`^(?:0(?![\d.,])|no\b|zero\b|nil\b|none\b)`, // "0 hits", "no PTR", "none found"; NOT "0.92 match"
+    String.raw`^(?:http\s*)?(?:404|410)\b`, // "404", "404 — no open ports"
+    String.raw`\bnot[ -]?found\b`,
+    String.raw`\bnot completed\b`,
+    String.raw`\bcircuit[- ]?broken\b`,
+    String.raw`\bfinalize window\b`,
+    String.raw`\b(?:timed? ?out|timeout)\b`,
+    String.raw`\b(?:blocked|captcha)\b`,
+  ].join("|"),
+  "i",
+);
+
+/** Split on top-level source separators only — a separator inside a parenthetical
+ *  ("exa_search (DOJ release + CBS SF)") belongs to ONE token. */
+function splitSourceTopLevel(label: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of label) {
+    if (ch === "(") depth++;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    if (depth === 0 && (ch === "+" || ch === "|" || ch === ";" || ch === ",")) {
+      parts.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  parts.push(cur);
+  return parts.map((p) => p.trim()).filter(Boolean);
+}
+
+/** True when a source token's trailing parenthetical says the lookup found nothing.
+ *  A URL/host qualifier ("jina_reader_scrape (example.gov/not-found)") is a page
+ *  address, not a result, and is never negative. */
+export function isNegativeSourceToken(token: string): boolean {
+  const m = token.match(/\(([^()]*)\)\s*$/);
+  if (!m) return false;
+  const body = m[1].trim();
+  if (!body || qualifierHost(body)) return false;
+  return NEGATIVE_QUALIFIER_BODY_RE.test(body);
+}
+
+const stripQualifier = (token: string): string => token.replace(/\s*\([^()]*\)\s*$/, "").trim();
+
+/** Drop negative-result tokens from a set of source labels (compound labels, several
+ *  labels, or metadata labels alike). Identity when nothing is negative or the kill
+ *  switch is on; when EVERY token is negative, returns the single head token. */
+export function sanitizeSourceLabelsForEvidence(labels: readonly string[]): string[] {
+  const list = [...labels];
+  if (negativeSourceQualifierRuleDisabled()) return list;
+  const perLabel = list.map((l) => (typeof l === "string" && l ? splitSourceTopLevel(l) : []));
+  const anyNegative = perLabel.some((tokens) => tokens.some(isNegativeSourceToken));
+  if (!anyNegative) return list;
+  const anyPositive = perLabel.some((tokens) => tokens.some((t) => !isNegativeSourceToken(t)));
+  if (!anyPositive) {
+    const head = perLabel.flat().map(stripQualifier).find(Boolean);
+    return head ? [head] : list;
+  }
+  const out: string[] = [];
+  list.forEach((original, i) => {
+    const tokens = perLabel[i];
+    if (!tokens.length) { out.push(original); return; }
+    if (!tokens.some(isNegativeSourceToken)) { out.push(original); return; }
+    const kept = tokens.filter((t) => !isNegativeSourceToken(t));
+    if (kept.length) out.push(kept.join(" + "));
+  });
+  return out;
+}
+
+export function sanitizeSourceLabelForEvidence(label: string): string {
+  if (typeof label !== "string" || !label) return label;
+  const [only] = sanitizeSourceLabelsForEvidence([label]);
+  return only ?? label;
+}
+
+/** /health self-test: the rule engages on the measured production shapes and
+ *  leaves positive observations alone. Pure. PRESENCE of the key proves the build. */
+export function negativeSourceQualifierSelfTest(): { ok: boolean; detail: string } {
+  if (negativeSourceQualifierRuleDisabled()) {
+    return { ok: true, detail: "LEGACY via NEGATIVE_QUALIFIER_CLASS_DISABLED" };
+  }
+  const cases: Array<[string[], string[]]> = [
+    [["ip_intel + shodan_internetdb (404) + oathnet_stealer_search (0 hits)"], ["ip_intel"]],
+    [["ip_intel + hackertarget (no PTR)"], ["ip_intel"]],
+    [["shodan_internetdb (404) + oathnet_stealer_search (0 hits)"], ["shodan_internetdb"]],
+    [["serus_darkweb_scan (iMesh 2013 breach on user@example.test) + ip_intel"], ["serus_darkweb_scan (iMesh 2013 breach on user@example.test) + ip_intel"]],
+    [["ip_intel + oathnet_lookup (0.92 match)"], ["ip_intel + oathnet_lookup (0.92 match)"]],
+  ];
+  const wrong = cases
+    .filter(([input, want]) => JSON.stringify(sanitizeSourceLabelsForEvidence(input)) !== JSON.stringify(want))
+    .map(([input]) => input.join(" | "));
+  return wrong.length
+    ? { ok: false, detail: `mis-sanitized: ${wrong.join(" ;; ")}` }
+    : {
+      ok: true,
+      detail: "tokens qualified (0 hits)/(404)/(no PTR)/(circuit-broken)/(not completed) contribute no source class; an all-negative label keeps one head token",
+    };
+}
+
 // Slash/slug-style breach provider labels are common in recorded artifacts
 // ("breach_data/memory", "breach_check/fling_com", "username_sweep/breach_data",
 // "serus_darkweb_scan (reveal:true)"). Classify them as breach BEFORE the generic
@@ -691,7 +815,9 @@ export function classifySourceWithOrigin(
 /** Classify a source string into ALL of its source classes. Splits mixed labels
  *  ("D&B / Redfin" → ["business_directory","real_estate_listing"]) and returns
  *  [] for wrapper labels (so the caller falls back to metadata.sources). */
-export function classifySourceLabel(label: string | null | undefined): SourceClass[] {
+export function classifySourceLabel(rawLabel: string | null | undefined): SourceClass[] {
+  // Negative-result tokens contribute no class (see sanitizeSourceLabelsForEvidence).
+  const label = typeof rawLabel === "string" ? sanitizeSourceLabelForEvidence(rawLabel) : rawLabel;
   if (!label || !label.trim()) return [];
   if (isWrapperLabel(label)) return [];
   const parts = splitSourceLabels(label);

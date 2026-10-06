@@ -41,7 +41,7 @@ import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
 import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
-import { sourceOriginRulesSelfTest } from "./source-classification.ts";
+import { negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -482,6 +482,13 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // from the HOST (source-classification.ts classifyOriginHost)? Pure. Its PRESENCE
   // proves the build is live; ok:false means a rule misclassified its own probe.
   r.checks.source_origin_rules = sourceOriginRulesSelfTest();
+
+  // Does a source token that records a lookup finding NOTHING — "(404)", "(0 hits)",
+  // "(no PTR)", "(circuit-broken)" — contribute a source class? It must not: an empty
+  // lookup supplied the second "independent" class on 11 of 14 IP rows of a live case.
+  // Pure. Its PRESENCE proves the deployed bundle carries the rule; ok:false means the
+  // rule misclassified its own probe. Kill switch: NEGATIVE_QUALIFIER_CLASS_DISABLED.
+  r.checks.negative_qualifier_rule = negativeSourceQualifierSelfTest();
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure
