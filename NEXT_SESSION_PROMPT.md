@@ -4,7 +4,7 @@
 > **Prerequisites:** GitHub MCP access to `justindean785/insight-finder` and `justindean785/seeker-spark-search-5362c57c`; the Lovable MCP (project `4ce11bc3-039d-4439-b293-acacca9e1e3a`, SELECT-only DB queries) for deploys.
 > **Written 2026-10-06T21:30Z.** Every number is a dated measurement, not a state — re-verify. This file replaces the 2026-09-20 prompt, whose queue has drained.
 > Address the user as **JD**. Engineering only — never investigate any person who appears in a scan.
-> **Where the hand-off files live:** PR #708 (branch `docs/handoff-2026-10-06`). If it is not merged to `main` yet, run `git fetch origin docs/handoff-2026-10-06` and read `SESSION_HANDOFF_2026-10-06_release-train-and-audit-queue.md` and `scripts/ops/` from that branch (`git show origin/docs/handoff-2026-10-06:<path>`). Do not merge #708 yourself — ask JD.
+> **Where the hand-off files live:** merged to `main` via PR #708 — read `SESSION_HANDOFF_2026-10-06_release-train-and-audit-queue.md` and `scripts/ops/` straight from `main`. If `origin/main` does not contain them, the merge did not land: check PR #708 (branch `docs/handoff-2026-10-06`) and ask JD.
 
 ---
 
