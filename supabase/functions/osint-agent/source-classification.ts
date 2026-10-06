@@ -313,8 +313,12 @@ export function splitSourceLabels(label: string | null | undefined): string[] {
 // class (it just can never corroborate itself). The lasting fix is
 // call-to-artifact lineage (join to the call's real outcome); this is the interim
 // guard. Kill switch, read at CALL TIME: NEGATIVE_QUALIFIER_CLASS_DISABLED=true.
+// NOTE: this file is also imported by the FRONTEND (src/lib/confidence-tier.ts, intel.ts), whose
+// typecheck has no `Deno` global — so the env read goes through readEnvSafe (globalThis, try/catch),
+// never `Deno.env` directly. In the browser it reads nothing, so the rule stays ON, which is the
+// intended default.
 export function negativeSourceQualifierRuleDisabled(
-  env: (k: string) => string | undefined = (k) => Deno.env.get(k),
+  env: (k: string) => string | undefined = readEnvSafe,
 ): boolean {
   return (env("NEGATIVE_QUALIFIER_CLASS_DISABLED") ?? "").trim().toLowerCase() === "true";
 }
