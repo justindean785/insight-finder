@@ -13,6 +13,12 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
 
+> ⚠️ **Every dated-state block below is from 2026-09-22 or earlier and is STALE.** As of
+> 2026-10-06T21:25Z `main` = `2ba2842`, live `osint-agent` = **`3ad2d2f`** (#697 → `9233ebd`, then
+> #696 → `3ad2d2f`, both deployed and ledgered), mirror `c9b1ba3`. The current state, the PR queue
+> and the release-recipe traps are in `SESSION_HANDOFF_2026-10-06_release-train-and-audit-queue.md`.
+> It is itself a dated measurement — re-check `/health` and `origin/main` first.
+
 > **Dated state — 2026-09-22T16:30Z.** `main` = **`3b905b4`**. Live `osint-agent` build =
 > **`325daad`** — **DEPLOYED AND VERIFIED at 16:29Z.** `deploy/live` → `325daad`, ledger row
 > `3b905b4` with **zero problems and zero warnings**, `verify:deploy` **VERIFIED** with
@@ -633,8 +639,12 @@ list, §7 the ordered plan) →
 promotion-quarantine switch, §3 the trap list of four instruments that lied) →
 `…_2026-09-13_instrument-truth-and-the-lineage-prerequisite.md` →
 `…_2026-09-14_sweep-false-positives-and-the-memory-retrieval-gap.md` →
-**`SESSION_HANDOFF_2026-09-20_prompt-ceiling-payload-store-and-the-overlap-wedge.md` (newest —
-read this one first)**. Its §2 is the stale-baseline correction, §4 the production overlap wedge
+`…_2026-09-20_prompt-ceiling-payload-store-and-the-overlap-wedge.md` →
+**`SESSION_HANDOFF_2026-10-06_release-train-and-audit-queue.md` (newest — read this one first)**.
+Its §1 is the state and the caveat that Releases 1–2 are not yet observed in production, §3 JD's
+standing rules, §4 the draft-PR queue with proof keys and recommended order, §5 the release-recipe
+traps, §7 the decisions only JD can make, §9 the ordered plan.
+The 09-20 handoff: its §2 is the stale-baseline correction, §4 the production overlap wedge
 (the highest-value unfixed defect), §5 the `unknown` stop reason, §6 the payload-store decision
 and why the store is a TABLE not the archive bucket, §7 the trap list, §9 the ordered plan.
 The 09-14 handoff. Its §2 is the sweep bug that was manufacturing evidence, §4 the
