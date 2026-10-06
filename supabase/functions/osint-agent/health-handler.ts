@@ -4,7 +4,7 @@ import {
   corsHeaders, MINIMAX_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED, REVEAL_BREACH_DATA,
-  HIBP_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
+  HIBP_API_KEY, OPSIS_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
   GITHUB_API_TOKEN, PERPLEXITY_API_KEY, IPQUALITYSCORE_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
   URLSCANNER_API_KEY, GEMINI_FALLBACK_MODEL_ID,
@@ -19,6 +19,7 @@ import {
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
+import { opsisHealthDetail, opsisKillSwitchOn } from "./lib/opsis.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
@@ -34,8 +35,13 @@ import {
   resolveFallbackProvider,
 } from "./lib/preflight-pivot.ts";
 import { positionalPairingSelfTest } from "./message-sanitize.ts";
+import { streamErrorDetailSelfTest } from "./stream-error-classify.ts";
+import { contradictionClaimSelfTest } from "./contradictions.ts";
+import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
 import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
+import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
+import { sourceOriginRulesSelfTest } from "./source-classification.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -258,6 +264,7 @@ export function deriveReadiness(env: {
   URLSCANNER_API_KEY?: string | null;
   FOFA_API_KEY?: string | null;
   GEOSEER_API_KEY?: string | null;
+  OPSIS_API_KEY?: string | null;
 }): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> } {
   const has = (v: string | null | undefined) => !!(v && v.length > 0);
   const orchestratorOk = has(env.MINIMAX_API_KEY);
@@ -296,6 +303,7 @@ export function deriveReadiness(env: {
     // is the cheap, unauthenticated way to detect that a deploy actually shipped
     // new capability. Any tool added with a new key belongs here.
     geoseer: has(env.GEOSEER_API_KEY),
+    opsis: has(env.OPSIS_API_KEY),
   };
   const enabledOptional = Object.values(tools).filter(Boolean).length;
   const checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> = {
@@ -335,6 +343,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     RAPIDAPI_KEY: Deno.env.get("RAPIDAPI_KEY"),
     FOFA_API_KEY: Deno.env.get("FOFA_API_KEY"),
     GEOSEER_API_KEY: Deno.env.get("GEOSEER_API_KEY"),
+    OPSIS_API_KEY,
   });
   const u = new URL(req.url);
   const wantProbe = u.searchParams.get("probe") === "1";
@@ -360,6 +369,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // reported on every probe — and its PRESENCE is the behavioural proof that the build
   // with versioned cache keys is the one running (see lib/tool-cache-version.ts).
   r.checks.tool_cache_version = describeToolCacheVersions();
+  // Per-case dead-target memory (lib/dead-target.ts). Pure, no DB. Its PRESENCE is the
+  // behavioural proof that the build carrying the gate is the one running.
+  r.checks.dead_target_memory = describeDeadTargetMemory();
   // Is the prompt char budget a CEILING, or only a target the recent-window tail is
   // exempt from? Pure, no DB. Its PRESENCE is the behavioural proof that the build
   // carrying the second elision pass is the one running — the BUILD_MARKER is a
@@ -417,12 +429,30 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     ),
   };
 
+  // Is Opsis configured, switched off, or absent (lib/opsis.ts)? Presence only, no
+  // network call. Its PRESENCE is the behavioural proof that the build carrying
+  // the opsis_* tools is live; the detail says whether they can run.
+  r.checks.opsis = opsisHealthDetail(!!OPSIS_API_KEY, opsisKillSwitchOn());
+
   // Does the DEPLOYED sanitizer pair tool-calls by POSITION (message-sanitize.ts)?
   // A self-test, not a label: it runs the live sanitizer on a fixed synthetic
   // overlap probe and checks the result the way the AI SDK does. Pure and
   // silent, so health probes never emit sanitize_positional_pair_repair. Its
   // PRESENCE proves this build is live; ok:false means the pairing rule regressed.
   r.checks.message_sanitize = positionalPairingSelfTest();
+
+  // Do stream errors record the provider's status and code WITHOUT the response
+  // body (stream-error-classify.ts)? A self-test on a synthetic error, pure.
+  r.checks.stream_error_detail = streamErrorDetailSelfTest();
+
+  // Do excluded rows, relatives and one-word names stay OUT of the name/location
+  // conflict check (contradictions.ts makesSubjectClaim)? A self-test on a fixed
+  // synthetic case, pure. Its PRESENCE proves this build is live.
+  r.checks.contradiction_claims = contradictionClaimSelfTest();
+
+  // Are one-word Serus "names" kept out of name artifacts (auto-persist-findings.ts
+  // serusNameAdmissible)? A pure self-test; its PRESENCE proves this build is live.
+  r.checks.serus_name_filter = serusNameFilterSelfTest();
 
   // Is `stop_reason = budget_exhausted` attributed per INVOCATION (#611)? The
   // ceiling latch is request-owned (index.ts `budgetCeiling`, set by
@@ -447,6 +477,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Error hygiene (lib/redact-error.ts). Its PRESENCE proves the build that redacts
   // the catch-all 500 detail and keeps the seed text out of the log is live.
   r.checks.error_redaction = { ok: true, detail: "500 detail and fault/stream logs redacted (configured keys + shapes); seed text not logged" };
+
+  // Do pages on law-enforcement/court .gov hosts and news outlets get their class
+  // from the HOST (source-classification.ts classifyOriginHost)? Pure. Its PRESENCE
+  // proves the build is live; ok:false means a rule misclassified its own probe.
+  r.checks.source_origin_rules = sourceOriginRulesSelfTest();
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure

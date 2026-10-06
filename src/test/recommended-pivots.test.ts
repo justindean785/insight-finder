@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { extractRecommendedPivots, isPlausiblePhone } from "@/lib/recommended-pivots";
+import { isWellFormedTarget, type PivotTargetType } from "@/lib/pivot-target-shape";
 
 describe("extractRecommendedPivots", () => {
   it("extracts the final report recommendations in display order", () => {
@@ -18,7 +19,7 @@ describe("extractRecommendedPivots", () => {
     expect(pivots[0]).toMatchObject({
       value: "sam.cole@example.com",
       type: "email",
-      actionLabel: "Verify email ownership",
+      actionLabel: "Investigate email",
       detail: "sam.cole@example.com · same person, 3-breach corroboration",
     });
     expect(pivots[1]).toMatchObject({
@@ -315,5 +316,98 @@ Let me also call detect_contradictions to check for any issues.
       const text = "**Recommended next pivots:**\n- Investigate a@example.com — one\n*Note: breach values are masked.*\n- Investigate b@example.com — two\n";
       expect(extractRecommendedPivots(text).map((p) => p.value)).toEqual(["a@example.com", "b@example.com"]);
     });
+  });
+});
+
+/**
+ * Production 2026-10-01 (spearheadlab case; values below are synthetic). The
+ * report hedged "may contain the student's university email (e.g., `…` or
+ * `@…`)" and Next steps offered that GUESSED address as a HIGH "Verify email
+ * ownership" card, backticks included, with a Run button.
+ */
+describe("examples and Markdown are never selectors", () => {
+  const REPORT = `
+**Recommended Next Pivots**
+- Extract the thesis PDF (\`repo.example.edu/pub/tfg/2025/1234/...\`) — may contain the student's university email (e.g., \`jane.doe@uni.example\` or \`@campus.uni.example\`), advisor name, and acknowledgments.
+- Breach check on \`contact@site.example\` — run \`rapidapi_breach_search\` on the contact email found on the site.
+`;
+
+  it("a guessed 'e.g.' address never becomes a pivot", () => {
+    const pivots = extractRecommendedPivots(REPORT);
+    expect(pivots.some((p) => p.value.includes("jane.doe"))).toBe(false);
+    expect(pivots.some((p) => p.value.includes("campus.uni.example"))).toBe(false);
+  });
+
+  it("the host of a scheme-less URL is not offered as a domain to footprint", () => {
+    const pivots = extractRecommendedPivots(REPORT);
+    expect(pivots.some((p) => p.value === "repo.example.edu")).toBe(false);
+  });
+
+  it("a backticked real address is extracted clean, with an honest label", () => {
+    const pivots = extractRecommendedPivots(REPORT);
+    const email = pivots.find((p) => p.type === "email");
+    expect(email).toMatchObject({ value: "contact@site.example", actionLabel: "Investigate email", priority: "high" });
+    // Nothing that could get a Run button carries Markdown. The thesis line has
+    // no observed selector left, so it falls back to its sentence — which the
+    // shared shape table refuses, so the panel discloses it as "needs repair"
+    // instead of offering it.
+    for (const p of pivots) {
+      const runnable = isWellFormedTarget(p.type as PivotTargetType, p.value);
+      if (runnable) expect(p.value).not.toMatch(/[`'"]/);
+    }
+    const thesis = pivots.find((p) => p.label.startsWith("Extract the thesis PDF"));
+    expect(thesis && isWellFormedTarget(thesis.type as PivotTargetType, thesis.value)).toBe(false);
+  });
+
+  it("unbracketed 'for example' / 'such as' clauses are examples too; 'i.e.' is not", () => {
+    const text = `
+## Recommended next pivots
+- Try likely aliases, for example jdoe88@mail.example, against breach corpora
+- Check likely handles such as @jdoe_88 on forums
+- Investigate the registrant, i.e. owner@site.example — named in WHOIS
+`;
+    const values = extractRecommendedPivots(text).map((p) => p.value);
+    expect(values).not.toContain("jdoe88@mail.example");
+    expect(values).not.toContain("@jdoe_88");
+    expect(values).toContain("owner@site.example");
+  });
+
+  it("an apostrophe inside an address is kept; quotes around it are not (Codex P1)", () => {
+    const text = `
+## Recommended next pivots
+- Investigate o'connor@site.example — named on the contact page
+- Investigate 'jane@uni.example' — quoted in the footer
+`;
+    const values = extractRecommendedPivots(text).map((p) => p.value);
+    expect(values).toContain("o'connor@site.example");
+    expect(values).not.toContain("connor@site.example");
+    expect(values).toContain("jane@uni.example");
+  });
+
+  it("an example ends at its sentence; a real selector in the next one survives (Codex P2)", () => {
+    const text = `
+## Recommended next pivots
+- Review naming patterns, e.g. first.last. Check observed@site.example — observed in WHOIS
+`;
+    expect(extractRecommendedPivots(text)[0]).toMatchObject({ value: "observed@site.example", type: "email" });
+  });
+
+  it("a capitalised marker is still an example", () => {
+    const text = `
+## Recommended next pivots
+- Try the university format. E.g. jane.doe@uni.example might exist
+- For example, guess@mail.example could be tried
+`;
+    const values = extractRecommendedPivots(text).map((p) => p.value);
+    expect(values).not.toContain("jane.doe@uni.example");
+    expect(values).not.toContain("guess@mail.example");
+  });
+
+  it("a bare domain still extracts when it is not a URL host", () => {
+    const text = `
+## Recommended next pivots
+- Pivot on site.example — registrant overlap
+`;
+    expect(extractRecommendedPivots(text)[0]).toMatchObject({ value: "site.example", type: "domain" });
   });
 });

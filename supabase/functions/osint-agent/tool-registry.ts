@@ -9,6 +9,7 @@ import { tierOf, TIER_A, TIER_B } from "./tiers.ts";
 import { playbookFor, renderPlaybookForPrompt } from "./playbooks.ts";
 import { auditCoverage } from "./coverage.ts";
 import {
+  contradictionClaimFilterDisabled,
   detectContradictions,
   clusterScopedContradictionPatches,
   artifactsForFinding,
@@ -40,7 +41,7 @@ import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
-import { loadReviewsForThread, dropRejectedAndDerived, normalizeArtifactKey, type ReviewDb } from "./reviews.ts";
+import { loadReviewsForThread, dropRejectedAndDerived, dropRejectedArtifacts, normalizeArtifactKey, type ReviewDb } from "./reviews.ts";
 import { applyMemorySupersession, refuseConflictingMemoryWrites, rejectedSelectorsFromRows, type MemoryRow } from "./lib/memory-supersession.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
 
@@ -72,7 +73,7 @@ import {
   MINIMAX_API_KEY, LOVABLE_API_KEY,
   OATHNET_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY,
-  HIBP_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,
+  HIBP_API_KEY, OPSIS_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
   RAPIDAPI_KEY, INDICIA_API_KEY, PEOPLEDATALABS_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
@@ -82,6 +83,7 @@ import {
   deadHosts, markHostDead, isHostDead,
 } from "./env.ts";
 import { buildLeakcheckUrl, buildOathnetUrl } from "./breach-request.ts";
+import { opsisAccount, opsisDepsFromEnv, opsisKillSwitchOn, opsisResults, opsisSearch } from "./lib/opsis.ts";
 import {
   oathnetBreachSearchUrl, oathnetStealerSearchUrl, oathnetVictimsSearchUrl,
   oathnetVictimManifestUrl, oathnetVictimFileUrl, oathnetVictimArchiveUrl,
@@ -707,6 +709,11 @@ export function buildTools(ctx: ToolContext) {
             name: "geoseer_geolocate",
             reason: "GEOSEER_API_KEY not configured — AI image geolocation is unavailable; do not attempt to infer capture locations from photos.",
           });
+        }
+        if (!OPSIS_API_KEY || opsisKillSwitchOn()) {
+          for (const n of ["opsis_search", "opsis_results", "opsis_balance", "opsis_status"]) {
+            disabled.push({ name: n, reason: "Opsis is not configured or is switched off — use username_sweep for account enumeration." });
+          }
         }
         // Config-disabled providers (`disabled: true` in capabilities.ts's
         // PROVIDER_REQUIREMENTS) were NEVER gated here — only the key-presence
@@ -3110,6 +3117,46 @@ export function buildTools(ctx: ToolContext) {
         }
         return await sweepUsername(username);
       },
+    }),
+    // Opsis OSINT API (lib/opsis.ts): account enumeration across ~700 platforms.
+    // opsis_search is PAID per call; the other three are free reads. All four are
+    // removed from the schema when OPSIS_API_KEY is unset (capabilities.ts), and
+    // OPSIS_DISABLED=true stops every call at call time. The wrapper's timeout
+    // signal is forwarded so its cap can end a poll early.
+    opsis_search: tool({
+      description:
+        "Opsis: find accounts for a username, email or domain across ~700 platforms. PAID (1 credit). Returns within ~25s; a run still going returns partial results plus a run_id, so fetch the rest with opsis_results and never search the same selector again. Hits are unverified account leads.",
+      inputSchema: memoSchema("opsis_search", () => z.object({
+        kind: z.enum(["username", "email", "domain"]),
+        value: z.string().min(1),
+      })),
+      // No `premium` input: a premium username search costs 2 credits and
+      // costs.ts prices per tool name, so exposing it would under-report spend
+      // (Codex P2 on #659). It returns as its own costed tool if wanted.
+      execute: async ({ kind, value }, opts) =>
+        await opsisSearch({ kind, value }, opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
+    }),
+    opsis_results: tool({
+      description: "Opsis: fetch the rest of a still-running opsis_search by its run_id (free). Pass the kind and value that search used.",
+      inputSchema: memoSchema("opsis_results", () => z.object({
+        kind: z.enum(["username", "email", "domain"]),
+        value: z.string().min(1),
+        run_id: z.string().min(1),
+      })),
+      execute: async ({ kind, value, run_id }, opts) =>
+        await opsisResults({ kind, value, run_id }, opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
+    }),
+    opsis_balance: tool({
+      description: "Opsis: API credit balance (free). Diagnostics only; do not call before routine searches.",
+      inputSchema: memoSchema("opsis_balance", () => z.object({})),
+      execute: async (_input, opts) =>
+        await opsisAccount("balance", opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
+    }),
+    opsis_status: tool({
+      description: "Opsis: API key, plan and rate-limit self-check (free). Diagnostics only.",
+      inputSchema: memoSchema("opsis_status", () => z.object({})),
+      execute: async (_input, opts) =>
+        await opsisAccount("status", opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
     }),
     crtsh_subdomains: tool({
       description: "Enumerate subdomains for a domain via crt.sh certificate transparency logs.",
@@ -6651,10 +6698,21 @@ export function buildTools(ctx: ToolContext) {
       label: z.enum(["CONFIRMED","CORROBORATED","INFERRED","VERIFY","LOW","DISMISSED"]).default("INFERRED"),
     })),
     execute: async (i) => {
-      const { data: contraRows } = await supabase
+      const { data: threadRows } = await supabase
         .from("artifacts")
-        .select("kind,value,source,metadata,created_at")
+        .select("id,kind,value,source,metadata,created_at")
         .eq("thread_id", threadId);
+      // Rows the analyst DISMISSED stop testifying about the subject, exactly as
+      // on the synthesis path (finding-synthesis-sweep.ts), which already scored
+      // the same row shape on review-filtered rows while this path did not. These
+      // rows only feed the contradiction check, so an unreadable verdict set keeps
+      // every row: a missed dismissal costs a penalty, never invents confidence.
+      let contraRows = threadRows ?? null;
+      if (contraRows && !contradictionClaimFilterDisabled()) {
+        const reviews = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
+        if (reviews.ok) contraRows = dropRejectedArtifacts(contraRows, reviews);
+        else console.warn(JSON.stringify({ event: "record_finding_review_state_unavailable", thread_id: threadId, error: reviews.error }));
+      }
       // Scoring + row construction live in ONE place — see lib/finding-row.ts.
       // This block used to be 161 lines inline here; it was MOVED, not rewritten,
       // because finding synthesis needs the identical chain and two copies of a
@@ -6663,7 +6721,7 @@ export function buildTools(ctx: ToolContext) {
       const { row, axes, status: findingStatus } = buildFindingRow(i, {
         threadId,
         userId,
-        contraRows: contraRows ?? null,
+        contraRows,
       });
       const { data, error } = await supabase.from("artifacts").insert([row]).select("id").maybeSingle();
       if (error) return { ok: false, error: error.message };

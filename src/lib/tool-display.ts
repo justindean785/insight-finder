@@ -142,12 +142,9 @@ export function humanizeStage(stage: string | null | undefined): string {
  * and prose where the full role prefix would be redundant.
  */
 export function toolActionLabel(toolName: string): string {
-  const full = DISPLAY[toolName];
-  if (full) {
-    const idx = full.indexOf(" — ");
-    return idx >= 0 ? full.slice(idx + 3) : full;
-  }
-  return fallbackDisplay(toolName);
+  const full = DISPLAY[toolName] ?? fallbackDisplay(toolName);
+  const idx = full.indexOf(" — ");
+  return idx >= 0 ? full.slice(idx + 3) : full;
 }
 
 /**
@@ -162,11 +159,56 @@ export function toolAgentRole(toolName: string): string {
   return "Analyst";
 }
 
+/** A real tool name is an identifier. */
+const TOOL_IDENT_RE = /^[a-z0-9_]+$/i;
+
+function titleCaseTool(name: string): string {
+  return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Leaked call markup: angle brackets, JSON punctuation, or GLM's arg tags. */
+const CALL_MARKUP_RE = /[<>{}[\]"]|arg_(?:key|value)/i;
+
+/** Longest free-text source label shown before it is cut with an ellipsis. */
+const SOURCE_LABEL_MAX = 60;
+
+/**
+ * A name carrying call MARKUP is a malformed call, and is labelled as one.
+ * Production 2026-10-01: GLM wrote its `<arg_key>/<arg_value>` call markup into
+ * the tool NAME; the server sank the call, but the stored part kept the name
+ * and this fallback title-cased it into
+ * "Minimax Correlate</Arg Value>Artifacts</Arg Key>…" — model markup, and the
+ * case's selectors, shown as a cycle label.
+ *
+ * Free text WITHOUT markup is not a call at all. The report's Tool Coverage and
+ * Source Appendix group evidence by its recorded source, and a model-recorded
+ * source is prose like "FBI Wanted (fbi.gov/wanted/cac)". Treating every
+ * non-identifier as malformed printed that as "Malformed call (Fbi)" — measured
+ * on a production report 2026-10-01, 14 of 36 coverage lines. Such a label is
+ * shown as written, whitespace-collapsed and length-capped.
+ */
 function fallbackDisplay(name: string): string {
-  const action = name
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-  return `Analyst — ${action}`;
+  if (TOOL_IDENT_RE.test(name)) return `Analyst — ${titleCaseTool(name)}`;
+  if (CALL_MARKUP_RE.test(name)) {
+    const head = name.match(/^[a-z0-9_]+/i)?.[0];
+    return `Analyst — Malformed call${head ? ` (${titleCaseTool(head)})` : ""}`;
+  }
+  const text = name.replace(/\s+/g, " ").trim();
+  if (!text) return "Analyst — Unknown source";
+  return `Analyst — ${text.length > SOURCE_LABEL_MAX ? `${text.slice(0, SOURCE_LABEL_MAX - 1)}…` : text}`;
+}
+
+/**
+ * The name to label a `buildToolAudit` entry with. Its `tool` is a GROUPING key
+ * (`primaryToolSlug`): exact for a tool slug, but lossy for free text — it is
+ * lowercased and cut at the parenthesis, so "FBI Wanted (fbi.gov/wanted/cac)"
+ * keys as "fbi wanted". A real tool is labelled by its key; a free-text source
+ * by the first link of the chain it was RECORDED under.
+ */
+export function auditEntryToolName(entry: { tool: string; variants?: readonly string[] }): string {
+  if (DISPLAY[entry.tool] || entry.tool.includes("_")) return entry.tool;
+  const recorded = entry.variants?.find((v) => v.trim());
+  return recorded ? recorded.split(/\s+\+\s+/)[0].trim() : entry.tool;
 }
 
 /**

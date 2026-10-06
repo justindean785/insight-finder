@@ -177,6 +177,10 @@ export const TOOL_TTL_MS: Record<string, number> = {
   shodan_internetdb: TTL_24H_MS,
   urlscan_search: TTL_24H_MS,
   wayback_snapshots: TTL_7D_MS,
+  // A credit balance or plan read is only useful fresh; the default 24h would
+  // replay yesterday's balance across investigations.
+  opsis_balance: 60_000,
+  opsis_status: 60_000,
 };
 
 // Tools that mutate state — never cache.

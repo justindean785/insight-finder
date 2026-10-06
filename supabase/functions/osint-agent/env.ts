@@ -272,6 +272,8 @@ export const INTELBASE_API_KEY = Deno.env.get("INTELBASE_API_KEY");
 // showed 33% OK rate. Re-enable by flipping this flag once provider is healthy.
 export const INTELBASE_ENABLED = false;
 export const HIBP_API_KEY = Deno.env.get("HIBP_API_KEY");
+// Opsis OSINT API (lib/opsis.ts) — paid account enumeration; Pro/Unlimited plan + API credits.
+export const OPSIS_API_KEY = Deno.env.get("OPSIS_API_KEY");
 export const GITHUB_API_TOKEN = Deno.env.get("GITHUB_API_TOKEN") ?? Deno.env.get("GITHUB_TOKEN");
 export const FIRECRAWL_API_KEY = Deno.env.get("FIRECRAWL_API_KEY");
 export const EXA_API_KEY = Deno.env.get("EXA_API_KEY");
