@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { classifyActivityRow } from "@/hooks/useThreadToolActivity";
+import { deriveToolReason } from "@/lib/tool-run";
 
 export type MessageSummary = {
   id: string;
@@ -42,15 +44,50 @@ function outputLooksLikeReport(output: unknown): boolean {
   return !!(data && (data.report_markdown || data.final_report));
 }
 
-function resultSummaryFor(output: unknown, errored: boolean): string {
-  if (errored) return "failed";
-  if (output && typeof output === "object") {
-    const o = output as Record<string, unknown>;
-    if (o.ok === true) return "completed";
-    if (o.ok === false || "error" in o) return "failed";
-    return "returned";
+/**
+ * Word for one tool call in the report's Activity Log.
+ *
+ * ⚠️ Delegates to `classifyActivityRow` — the SAME classifier the Activity feed
+ * and the Health panel use. This path reads AI SDK message parts rather than
+ * `tool_usage_log` rows, so it was never brought in line when those two were
+ * reconciled, leaving a THIRD definition of "did this call fail".
+ *
+ * It was wrong in the direction that matters. Every non-OK outcome collapsed to
+ * "failed", so a denied provider, an internal cap and a clean no-record all read
+ * as faults. Measured on a production export (2026-09-22): the report listed
+ * seven failures for a run where Activity showed `Failed 0` and Health showed
+ * `0 Needs attention` — a healthy run reading as broken, which is exactly what
+ * the "a 403 is not a dead credential" rule exists to prevent.
+ *
+ * Message parts do not carry the edge function's `classifyToolOutcome` verdict,
+ * so the classifier gets the most a part CAN say: an explicit `skipped` flag as
+ * the outcome, and the tool's own words wherever it put them — a stream-error
+ * `errorText`, then the output's `reason` / `error` / `message` (the order
+ * `deriveToolReason` reads). Passing only `output.error` made the `skipped`
+ * branch unreachable and turned `{ok:false, skipped:true, reason:"duplicate
+ * query"}` or an `output-error` "paid-call budget exhausted" back into "failed".
+ */
+function resultSummaryFor(output: unknown, errored: boolean, errorText?: unknown): string {
+  const o = output && typeof output === "object" ? (output as Record<string, unknown>) : null;
+  const skippedFlag = o?.skipped === true;
+
+  // No verdict of any kind in the payload — the call returned something we
+  // cannot characterise. Unchanged, and deliberately not called a failure.
+  if (!errored && !skippedFlag && (!o || (o.ok === undefined && !("error" in o)))) return "returned";
+
+  const ok = errored ? false : o?.ok === true;
+  const errorMsg = [typeof errorText === "string" ? errorText : "", o ? deriveToolReason(o) : ""]
+    .filter(Boolean).join(" ") || null;
+  const outcome = !errored && skippedFlag ? "skipped" : null;
+
+  const { status } = classifyActivityRow(outcome, ok, errorMsg);
+  switch (status) {
+    case "succeeded": return "completed";
+    case "gated": return "gated";
+    case "degraded": return "degraded";
+    case "skipped": return "skipped";
+    default: return "failed";
   }
-  return "returned";
 }
 
 /**
@@ -83,7 +120,9 @@ export function summarizeMessageRow(msg: RawMessageRow): MessageSummary {
       toolCalls.push({
         toolName: typeof part.toolName === "string" ? part.toolName : "unknown",
         args: (part as Record<string, unknown>).input ?? part.args,
-        resultSummary: hasOutput || errored ? resultSummaryFor(part.output, errored) : undefined,
+        resultSummary: hasOutput || errored
+          ? resultSummaryFor(part.output, errored, (part as Record<string, unknown>).errorText)
+          : undefined,
         startedAt: msg.created_at,
       });
       continue;
@@ -98,7 +137,9 @@ export function summarizeMessageRow(msg: RawMessageRow): MessageSummary {
       toolCalls.push({
         toolName: type.slice("tool-".length),
         args: (part as Record<string, unknown>).input ?? part.args,
-        resultSummary: hasOutput || errored ? resultSummaryFor(part.output, errored) : undefined,
+        resultSummary: hasOutput || errored
+          ? resultSummaryFor(part.output, errored, (part as Record<string, unknown>).errorText)
+          : undefined,
         startedAt: msg.created_at,
       });
       continue;

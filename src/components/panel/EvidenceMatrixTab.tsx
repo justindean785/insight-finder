@@ -7,6 +7,8 @@ import {
 // This tab was the surface that read 93 where the board read 88. It now renders
 // the same `effective` value as every other surface. See lib/display-confidence.ts.
 import { displayConfidence, effectiveConfidenceOrZero } from "@/lib/display-confidence";
+import { ANALYST_CONFIRMED_TEXT, isAnalystConfirmed, machineScoreText } from "@/lib/analyst-confirmed";
+import { AnalystConfirmedMark } from "@/components/AnalystConfirmedMark";
 import {
   useReviewStates, REVIEW_CLASS, REVIEW_SHORT, REVIEW_STATES, REVIEW_HELP,
   startRecheck, type ReviewState,
@@ -184,6 +186,9 @@ export function EvidenceMatrixTab({
               // Score colour from the shared 5-tier ramp so the matrix agrees
               // with the grid / cluster / radar everywhere a confidence shows.
               const scoreColor = confidenceColor(score);
+              // The label ladder's ATTESTED rung: the tile names the decision in
+              // the score slot and the machine figure moves to the tooltip and ⓘ.
+              const attested = isAnalystConfirmed(a, rState);
               return (
                 <li
                   key={a.id}
@@ -261,27 +266,37 @@ export function EvidenceMatrixTab({
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <div className="mt-2.5 flex items-center gap-2 cursor-help">
-                        <div className="relative flex-1 h-1.5 rounded-full overflow-hidden bg-surface-3">
-                          <div
-                            className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-slow ease-standard"
-                            style={{ width: `${basePct}%`, background: "hsl(var(--muted-foreground) / 0.5)" }}
-                          />
-                          {/* The review-delta overlay is gone with the delta itself.
-                              A confirmation is a decision, not new evidence, so it no
-                              longer moves the number — drawing a segment the figure
-                              does not contain would be the same lie in a new place.
-                              Review state is carried by the REVIEW chip on this tile. */}
-                        </div>
-                        <span className="font-mono tabular-nums text-data" style={{ color: scoreColor }}>
-                          {score}
-                        </span>
-                        <span className="font-mono text-data text-muted-foreground tabular-nums">/100</span>
+                        {attested ? (
+                          <AnalystConfirmedMark shown={shownConf} className="flex-1" />
+                        ) : (
+                          <>
+                            <div className="relative flex-1 h-1.5 rounded-full overflow-hidden bg-surface-3">
+                              <div
+                                className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-slow ease-standard"
+                                style={{ width: `${basePct}%`, background: "hsl(var(--muted-foreground) / 0.5)" }}
+                              />
+                              {/* The review-delta overlay is gone with the delta itself.
+                                  A confirmation is a decision, not new evidence, so it no
+                                  longer moves the number — drawing a segment the figure
+                                  does not contain would be the same lie in a new place.
+                                  Review state is carried by the REVIEW chip on this tile. */}
+                            </div>
+                            <span className="font-mono tabular-nums text-data" style={{ color: scoreColor }}>
+                              {score}
+                            </span>
+                            <span className="font-mono text-data text-muted-foreground tabular-nums">/100</span>
+                          </>
+                        )}
                         <ConfidenceExplain artifact={a} review={rState} />
                       </div>
                     </TooltipTrigger>
                     <TooltipContent side="bottom" className="max-w-[260px] text-xs">
                       <div className="space-y-0.5">
-                        <div><span className="text-foreground font-medium">Confidence {score}/100</span></div>
+                        <div>
+                          <span className="text-foreground font-medium">
+                            {attested ? `${ANALYST_CONFIRMED_TEXT} · ${machineScoreText(shownConf)}` : `Confidence ${score}/100`}
+                          </span>
+                        </div>
                         <div className="text-muted-foreground">
                           {stored !== null && stored !== score
                             ? <>Stored {stored} · capped to {score} by the source-class ceiling the server recorded</>

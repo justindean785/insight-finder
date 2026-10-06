@@ -105,6 +105,10 @@ export default {
           DEFAULT: "hsl(var(--muted))",
           foreground: "hsl(var(--muted-foreground))",
         },
+        // Ink levels 3 and 4. Reach for these instead of stacking an opacity
+        // modifier on muted-foreground; see the ink ramp note in index.css.
+        subtle: { foreground: "hsl(var(--subtle-foreground))" },
+        faint: { foreground: "hsl(var(--faint-foreground))" },
         accent: {
           DEFAULT: "hsl(var(--accent))",
           foreground: "hsl(var(--accent-foreground))",

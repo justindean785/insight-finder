@@ -94,3 +94,62 @@ describe("report Activity Log reflects parsed v6 tool calls", () => {
     expect(md).not.toContain("**Tool invocations:** 0");
   });
 });
+
+/**
+ * ⚠️ The report's Activity Log was a THIRD definition of "did this call fail".
+ *
+ * `classifyActivityRow` already reconciled the Activity feed and the Health
+ * panel, but this path reads AI SDK message parts rather than `tool_usage_log`
+ * rows, so it kept collapsing every non-OK outcome to "failed". Measured on a
+ * production export (2026-09-22): the report listed seven failures for a run
+ * where Activity showed `Failed 0` and Health showed `0 Needs attention` — a
+ * denied provider, an internal cap and a clean no-record all reading as faults.
+ *
+ * A healthy run must not read as broken. These pin the shared vocabulary.
+ */
+describe("summarizeMessageRow — non-OK outcomes are not all failures", () => {
+  const out = (output: unknown) =>
+    summarizeMessageRow(row("assistant", [
+      { type: "tool-deepfind_email_breach", toolCallId: "c1", state: "output-available", input: {}, output },
+    ])).toolCalls[0].resultSummary;
+
+  it("a denied provider (403) is degraded, not failed", () => {
+    expect(out({ ok: false, error: "deepfind 403 forbidden" })).toBe("degraded");
+  });
+
+  it("a missing key / unconfigured provider is gated, not failed", () => {
+    expect(out({ ok: false, error: "skipped: missing key for provider" })).toBe("gated");
+  });
+
+  it("an internal paid-call cap is degraded, not failed", () => {
+    expect(out({ ok: false, error: "paid-call cap reached for this cycle" })).toBe("degraded");
+  });
+
+  it("a rate limit is degraded, not failed", () => {
+    expect(out({ ok: false, error: "429 rate limit" })).toBe("degraded");
+  });
+
+  it("a genuine fault is still failed", () => {
+    expect(out({ ok: false, error: "TypeError: cannot read property of undefined" })).toBe("failed");
+  });
+
+  it("an explicit skip carrying its words in `reason` is skipped, not failed (Codex P2, #610)", () => {
+    expect(out({ ok: false, skipped: true, reason: "duplicate query" })).toBe("skipped");
+  });
+
+  it("a gate named in `reason` rather than `error` is still recognised", () => {
+    expect(out({ ok: false, reason: "provider disabled for this deployment" })).toBe("gated");
+  });
+
+  it("an output-error part is classified by its errorText, not called failed blind", () => {
+    const s = summarizeMessageRow(row("assistant", [
+      { type: "tool-minimax_correlate", toolCallId: "c9", state: "output-error", input: {}, errorText: "paid-call budget exhausted" },
+    ]));
+    expect(s.toolCalls[0].resultSummary).toBe("degraded");
+  });
+
+  it("a successful call is still completed, and an uncharacterised one still returns", () => {
+    expect(out({ ok: true, hits: 3 })).toBe("completed");
+    expect(out({ hits: 3 })).toBe("returned");
+  });
+});

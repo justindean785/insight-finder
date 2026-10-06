@@ -9,6 +9,7 @@ import { tierOf, TIER_A, TIER_B } from "./tiers.ts";
 import { playbookFor, renderPlaybookForPrompt } from "./playbooks.ts";
 import { auditCoverage } from "./coverage.ts";
 import {
+  contradictionClaimFilterDisabled,
   detectContradictions,
   clusterScopedContradictionPatches,
   artifactsForFinding,
@@ -26,6 +27,8 @@ import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDom
 import * as circuit from "./circuit.ts";
 import { buildNodes } from "./graph.ts";
 import { collisionPeerSignal, type CollisionPeer } from "./lib/quarantine.ts";
+import { loadRefusedArtifacts, type QuarantineRow } from "./lib/dispatch-quarantine.ts";
+import { inheritedNameQuarantine, quarantinedPersonNames, recordNameQuarantineEnabled, type QuarantinedName, type ThreadRow } from "./lib/record-name-quarantine.ts";
 import {
   isQueuedPlaceholder,
   stripStatusAssertions,
@@ -38,7 +41,7 @@ import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
-import { loadReviewsForThread, dropRejectedAndDerived, normalizeArtifactKey, type ReviewDb } from "./reviews.ts";
+import { loadReviewsForThread, dropRejectedAndDerived, dropRejectedArtifacts, normalizeArtifactKey, type ReviewDb } from "./reviews.ts";
 import { applyMemorySupersession, refuseConflictingMemoryWrites, rejectedSelectorsFromRows, type MemoryRow } from "./lib/memory-supersession.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
 
@@ -70,7 +73,7 @@ import {
   MINIMAX_API_KEY, LOVABLE_API_KEY,
   OATHNET_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY,
-  HIBP_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,
+  HIBP_API_KEY, OPSIS_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
   RAPIDAPI_KEY, INDICIA_API_KEY, PEOPLEDATALABS_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
@@ -80,6 +83,7 @@ import {
   deadHosts, markHostDead, isHostDead,
 } from "./env.ts";
 import { buildLeakcheckUrl, buildOathnetUrl } from "./breach-request.ts";
+import { opsisAccount, opsisDepsFromEnv, opsisKillSwitchOn, opsisResults, opsisSearch } from "./lib/opsis.ts";
 import {
   oathnetBreachSearchUrl, oathnetStealerSearchUrl, oathnetVictimsSearchUrl,
   oathnetVictimManifestUrl, oathnetVictimFileUrl, oathnetVictimArchiveUrl,
@@ -162,6 +166,11 @@ export interface ToolContext {
   detectedSeedType: string;
   messages: UIMessage[];
   manualOverrideSelector: string | null;
+  /** The request's PERSON seed, normalized ("" when not a person seed). A getter
+   *  because index.ts derives it after buildTools is called; tools only execute
+   *  later. `triageState.seed` cannot stand in for it: triage_seed accepts only
+   *  email/username. Optional so existing callers and tests keep working. */
+  getSubjectSeedName?: () => string;
 }
 
 // Hosts that reliably return 451/403 THROUGH r.jina.ai — scraping them is a
@@ -372,6 +381,46 @@ export const SOCIALFETCH_YOUTUBE_HOSTS = ["youtube.com", "youtu.be"] as const;
 export const SOCIALFETCH_YOUTUBE_FAST_TIMEOUT_MS = 6_000;
 export const SOCIALFETCH_DEFAULT_TIMEOUT_MS = 18_000;
 
+// ── 2026-09-30: three hosts move from fast_timeout/normal to SKIP ────────────
+// The block above explains why youtube was fast_timeout rather than skip: "there
+// is no proven-working reader for them today", so a few seconds bought the rare
+// channel-About page that might carry a bio. That precondition no longer holds —
+// youtube_oembed, roblox_user and steam_profile land the same identity facts
+// keylessly in ~300ms. The 14-day record to 2026-09-30 says the rare case never
+// arrived either: 0 of 10 real youtube reads completed, 0 of 3 roblox, and every
+// steamcommunity attempt aborted at the 18s cap.
+//
+// What the replacements do NOT recover is a channel-About bio or contact email —
+// oembed returns title/channel/author_url only. That is a real, narrow loss, set
+// against a measured 0% success rate for the thing that was supposedly preserving
+// it.
+export const SOCIALFETCH_ROBLOX_HOSTS = ["roblox.com"] as const;
+export const SOCIALFETCH_STEAM_HOSTS = ["steamcommunity.com"] as const;
+
+// Hosts that hang to the 18s cap AND that jina_reader_scrape can actually read.
+// The jina-reachability half is not optional: x.com and twitter.com hang on
+// SocialFetch too and were proposed for this list, but both are in
+// JINA_HARD_BLOCK_HOSTS, so routing them here would hand them to a reader that
+// refuses them and leave them with no reader at all. They stay on the normal
+// path — not because it works, but because removing the only attempt on a thin
+// sample is worse than an 18s abort. Revisit when a reader exists for them.
+// Mirrors TOOL_TIMEOUT_OVERRIDE_MS.socialfetch_web_read in cache.ts. Duplicated
+// rather than imported to keep tool-registry.ts free of a cache.ts dependency;
+// socialfetch_fallback_test.ts asserts the two never drift.
+export const SOCIALFETCH_WRAPPER_BUDGET_MS = 22_000;
+// A jina attempt needs enough runway to be worth starting. Below this we return
+// the classified timeout rather than burn the remainder on a near-certain abort.
+export const SOCIALFETCH_FALLBACK_MIN_BUDGET_MS = 4_000;
+export const SOCIALFETCH_FALLBACK_MAX_MS = 10_000;
+
+export const SOCIALFETCH_SLOW_HOSTS = [
+  "chess.com",
+  "namemc.com",
+  "gofundme.com",
+  "scamadviser.com",
+  "threads.net",
+] as const;
+
 /** Characters of converted document returned per `markdown_extract` call.
  *  Bounded to protect the turn's context budget; `next_offset` pages past it. */
 export const MARKDOWN_EXTRACT_WINDOW = 12_000;
@@ -397,9 +446,115 @@ export function socialfetchHostPolicy(hostname: string): SocialfetchHostDecision
     };
   }
   if (hostMatchesAny(hostname, SOCIALFETCH_YOUTUBE_HOSTS)) {
-    return { action: "fast_timeout", timeoutMs: SOCIALFETCH_YOUTUBE_FAST_TIMEOUT_MS };
+    return {
+      action: "skip",
+      hint:
+        "socialfetch_web_read has never completed a youtube.com/youtu.be read " +
+        "(0 of 10 real attempts, 14 days to 2026-09-30) — use youtube_oembed, " +
+        "which returns the video title, channel name and channel URL keylessly.",
+    };
+  }
+  if (hostMatchesAny(hostname, SOCIALFETCH_ROBLOX_HOSTS)) {
+    return {
+      action: "skip",
+      hint:
+        "socialfetch_web_read times out on roblox.com (0 of 3, 2026-09-30) — use " +
+        "roblox_user { username } or { user_id } for the profile instead.",
+    };
+  }
+  if (hostMatchesAny(hostname, SOCIALFETCH_STEAM_HOSTS)) {
+    return {
+      action: "skip",
+      hint:
+        "socialfetch_web_read aborts at the 18s cap on steamcommunity.com — use " +
+        "steam_profile { url } / { steamid64 } / { vanity } instead.",
+    };
+  }
+  if (hostMatchesAny(hostname, SOCIALFETCH_SLOW_HOSTS)) {
+    return {
+      action: "skip",
+      hint:
+        "this host hangs to socialfetch_web_read's 18s cap — use jina_reader_scrape, " +
+        "which reads it and costs nothing.",
+    };
   }
   return { action: "normal" };
+}
+
+/** A 2xx body shorter than this is a blank page, an interstitial or an error
+ *  document — never a page read worth recording as evidence. */
+export const SOCIALFETCH_MIN_BODY_CHARS = 200;
+
+/** An abort (our own cap or the SDK cancelling the step) rather than a fault.
+ *  Matched on name AND message because fetch implementations disagree: Deno
+ *  throws DOMException("AbortError"), some paths surface a plain TimeoutError,
+ *  and fetchRetry can wrap either in an Error whose name is lost. */
+export function isAbortLikeError(e: unknown): boolean {
+  const name = (e as { name?: unknown })?.name;
+  if (name === "AbortError" || name === "TimeoutError") return true;
+  return /\babort(ed)?\b|\btimed? ?out\b|signal (is|has been) aborted/i.test(String(e));
+}
+
+/**
+ * One free jina attempt for a URL SocialFetch could not read.
+ *
+ * Returns null when there is no budget left or jina also fails — the caller then
+ * reports its own classified failure. SocialFetch is NEVER retried here: a retry
+ * would spend a second credit on a provider that just demonstrated it cannot read
+ * this page.
+ *
+ * ⚠️ HONEST LIMIT. The wrapper allows 22s and the internal cap is 18s, so a FULL
+ * timeout leaves ~4s and jina gets ~3s against a measured 4.2s average — it will
+ * usually miss. This path earns its keep on the fast failures (5xx, an early
+ * abort, a cancelled step), not on the full-cap case. Do not "fix" that by
+ * raising the wrapper or lowering the internal cap: both are pinned, and
+ * tool_timeout_caps_test.ts asserts the wrapper stays above the internal budget
+ * so the tool fails cleanly before the wrapper orphans an un-signalled request.
+ * The real remedy for the full-cap case is not sending those hosts here at all,
+ * which is what socialfetchHostPolicy now does.
+ */
+export async function socialfetchJinaFallback(
+  url: string,
+  startedAt: number,
+  outerSignal?: AbortSignal,
+): Promise<Record<string, unknown> | null> {
+  const remaining = SOCIALFETCH_WRAPPER_BUDGET_MS - (Date.now() - startedAt);
+  if (remaining < SOCIALFETCH_FALLBACK_MIN_BUDGET_MS) return null;
+  // Leave a second of headroom so the fallback cannot be the thing that trips
+  // the wrapper — a wrapper kill loses the classified result too.
+  const budget = Math.min(remaining - 1_000, SOCIALFETCH_FALLBACK_MAX_MS);
+  if (budget <= 0) return null;
+  try {
+    let clean: string;
+    try { const u = new URL(url); u.hash = ""; clean = u.toString(); } catch { return null; }
+    // jina hard-blocks a known set outright; spending the remaining budget to be
+    // refused is strictly worse than returning the classified timeout now.
+    try { if (isJinaHardBlocked(new URL(clean).hostname)) return null; } catch { return null; }
+    const headers: Record<string, string> = { Accept: "text/plain" };
+    if (JINA_API_KEY) headers.Authorization = `Bearer ${JINA_API_KEY}`;
+    const signals: AbortSignal[] = [AbortSignal.timeout(budget)];
+    if (outerSignal) signals.push(outerSignal);
+    const r = await fetch(`https://r.jina.ai/${clean}`, {
+      headers,
+      signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
+    });
+    if (!r.ok) return null;
+    const text = await r.text();
+    if (text.trim().length < SOCIALFETCH_MIN_BODY_CHARS) return null;
+    return {
+      ok: true,
+      status: r.status,
+      url: clean,
+      via: "jina_fallback",
+      data: text.slice(0, 18_000),
+      truncated: text.length > 18_000,
+      fallback_budget_ms: budget,
+    };
+  } catch {
+    // A failed fallback is not a new fault to report — the caller already has a
+    // classified primary failure that describes what actually went wrong.
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +618,55 @@ export function normalizeSocialPlatform(platform: unknown): string {
 export function buildTools(ctx: ToolContext) {
   const { supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector } = ctx;
 
+  // ── record-name-quarantine: request-local state + one loader for BOTH writers ──
+  // Quarantined findings extracted in THIS request, noted synchronously by
+  // index.ts's onStepFinish BEFORE the detached auto-persist write lands. Without
+  // it, a record_artifacts call in the very next step races that insert, reads no
+  // quarantined name, and writes the same-name rows at full authority.
+  const pendingQuarantineRows: ThreadRow[] = [];
+  const noteQuarantinedFindings = (
+    findings: ReadonlyArray<{ kind: string; value: string; context?: Record<string, unknown> }>,
+  ): void => {
+    for (const f of findings ?? []) {
+      if (f?.context?.subject_unlinked === true) {
+        pendingQuarantineRows.push({ kind: f.kind, value: f.value, metadata: f.context });
+      }
+    }
+  };
+  /** The seed the exemption compares against: the request's PERSON seed, or none.
+   *  Never triageState.seed: that is whatever email/username the model passed to
+   *  triage_seed, and tokens() splits "jordan.vale@…" into the name "Jordan Vale",
+   *  so a namesake escaped. The auto-persist gate exempts a person seed only. */
+  const quarantineSeed = (): string | null => ctx.getSubjectSeedName?.() || null;
+  /** Thread + pending quarantined person names. Fails OPEN on a read error: an
+   *  authority stamp must not turn a DB blip into stamping every row. */
+  const loadQuarantinedNames = async (): Promise<QuarantinedName[]> => {
+    let rows: ThreadRow[] = [];
+    try {
+      const res = await loadRefusedArtifacts(
+        async (from, to) => {
+          const { data, count, error } = await supabase
+            .from("artifacts")
+            .select("kind,value,metadata", { count: "exact" })
+            .eq("thread_id", threadId)
+            .in("kind", ["name", "person", "source_person"])
+            .order("created_at", { ascending: true })
+            .order("id", { ascending: true })
+            .range(from, to);
+          return { data: (data ?? null) as QuarantineRow[] | null, count, error };
+        },
+        () => "",
+      );
+      rows = res.rows;
+      if (!res.complete) {
+        console.warn(JSON.stringify({ event: "record_name_quarantine_read_incomplete", thread_id: threadId, rows: res.rows.length, reason: res.reason }));
+      }
+    } catch (e) {
+      console.warn(JSON.stringify({ event: "record_name_quarantine_read_failed", thread_id: threadId, error: String(e).slice(0, 200) }));
+    }
+    return quarantinedPersonNames([...rows, ...pendingQuarantineRows]);
+  };
+
   const tools = {
     list_tools: tool({
       description:
@@ -505,6 +709,11 @@ export function buildTools(ctx: ToolContext) {
             name: "geoseer_geolocate",
             reason: "GEOSEER_API_KEY not configured — AI image geolocation is unavailable; do not attempt to infer capture locations from photos.",
           });
+        }
+        if (!OPSIS_API_KEY || opsisKillSwitchOn()) {
+          for (const n of ["opsis_search", "opsis_results", "opsis_balance", "opsis_status"]) {
+            disabled.push({ name: n, reason: "Opsis is not configured or is switched off — use username_sweep for account enumeration." });
+          }
         }
         // Config-disabled providers (`disabled: true` in capabilities.ts's
         // PROVIDER_REQUIREMENTS) were NEVER gated here — only the key-presence
@@ -873,6 +1082,13 @@ export function buildTools(ctx: ToolContext) {
             // Profile / social
             "socialfetch_lookup","socialfetch_web_read","cordcat_discord_lookup","github_user","github_code_search",
             "hackernews_user","reddit_user","gravatar_profile",
+            // Free keyless profile readers. These MUST be here, not only in the
+            // system prompt: `socialfetch_web_read` now skips youtube / roblox /
+            // steamcommunity and its hint names these as the replacement, so a
+            // planner menu without them routes the pivot nowhere. (The copy in
+            // tools/minimax.ts is dead code — nothing imports it. This inline
+            // list is the one `buildTools()` actually ships.)
+            "youtube_oembed","roblox_user","steam_profile",
             "username_sweep","username_search",
             // Email enrichment
             "hunter_domain_search","hunter_email_finder","hunter_email_verifier","hunter_combined",
@@ -1711,11 +1927,16 @@ export function buildTools(ctx: ToolContext) {
     }),
     socialfetch_web_read: tool({
       description:
-        "Read ANY web URL as clean markdown via SocialFetch's SERVER-SIDE fetch (/v1/web/markdown). Use this for hosts that r.jina.ai HARD-BLOCKS — youtube/youtu.be, x/twitter, twitch, reddit — and for arbitrary evidence pages Jina can't reach: SocialFetch fetches server-side so origin 403/451 blocks don't apply. Costs ~1 credit per URL and SocialFetch quota is LOW — call it only for a specific blocked/important URL, NEVER as a bulk crawler. Returns { ok, status, data (markdown), meta, error }.",
+        "Read ANY web URL as clean markdown via SocialFetch's SERVER-SIDE fetch (/v1/web/markdown). Use it for hosts r.jina.ai HARD-BLOCKS — x/twitter, twitch, reddit, instagram — and for arbitrary evidence pages Jina can't reach: SocialFetch fetches server-side so origin 403/451 blocks don't apply. SKIPPED FOR FREE, use the named tool instead: youtube.com/youtu.be -> youtube_oembed, roblox.com -> roblox_user, steamcommunity.com -> steam_profile, t.me / chess.com / namemc.com / gofundme.com / scamadviser.com / threads.net -> jina_reader_scrape. It has never once completed a read on those hosts. Costs ~1 credit per URL and quota is LOW — call it for a specific blocked/important URL, NEVER as a bulk crawler. Returns { ok, status, data (markdown), meta, error }.",
       inputSchema: memoSchema("socialfetch_web_read", () => z.object({
         url: z.string().describe("Fully-qualified http(s) URL to read"),
       })),
-      execute: async ({ url }) => {
+      execute: async ({ url }, opts) => {
+        // The AI SDK's own abort signal. Combined with the per-call timeout below
+        // so a cancelled STEP actually cancels the in-flight upstream request
+        // instead of leaving it streaming into a run nobody is reading.
+        const outerSignal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
+        const startedAt = Date.now();
         if (!SOCIALFETCH_API_KEY) return { error: "SOCIALFETCH_API_KEY not configured" };
         // Host policy (2026-09-08 audit): t.me and youtube.com/youtu.be do not
         // share the success distribution the 18s cap below is calibrated
@@ -1730,7 +1951,25 @@ export function buildTools(ctx: ToolContext) {
           // surface the real error, exactly as it would have before this policy.
         }
         if (policy.action === "skip") {
-          return { error: "socialfetch host skip", status: null, url, skipped: true, hint: policy.hint };
+          // A classified skip, not an error: `skipped:true` keeps it out of the
+          // failure metrics (tool-outcome.ts reads it), `failure_class` says WHY
+          // for the trace, and no request is issued so no credit is spent.
+          return {
+            ok: false,
+            skipped: true,
+            status: "skipped",
+            failure_class: "host_unsupported",
+            // THE SLOT, not just the seconds. `startCall` reserves a paid-call
+            // slot at admission and `cache.ts` releases it ONLY on this
+            // structural marker (runtime-policy.ts:isPreProviderGate) — never on
+            // `skipped`, which also covers rate-limits, 5xx and timeouts that
+            // really did spend. Without it this skip still burned one of the
+            // run's 12 paid calls on a lookup it never performed, which would
+            // have left the headline saving of this commit at wall-clock only.
+            provider_attempted: false,
+            url,
+            hint: policy.hint,
+          };
         }
         try {
           // Single attempt, no retry: retrying a timeout would just double the
@@ -1746,15 +1985,71 @@ export function buildTools(ctx: ToolContext) {
           // the one exception (fast_timeout above) — they never cleared this
           // window in the audited sample, so the shorter cap costs no real success.
           const timeoutMs = policy.action === "fast_timeout" ? policy.timeoutMs : SOCIALFETCH_DEFAULT_TIMEOUT_MS;
-          const r = await fetchRetry(`https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`, { headers: { "x-api-key": SOCIALFETCH_API_KEY } }, { retries: 0, timeoutMs });
+          const r = await fetchRetry(
+            `https://api.socialfetch.dev/v1/web/markdown?url=${encodeURIComponent(url)}`,
+            { headers: { "x-api-key": SOCIALFETCH_API_KEY }, signal: outerSignal },
+            { retries: 0, timeoutMs },
+          );
           if (r.status === 402) {
             return { ok: false, status: 402, error: "SOCIALFETCH_CREDITS_EXHAUSTED", message: "Social Fetch credit balance is zero. Check /v1/balance." };
+          }
+          // A 5xx is the provider failing, not the page refusing. Worth one free
+          // jina attempt — and unlike a full timeout it leaves real budget.
+          if (r.status >= 500) {
+            const fb = await socialfetchJinaFallback(url, startedAt, outerSignal);
+            if (fb) return { ...fb, primary_failure: "upstream_5xx", primary_status: r.status };
+            return { ok: false, status: r.status, failure_class: "upstream_5xx", url, error: `socialfetch ${r.status}` };
           }
           const text = await r.text();
           let env: { data?: unknown; meta?: unknown; error?: unknown };
           try { env = JSON.parse(text) as typeof env; } catch { env = { data: text.slice(0, 8000) }; }
+          // A 2xx carrying nothing is not a read. Recording it as one lets a blank
+          // page or an error envelope enter the case as page evidence.
+          const body = env?.data ?? null;
+          const bodyText = typeof body === "string" ? body : body == null ? "" : JSON.stringify(body);
+          if (r.ok && (env?.error != null || bodyText.trim().length < SOCIALFETCH_MIN_BODY_CHARS)) {
+            const trimmed = bodyText.trim();
+            // A thin 2xx is the ONLY failure class that leaves the whole budget
+            // intact — nothing timed out, the provider answered fast. That makes
+            // it the best position the free reader ever gets, the opposite of the
+            // full-timeout path where it has ~3s and usually misses.
+            const fb = await socialfetchJinaFallback(url, startedAt, outerSignal);
+            if (fb) return { ...fb, primary_failure: "empty_body", primary_chars: trimmed.length };
+            return {
+              ok: false,
+              status: r.status,
+              failure_class: "empty_body",
+              url,
+              chars: trimmed.length,
+              // Never discard what the credit already bought. The floor exists so
+              // a blank page or an interstitial cannot enter the case AS a page
+              // read — `ok:false` already secures that. Throwing the characters
+              // away as well is a separate, unintended loss: a legitimately short
+              // page (a stub profile, a one-line bio) is rare but real, and a bare
+              // char count gives the model nothing to judge it by. Returned under
+              // `thin_body`, deliberately NOT `data`, so no caller that keys on a
+              // successful read can mistake it for one.
+              ...(trimmed ? { thin_body: trimmed.slice(0, SOCIALFETCH_MIN_BODY_CHARS) } : {}),
+              error: env?.error ?? "socialfetch returned 2xx with no usable page content",
+            };
+          }
           return { ok: r.ok, status: r.status, data: env?.data ?? env, meta: env?.meta ?? null, error: env?.error ?? null };
         } catch (e) {
+          // An abort is a TIMEOUT, which is a different fact from a failure: the
+          // host was slow, not broken, and the failed-tools panel should not read
+          // the two the same way.
+          if (isAbortLikeError(e)) {
+            const fb = await socialfetchJinaFallback(url, startedAt, outerSignal);
+            if (fb) return { ...fb, primary_failure: "timeout" };
+            return {
+              ok: false,
+              status: "timed_out",
+              failure_class: "timeout",
+              url,
+              elapsed_ms: Date.now() - startedAt,
+              error: String(e),
+            };
+          }
           return { error: String(e) };
         }
       },
@@ -2823,6 +3118,46 @@ export function buildTools(ctx: ToolContext) {
         return await sweepUsername(username);
       },
     }),
+    // Opsis OSINT API (lib/opsis.ts): account enumeration across ~700 platforms.
+    // opsis_search is PAID per call; the other three are free reads. All four are
+    // removed from the schema when OPSIS_API_KEY is unset (capabilities.ts), and
+    // OPSIS_DISABLED=true stops every call at call time. The wrapper's timeout
+    // signal is forwarded so its cap can end a poll early.
+    opsis_search: tool({
+      description:
+        "Opsis: find accounts for a username, email or domain across ~700 platforms. PAID (1 credit). Returns within ~25s; a run still going returns partial results plus a run_id, so fetch the rest with opsis_results and never search the same selector again. Hits are unverified account leads.",
+      inputSchema: memoSchema("opsis_search", () => z.object({
+        kind: z.enum(["username", "email", "domain"]),
+        value: z.string().min(1),
+      })),
+      // No `premium` input: a premium username search costs 2 credits and
+      // costs.ts prices per tool name, so exposing it would under-report spend
+      // (Codex P2 on #659). It returns as its own costed tool if wanted.
+      execute: async ({ kind, value }, opts) =>
+        await opsisSearch({ kind, value }, opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
+    }),
+    opsis_results: tool({
+      description: "Opsis: fetch the rest of a still-running opsis_search by its run_id (free). Pass the kind and value that search used.",
+      inputSchema: memoSchema("opsis_results", () => z.object({
+        kind: z.enum(["username", "email", "domain"]),
+        value: z.string().min(1),
+        run_id: z.string().min(1),
+      })),
+      execute: async ({ kind, value, run_id }, opts) =>
+        await opsisResults({ kind, value, run_id }, opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
+    }),
+    opsis_balance: tool({
+      description: "Opsis: API credit balance (free). Diagnostics only; do not call before routine searches.",
+      inputSchema: memoSchema("opsis_balance", () => z.object({})),
+      execute: async (_input, opts) =>
+        await opsisAccount("balance", opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
+    }),
+    opsis_status: tool({
+      description: "Opsis: API key, plan and rate-limit self-check (free). Diagnostics only.",
+      inputSchema: memoSchema("opsis_status", () => z.object({})),
+      execute: async (_input, opts) =>
+        await opsisAccount("status", opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
+    }),
     crtsh_subdomains: tool({
       description: "Enumerate subdomains for a domain via crt.sh certificate transparency logs.",
       inputSchema: memoSchema("crtsh_subdomains", () => z.object({ domain: z.string() })),
@@ -3160,6 +3495,153 @@ export function buildTools(ctx: ToolContext) {
             return { matchedAddress: (m.matchedAddress ?? null) as string | null, lon: coords.x ?? null, lat: coords.y ?? null };
           });
           return { ok: true, address, matched: true, count: out.length, matches: out };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
+    // ---- Free, keyless replacements for hosts socialfetch_web_read cannot read ----
+    // Measured 2026-09-30 over 14 days of tool_usage_log: socialfetch_web_read
+    // completed ZERO of 10 real youtube.com reads and 0 of 3 roblox.com reads,
+    // and every steamcommunity.com attempt aborted at the 18s cap. Each of those
+    // hosts publishes a free, keyless, sub-second structured endpoint instead.
+    // These three exist so socialfetchHostPolicy can SKIP those hosts outright
+    // rather than spending 6-18s per call to fail. They return profile metadata
+    // for the queried handle only: they prove an account exists and what it
+    // says about itself, never who controls it.
+    youtube_oembed: tool({
+      description:
+        "YouTube oEmbed metadata for a video URL — title, author_name (channel), author_url, thumbnail. FREE, keyless, sub-second. Use this INSTEAD of socialfetch_web_read for youtube.com / youtu.be, which has never once read a YouTube page (0 of 10 real attempts, 2026-09-30 audit). A 401/404 means private or deleted — a genuine negative about the URL, returned as { ok: true, found: false }, not a tool fault.",
+      inputSchema: memoSchema("youtube_oembed", () => z.object({
+        url: z.string().min(1).describe("youtube.com or youtu.be video URL"),
+      })),
+      execute: async ({ url }) => {
+        try {
+          const r = await fetchT(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`, {}, 8_000);
+          // oEmbed answers 401 for a private video and 404 for a deleted or
+          // never-existent one. Both are real facts about the URL, so they are
+          // successes that found nothing — never `ok: false`.
+          if (r.status === 401 || r.status === 404) {
+            return { ok: true, url, found: false, status: r.status, reason: r.status === 401 ? "private" : "not_found" };
+          }
+          if (!r.ok) return { ok: false, status: r.status, error: `youtube oembed ${r.status}`, url };
+          const d = (await r.json().catch(() => null)) as
+            { title?: string; author_name?: string; author_url?: string; thumbnail_url?: string } | null;
+          if (!d) return { ok: false, status: r.status, error: "youtube oembed returned non-JSON", url };
+          return {
+            ok: true, url, found: true,
+            title: d.title ?? null,
+            author_name: d.author_name ?? null,
+            author_url: d.author_url ?? null,
+            thumbnail_url: d.thumbnail_url ?? null,
+          };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
+    roblox_user: tool({
+      description:
+        "Roblox public profile lookup by username or numeric user id — id, name, displayName, created, isBanned, description, profile_url. FREE, keyless, official users.roblox.com API. Use this INSTEAD of socialfetch_web_read for roblox.com, which timed out on every attempt (3 of 3, 2026-09-30 audit). Proves the account exists and what its profile says — never who owns it.",
+      inputSchema: memoSchema("roblox_user", () => z.object({
+        username: z.string().min(1).optional().describe("Roblox username"),
+        user_id: z.union([z.string(), z.number()]).optional().describe("numeric Roblox user id"),
+      })),
+      execute: async ({ username, user_id }) => {
+        try {
+          let id = user_id == null ? null : String(user_id).trim();
+          if (!id && !username) return { error: "roblox_user needs username or user_id" };
+          if (!id && username) {
+            const lookup = await fetchT("https://users.roblox.com/v1/usernames/users", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ usernames: [username], excludeBannedUsers: false }),
+            }, 8_000);
+            if (!lookup.ok) return { ok: false, status: lookup.status, error: `roblox usernames ${lookup.status}`, username };
+            const ld = (await lookup.json().catch(() => null)) as { data?: Array<{ id?: number }> } | null;
+            const hit = ld?.data?.[0]?.id;
+            // An unknown username returns 200 with an EMPTY data array, so a
+            // 200 alone is not a hit.
+            if (hit == null) return { ok: true, username, found: false };
+            id = String(hit);
+          }
+          const r = await fetchT(`https://users.roblox.com/v1/users/${encodeURIComponent(id!)}`, {}, 8_000);
+          if (r.status === 404) return { ok: true, username: username ?? null, user_id: id, found: false };
+          if (!r.ok) return { ok: false, status: r.status, error: `roblox users ${r.status}`, user_id: id };
+          const d = (await r.json().catch(() => null)) as
+            { id?: number; name?: string; displayName?: string; created?: string; isBanned?: boolean; description?: string } | null;
+          if (!d) return { ok: false, status: r.status, error: "roblox returned non-JSON", user_id: id };
+          return {
+            ok: true, found: true,
+            id: d.id ?? Number(id),
+            name: d.name ?? null,
+            displayName: d.displayName ?? null,
+            created: d.created ?? null,
+            isBanned: d.isBanned ?? null,
+            // Bounded: a Roblox bio is free text and the whole result is
+            // re-serialized into the prompt on every later step.
+            description: typeof d.description === "string" ? d.description.slice(0, 500) : null,
+            profile_url: `https://www.roblox.com/users/${d.id ?? id}/profile`,
+          };
+        } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
+      },
+    }),
+    steam_profile: tool({
+      description:
+        "Steam community profile by profile URL, steamID64 or vanity name — steamID64, display name, realname, location, memberSince, privacyState. FREE, keyless (the public ?xml=1 endpoint). Use this INSTEAD of socialfetch_web_read for steamcommunity.com, which aborts at the 18s cap there (2026-09-30 audit). A private profile returns privacyState 'private' with no detail — that is the account's own setting, not a failure.",
+      inputSchema: memoSchema("steam_profile", () => z.object({
+        url: z.string().min(1).optional().describe("full steamcommunity.com profile URL"),
+        steamid64: z.string().min(1).optional().describe("17-digit steamID64"),
+        vanity: z.string().min(1).optional().describe("vanity /id/<name> segment"),
+      })),
+      execute: async ({ url, steamid64, vanity }) => {
+        try {
+          let target: string | null = null;
+          if (steamid64) target = `https://steamcommunity.com/profiles/${encodeURIComponent(steamid64.trim())}`;
+          else if (vanity) target = `https://steamcommunity.com/id/${encodeURIComponent(vanity.trim())}`;
+          else if (url) {
+            const m = url.match(/steamcommunity\.com\/(profiles|id)\/([^/?#]+)/i);
+            if (m) target = `https://steamcommunity.com/${m[1].toLowerCase()}/${m[2]}`;
+          }
+          if (!target) return { error: "steam_profile needs url, steamid64 or vanity" };
+          const r = await fetchT(`${target}?xml=1`, {}, 8_000);
+          if (!r.ok) return { ok: false, status: r.status, error: `steam ${r.status}`, profile_url: target };
+          const xml = await r.text();
+          const pick = (tag: string): string | null => {
+            const m = xml.match(new RegExp(`<${tag}>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</${tag}>`, "i"));
+            return m ? (m[1].trim() || null) : null;
+          };
+          // The ?xml=1 endpoint answers HTTP 200 with an <error> document for an
+          // unknown vanity or id, so a 200 is not on its own a hit.
+          const err = pick("error");
+          if (err) return { ok: true, found: false, profile_url: target, reason: err.slice(0, 200) };
+          const steamID64 = pick("steamID64");
+          if (!steamID64) {
+            // ⚠️ NOT a negative. Steam answers 200 with a maintenance page, an
+            // age/consent interstitial, a rate-limit notice or a truncated body,
+            // and none of those carry an <error> element. Reporting "no such
+            // account" for one MANUFACTURES EVIDENCE: it is an operational fault
+            // dressed as a fact about the target, and the cache would then serve
+            // that fabricated negative for the whole TTL. A recognized <error>
+            // document is the only successful negative; anything else is a tool
+            // fault, so `ok:false` — which keeps it out of the case and out of
+            // the cache.
+            return {
+              ok: false,
+              status: r.status,
+              failure_class: "malformed_response",
+              error: "steam ?xml=1 returned 200 with neither <steamID64> nor <error> — not a profile document",
+              profile_url: target,
+              chars: xml.length,
+              body_head: xml.trim().slice(0, 200) || null,
+            };
+          }
+          return {
+            ok: true, found: true,
+            steamID64,
+            steamID: pick("steamID"),
+            realname: pick("realname"),
+            location: pick("location"),
+            memberSince: pick("memberSince"),
+            privacyState: pick("privacyState"),
+            profile_url: target,
+          };
         } catch (e) { return { error: String(e instanceof Error ? e.message : e) }; }
       },
     }),
@@ -4962,6 +5444,14 @@ export function buildTools(ctx: ToolContext) {
         // row the thread already has.
         const { keys: priorByKey, truncated: threadDedupPartial } =
           await loadThreadArtifactIdentities(supabase, threadId, triageState.seed ?? null);
+        // Write-path linkage gate for MODEL-AUTHORED rows (lib/record-name-quarantine.ts):
+        // a row naming a person this thread has ACTIVELY quarantined inherits that
+        // quarantine. `loadQuarantinedNames` reads the thread completely and merges
+        // quarantines extracted earlier in THIS request (see its definition).
+        let quarantinedNames: QuarantinedName[] = [];
+        let nameQuarantineStamped = 0;
+        const nameQuarantineOn = recordNameQuarantineEnabled();
+        if (nameQuarantineOn) quarantinedNames = await loadQuarantinedNames();
         /** Confidence differences on rows declined as thread-wide duplicates.
          *  DISCLOSED, never applied — see the note at the rejection site. */
         const confidenceDeltasSuppressed: Array<{
@@ -5105,6 +5595,16 @@ export function buildTools(ctx: ToolContext) {
             // Spread LAST so a corrected `note` overrides the model-supplied one.
             ...dateSanity.metaPatch,
           };
+          if (nameQuarantineOn && !collisionExcluded) {
+            const inherited = inheritedNameQuarantine(v.value, quarantinedNames, quarantineSeed());
+            if (inherited) {
+              Object.assign(meta, inherited);
+              // Release is an ANALYST decision (src/lib/quarantine-release.ts). The
+              // model cannot pre-release its own row by writing the flag.
+              delete meta.linkage_confirmed;
+              nameQuarantineStamped++;
+            }
+          }
           // One observation is identified only by its authority-bearing surface.
           // Model-authored metadata labels remain persisted for disclosure, but
           // cannot manufacture another observation row or corroboration.
@@ -5424,6 +5924,16 @@ export function buildTools(ctx: ToolContext) {
           // A dedup gate that quietly stopped deduping would be worse than one
           // that says so: a partial scan means a duplicate may have been let in.
           ...(threadDedupPartial ? { thread_dedup_partial: true } : {}),
+          // Told, not hidden: the model must not re-assert these as the subject's.
+          ...(nameQuarantineStamped > 0
+            ? {
+                name_quarantined: nameQuarantineStamped,
+                name_quarantine_note:
+                  "Some rows name a person this investigation has NOT linked to the subject (a quarantined same-name identity). " +
+                  "They were recorded with subject_unlinked and carry no subject authority. Do not describe them as the subject; " +
+                  "link the name with an independent selector (shared handle, email, photo, location) before relying on it.",
+              }
+            : {}),
           ...(memory_hits.length > 0
             ? {
                 memory_hits,
@@ -5538,7 +6048,19 @@ export function buildTools(ctx: ToolContext) {
           ...(listingAgent ? { contact_type: "real_estate_listing_agent" } : {}),
           ...(bioName ? { bio_cross_link: true } : {}),
           ...(llmAssertedProvenance ? { provenance: LLM_ASSERTED_PROVENANCE, provenance_verified: false } : {}),
-        };
+        } as Record<string, unknown>;
+        // Same write-path linkage gate as record_artifacts: this shim is a full
+        // duplicate implementation and is advertised in the catalog, so gating only
+        // the plural tool would leave the bypass one spelling away.
+        let singleNameQuarantined = false;
+        if (!collisionExcluded && recordNameQuarantineEnabled()) {
+          const inherited = inheritedNameQuarantine(v.value, await loadQuarantinedNames(), quarantineSeed());
+          if (inherited) {
+            Object.assign(enrichedMeta, inherited);
+            delete enrichedMeta.linkage_confirmed;
+            singleNameQuarantined = true;
+          }
+        }
         // THREAD-WIDE dedup, same gate as record_artifacts (2026-08-28). This
         // shim is a full duplicate implementation, not a delegation, and it is
         // advertised in the catalog — so deduping only the plural tool would
@@ -5614,7 +6136,20 @@ export function buildTools(ctx: ToolContext) {
           _content_snapshot: JSON.stringify(meta).slice(0, 1500),
           _metadata: meta,
         }).then(() => {}, (e: unknown) => console.warn("[record_artifact] append_evidence:", e));
-        return { ok: true, kind: row.kind, value: row.value, ...(minor ? { minor_safety_flag: true } : {}) };
+        return {
+          ok: true,
+          kind: row.kind,
+          value: row.value,
+          ...(minor ? { minor_safety_flag: true } : {}),
+          ...(singleNameQuarantined
+            ? {
+                name_quarantined: 1,
+                name_quarantine_note:
+                  "This row names a person this investigation has NOT linked to the subject (a quarantined same-name identity). " +
+                  "It was recorded with subject_unlinked and carries no subject authority.",
+              }
+            : {}),
+        };
       },
     }),
     record_evidence: tool({
@@ -6163,10 +6698,21 @@ export function buildTools(ctx: ToolContext) {
       label: z.enum(["CONFIRMED","CORROBORATED","INFERRED","VERIFY","LOW","DISMISSED"]).default("INFERRED"),
     })),
     execute: async (i) => {
-      const { data: contraRows } = await supabase
+      const { data: threadRows } = await supabase
         .from("artifacts")
-        .select("kind,value,source,metadata,created_at")
+        .select("id,kind,value,source,metadata,created_at")
         .eq("thread_id", threadId);
+      // Rows the analyst DISMISSED stop testifying about the subject, exactly as
+      // on the synthesis path (finding-synthesis-sweep.ts), which already scored
+      // the same row shape on review-filtered rows while this path did not. These
+      // rows only feed the contradiction check, so an unreadable verdict set keeps
+      // every row: a missed dismissal costs a penalty, never invents confidence.
+      let contraRows = threadRows ?? null;
+      if (contraRows && !contradictionClaimFilterDisabled()) {
+        const reviews = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
+        if (reviews.ok) contraRows = dropRejectedArtifacts(contraRows, reviews);
+        else console.warn(JSON.stringify({ event: "record_finding_review_state_unavailable", thread_id: threadId, error: reviews.error }));
+      }
       // Scoring + row construction live in ONE place — see lib/finding-row.ts.
       // This block used to be 161 lines inline here; it was MOVED, not rewritten,
       // because finding synthesis needs the identical chain and two copies of a
@@ -6175,7 +6721,7 @@ export function buildTools(ctx: ToolContext) {
       const { row, axes, status: findingStatus } = buildFindingRow(i, {
         threadId,
         userId,
-        contraRows: contraRows ?? null,
+        contraRows,
       });
       const { data, error } = await supabase.from("artifacts").insert([row]).select("id").maybeSingle();
       if (error) return { ok: false, error: error.message };
@@ -6186,5 +6732,5 @@ export function buildTools(ctx: ToolContext) {
     },
   });
 
-  return { tools, availableToolsForAudit };
+  return { tools, availableToolsForAudit, noteQuarantinedFindings };
 }

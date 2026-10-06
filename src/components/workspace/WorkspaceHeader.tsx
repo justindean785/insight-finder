@@ -38,8 +38,12 @@ const KIND_LABEL: Record<SeedKind, string> = {
 function Figure({ value, label, tone, hint }: { value: ReactNode; label: string; tone?: string; hint?: string }) {
   const body = (
     <span className={cn("inline-flex items-baseline gap-1 whitespace-nowrap", hint && "cursor-help")}>
-      <span className={cn("font-mono tabular-nums text-foreground/90", tone)}>{value}</span>
-      <span className="text-muted-foreground">{label}</span>
+      {/* Ink 3 and ink 4. These used to sit at 90% foreground, a hair under the
+          selector above them, so the case line competed with the thing it was
+          describing. A toned figure keeps its authority hue: an adverse count
+          is the one figure here that should stop the eye. */}
+      <span className={cn("font-mono tabular-nums", tone ?? "text-subtle-foreground")}>{value}</span>
+      <span className="text-faint-foreground">{label}</span>
     </span>
   );
   if (!hint) return body;
@@ -216,13 +220,13 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
       role="region"
       aria-label="Case summary"
       data-thread-id={threadId}
-      className="relative border-b border-white/[0.07] bg-surface-1"
+      className="case-bar relative border-b border-white/[0.07]"
     >
       <div className="flex min-h-[3.5rem] items-center gap-3 px-4 py-2 sm:px-6">
         {/* Identity */}
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <span
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.03] text-muted-foreground"
+            className="case-mark grid h-9 w-9 shrink-0 place-items-center rounded-[10px]"
             title={KIND_LABEL[display.kind]}
           >
             <KindIcon className="h-4 w-4" strokeWidth={1.75} aria-hidden />
@@ -240,7 +244,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
                       aria-label={snapshot?.seed.value ? `${display.title} — copy selector` : display.title}
                       className="group flex min-w-0 items-center gap-1.5 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
                     >
-                      <span className="truncate font-mono text-[15px] font-medium tracking-tight text-foreground">
+                      <span className="truncate font-mono text-[16px] font-medium tracking-[-0.015em] text-foreground">
                         {display.title}
                       </span>
                       {snapshot?.seed.value && (
@@ -297,13 +301,13 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
  * Mobile previously showed NO run state at all, so an interrupted run was
  * invisible on a phone. Same snapshot, same figures as desktop.
  */
-export function MobileCaseStrip({ onNew, creating = false }: { onNew: () => void; creating?: boolean }) {
+export function MobileCaseStrip() {
   const { snapshot } = useCaseSnapshot();
   const display = snapshot?.seed.value
     ? extractDisplaySeed(snapshot.seed.value, snapshot.seed.type)
     : { selector: "", kind: "other" as SeedKind, title: snapshot?.hydrated ? "New investigation" : "" };
   return (
-    <div className="flex min-h-12 items-center gap-2 border-b border-white/[0.07] bg-surface-1 py-1.5 pl-3 pr-1.5">
+    <div className="flex min-h-14 min-w-0 flex-1 items-center gap-2 py-1.5 pr-1.5">
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
           {display.title
@@ -316,15 +320,7 @@ export function MobileCaseStrip({ onNew, creating = false }: { onNew: () => void
         </div>
       </div>
       <CaseSyncStatus compact className="shrink-0 [&>span:first-child]:hidden min-[420px]:[&>span:first-child]:inline-flex" />
-      <button
-        type="button"
-        onClick={onNew}
-        disabled={creating}
-        aria-label="Start a new investigation"
-        className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-white/10 bg-white text-black transition-colors duration-fast hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
-      >
-        <Plus className="h-4 w-4" aria-hidden />
-      </button>
     </div>
   );
 }
+

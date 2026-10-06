@@ -4,6 +4,7 @@
  * All 77 tools flow through wrapToolsWithCache().
  */
 
+import { redactErrorMessage } from "./lib/redact-error.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import type { Tool } from "npm:ai@6";
 import { hashInput, normalizeForHash, sanitizeToolOutput, stripNulCharacters, TOOL_CACHE_LRU } from "./safety.ts";
@@ -24,6 +25,11 @@ import { unprovenLinkageMarker, UNPROVEN_LINKAGE_KEY, type UnprovenLinkage } fro
 import { promotionQuarantineEnabled } from "./env.ts";
 import type { QuarantineRow } from "./lib/dispatch-quarantine.ts";
 import { buildRejectedDispatchKeys, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
+import {
+  buildDeadTargets, deadTargetMemoryEnabled, deadTargetCount, deadTargetRefusal,
+  DEAD_TARGET_FLOOR, DEAD_TARGET_REFUSAL_ERROR,
+  DEAD_TARGET_PAGE, DEAD_TARGET_MAX_PAGES, DEAD_TARGET_READ_OUTCOMES,
+} from "./lib/dead-target.ts";
 import { loadReviewsForThread, type ReviewDb } from "./reviews.ts";
 import {
   guard, takeCorrelateHint, shouldSkipRedundantCorrelate,
@@ -160,6 +166,11 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // asserted in tool_timeout_contract_test.ts. At the old 30s the wrapper fired
   // first and Serus kept polling unsupervised.
   serus_darkweb_scan: 45_000,
+  // Opsis polls to an internal 25s deadline (lib/opsis.ts OPSIS_POLL_DEADLINE_MS);
+  // the cap sits above it so the INTERNAL bound fires and returns partial results
+  // with a run_id, rather than the wrapper discarding a paid run.
+  opsis_search: 30_000,
+  opsis_results: 30_000,
   // minimax_correlate is the correlation engine — it sends the whole artifact batch
   // (up to 200 entries / 16k chars) to the smart-tier model for a 1500-token JSON
   // clustering+rescoring response. The 2026-07-08 pipeline audit caught it timing out
@@ -345,22 +356,54 @@ export function withTimeoutSignal(opts: unknown, signal: AbortSignal): unknown {
   return { ...((opts as Record<string, unknown>) ?? {}), abortSignal: merged };
 }
 
+/**
+ * ⚠️ EVERY GOVERNANCE CHECK IN THIS WRAPPER IS KEYED ON WHAT THESE TWO RETURN.
+ *
+ * A tool whose input uses none of the recognized field names yields selector
+ * type `"value"` and selector value `""` — and an EMPTY selector makes the
+ * analyst-rejection lookup, the `subject_unlinked` quarantine lookup and the
+ * `unproven_linkage` taint all vacuous. They do not refuse and they do not
+ * taint; they match nothing and fall silently open. So a new tool that invents
+ * a parameter name is not merely uncached, it is UNGOVERNED.
+ *
+ * `vanity` is the sharp case: it is a username in everything but spelling, so
+ * without the alias an analyst could quarantine a handle and the planner could
+ * still read that same handle's Steam profile at full subject authority. It is
+ * therefore mapped to `username`, where the quarantine table can see it.
+ *
+ * `steamid64` / `user_id` are platform account ids and are deliberately NOT
+ * mapped to `username`: keying a numeric id into the username namespace invites
+ * exactly the cross-type collision `lib/dispatch-quarantine.ts` warns about
+ * (`normalizeTarget` collapses non-alphanumerics, so distinct selector kinds
+ * can normalize equal). They get their own `account_id` type, which cannot
+ * collide with a handle while still producing a NON-EMPTY key, so the checks
+ * above evaluate honestly instead of no-oping.
+ *
+ * Adding a key here changes `params_hash` for any tool that uses it, because
+ * selector keys are excluded from the params bag. Verified 2026-10-01: no tool
+ * in the live registry takes `vanity`, `steamid64` or `user_id` as an INPUT
+ * except the two added in this PR, which have no cached rows yet — so this
+ * invalidates nothing. Re-check that before adding a fourth.
+ */
 function detectSelectorType(input: Record<string, unknown>): string {
   const hinted = String(input.kind ?? input.selector_type ?? "").trim().toLowerCase();
   if (hinted) return hinted;
   if (typeof input.email === "string") return "email";
-  if (typeof input.username === "string" || typeof input.handle === "string") return "username";
+  if (typeof input.username === "string" || typeof input.handle === "string" || typeof input.vanity === "string") return "username";
   if (typeof input.domain === "string") return "domain";
   if (typeof input.phone === "string") return "phone";
   if (typeof input.ip === "string") return "ip";
   if (typeof input.url === "string") return "url";
   if (typeof input.name === "string") return "name";
+  if (input.steamid64 != null || input.user_id != null) return "account_id";
   if (typeof input.value === "string") return "value";
   return "value";
 }
 
 function detectSelectorValue(input: Record<string, unknown>): string {
-  const raw = input.value ?? input.email ?? input.username ?? input.handle ?? input.domain ?? input.ip ?? input.phone ?? input.url ?? input.name ?? input.seed ?? "";
+  const raw = input.value ?? input.email ?? input.username ?? input.handle ?? input.vanity ??
+    input.domain ?? input.ip ?? input.phone ?? input.url ?? input.name ?? input.seed ??
+    input.steamid64 ?? input.user_id ?? "";
   return typeof raw === "string" ? raw : String(raw ?? "");
 }
 
@@ -369,12 +412,15 @@ const SELECTOR_INPUT_KEYS = new Set([
   "email",
   "username",
   "handle",
+  "vanity",
   "domain",
   "ip",
   "phone",
   "url",
   "name",
   "seed",
+  "steamid64",
+  "user_id",
   "kind",
   "selector_type",
   "force",
@@ -421,6 +467,10 @@ export function isCacheableToolResult(result: unknown): boolean {
     typeof r.ok !== "boolean" && typeof r.error !== "string"
   ) return false;
   if (isIntentionalSkip(r) || r.provider_unavailable === true) return false;
+  // A result that says it is PARTIAL (a provider run still in progress, e.g.
+  // opsis_search at its deadline) is a snapshot, not an answer. Replaying it for
+  // the TTL would hand back the snapshot instead of the finished run.
+  if (r.partial === true) return false;
   if (typeof r.ok === "boolean") return r.ok;
   if (typeof r.error === "string" && r.error.length > 0) return false;
   return true;
@@ -629,6 +679,11 @@ export function wrapToolsWithCache(
     // `capped` is surfaced by index.ts (finalize + telemetry). Optional so callers
     // that don't set it (tests, other entrypoints) are unaffected.
     toolCallBudget?: { genuine: number; reserved: number; capped: boolean };
+    // Request-owned latch for telemetry's `budget_exhausted` stop reason: set when
+    // a runtime-policy budget ceiling REFUSES a call in THIS invocation. Never
+    // keyed by thread — overlapping invocations share one, and each request's
+    // clearRuntime(threadId) would erase or cross-attribute a thread-keyed flag.
+    budgetCeiling?: { fired: boolean };
     shouldStopLiveLookups?: () => boolean;
     // TRUE only while enough wall-clock remains for a dispatched
     // minimax_correlate call to actually finish (its own enforced cap + the
@@ -686,6 +741,67 @@ export function wrapToolsWithCache(
       })();
     }
     return toolHealthPromise;
+  };
+  // ---- Dead-target memory (lib/dead-target.ts) -----------------------------------
+  // The circuit breaker forgets everything between requests; tool_usage_log does
+  // not. Loaded ONCE per run: only this case's FAILED rows, so the read is small.
+  // FAILS OPEN on any error, like loadToolHealth — a cost control, not authorization.
+  let deadTargetsPromise: Promise<Map<string, number>> | null = null;
+  const loadDeadTargets = (): Promise<Map<string, number>> => {
+    if (!deadTargetsPromise) {
+      deadTargetsPromise = (async () => {
+        try {
+          // ⚠️ PAGED, and it has to be. An unbounded PostgREST select returns at most
+          // `db-max-rows` with NO error — a well-formed short 200 — which is exactly
+          // how the quarantine read silently stopped binding (#519). Here a short read
+          // is worse than a missing refusal: the streak resets on a success, so a page
+          // that carries a pair's failures but not its LATER success inverts the
+          // answer and refuses a live target. So: read chronologically, advance by rows
+          // actually returned, and stop only on a short/empty page.
+          const rows: Array<Record<string, unknown>> = [];
+          let from = 0;
+          let truncated = false;
+          for (let page = 0; ; page++) {
+            if (page >= DEAD_TARGET_MAX_PAGES) { truncated = true; break; }
+            const { data, error } = await adminDb
+              .from("tool_usage_log")
+              .select("tool_name,outcome,input_json,created_at,cached")
+              .eq("thread_id", ctx.investigationId)
+              .in("outcome", DEAD_TARGET_READ_OUTCOMES)
+              .order("created_at", { ascending: true })
+              .range(from, from + DEAD_TARGET_PAGE - 1);
+            if (error) {
+              console.warn("[dead-target] load failed (gate open):", error.message);
+              return new Map();
+            }
+            const got = (data ?? []) as Array<Record<string, unknown>>;
+            rows.push(...got);
+            if (got.length < DEAD_TARGET_PAGE) break;   // short page ⇒ end of the set
+            from += got.length;                          // advance by rows RETURNED
+          }
+          if (truncated) {
+            // Fail OPEN on an incomplete read, deliberately. A partial history can
+            // only ever manufacture a false refusal (failures seen, later success
+            // missed), and this is a cost control, not an authorization boundary.
+            console.warn(JSON.stringify({
+              event: "dead_target_read_incomplete",
+              thread_id: ctx.investigationId,
+              rows_read: rows.length,
+              reason: "page_cap",
+            }));
+            return new Map();
+          }
+          return buildDeadTargets(
+            rows,
+            (input) => circuit.normalizeSelector(detectSelectorType(input), detectSelectorValue(input)),
+          );
+        } catch (e) {
+          console.warn("[dead-target] load threw (gate open):", e);
+          return new Map();
+        }
+      })();
+    }
+    return deadTargetsPromise;
   };
   // ---- subject_unlinked DISPATCH boundary --------------------------------------
   // Quarantine binds at write and read-back; without this it never bound at
@@ -836,14 +952,9 @@ export function wrapToolsWithCache(
     }
     return false;
   };
-  // Strip anything that looks like an API credential before it lands in
-  // tool_usage_log.error_msg or edge logs. Covers Bearer tokens, OpenAI-style
-  // sk- keys, and Google AIza keys.
-  const redactSecrets = (input: string): string =>
-    input
-      .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-      .replace(/sk-[A-Za-z0-9._-]+/g, "sk-[REDACTED]")
-      .replace(/AIza[A-Za-z0-9_-]+/g, "AIza[REDACTED]");
+  // Credentials are stripped by the shared lib/redact-error.ts before an error
+  // lands in tool_usage_log.error_msg or edge logs.
+  const redactSecrets = redactErrorMessage;
   // Pull a human-readable error message + status code out of a tool result
   // so failed calls leave a durable trace in tool_usage_log.
   const extractToolError = (
@@ -1294,6 +1405,41 @@ export function wrapToolsWithCache(
           }
         }
 
+        // ---- Dead-target memory: this (tool, selector) is failing in THIS case ----
+        // ⚠️ Placed HERE, below every cache layer, and that placement is the fix for
+        // the first cut of this gate. A cache hit is free and already paid for, so
+        // refusing one saved nothing and threw away a usable result — a pure
+        // regression. Everything above this line is a free replay; nothing below it
+        // is. So the gate refuses exactly what it exists to refuse: a LIVE call on a
+        // target that keeps failing.
+        //
+        // It still sits ABOVE the tool-call cap, the circuit and the paid-call
+        // reservation, so a refusal reserves no budget slot and leaves no circuit
+        // state — the same free-refusal placement as the correlate gates below.
+        // An analyst override is the one legitimate reason to try a dead target
+        // again: the documented "manual override: <selector>" flow (manualOverride,
+        // computed above) — the path an analyst can actually reach, since tool
+        // schemas do not expose `force` (Codex P2 on #673) — or an explicit force.
+        if (deadTargetMemoryEnabled() && !force && !manualOverride && !ALWAYS_ALLOW_TOOLS.has(name)) {
+          const prior = deadTargetCount(await loadDeadTargets(), name, sel);
+          if (prior >= DEAD_TARGET_FLOOR) {
+            await logUsage(false, false, Date.now() - t0, DEAD_TARGET_REFUSAL_ERROR, null, true, {
+              input: inputJson,
+              runtime: { ...runtimeMetaBase, rejection_reason: "dead_target", rejection_source: "case_memory", prior_failures: prior },
+            });
+            console.log(JSON.stringify({
+              event: "dead_target_refused", thread_id: ctx.investigationId, tool: name, selector: sel, prior_failures: prior,
+            }));
+            return attachRuntimeMeta(deadTargetRefusal(name, sel, prior), {
+              ...runtimeMetaBase,
+              rejection_reason: "dead_target",
+              stage: "TRIAGE",
+              cache_layer: "miss",
+              stale_cache: !!staleRecord,
+            });
+          }
+        }
+
         // ---- Correlation freshness gate (2026-09-08 performance audit) --------
         // Every cache layer above is a free, valid replay and never reaches here.
         // Placed BEFORE the tool-call cap / circuit / paid-call reservation below
@@ -1459,6 +1605,7 @@ export function wrapToolsWithCache(
           force,
         });
         if (!runtimeDecision.allow) {
+          if (runtimeDecision.budgetCeiling && ctx.budgetCeiling) ctx.budgetCeiling.fired = true;
           noteRejectedCall(ctx.investigationId, {
             tool_name: name,
             selector: sel,

@@ -56,12 +56,33 @@ const REPORT_TYPES_SOON = ["LE / Court", "OSINT Technical", "Lead Brief"];
 
 type ExportFormat = "copy-md" | "md" | "pdf" | "matrix" | "json";
 
+// ⚠️ These labels must say what the format ACTUALLY produces, and must not
+// over-claim. Two things are true at once:
+//
+//  1. Masking is not uniform by FORMAT. Markdown and JSON run through
+//     `markMarkdown` / `wrapJsonExport` → redactSecretsInText /
+//     redactSecretsDeep. PDF and Ctrl+P get no export redaction pass: they
+//     print CaseReport AS DISPLAYED, so they mask exactly what the on-screen
+//     display policy masks — `MaskedValue` under VITE_MASK_BREACH_VALUES, and
+//     minor-related breach rows always. "Nothing masked" would over-claim in
+//     the other direction (Codex P2 on #609), so the label says "as displayed".
+//  2. Masking is narrow in SCOPE. `SECRET_KEY_RE` and the password regexes
+//     cover passwords, passcodes and hashes — nothing else. SSNs, DOBs and
+//     partial card numbers pass through every format untouched. Verified on a
+//     production export (2026-09-22): a 9-digit SSN from an NPD breach row
+//     survived the JSON path intact.
+//
+// So "secrets masked" would be a lie in the other direction — the exact failure
+// the old "Raw JSON" label committed. Say PASSWORDS, which is what is true.
+// Whether either the format asymmetry or the narrow scope should change is an
+// operator decision under the standing REVEAL_BREACH_DATA preference; these
+// labels only make the current behaviour legible.
 const FORMAT_LABEL: Record<ExportFormat, string> = {
-  "copy-md": "Copy markdown",
-  md: "Markdown (.md)",
-  pdf: "PDF (print)",
+  "copy-md": "Copy markdown · passwords masked",
+  md: "Markdown (.md) · passwords masked",
+  pdf: "PDF (print) · as displayed",
   matrix: "Evidence matrix",
-  json: "Raw JSON",
+  json: "JSON · passwords masked",
 };
 
 export function ReportTab({
@@ -371,7 +392,7 @@ export function ReportTab({
           {profile && <ConfidenceRadar artifacts={artifacts} seedValue={seed.value} reviews={reviews} profile={profile} />}
         </div>
         {/* No inner scroll: the report flows in the page's single scroll container. */}
-        <div className="rounded-lg border border-border-subtle bg-surface-1 px-4 py-5">
+        <div className="panel px-4 py-5">
           <CaseReport
             seedValue={seed.value}
             seedType={seed.type}
@@ -448,7 +469,7 @@ export function ReportTab({
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setPending(null)}>Cancel</Button>
             <Button size="sm" disabled={!ack} onClick={confirmPending}>
-              {pending ? (isDraft ? `Export draft · ${FORMAT_LABEL[pending]}` : FORMAT_LABEL[pending] === "Raw JSON" ? "Copy JSON" : FORMAT_LABEL[pending]) : "Export"}
+              {pending ? (isDraft ? `Export draft · ${FORMAT_LABEL[pending]}` : pending === "json" ? "Copy JSON" : FORMAT_LABEL[pending]) : "Export"}
             </Button>
           </DialogFooter>
         </DialogContent>

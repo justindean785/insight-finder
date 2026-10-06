@@ -115,7 +115,7 @@ function itemsFor(inputs: Record<string, unknown>[]): NextStepItem[] {
 }
 
 describe("NextSteps — a malformed pivot cannot run, a valid one previews first", () => {
-  it("renders a malformed pivot as 'Suggestion needs repair' with no Run control", () => {
+  it("keeps a malformed pivot OFF the list, disclosed behind one line, with no Run control", () => {
     render(
       <NextSteps
         items={itemsFor([{ ...validInput, action: "Review lead", target: "| Review lead | Keith family | name |", targetType: "name" }])}
@@ -123,9 +123,33 @@ describe("NextSteps — a malformed pivot cannot run, a valid one previews first
         onRunAction={vi.fn()}
       />,
     );
+    expect(screen.queryByText("Suggestion needs repair")).toBeNull();
+    const disclosure = screen.getByRole("button", { name: /1 suggestion from the report couldn't be turned into a runnable step/ });
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(disclosure);
+    expect(disclosure.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText("Suggestion needs repair")).toBeTruthy();
     expect(screen.getByText(/table cell/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Run/ })).toBeNull();
+  });
+
+  it("counts and lists only runnable steps; the repair line sits below them", () => {
+    render(
+      <NextSteps
+        items={itemsFor([
+          { ...validInput, action: "Review lead", target: "| Review lead | Keith family | name |", targetType: "name" },
+          validInput,
+        ])}
+        onRunPivot={vi.fn()}
+        onRunAction={vi.fn()}
+      />,
+    );
+    const section = screen.getByRole("region", { name: "Next steps" });
+    expect(section.querySelector("header")?.textContent).toMatch(/Next steps\s*1$/);
+    expect(screen.getByRole("button", { name: "Run Verify email ownership on j@example.com" })).toBeTruthy();
+    const run = screen.getByRole("button", { name: /^Run Verify/ });
+    const disclosure = screen.getByRole("button", { name: /couldn't be turned into/ });
+    expect(run.compareDocumentPosition(disclosure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("Run opens the preview and starts NOTHING; Start dispatches exactly once", () => {
@@ -162,29 +186,36 @@ describe("WorkspaceTabs (mobile) — labelled, never an unnamed icon", () => {
     expect(trigger.textContent).toContain("Graph");
   });
 
-  it("labels the three primary sections as real tabs", () => {
+  it("labels the three primary sections as real tabs — Report is one tap away", () => {
     render(<WorkspaceTabs active="evidence" onChange={vi.fn()} variant="inline" />);
-    for (const name of ["Overview", "Investigate", "Evidence"]) {
+    for (const name of ["Investigate", "Evidence", "Report"]) {
       expect(screen.getByRole("tab", { name: new RegExp(name) })).toBeTruthy();
     }
+    expect(screen.queryByRole("tab", { name: /Overview/ })).toBeNull();
     expect(screen.getByRole("tab", { name: /Evidence/ }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("button", { name: "More sections: Tools, Graph, Report" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "More sections: Overview, Tools, Graph" })).toBeTruthy();
+  });
+
+  it("pads the bar by the bottom safe-area inset", () => {
+    render(<WorkspaceTabs active="chat" onChange={vi.fn()} variant="inline" />);
+    const nav = screen.getByRole("navigation", { name: "Workspace sections" });
+    expect(nav.className).toContain("pb-[env(safe-area-inset-bottom)]");
   });
 
   it("opens a menu of radio items with the current section checked", async () => {
     const onChange = vi.fn();
-    render(<WorkspaceTabs active="report" onChange={onChange} variant="inline" />);
-    const trigger = screen.getByRole("button", { name: "More, current section: Report" });
+    render(<WorkspaceTabs active="tools" onChange={onChange} variant="inline" />);
+    const trigger = screen.getByRole("button", { name: "More, current section: Tools" });
     // Keyboard is the path under test: ArrowDown on the trigger opens the menu.
     trigger.focus();
     await act(async () => { fireEvent.keyDown(trigger, { key: "ArrowDown" }); });
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
     const items = screen.getAllByRole("menuitemradio");
     expect(items.map((i) => i.textContent)).toEqual([
-      expect.stringContaining("Tools"), expect.stringContaining("Graph"), expect.stringContaining("Report"),
+      expect.stringContaining("Overview"), expect.stringContaining("Tools"), expect.stringContaining("Graph"),
     ]);
-    expect(items[2].getAttribute("aria-checked")).toBe("true");
-    await act(async () => { fireEvent.click(items[1]); });
+    expect(items[1].getAttribute("aria-checked")).toBe("true");
+    await act(async () => { fireEvent.click(items[2]); });
     expect(onChange).toHaveBeenCalledWith("graph");
   });
 });

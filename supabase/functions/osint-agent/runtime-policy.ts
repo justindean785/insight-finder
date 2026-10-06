@@ -107,7 +107,16 @@ export interface RuntimeDecisionInput {
 
 export type RuntimeDecision =
   | { allow: true; stage: InvestigationStage; cycleId: number; waitMs: number }
-  | { allow: false; stage: InvestigationStage; cycleId: number; reason: string };
+  | {
+    allow: false; stage: InvestigationStage; cycleId: number; reason: string;
+    /** true ONLY when one of the three budget ceilings (total / paid / per-tool)
+     *  refused this call. The caller copies it into REQUEST-owned state
+     *  (cache.ts → ctx.budgetCeiling), never into per-thread state: overlapping
+     *  invocations share a thread, and `clearRuntime(threadId)` runs at the start
+     *  of every request, so a thread-keyed flag could be erased by a newer
+     *  invocation or leak one invocation's refusal into its sibling's telemetry. */
+    budgetCeiling?: true;
+  };
 
 interface RuntimeThreadState {
   stage: InvestigationStage;
@@ -442,13 +451,13 @@ export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
   const sameToolCount = state.toolCounts.get(input.toolName) ?? 0;
   if (runtimeLimits.stopOnBudgetExhausted && !essential) {
     if (Number.isFinite(runtimeLimits.maxTotalToolCallsPerRun) && state.totalCalls >= runtimeLimits.maxTotalToolCallsPerRun) {
-      return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal run cap reached (${runtimeLimits.maxTotalToolCallsPerRun} calls this investigation) — internal throttle, not a provider limit` };
+      return { allow: false, budgetCeiling: true, stage: state.stage, cycleId: state.cycleId, reason: `internal run cap reached (${runtimeLimits.maxTotalToolCallsPerRun} calls this investigation) — internal throttle, not a provider limit` };
     }
     if (Number.isFinite(runtimeLimits.maxPaidCallsPerRun) && input.costTier !== "free" && state.paidCalls >= runtimeLimits.maxPaidCallsPerRun) {
-      return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal paid-call cap reached (${runtimeLimits.maxPaidCallsPerRun} this run) — internal throttle, not a provider limit` };
+      return { allow: false, budgetCeiling: true, stage: state.stage, cycleId: state.cycleId, reason: `internal paid-call cap reached (${runtimeLimits.maxPaidCallsPerRun} this run) — internal throttle, not a provider limit` };
     }
     if (Number.isFinite(runtimeLimits.maxSameToolCallsPerRun) && sameToolCount >= runtimeLimits.maxSameToolCallsPerRun) {
-      return { allow: false, stage: state.stage, cycleId: state.cycleId, reason: `internal per-tool cap reached (${input.toolName} ran ${runtimeLimits.maxSameToolCallsPerRun}× this run) — vary the selector or choose another pivot; internal throttle, not a provider limit` };
+      return { allow: false, budgetCeiling: true, stage: state.stage, cycleId: state.cycleId, reason: `internal per-tool cap reached (${input.toolName} ran ${runtimeLimits.maxSameToolCallsPerRun}× this run) — vary the selector or choose another pivot; internal throttle, not a provider limit` };
     }
   }
 

@@ -8,7 +8,7 @@ import {
   type AuthoritativeFindings,
 } from "@/lib/authoritative-findings";
 import { detectSeed, extractDisplaySeed } from "@/lib/seed";
-import { toolActionLabel } from "@/lib/tool-display";
+import { auditEntryToolName, toolActionLabel } from "@/lib/tool-display";
 import { humanizeSourceChain, primaryToolSlug, tokenizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
 import { isSubjectUnlinked, isQuarantined } from "@/lib/quarantine";
@@ -1692,7 +1692,7 @@ export function buildReportMarkdown(input: ReportInput): string {
   const toolCoverage = audit.tools.length === 0
     ? "_No tools produced artifacts._"
     : audit.tools.map((t) =>
-        `- ${toolActionLabel(t.tool)} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
+        `- ${toolActionLabel(auditEntryToolName(t))} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
       ).join("\n");
 
   const weakAreas = (() => {
@@ -1731,7 +1731,7 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const sourceAppendix = audit.tools.length === 0
     ? "_None._"
-    : audit.tools.map((t) => `- ${toolActionLabel(t.tool)} — produced ${t.kinds.join(", ") || "—"}`).join("\n");
+    : audit.tools.map((t) => `- ${toolActionLabel(auditEntryToolName(t))} — produced ${t.kinds.join(", ") || "—"}`).join("\n");
 
   if (reportType === "brief") {
     return [
@@ -2195,6 +2195,86 @@ export function recordMateKey(raw: string): string | null {
   return h ? `parent:${h}` : null;
 }
 
+/**
+ * Metadata keys that describe HOW a row was obtained, not what it contains.
+ * They are excluded from the corroboration scan below — `queried_selector` is
+ * itself stamped into metadata, so scanning it would make the check a no-op.
+ */
+const PROVENANCE_META_KEYS: ReadonlySet<string> = new Set([
+  "queried_selector",
+  "parent_selector",
+  "parent",
+  "parent_seed",
+  "seed",
+  "auto_persist_source",
+  "via",
+  "tool",
+  "source",
+]);
+
+/**
+ * Does the returned record ITSELF name the selector it was looked up on?
+ *
+ * ⚠️ Query provenance alone is NOT linkage. A lookup on A@example.com can return
+ * a row that is about an unrelated B@example.com — a broker mis-hit, a shared
+ * breach dump, a fuzzy provider match. Publishing `parent:A` for that row unions
+ * B's cluster into A's on nothing but "this came back from that query", and
+ * because both are well-formed emails the shape gate in `recordMateKey` cannot
+ * see it. Two identities with no NAME rows then merge silently, since the
+ * collision detector only splits on conflicting names.
+ *
+ * So the record-mate key is published only when the row's own content names the
+ * selector — its value, or one of its non-provenance metadata fields.
+ */
+export function recordCorroboratesSelector(
+  value: string,
+  metadata: Record<string, unknown> | null | undefined,
+  selector: string,
+): boolean {
+  const needle = selector.trim().toLowerCase();
+  if (!needle) return false;
+  if (namesSelector(value, needle)) return true;
+  const meta = metadata ?? {};
+  for (const [k, v] of Object.entries(meta)) {
+    if (PROVENANCE_META_KEYS.has(k)) continue;
+    if (typeof v === "string" && namesSelector(v, needle)) return true;
+    // One level of nesting: providers commonly nest the matched record.
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) {
+        if (PROVENANCE_META_KEYS.has(k2)) continue;
+        if (typeof v2 === "string" && namesSelector(v2, needle)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Anything outside a selector's own character set separates two tokens. */
+const SELECTOR_TOKEN_SPLIT = /[^a-z0-9_.%+@-]+/;
+
+/**
+ * Does `text` name `needle` as a WHOLE selector token?
+ *
+ * ⚠️ Never a substring test. `"johnsmith2".includes("johnsmith")` and
+ * `"xa@example.com".includes("a@example.com")` are both true, so substring
+ * corroboration lets a lookup on one identity publish its record-mate key on a
+ * row about a different one — the union this gate exists to stop. `text` is
+ * split on characters a selector cannot contain (spaces, `/`, `:`, `,`, …), so
+ * a profile URL or a prose sentence still yields the selector as one token;
+ * prose punctuation at a token's edge (`a@example.com.`) is trimmed, and an
+ * `@handle` mention also names `handle`.
+ */
+function namesSelector(text: string, needle: string): boolean {
+  for (const raw of text.toLowerCase().split(SELECTOR_TOKEN_SPLIT)) {
+    const t = raw.replace(/^[.-]+|[.-]+$/g, "");
+    if (!t) continue;
+    if (t === needle) return true;
+    if (t.startsWith("@") && t.slice(1) === needle) return true;
+    if (needle.startsWith("@") && t === needle.slice(1)) return true;
+  }
+  return false;
+}
+
 function normalizePersonName(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -2278,9 +2358,17 @@ export function buildIdentityClusters(
     // record-mates and union under the same weakest signal as `parent`. Gated on
     // shape, not kind: a selector with whitespace is a person name (the 19-identity
     // name-only harvest), and name equality is never linkage (T1-2 §8).
-    const queriedKey = recordMateKey(String(meta.queried_selector ?? ""));
-    if (queriedKey && queriedKey !== `parent:${parent}`) {
-      hits.push({ key: queriedKey, signal: "SHARED_INFRASTRUCTURE", raw: String(meta.queried_selector), platform });
+    // ⚠️ Gated on CORROBORATION, not merely on the stamp being present: a lookup
+    // on A can return a row about an unrelated B, and unioning on provenance
+    // alone puts two people in one identity cluster. See
+    // recordCorroboratesSelector.
+    const queriedRaw = String(meta.queried_selector ?? "");
+    const queriedKey = recordMateKey(queriedRaw);
+    if (
+      queriedKey && queriedKey !== `parent:${parent}` &&
+      recordCorroboratesSelector(v, meta, queriedRaw)
+    ) {
+      hits.push({ key: queriedKey, signal: "SHARED_INFRASTRUCTURE", raw: queriedRaw, platform });
     }
     // …and the selector's OWN row publishes the same key, so the email/phone/
     // username artifact and the rows a lookup on it yielded land together. Still

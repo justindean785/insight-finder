@@ -220,3 +220,29 @@ Deno.test("/health: checks.tool_cache_version names the versions, and says when 
   const health = await Deno.readTextFile(new URL("./health-handler.ts", import.meta.url));
   assert(health.includes("r.checks.tool_cache_version = describeToolCacheVersions()"), "health probe must report the check");
 });
+
+// ---------------------------------------------------------------------------
+// socialfetch_web_read — the SAME trap as username_sweep, caught in review on
+// the branch that changed the interpretation rather than a month later.
+// ---------------------------------------------------------------------------
+
+Deno.test("socialfetch_web_read is versioned — three reinterpretations land in one build", () => {
+  // The branch changes what the SAME (url) key means in three ways at once:
+  //   • a skipped host is host_unsupported, not a read;
+  //   • a 2xx under the 200-char floor is empty_body, not ok:true with data;
+  //   • a timeout / 5xx / thin body may answer via the free jina fallback.
+  // A v1 row contradicts all three, and the cache wrapper serves it BEFORE any
+  // of this code runs — so without the bump a blank page keeps entering cases
+  // as page evidence for the TTL and the deploy reads as if it failed.
+  const v = TOOL_CACHE_VERSION.socialfetch_web_read;
+  assertEquals(typeof v, "number", "socialfetch_web_read MUST be versioned");
+  assert(v >= 2, `the pre-fix interpretation is the unversioned legacy key, so this starts at 2 (got ${v})`);
+});
+
+Deno.test("/health reports the socialfetch version, so the deploy is provable", async () => {
+  const on = await withSwitch(false, async () => describeToolCacheVersions());
+  assert(
+    on.detail.includes(`socialfetch_web_read=v${TOOL_CACHE_VERSION.socialfetch_web_read}`),
+    on.detail,
+  );
+});
