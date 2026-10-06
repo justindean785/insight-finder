@@ -39,11 +39,72 @@ export function parseHttpStatusFromError(err: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * A failed response's body, rewritten to lead with its HTTP status.
+ *
+ * WHY. On a non-2xx answer the AI SDK's chat transport throws
+ * `new Error(await response.text())` — the body is ALL it keeps; the status is
+ * gone. The osint-agent's error bodies are `{error, code, detail}` and never
+ * carry the number, so `parseHttpStatusFromError` found nothing and every
+ * pre-stream failure (401, 403, 413, 429, 500…) read as the generic "Scan request
+ * failed before the stream started", and the failure card's headline — cut at
+ * the first colon — read `{"error"`. Wrapping the transport's fetch with this
+ * puts `HTTP <status> <error> (<code>): <detail>` in that message instead.
+ *
+ * Pure apart from reading the body; a 2xx response passes through untouched.
+ */
+export async function withHttpStatusInErrorBody(res: Response): Promise<Response> {
+  // `new Response` rejects a status outside 200–599 (an opaque response is 0).
+  if (res.ok || res.status < 200 || res.status > 599) return res;
+  let body = "";
+  try {
+    body = await res.text();
+  } catch {
+    body = "";
+  }
+  // Headers are deliberately NOT copied: a gateway's content-length or
+  // content-encoding would describe bytes this rewritten body no longer has, and
+  // the SDK reads only `ok`, `status` and `text()` on this path.
+  return new Response(formatHttpFailure(res.status, res.statusText ?? "", body), {
+    status: res.status,
+    statusText: res.statusText,
+  });
+}
+
+/** `HTTP 403 Forbidden (THREAD_ACCESS_DENIED): This thread does not exist…`. Bounded. */
+export function formatHttpFailure(status: number, statusText: string, body: string): string {
+  const clean = (s: string, max: number) => s.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+  let label = clean(statusText, 80);
+  let code = "";
+  let detail = "";
+  let parsed: unknown = undefined;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const j = parsed as Record<string, unknown>;
+    if (typeof j.error === "string" && j.error.trim()) label = clean(j.error, 80);
+    if (typeof j.code === "string" && j.code.trim()) code = clean(j.code, 60);
+    // `detail` is the osint-agent's field; the Supabase gateway uses `message`.
+    const d = typeof j.detail === "string" ? j.detail : typeof j.message === "string" ? j.message : "";
+    detail = clean(d, 300);
+  } else {
+    detail = clean(body, 300);
+  }
+  return `HTTP ${status}${label ? ` ${label}` : ""}${code ? ` (${code})` : ""}${detail ? `: ${detail}` : ""}`;
+}
+
 export function describeTransportError(err: unknown): string {
   const msg = String((err as { message?: unknown })?.message ?? err ?? "").toLowerCase();
   const status = parseHttpStatusFromError(err);
   if (status === 401) return "Session expired — your login has timed out. Sign in again to continue.";
+  if (status === 402 || msg.includes("insufficient_credits") || msg.includes("out of credits"))
+    return "Out of beta credits — you've used your investigation allowance for now. Contact us to top up your account.";
+  if (status === 400) return "Bad request — the scan backend rejected the request as malformed. Reload the case and try again.";
   if (status === 403) return "Access denied — this thread doesn't belong to your account. Open your own thread or create a new one.";
+  if (status === 413) return "Request too large — this thread's history is over the scan backend's upload limit. Start a new investigation to continue.";
   if (status === 404) return "Edge function not deployed — the OSINT agent backend wasn't found. Deploy the Supabase function and retry.";
   if (status === 429) return "Rate limited by the scan backend — too many requests. Wait ~30 seconds and try again.";
   if (status === 502 || status === 503 || status === 504) return "Scan backend temporarily unavailable — upstream provider or dependency is down. Retry in a minute.";

@@ -24,6 +24,8 @@ const m = vi.hoisted(() => ({
   gates: {} as Record<string, Promise<void> | undefined>,
   /** Per-table failed read: while set, reads of that table resolve `{ error }`. */
   errors: {} as Record<string, boolean | undefined>,
+  /** Reads actually executed, per table. */
+  reads: {} as Record<string, number>,
   /** The custody RPC fails (transport / RPC error) while set. */
   rpcError: false,
   /** Forces the scoring engine's own verdict to report-ready, so the provider's
@@ -52,6 +54,7 @@ vi.mock("@/integrations/supabase/client", () => {
     q.eq = (col: string, v: unknown) => { rows = rows.filter((r) => !(col in r) || r[col] === v); return q; };
     const settle = async <T,>(v: () => T): Promise<T | { data: null; error: { message: string }; count: null }> => {
       if (m.gates[table]) await m.gates[table];
+      m.reads[table] = (m.reads[table] ?? 0) + 1;
       return m.errors[table] ? { data: null, error: { message: `${table} read failed` }, count: null } : v();
     };
     q.maybeSingle = () => settle(() => ({ data: rows[0] ?? null, error: null }));
@@ -103,6 +106,7 @@ const { WorkspaceTabs } = await import("@/components/workspace/WorkspaceTabs");
 const { ToolsTab } = await import("@/components/workspace/ToolsTab");
 const { useCaseSnapshot } = await import("@/hooks/useCaseSnapshot");
 const { buildWorkspaceTabCounts } = await import("@/lib/workspace-tab-counts");
+const { useCaseSheetModel } = await import("@/hooks/useCaseSheetModel");
 
 const T = "11111111-2222-4333-8444-555555555555";
 
@@ -124,7 +128,11 @@ function threadRow(over: Row = {}): Row {
 /** The tab strip as ChatPage wires it: badges from the SAME snapshot. */
 function Tabs() {
   const { snapshot } = useCaseSnapshot();
-  const counts = buildWorkspaceTabCounts(snapshot?.items ?? [], snapshot?.tools.total ?? 0);
+  const sheet = useCaseSheetModel(T);
+  const counts = buildWorkspaceTabCounts(
+    snapshot?.tools.total ?? 0,
+    sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null,
+  );
   return <WorkspaceTabs active="tools" onChange={() => {}} counts={counts} loading={!snapshot?.hydrated} />;
 }
 
@@ -299,14 +307,14 @@ describe("CaseSnapshotProvider — failed reads fail closed", () => {
 
   const probe = () => screen.getByTestId("probe");
   const syncLabel = () =>
-    screen.getAllByText(/^(Synced|Sync failed|Syncing|Updated)/).map((el) => el.textContent ?? "");
+    screen.getAllByText(/^(Updated|Up to date|Sync failed|Syncing)/).map((el) => el.textContent ?? "");
 
-  it("a refresh whose tool read fails says 'Sync failed', keeps the last count, and does not move 'Synced'", async () => {
+  it("a refresh whose tool read fails says 'Sync failed', keeps the last count, and does not move the Updated time", async () => {
     const tid = freshThread();
     seedFor(tid);
     mountFor(tid);
     await flush();
-    expect(syncLabel().some((t) => t.startsWith("Synced"))).toBe(true);
+    expect(syncLabel().some((t) => t.startsWith("Updated"))).toBe(true);
     expect(headerTools()).toBe("46");
     const syncedBefore = probe().dataset.syncedAt;
     expect(syncedBefore).not.toBe("");
@@ -319,7 +327,7 @@ describe("CaseSnapshotProvider — failed reads fail closed", () => {
     await flush(10);
 
     expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(true);
-    expect(syncLabel().some((t) => t.startsWith("Synced"))).toBe(false);
+    expect(syncLabel().some((t) => t.startsWith("Updated"))).toBe(false);
     // The last good count stays — a failed read never repaints it — and the
     // "last synced" time is NOT advanced by a refresh that kept stale rows.
     expect(headerTools()).toBe("46");
@@ -330,8 +338,8 @@ describe("CaseSnapshotProvider — failed reads fail closed", () => {
     await act(async () => { screen.getAllByRole("button", { name: "Refresh case data" })[0].click(); });
     await flush(10);
     expect(headerTools()).toBe("48");
-    // A refresh that moved a figure reads "Updated <time>" for a moment, then "Synced".
-    expect(syncLabel().some((t) => /^(Synced|Updated)/.test(t))).toBe(true);
+    // A refresh that moved a figure reads "Updated <time>" for a moment, then the last full read time.
+    expect(syncLabel().some((t) => /^Updated/.test(t))).toBe(true);
     expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(false);
     expect(Number(probe().dataset.syncedAt)).toBeGreaterThan(Number(syncedBefore));
   });
@@ -341,7 +349,7 @@ describe("CaseSnapshotProvider — failed reads fail closed", () => {
     seedFor(tid);
     mountFor(tid);
     await flush();
-    expect(syncLabel().some((t) => t.startsWith("Synced"))).toBe(true);
+    expect(syncLabel().some((t) => t.startsWith("Updated"))).toBe(true);
 
     // A heartbeat-only thread UPDATE: the provider does not reconcile, but the
     // shared tool store re-reads on it — and that read fails.
@@ -358,6 +366,101 @@ describe("CaseSnapshotProvider — failed reads fail closed", () => {
     expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(true);
     expect(headerTools()).toBe("46");
   });
+
+  /**
+   * Production 2026-10-02: a finished case read "Sync failed" after the phone
+   * resumed the tab. Nothing re-reads a case that is not live, so one failed read
+   * stayed on screen until the analyst found the refresh button.
+   */
+  const RETRY_WAIT_MS = 2_100;
+  const wait = (ms: number) => act(async () => { await new Promise((r) => setTimeout(r, ms)); });
+
+  it("a failed sync re-reads itself once, and the warning clears when that read lands", async () => {
+    const tid = freshThread();
+    seedFor(tid);
+    mountFor(tid);
+    await flush();
+    m.errors.tool_usage_log = true;
+    await act(async () => { screen.getAllByRole("button", { name: "Refresh case data" })[0].click(); });
+    await flush(10);
+    expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(true);
+
+    // The network is back; nobody taps anything.
+    m.errors.tool_usage_log = false;
+    await wait(RETRY_WAIT_MS);
+    await flush(10);
+    expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(false);
+    expect(syncLabel().some((t) => t.startsWith("Updated"))).toBe(true);
+  }, 10_000);
+
+  it("a retry that fails too is left as 'Sync failed' — exactly one retry, no loop", async () => {
+    const tid = freshThread();
+    seedFor(tid);
+    mountFor(tid);
+    await flush();
+    m.errors.tool_usage_log = true;
+    await act(async () => { screen.getAllByRole("button", { name: "Refresh case data" })[0].click(); });
+    await flush(10);
+    const afterFailure = m.reads.tool_usage_log ?? 0;
+
+    await wait(RETRY_WAIT_MS);
+    await flush(10);
+    const afterRetry = m.reads.tool_usage_log ?? 0;
+    expect(afterRetry).toBeGreaterThan(afterFailure);
+    expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(true);
+
+    await wait(RETRY_WAIT_MS);
+    await flush(10);
+    expect(m.reads.tool_usage_log ?? 0).toBe(afterRetry);
+    expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(true);
+  }, 10_000);
+
+  it("a failure while hidden keeps its retry for a failed re-read on resume", async () => {
+    const tid = freshThread();
+    seedFor(tid);
+    mountFor(tid);
+    await flush();
+    m.errors.tool_usage_log = true;
+    let state: DocumentVisibilityState = "hidden";
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => state);
+    try {
+      await act(async () => { screen.getAllByRole("button", { name: "Refresh case data" })[0].click(); });
+      await flush(10);
+      await wait(RETRY_WAIT_MS); // the timer fires while hidden
+      await flush(10);
+      // The phone resumes; its first re-read fails as well.
+      state = "visible";
+      await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+      await flush(10);
+      expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(true);
+      // The network is back. The retry was not spent in the background.
+      m.errors.tool_usage_log = false;
+      await wait(RETRY_WAIT_MS);
+      await flush(10);
+      expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(false);
+    } finally {
+      visibility.mockRestore();
+    }
+  }, 10_000);
+
+  it("a hidden tab does not retry; returning to it is the re-read", async () => {
+    const tid = freshThread();
+    seedFor(tid);
+    mountFor(tid);
+    await flush();
+    m.errors.tool_usage_log = true;
+    await act(async () => { screen.getAllByRole("button", { name: "Refresh case data" })[0].click(); });
+    await flush(10);
+    const before = m.reads.tool_usage_log ?? 0;
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    try {
+      await wait(RETRY_WAIT_MS);
+      await flush(10);
+      expect(m.reads.tool_usage_log ?? 0).toBe(before);
+    } finally {
+      visibility.mockRestore();
+    }
+  }, 10_000);
 
   it("a custody check that did not run is not reported as a broken chain", async () => {
     const tid = freshThread();

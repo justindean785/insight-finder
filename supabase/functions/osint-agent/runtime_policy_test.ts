@@ -189,3 +189,83 @@ Deno.test("(4) over maxParallelTools → allow:true with waitMs>0 (queued, not f
     restoreLimits();
   }
 });
+
+// ---- budgetCeiling on the refusal ------------------------------------------
+//
+// The signal that makes `budget_exhausted` an honest stop reason. It must be
+// carried ONLY by a real cap refusal — inferring it from a run that merely used
+// a lot of calls would put a cause in the telemetry column that nothing measured.
+// It rides on the DECISION, not on per-thread state: the caller (cache.ts) copies
+// it into request-owned state, so overlapping invocations cannot share it.
+
+Deno.test("budgetCeiling: an ALLOWED call never carries it", () => {
+  const threadId = "t-ceiling-clean";
+  clearRuntime(threadId);
+  try {
+    const d = startCall(baseInput({ threadId }));
+    assertEquals(d.allow, true);
+    assertEquals("budgetCeiling" in d, false, "an allowed call is not a ceiling");
+  } finally {
+    clearRuntime(threadId);
+    restoreLimits();
+  }
+});
+
+Deno.test("budgetCeiling: the paid-call cap refusal carries it", () => {
+  const threadId = "t-ceiling-paid";
+  clearRuntime(threadId);
+  try {
+    runtimeLimits.maxPaidCallsPerRun = 1;
+    runtimeLimits.stopOnBudgetExhausted = true;
+    const first = startCall(baseInput({ threadId, now: 2_000_000 }));
+    assertEquals(first.allow, true);
+    const second = startCall(baseInput({ threadId, now: 3_000_000 }));
+    assertEquals(second.allow, false, "second paid call must be refused at cap 1");
+    assertEquals(second.allow === false && second.budgetCeiling, true, "the cap refusal is marked");
+  } finally {
+    clearRuntime(threadId);
+    restoreLimits();
+  }
+});
+
+Deno.test("budgetCeiling: the total-call and per-tool cap refusals carry it", () => {
+  const threadId = "t-ceiling-total";
+  clearRuntime(threadId);
+  try {
+    runtimeLimits.stopOnBudgetExhausted = true;
+    runtimeLimits.maxTotalToolCallsPerRun = 1;
+    startCall(baseInput({ threadId, costTier: "free", now: 2_000_000 }));
+    const total = startCall(baseInput({ threadId, costTier: "free", toolName: "dns_records", now: 3_000_000 }));
+    assertEquals(total.allow === false && total.budgetCeiling, true, "total-call cap");
+  } finally {
+    clearRuntime(threadId);
+    restoreLimits();
+  }
+  const t2 = "t-ceiling-same-tool";
+  clearRuntime(t2);
+  try {
+    runtimeLimits.stopOnBudgetExhausted = true;
+    runtimeLimits.maxSameToolCallsPerRun = 1;
+    startCall(baseInput({ threadId: t2, costTier: "free", now: 2_000_000 }));
+    const same = startCall(baseInput({ threadId: t2, costTier: "free", selector: "bob@example.com", familyKey: "exa_search::email::bob@example.com", now: 3_000_000 }));
+    assertEquals(same.allow === false && same.budgetCeiling, true, "per-tool cap");
+  } finally {
+    clearRuntime(t2);
+    restoreLimits();
+  }
+});
+
+Deno.test("budgetCeiling: a FREE call never trips the paid cap, so carries nothing", () => {
+  const threadId = "t-ceiling-free";
+  clearRuntime(threadId);
+  try {
+    runtimeLimits.maxPaidCallsPerRun = 1;
+    runtimeLimits.stopOnBudgetExhausted = true;
+    const a = startCall(baseInput({ threadId, costTier: "free", now: 4_000_000 }));
+    const b = startCall(baseInput({ threadId, costTier: "free", now: 5_000_000 }));
+    for (const d of [a, b]) assertEquals(d.allow === false && d.budgetCeiling === true, false);
+  } finally {
+    clearRuntime(threadId);
+    restoreLimits();
+  }
+});

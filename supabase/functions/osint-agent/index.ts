@@ -76,14 +76,20 @@ import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
 import { buildTools, TOOL_NAME_ALIASES } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
-import { isMessageSchemaError, classifyStreamProviderError } from "./stream-error-classify.ts";
+import { isMessageSchemaError, classifyStreamProviderError, describeStreamError } from "./stream-error-classify.ts";
 import {
   shouldFallbackAfterMinimaxPreflight,
   minimaxPreflightFailureLabel,
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
-import { geminiPreflightPivotEnabled, shouldPivotOnPreflight } from "./lib/preflight-pivot.ts";
+import {
+  deepseekPreflightAlways,
+  geminiPreflightPivotEnabled,
+  resolveFallbackProvider,
+  shouldPivotOnPreflight,
+  shouldRunPreflight,
+} from "./lib/preflight-pivot.ts";
 import { redactErrorMessage } from "./lib/redact-error.ts";
 import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
 
@@ -613,12 +619,18 @@ Deno.serve(async (req) => {
     // Lovable gateway only participates when the operator pinned it as primary
     // (ORCHESTRATOR_PROVIDER=lovable) or opted in via ALLOW_LOVABLE_FALLBACK.
     // Grok/xAI is never a fallback (primary pin only).
-    const fallbackTarget = lovablePinned
+    // The precedence lives in resolveFallbackProvider (lib/preflight-pivot.ts) so
+    // /health's checks.preflight_policy reports the same target routing resolves.
+    const fallbackProvider = resolveFallbackProvider({
+      orchestratorProvider: ORCHESTRATOR_PROVIDER,
+      hasLovableGateway: !!lovableGateway,
+      hasGeminiDirect: !!geminiDirectGateway,
+      allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
+    });
+    const fallbackTarget = fallbackProvider === "lovable-gateway"
       ? { gateway: lovableGateway!, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
-      : geminiDirectGateway
-      ? { gateway: geminiDirectGateway, modelId: GEMINI_FALLBACK_MODEL_ID, label: "Gemini direct fallback", provider: "gemini-direct" as const }
-      : (lovableGateway && ALLOW_LOVABLE_FALLBACK)
-      ? { gateway: lovableGateway, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
+      : fallbackProvider === "gemini-direct"
+      ? { gateway: geminiDirectGateway!, modelId: GEMINI_FALLBACK_MODEL_ID, label: "Gemini direct fallback", provider: "gemini-direct" as const }
       : null;
     // Pre-flight MiniMax health probe. The fallback selection above only fires
     // when MiniMax's key is missing or the prompt would overflow — it does NOT
@@ -690,7 +702,22 @@ Deno.serve(async (req) => {
     // id (400), or an upstream outage would previously commit the whole run to
     // DeepSeek and die mid-stream with no failover, instead of a clean pivot
     // to Gemini.
-    if (deepseekIsPrimary && !useFallback && fallbackTarget) {
+    //
+    // Skipped when no outcome can pivot (lib/preflight-pivot.ts → shouldRunPreflight):
+    // with the gemini-direct pivot disabled the probe's only output is a log line, and
+    // it sat serially on the path to the first byte (up to 2×12s + 250ms).
+    // DEEPSEEK_PREFLIGHT_ALWAYS=true restores it on every request.
+    const runDeepseekPreflight = deepseekIsPrimary && !useFallback &&
+      shouldRunPreflight(fallbackTarget, geminiPreflightPivotEnabled(), deepseekPreflightAlways());
+    if (deepseekIsPrimary && !useFallback && fallbackTarget && !runDeepseekPreflight) {
+      console.log(JSON.stringify({
+        event: "preflight_skipped",
+        thread_id: threadId,
+        fallback: fallbackTarget.provider,
+        reason: "no outcome can pivot",
+      }));
+    }
+    if (runDeepseekPreflight && fallbackTarget) {
       const DEEPSEEK_PREFLIGHT_TIMEOUT_MS = 12_000;
       const DEEPSEEK_PREFLIGHT_ATTEMPTS = 2;
       const probeDeepseekOnce = async (): Promise<{ ok: boolean; status: number }> => {
@@ -877,6 +904,9 @@ Deno.serve(async (req) => {
     // `capped` once the cap is hit; prepareStep reads it to force finalize. Owned by
     // this per-request closure so concurrent runs on a warm isolate never share it.
     const toolCallBudget = { genuine: 0, reserved: 0, capped: false };
+    // Request-owned: set by wrapToolsWithCache when a budget ceiling refuses a call
+    // in THIS invocation; read by both telemetry finish() calls for budget_exhausted.
+    const budgetCeiling = { fired: false };
     // Separate one-shot latch for the run_capped telemetry: `capped` is now flipped at
     // ADMISSION (reserveToolCall), before this prepareStep closure runs, so the old
     // `capReached && !capped` gate would never log. This latch fires the event exactly
@@ -1221,6 +1251,7 @@ Deno.serve(async (req) => {
         onCost,
         manualOverrideSelector,
         toolCallBudget,
+        budgetCeiling,
         shouldStopLiveLookups: () =>
           shouldForceFinalize(Date.now() - runStartedAt, 0),
         // See cache.ts's ctx field comment: the correlate exemption in the
@@ -1510,6 +1541,21 @@ Deno.serve(async (req) => {
       // they come in, and save the final assistant message via onFinish.
       onError: async ({ error }) => {
         const msg = error instanceof Error ? error.message : String(error);
+        // What gets RECORDED (invocation row, thread recovery_reason): the
+        // reason-phrase plus the provider's HTTP status and enum-like error code, so
+        // a fallback "Bad Request" is diagnosable from the ledger (14/14
+        // gemini-direct fallbacks died as a bare "Bad Request"). NEVER the body: a
+        // 4xx body echoes the request, which here is the investigation, and these
+        // fields are durable and analyst-visible.
+        const detail = describeStreamError(error);
+        // STREAM_ERROR_BODY_DETAIL=true adds a bounded body excerpt to the LOG LINE
+        // only — redacted, and kept out of every persisted field (Codex P2 on #672).
+        // Read at call time.
+        const logDetail = (Deno.env.get("STREAM_ERROR_BODY_DETAIL") ?? "").trim().toLowerCase() === "true"
+          ? describeStreamError(error, true)
+          : detail;
+        // Classification below keeps reading `msg`: the overflow test matches a
+        // bare "2013", which a body SIZE in `detail` could otherwise supply.
         const errName = error instanceof Error ? error.name : "";
         const isCtxOverflow =
           /context window|context length|2013|invalid params.*context|exceeds limit/i.test(msg);
@@ -1538,7 +1584,7 @@ Deno.serve(async (req) => {
             error_name: errName,
             // Redacted: a provider error can echo our key, and this line is kept in
             // the edge logs (lib/redact-error.ts).
-            message: redactErrorMessage(msg).slice(0, 600),
+            message: redactErrorMessage(logDetail).slice(0, 600),
           }),
         );
         invocationTelemetry.finish({
@@ -1547,7 +1593,8 @@ Deno.serve(async (req) => {
           finalizeStarted,
           hadStreamError: true,
           creditsMicroUsd: runCostMicroUsd,
-          errorMessage: msg,
+          errorMessage: detail,
+          budgetExhausted: budgetCeiling.fired,
         });
         // A terminal stream error means onFinish never fires, so without this the
         // thread row stays "active" forever (UI stuck on "running"). Write the
@@ -1563,7 +1610,7 @@ Deno.serve(async (req) => {
           heartbeat?.stop();
           const { error: updErr } = await supabase
             .from("threads")
-            .update({ status: "finished", recovery_reason: `stream_error: ${msg.slice(0, 220)}`, updated_at: new Date().toISOString() })
+            .update({ status: "finished", recovery_reason: `stream_error: ${detail.slice(0, 220)}`, updated_at: new Date().toISOString() })
             .eq("id", threadId)
             .eq("status", "active");
           if (updErr) console.warn("[thread status] error-path update failed:", updErr.message);
@@ -2045,6 +2092,7 @@ Deno.serve(async (req) => {
           hadStreamError: false,
           creditsMicroUsd: runCostMicroUsd,
           errorMessage: null,
+          budgetExhausted: budgetCeiling.fired,
         });
         heartbeat?.stop();
         releaseRunState();

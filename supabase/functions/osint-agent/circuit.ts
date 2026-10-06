@@ -332,6 +332,11 @@ export const PREMIUM_TOOLS = new Set<string>([
   "exa_find_similar",
   "exa_get_contents",
   "hunter_combined",
+  // One Opsis search per entity per investigation: each POST costs a credit, and a
+  // run that outlived its poll deadline is finished with the FREE opsis_results,
+  // never by searching again (lib/opsis.ts). The tool description asks for this;
+  // this is what enforces it.
+  "opsis_search",
 ]);
 
 export function isPremiumTool(tool: string): boolean {

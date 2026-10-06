@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { isRunningThread } from "@/lib/thread-status";
 import { extractDisplaySeed } from "@/lib/seed";
 import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
+import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
 
 const EvidenceTab = lazy(() =>
   import("@/components/workspace/EvidenceTab").then((m) => ({ default: m.EvidenceTab })),
@@ -154,7 +155,7 @@ export default function CaseViewPage() {
         </div>
       </div>
 
-      <CaseViewTabs active={tab} onChange={setTab} />
+      <CaseViewTabs threadId={threadId} active={tab} onChange={setTab} />
 
       <main className="flex-1 min-h-0 relative mx-auto w-full max-w-6xl">
         <div className={cn("absolute inset-0", tab === "report" ? "overflow-y-auto" : "")}>
@@ -190,8 +191,13 @@ export default function CaseViewPage() {
 }
 
 /** Tab badges from the case snapshot — the same version the Tools and Report tabs read. */
-function CaseViewTabs({ active, onChange }: { active: ViewCaseTab; onChange: (t: ViewCaseTab) => void }) {
+function CaseViewTabs({ threadId, active, onChange }: { threadId: string; active: ViewCaseTab; onChange: (t: ViewCaseTab) => void }) {
   const { snapshot } = useCaseSnapshot();
-  const tabCounts = buildWorkspaceTabCounts(snapshot?.items ?? [], snapshot?.tools.total ?? 0, snapshot?.authority ?? null);
+  // The Evidence number IS the case sheet's "Needs your call" count.
+  const sheet = useCaseSheetModel(threadId);
+  const tabCounts = buildWorkspaceTabCounts(
+    snapshot?.tools.total ?? 0,
+    sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null,
+  );
   return <ViewWorkspaceTabs active={active} onChange={onChange} counts={tabCounts} />;
 }

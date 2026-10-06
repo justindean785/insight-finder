@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
+import { buildReportMarkdown } from "@/lib/intel";
 
 const KNOWN_TOOLS = [
   "list_tools", "triage_seed",
@@ -117,5 +118,86 @@ describe("humanizeStage", () => {
     expect(humanizeStage("")).toBe("Review");
     expect(humanizeStage(null)).toBe("Review");
     expect(humanizeStage(undefined)).toBe("Review");
+  });
+});
+
+/**
+ * Production 2026-10-01: GLM wrote its `<arg_key>/<arg_value>` call markup into
+ * the tool NAME, and the fallback title-cased it into a cycle label carrying the
+ * markup and the case's selectors.
+ */
+describe("malformed tool names", () => {
+  const POLLUTED = 'minimax_correlate</arg_value>artifacts</arg_key><arg_value>[{"kind":"domain","value":"site.example"}]';
+
+  it("are labelled as a malformed call, never rendered verbatim", () => {
+    const display = toolDisplayName(POLLUTED);
+    expect(display).toBe("Analyst — Malformed call (Minimax Correlate)");
+    expect(display).not.toMatch(/[<>{}[\]"]/);
+    expect(display).not.toContain("site.example");
+  });
+
+  it("toolActionLabel gives the action only, for malformed and unknown names alike", () => {
+    expect(toolActionLabel(POLLUTED)).toBe("Malformed call (Minimax Correlate)");
+    expect(toolActionLabel("mystery_tool_xyz")).toBe("Mystery Tool Xyz");
+    expect(toolActionLabel("<arg_key>")).toBe("Malformed call");
+  });
+
+  // Production report 2026-10-01: Tool Coverage groups evidence by its RECORDED
+  // source, which is free text, and printed "Malformed call (Fbi)" for it.
+  it("shows a free-text source label as written, not as a malformed call", () => {
+    expect(toolActionLabel("FBI Wanted (fbi.gov/wanted/cac)")).toBe("FBI Wanted (fbi.gov/wanted/cac)");
+    expect(toolActionLabel("People profile (user-provided)")).toBe("People profile (user-provided)");
+    expect(toolActionLabel("Mercury News  (mercurynews.com)")).toBe("Mercury News (mercurynews.com)");
+    expect(toolActionLabel("x y".repeat(30))).toHaveLength(60);
+    expect(toolActionLabel("   ")).toBe("Unknown source");
+  });
+
+  it("still labels markup that merely starts like a source as malformed", () => {
+    expect(toolActionLabel('People search {"value":"site.example"}')).toBe("Malformed call (People)");
+    expect(toolActionLabel("lookup <arg_value>x</arg_value>")).toBe("Malformed call (Lookup)");
+  });
+});
+
+/**
+ * Codex on #680: the report never hands the formatter the raw source. It groups
+ * by `primaryToolSlug`, which lowercases free text and cuts it at "(", so the
+ * label has to come back from the entry's recorded variant — driven here
+ * through the real report builder, not the formatter alone.
+ */
+describe("report Tool Coverage / Source Appendix labels", () => {
+  const art = (id: string, source: string, kind = "media_report") => ({
+    id, thread_id: "t", user_id: "u", kind, value: `value ${id}`, confidence: 50,
+    source, metadata: {}, created_at: "2026-10-01T00:00:00Z",
+  });
+  const md = buildReportMarkdown({
+    seedValue: "+15550104477",
+    seedType: "phone",
+    artifacts: [
+      art("1", "FBI Wanted (fbi.gov/wanted/cac)", "name"),
+      art("2", "People profile (user-provided)", "address"),
+      art("3", "Example News (news.example) + Other Daily (other.example)"),
+      art("4", "username_sweep", "social_footprint"),
+    ] as never,
+    messages: [],
+  });
+  const section = (title: string) => {
+    const start = md.indexOf(`## ${title}`);
+    const next = md.indexOf("\n## ", start + 3);
+    return md.slice(start, next === -1 ? undefined : next);
+  };
+
+  it("prints a free-text source as it was recorded, never 'Malformed call'", () => {
+    for (const title of ["Tool Coverage Summary", "Source Appendix"]) {
+      const s = section(title);
+      expect(s).not.toContain("Malformed call");
+      expect(s).toContain("- FBI Wanted (fbi.gov/wanted/cac) — ");
+      expect(s).toContain("- People profile (user-provided) — ");
+      expect(s).toContain("- Example News (news.example) — ");
+      expect(s).not.toMatch(/- fbi wanted — /);
+    }
+  });
+
+  it("still labels a real tool by its action", () => {
+    expect(section("Tool Coverage Summary")).toContain(`- ${toolActionLabel("username_sweep")} — `);
   });
 });

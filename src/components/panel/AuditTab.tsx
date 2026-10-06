@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { buildToolAudit, inferToolGaps } from "@/lib/intel";
-import { toolDisplayName, toolActionLabel } from "@/lib/tool-display";
+import { auditEntryToolName, toolDisplayName, toolActionLabel } from "@/lib/tool-display";
 import { Wrench, AlertTriangle, RotateCcw, Compass, Lightbulb, Wallet, Pencil, Check } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
@@ -167,7 +167,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
             {audit.tools.map((t) => (
               <li key={t.tool} className="rounded-md border border-border bg-card/40 p-2">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-foreground truncate" title={t.tool}>{toolDisplayName(t.tool)}</span>
+                  <span className="text-foreground truncate" title={t.tool}>{toolDisplayName(auditEntryToolName(t))}</span>
                   <span className="text-data font-mono tabular-nums text-muted-foreground">{t.totalResults} result{t.totalResults === 1 ? "" : "s"}</span>
                 </div>
                 <div className="flex flex-wrap gap-1.5 mt-1 text-data font-mono">
