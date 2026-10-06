@@ -93,6 +93,8 @@ const TIMEOUT_RE = /\btimed?\s?out\b|exceeded\s+\d+\s?ms|_timeout\b|\btimeout\b/
 const RATELIMIT_RE = /\brate[\s-]?limit/i;
 const CONFIG_RE = /invalid (?:or unauthorized )?(?:api )?key|unauthorized key|api[\s-]?key|missing[\s_-]?key|not configured|no api key|payment required|insufficient (?:credit|balance)|quota exceeded/i;
 const DENIED_RE = /\bforbidden\b|access denied/i;
+/** A provider's own words saying the account — not the request — is the problem. */
+const ACCOUNT_LIMIT_RE = /\b(?:active plan|plan required|subscription|limit reached|daily limit|quota)\b/i;
 
 // A 5xx does NOT always mean "the provider is down". Providers routinely answer
 // a deterministic, non-retryable input problem with a 500 — markdown.new returns
@@ -186,6 +188,20 @@ export function normalizeProviderError(
     case "rate_limited":
       return `Rate-limited by the provider${code ? ` (HTTP ${code})` : ""} — the platform backed off automatically. Retry later.`;
     case "http_denied":
+      // A 403 is not always bot protection. LeakCheck documents 403 as exactly two things — "Active plan
+      // required" and "Limit reached" — and its API sits behind no bot wall, so for that tool a 403 means
+      // the subscription lapsed or the daily quota is spent. Any provider that SAYS plan/quota in its own
+      // words gets the same honest reading; saying "bot protection" there sends the analyst after the
+      // wrong fix while the real one (renew / wait for the reset) is a billing action.
+      if (toolName === "leakcheck_lookup" || ACCOUNT_LIMIT_RE.test(raw)) {
+        // Quote only the provider's own plan/quota words — never a bare "upstream returned HTTP 403".
+        const said = ACCOUNT_LIMIT_RE.test(raw) ? short : "";
+        return `Refused on account grounds (HTTP ${code ?? 403})${said ? ` — "${said}"` : ""}. ${
+          toolName === "leakcheck_lookup"
+            ? "LeakCheck answers 403 only when the subscription is inactive or the daily lookup quota is used up — not bot protection. Check the plan and quota on the LeakCheck account."
+            : "This is a plan or quota limit on the provider's side, not bot protection or a bad key. Check the account's plan and quota."
+        }`;
+      }
       return `Access denied (HTTP ${code ?? 403}) — the provider blocked this request, usually bot protection or IP reputation, not a bad key.`;
     case "blocked":
       return `Legally unavailable (HTTP ${code ?? 451}) — the provider blocked this content for legal reasons.`;

@@ -287,3 +287,36 @@ describe("the Faulted tile and the Needs attention list count different things",
     expect(totals.total).toBe(7);
   });
 });
+
+describe("normalizeProviderError — a plan/quota 403 is not bot protection (LeakCheck, 2026-10-06)", () => {
+  // LeakCheck's own docs give 403 exactly two meanings: "Active plan required" and "Limit reached". The row
+  // the edge writes for a refused lookup carries only the status, so the tool name is what identifies it.
+  it("leakcheck_lookup 403 says plan/quota and never 'bot protection or IP reputation'", () => {
+    const m = normalizeProviderError("leakcheck_lookup", "upstream returned HTTP 403", 403);
+    expect(m).toMatch(/subscription is inactive or the daily lookup quota is used up/i);
+    expect(m).toMatch(/Check the plan and quota/);
+    expect(m).not.toMatch(/IP reputation/i);
+    expect(m).not.toMatch(/upstream returned HTTP 403/); // bare transport text is not quoted back
+  });
+
+  it("quotes the provider's own plan/quota words when the row carries them", () => {
+    expect(normalizeProviderError("leakcheck_lookup", "Active plan required", 403)).toContain('"Active plan required"');
+    expect(normalizeProviderError("leakcheck_lookup", "Limit reached", 403)).toContain('"Limit reached"');
+  });
+
+  it("any other provider that says plan/quota in its own words gets the honest reading too", () => {
+    const m = normalizeProviderError("some_paid_api", "403 Active plan required", 403);
+    expect(m).toMatch(/plan or quota limit on the provider's side/i);
+    expect(m).not.toMatch(/IP reputation/i);
+  });
+
+  it("NEGATIVE CONTROL — an ordinary 403 keeps the bot-protection wording", () => {
+    expect(normalizeProviderError("jina_reader_scrape", "jina 403", 403)).toMatch(/bot protection or IP reputation/i);
+    expect(normalizeProviderError("reddit_user", "reddit 403 Blocked", 403)).toMatch(/bot protection or IP reputation/i);
+    expect(normalizeProviderError("nominatim_geocode", "nominatim 403", 403)).toMatch(/bot protection or IP reputation/i);
+  });
+
+  it("does not change the category: it is still http_denied (the calm bucket), only the wording moves", () => {
+    expect(classifyDetailedOutcome("failed", "Active plan required", 403)).toBe("http_denied");
+  });
+});
