@@ -94,8 +94,8 @@ async function runStep(thread: string, toolName: string, input: unknown) {
     { socialfetch_lookup: real.socialfetch_lookup } as never,
     { investigationId: thread, userId: `u-${thread}`, supabase: h.db, supabaseAdmin: h.db },
   );
-  // deno-lint-ignore no-explicit-any
-  const steps: any[] = [];
+  // The SDK's StepResult is generic over the tool set; the test only reads its toolCalls.
+  const steps: Array<{ stepNumber: number; toolCalls: unknown }> = [];
   await generateText({
     model: modelCalling(toolName, input),
     tools: wrapped as never,

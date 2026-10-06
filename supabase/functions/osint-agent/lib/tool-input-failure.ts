@@ -38,7 +38,7 @@ export type ToolInputFailure = {
 
 const MAX_ISSUES = 6;
 const MAX_KEYS = 12;
-const SEG_RE = /[^A-Za-z0-9_.\[\]-]/g;
+const SEG_RE = /[^A-Za-z0-9_.[\]-]/g;
 
 /** A short, log-safe token: identifier characters only, bounded. */
 const tidy = (v: unknown, max = 48): string => String(v ?? "").replace(SEG_RE, "?").slice(0, max);
