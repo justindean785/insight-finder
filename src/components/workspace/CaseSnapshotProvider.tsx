@@ -85,6 +85,11 @@ const SYNC_LABEL_DELAY_MS = 400;
 /** Poll cadence while a run is live. The backend heartbeat is the primary
  *  signal; this is the fallback for a socket that has quietly died. */
 const LIVE_POLL_MS = 30_000;
+/** One automatic re-read this long after a failed one. A phone resuming a
+ *  backgrounded tab re-reads before its network or auth token has woken up, and
+ *  nothing else re-reads a case that is not live — so one failed read on a
+ *  finished case used to stay "Sync failed" until the analyst tapped refresh. */
+const SYNC_RETRY_MS = 2_000;
 
 let channelSeq = 0;
 
@@ -134,6 +139,9 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
   const [showSyncing, setShowSyncing] = useState(false);
   const [syncedAt, setSyncedAt] = useState<number | null>(null);
   const [syncError, setSyncError] = useState(false);
+  /** Bumped by every failed reconcile, so the retry below re-evaluates after a
+   *  failure even when `syncError` was already true (it does not change). */
+  const [failedReads, setFailedReads] = useState(0);
   const [chatRunning, setChatRunning] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -209,9 +217,13 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
         setSyncError(false);
       } else {
         setSyncError(true);
+        setFailedReads((n) => n + 1);
       }
     } catch {
-      if (aliveRef.current && reconcileSeq.current === token) setSyncError(true);
+      if (aliveRef.current && reconcileSeq.current === token) {
+        setSyncError(true);
+        setFailedReads((n) => n + 1);
+      }
     } finally {
       clearTimeout(labelTimer);
       if (aliveRef.current && reconcileSeq.current === token) {
@@ -364,6 +376,26 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
   // The shared stores also re-read on their own (heartbeat, refocus). A failure
   // there keeps the old rows too, so it is a sync failure as much as one here.
   const sourceError = syncError || tools.error || artifacts.error;
+  // ONE automatic retry per failure. If the retry fails too the label stays
+  // "Sync failed" — a second failure is a real fault, not a phone waking up —
+  // and the next success re-arms it. A hidden tab does not spend the retry:
+  // returning to it re-reads (the visibilitychange handler above), and if THAT
+  // read fails, `failedReads` moves and the retry is still there to use.
+  const retriedRef = useRef(false);
+  useEffect(() => {
+    if (!sourceError) {
+      retriedRef.current = false;
+      return;
+    }
+    if (retriedRef.current) return;
+    const t = setTimeout(() => {
+      if (!aliveRef.current || document.visibilityState !== "visible") return;
+      retriedRef.current = true;
+      void reconcile();
+    }, SYNC_RETRY_MS);
+    return () => clearTimeout(t);
+  }, [sourceError, failedReads, reconcile]);
+
   const [published, setPublished] = useState<CaseSnapshot | null>(null);
   useEffect(() => {
     if (reconciling) return;
