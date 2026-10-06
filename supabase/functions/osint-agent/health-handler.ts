@@ -27,6 +27,7 @@ import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-c
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
 import { negativeLookupSelfTest } from "./lib/negative-lookup.ts";
+import { toolInputFailureSelfTest } from "./lib/tool-input-failure.ts";
 import { recordNameQuarantineEnabled } from "./lib/record-name-quarantine.ts";
 import {
   deepseekPreflightAlways,
@@ -371,6 +372,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // with versioned cache keys is the one running (see lib/tool-cache-version.ts).
   r.checks.tool_cache_version = describeToolCacheVersions();
   r.checks.negative_lookup_semantics = negativeLookupSelfTest();
+  r.checks.tool_input_failure_log = toolInputFailureSelfTest();
   // Per-case dead-target memory (lib/dead-target.ts). Pure, no DB. Its PRESENCE is the
   // behavioural proof that the build carrying the gate is the one running.
   r.checks.dead_target_memory = describeDeadTargetMemory();

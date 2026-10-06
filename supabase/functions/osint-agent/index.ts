@@ -92,6 +92,7 @@ import {
 } from "./lib/preflight-pivot.ts";
 import { redactErrorMessage } from "./lib/redact-error.ts";
 import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
+import { inputFailureRowsForStep } from "./lib/tool-input-failure.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
 // Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
@@ -1318,6 +1319,26 @@ Deno.serve(async (req) => {
       // metered at the Flash rate.
       onStepFinish: ({ stepNumber, usage, finishReason, toolCalls, toolResults }) => {
         invocationTelemetry.recordStepFinish({ stepNumber, usage, finishReason, toolCalls });
+        // A tool call the SDK rejected on its INPUT SCHEMA never reaches `execute`, so the
+        // cache wrapper's logUsage never runs and the Activity tab undercounts the step
+        // ("Failed 0 of 23" beside 26 model calls). Log it here — detached and best-effort,
+        // so it can never block or fail the step or the finalize window. Field paths and
+        // sent key NAMES only; no values. See lib/tool-input-failure.ts.
+        try {
+          const rejectedRows = inputFailureRowsForStep(toolCalls, { userId, threadId, stepNumber });
+          if (rejectedRows.length > 0) {
+            const rejectedTask = Promise.resolve(supabaseAdmin.from("tool_usage_log").insert(rejectedRows))
+              .then((res: { error?: { message?: string } | null } | undefined) => {
+                if (res?.error) console.warn(`[tool_usage_log] input-failure insert failed: ${res.error.message}`);
+              })
+              .catch((e: unknown) => console.warn("[tool_usage_log] input-failure insert threw:", String(e)));
+            const ertRejected = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+            if (ertRejected && typeof ertRejected.waitUntil === "function") ertRejected.waitUntil(rejectedTask);
+            else void rejectedTask;
+          }
+        } catch (e) {
+          console.warn("[tool_usage_log] input-failure logging skipped (non-fatal):", String(e));
+        }
         if (finalizeStarted) {
           const names = (toolCalls ?? []).map((call: { toolName: string }) => call.toolName);
           const stepProgress = countFinalizeProgress([{ content: toolResults }]);
