@@ -42,6 +42,7 @@ import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 import { sourceOriginRulesSelfTest } from "./source-classification.ts";
+import { seedAccountIdSelfTest } from "./validation.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -482,6 +483,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // from the HOST (source-classification.ts classifyOriginHost)? Pure. Its PRESENCE
   // proves the build is live; ok:false means a rule misclassified its own probe.
   r.checks.source_origin_rules = sourceOriginRulesSelfTest();
+
+  // Is a bare 17-20 digit platform account ID (Discord/Twitter snowflake, Steam64) kept out of
+  // the phone playbook? It classified as `phone` and routed a Discord-ID case into phone
+  // tooling. Pure. PRESENCE proves the deployed bundle; ok:false = the classifier failed its
+  // own probe. (Client mirror: src/lib/seed.ts, same 15-digit E.164 ceiling.)
+  r.checks.seed_account_id = seedAccountIdSelfTest();
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure

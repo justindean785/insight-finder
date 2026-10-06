@@ -479,3 +479,24 @@ export function validateArtifact(kind: string, rawValue: string): ValidateResult
     }
   }
 }
+
+/**
+ * /health self-test: a platform account ID is not a phone seed. A bare 17-20 digit run
+ * (Discord/Twitter snowflake, Steam64) must classify as `other`; real phones, including
+ * the 15-digit E.164 ceiling, must still classify as `phone`. Pure. Its PRESENCE proves
+ * the deployed bundle carries the fix (the build marker alone never can); ok:false means
+ * the classifier failed its own probe.
+ */
+export function seedAccountIdSelfTest(): { ok: boolean; detail: string } {
+  const cases: Array<[string, (kind: string | undefined) => boolean]> = [
+    ["1234567890123456789", (k) => k === "other"], // 19-digit snowflake (synthetic)
+    ["76561197960287930", (k) => k === "other"], // Steam64-shaped
+    ["+1 234 567 890 123 456 78", (k) => k !== "phone"], // punctuated, >15 digits
+    ["+15550100199", (k) => k === "phone"], // real E.164
+    ["123456789012345", (k) => k === "phone"], // exactly 15 digits: the ceiling
+  ];
+  const wrong = cases.filter(([input, ok]) => !ok(detectSeedServer(input)?.kind)).map(([input]) => input);
+  return wrong.length
+    ? { ok: false, detail: `misclassified: ${wrong.join(" | ")}` }
+    : { ok: true, detail: "bare digit runs >15 are account ids (kind=other), not phones; E.164 (<=15 digits) still phone" };
+}

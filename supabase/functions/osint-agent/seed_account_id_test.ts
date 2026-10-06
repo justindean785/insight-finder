@@ -31,3 +31,9 @@ Deno.test("the server pins the 15-digit E.164 ceiling (client mirror: src/lib/se
   const server = await Deno.readTextFile(new URL("./validation.ts", import.meta.url));
   assert(server.includes("const E164_MAX_DIGITS = 15;"), "server ceiling");
 });
+
+Deno.test("the /health self-test engages and reports ok", async () => {
+  const { seedAccountIdSelfTest } = await import("./validation.ts");
+  const t = seedAccountIdSelfTest();
+  assert(t.ok, t.detail);
+});
