@@ -16,6 +16,7 @@ import { isSubjectUnlinked, isQuarantined } from "@/lib/quarantine";
 // frontend consumer shares — analyst verdict OR the legacy `false_positive` flag.
 import { isRejectedArtifact as isRejectedArtifactRow, buildRejectedDerivationIds } from "@/lib/analyst-decisions";
 import { normalizeTarget } from "@/lib/next-step-cards";
+import { detectNameConflict, formatNameConflict } from "@/lib/name-conflict";
 // Derived models built here (timeline entries, pivot candidates) carry a
 // per-artifact confidence that is later RENDERED, so they must carry the
 // effective value — otherwise a surface displays a raw number without ever
@@ -2789,6 +2790,10 @@ export function buildIdentityClusters(
       "Potential same-name collision detected. The following artifacts may belong to different people and should not be merged without additional corroboration.",
     );
   }
+  // An analyst-supplied name that record-derived names contradict is an OPEN QUESTION,
+  // not something the model's prose gets to resolve. See name-conflict.ts.
+  const nameConflict = detectNameConflict(artifacts);
+  if (nameConflict) warnings.push(formatNameConflict(nameConflict));
   if (seedState && !out.some((c) => c.matchesSeedLocation)) {
     warnings.push(
       `No direct ${seedState} corroboration found in this run. Out-of-area same-name candidates are shown separately — do not conclude the subject is "not from ${seedState}".`,
