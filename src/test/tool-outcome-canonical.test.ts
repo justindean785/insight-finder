@@ -289,24 +289,32 @@ describe("the Faulted tile and the Needs attention list count different things",
 });
 
 describe("normalizeProviderError — a plan/quota 403 is not bot protection (LeakCheck, 2026-10-06)", () => {
-  // LeakCheck's own docs give 403 exactly two meanings: "Active plan required" and "Limit reached". The row
-  // the edge writes for a refused lookup carries only the status, so the tool name is what identifies it.
-  it("leakcheck_lookup 403 says plan/quota and never 'bot protection or IP reputation'", () => {
+  // LeakCheck's docs give 403 exactly two meanings: "Active plan required" and "Limit reached". The row the
+  // edge writes for a refused lookup carries only the status, so the tool name is what identifies it — and the
+  // status alone cannot say WHICH of the two, so the wording must not pick one without the provider's words.
+  it("leakcheck_lookup 403 with no provider text says 'either', says it was not told which, and drops 'bot protection'", () => {
     const m = normalizeProviderError("leakcheck_lookup", "upstream returned HTTP 403", 403);
-    expect(m).toMatch(/subscription is inactive or the daily lookup quota is used up/i);
+    expect(m).toMatch(/documents 403 as either an inactive plan or a reached quota, and did not say which/i);
     expect(m).toMatch(/Check the plan and quota/);
-    expect(m).not.toMatch(/IP reputation/i);
+    expect(m).not.toMatch(/IP reputation|bot protection/i);
+    expect(m).not.toMatch(/point to an inactive plan|point to a reached usage quota/i); // does NOT pick one
     expect(m).not.toMatch(/upstream returned HTTP 403/); // bare transport text is not quoted back
   });
 
-  it("quotes the provider's own plan/quota words when the row carries them", () => {
-    expect(normalizeProviderError("leakcheck_lookup", "Active plan required", 403)).toContain('"Active plan required"');
-    expect(normalizeProviderError("leakcheck_lookup", "Limit reached", 403)).toContain('"Limit reached"');
+  it("names WHICH only when the provider's own words did, and quotes them", () => {
+    const plan = normalizeProviderError("leakcheck_lookup", "Active plan required", 403);
+    expect(plan).toContain('"Active plan required"');
+    expect(plan).toMatch(/point to an inactive plan/i);
+    expect(plan).not.toMatch(/reached usage quota/i);
+    const lim = normalizeProviderError("leakcheck_lookup", "Limit reached", 403);
+    expect(lim).toContain('"Limit reached"');
+    expect(lim).toMatch(/point to a reached usage quota/i);
+    expect(lim).not.toMatch(/inactive plan/i);
   });
 
-  it("any other provider that says plan/quota in its own words gets the honest reading too", () => {
+  it("any other provider that says plan in its own words gets the honest reading too", () => {
     const m = normalizeProviderError("some_paid_api", "403 Active plan required", 403);
-    expect(m).toMatch(/plan or quota limit on the provider's side/i);
+    expect(m).toMatch(/point to an inactive plan/i);
     expect(m).not.toMatch(/IP reputation/i);
   });
 
