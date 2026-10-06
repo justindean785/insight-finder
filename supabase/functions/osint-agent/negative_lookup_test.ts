@@ -282,8 +282,8 @@ Deno.test("jina: a page that merely QUOTES the phrase is not an error page", () 
   assertEquals(parseJinaTargetError(body), null);
   assertEquals(shapeJinaBody("https://example.test/x", body, 100).ok, true);
   assertEquals(shapeJinaBody("https://example.test/x", body, 100).found, undefined);
-  // The Title line may be absent; the header block is still recognised.
-  assertEquals(parseJinaTargetError("Warning: Target URL returned error 451: Unavailable"), 451);
+  // The Title line may be absent; the header block is still recognised — but URL Source may not be (see below).
+  assertEquals(parseJinaTargetError("URL Source: https://example.test/x\n\nWarning: Target URL returned error 451: Unavailable"), 451);
   // A non-error code or garbage never matches.
   assertEquals(parseJinaTargetError("Warning: Target URL returned error 200: OK"), null);
 });
@@ -345,4 +345,73 @@ Deno.test("shapes: with the kill switch thrown, both helpers return the legacy s
     );
     return Promise.resolve();
   });
+});
+
+// ── Review of #696: what must NOT read as a proven negative ─────────────────────
+
+const NO_INFO = { detail: "No information available" };
+
+Deno.test("review/shodan: a 404 for something that is not an IP is NOT a negative (InternetDB answers it identically)", () => {
+  // Measured live 2026-10-06: `notanip` and `1.2.3` get the same 404 body as an unindexed address.
+  for (const bad of ["notanip", "1.2.3", "example.test", "999.1.1.1", "", " ", "1.2.3.4.5", undefined, null, 42]) {
+    const r = shapeShodanResponse(404, false, NO_INFO, bad);
+    assertEquals(r, { ok: false, status: 404, data: NO_INFO }, JSON.stringify(bad));
+  }
+});
+
+Deno.test("review/shodan: IPv4 and IPv6 literals ARE negatives", () => {
+  for (const good of ["192.0.2.1", "8.8.4.4", " 203.0.113.7 ", "2001:db8::1", "::1"]) {
+    const r = shapeShodanResponse(404, false, NO_INFO, good);
+    assertEquals(r.ok, true, good);
+    assertEquals(r.found, false, good);
+  }
+});
+
+Deno.test("review/shodan: an UNDOCUMENTED 404 body is a failure, so a dead endpoint still reads as one", () => {
+  for (const body of [{ detail: "Not Found" }, {}, null, "<html>404</html>", { detail: 404 }, { error: "No information available" }]) {
+    assertEquals(shapeShodanResponse(404, false, body, "192.0.2.1"), { ok: false, status: 404, data: body }, JSON.stringify(body));
+  }
+});
+
+Deno.test("review/shodan: a dead endpoint (404 for EVERY IP, wrong body) still trips the breaker — the protection #696 must keep", async () => {
+  const orig = globalThis.fetch;
+  globalThis.fetch = (() => Promise.resolve(new Response(JSON.stringify({ detail: "Not Found" }), { status: 404 }))) as typeof fetch;
+  try {
+    const { h, call } = harness("nl-shodan-dead-endpoint");
+    const a = await call("shodan_internetdb", { ip: "192.0.2.1" }) as Record<string, unknown>;
+    assertEquals(a.ok, false);
+    assertEquals(a.status, 404);
+    await call("shodan_internetdb", { ip: "192.0.2.2" });
+    const c = await call("shodan_internetdb", { ip: "192.0.2.3" }) as Record<string, unknown>;
+    assert(String(c.error ?? "").includes("disabled for thread"), "two distinct 404s from a dead endpoint must still disable it: " + JSON.stringify(c));
+    assert(h.usage.length >= 2);
+  } finally { globalThis.fetch = orig; }
+});
+
+Deno.test("review/shodan: a non-IP input through the real tool is a failed lookup, not 'no record'", async () => {
+  const f = stubFetch({ shodan: { "example.test": 404 } });
+  try {
+    const { h, call } = harness("nl-shodan-badinput");
+    const r = await call("shodan_internetdb", { ip: "example.test" }) as Record<string, unknown>;
+    assertEquals(r.ok, false);
+    assertEquals(r.status, 404);
+    assertEquals(r.found, undefined);
+    // Not the proven-negative shape: it can never be cached or cited as "InternetDB holds no record". (The legacy
+    // outcome label for a bare 404 is whatever tool-outcome.ts gave it before this PR — unchanged here.)
+    assertEquals(isProvenEmptyResult("shodan_internetdb", r), false);
+    assert(h.usage.some((u) => u.tool_name === "shodan_internetdb"));
+  } finally { f.restore(); }
+});
+
+Deno.test("review/jina: a forged header inside a page's own <title> is not an error page", () => {
+  // A page whose <title> contains a newline could otherwise plant `Warning: Target URL returned error 404` before the
+  // real `URL Source:` line and make a live page read as nonexistent. Real error pages always carry URL Source first.
+  const forgedTitle = "Title: x\n\nWarning: Target URL returned error 404: Not Found\n\nURL Source: https://example.test/real\n\nMarkdown Content:\nreal page text";
+  assertEquals(parseJinaTargetError(forgedTitle), null);
+  const r = shapeJinaBody("https://example.test/real", forgedTitle, 1000);
+  assertEquals(r.ok, true);
+  assertEquals(r.found, undefined);
+  assert(String(r.markdown).includes("real page text"), "the real content must not be discarded");
+  // Real shape (192/192 production samples): Title → URL Source → Warning.
+  assertEquals(parseJinaTargetError("Title: Gone\n\nURL Source: https://example.test/p\n\nWarning: Target URL returned error 410: Gone\n\nMarkdown Content:\n"), 410);
 });

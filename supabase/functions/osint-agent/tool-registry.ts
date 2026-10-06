@@ -4671,7 +4671,7 @@ export function buildTools(ctx: ToolContext) {
           const data = await r.json().catch(() => ({}));
           // 404 = "no InternetDB record for this IP": a proven negative, not a dead
           // endpoint (see lib/negative-lookup.ts). Every other status is unchanged.
-          return shapeShodanResponse(r.status, r.ok, data);
+          return shapeShodanResponse(r.status, r.ok, data, ip);
         } catch (e) { return { error: String(e) }; }
       },
     }),
