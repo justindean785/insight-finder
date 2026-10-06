@@ -26,6 +26,7 @@ import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./
 import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
+import { probeLeakcheckKey } from "./lib/leakcheck-key-probe.ts";
 import { recordNameQuarantineEnabled } from "./lib/record-name-quarantine.ts";
 import {
   deepseekPreflightAlways,
@@ -357,14 +358,19 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // health response stays bounded. checks.deepseek is reported UNCONDITIONALLY and is
   // INDEPENDENT of checks.minimax — a healthy MiniMax fallback can never mask a
   // DeepSeek key-missing / probe failure.
-  const [deepseekCheck, minimaxCheck] = await Promise.all([
+  const [deepseekCheck, minimaxCheck, leakcheckKeyCheck] = await Promise.all([
     checkDeepseek(),
     checkMinimax(),
+    // Does LeakCheck still ACCEPT our key? A free request (deliberately too-short query, no lookup run) in
+    // parallel with the others so the response stays bounded. checks.credentials only learns this from a past
+    // paid lookup; this answers NOW — including "the key you just replaced works". Never throws, memoised.
+    probeLeakcheckKey(),
   ]);
   // Role labels: only the SELECTED provider is "active"; the other is a "fallback"
   // diagnostic. So MiniMax is never labeled active when DeepSeek is selected.
   r.checks.deepseek = { ...deepseekCheck, role: providerRole(selected.provider, "deepseek") };
   r.checks.minimax = { ...minimaxCheck, role: providerRole(selected.provider, "minimax") };
+  r.checks.leakcheck_key = leakcheckKeyCheck;
   // Which tools' cache keys carry a result-interpretation version. Pure, no DB, so it is
   // reported on every probe — and its PRESENCE is the behavioural proof that the build
   // with versioned cache keys is the one running (see lib/tool-cache-version.ts).
