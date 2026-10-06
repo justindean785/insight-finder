@@ -4,8 +4,8 @@ import { DEFAULT_CONTROLS, evaluatePreflight, type PreflightControls } from "@/l
 /**
  * The composer preflight. The load-bearing rule: a bare seed is sent
  * byte-for-byte as typed — the investigation cache, seed detection and the
- * opening-phase gate all key on that text — and Scope & controls are added
- * only when the analyst changed one.
+ * opening-phase gate all key on that text — and the only thing ever added is
+ * one Target line, when the analyst corrected the detected type.
  */
 
 const run = (text: string, over: Partial<PreflightControls> = {}, extra: { isFollowUp?: boolean; attachments?: number } = {}) =>
@@ -65,32 +65,14 @@ describe("evaluatePreflight", () => {
     expect(r.message).toBe("jharker88");
   });
 
-  it("invalid objective: a placeholder, a single word, or the target repeated", () => {
-    expect(run("jordan.vale@example.test", { objective: "tbd" }).errors.objective).toBeTruthy();
-    expect(run("jordan.vale@example.test", { objective: "ownership" }).errors.objective).toBeTruthy();
-    expect(run("jordan.vale@example.test", { objective: "jordan.vale@example.test" }).errors.objective).toBeTruthy();
-    expect(run("jordan.vale@example.test", { objective: "tbd" }).canSubmit).toBe(false);
+  it("a corrected type adds exactly one line — never the old Scope & controls block", () => {
+    const r = run("john.smith", { targetKind: "username" });
+    expect(r.message).toBe("john.smith\n\nTarget: john.smith (username)");
+    expect(r.message).not.toMatch(/Scope & controls|analyst instructions|Authorized scope|Depth:/);
   });
 
-  it("valid preflight: custom controls are appended as labelled, advisory instructions", () => {
-    const r = run("jordan.vale@example.test", {
-      objective: "Who controls this mailbox today?",
-      depth: "deep",
-      scope: "public_no_sensitive",
-      exclusions: "no relatives",
-    });
-    expect(r.canSubmit).toBe(true);
-    expect(r.message.startsWith("jordan.vale@example.test\n")).toBe(true);
-    expect(r.message).toContain("Scope & controls (analyst instructions)");
-    expect(r.message).toContain("Objective: Who controls this mailbox today?");
-    expect(r.message).toContain("Authorized scope: Public sources, excluding breach and broker data");
-    expect(r.message).toContain("Exclusions: no relatives");
-    expect(r.message).toMatch(/Depth: Deep pass/);
-    expect(r.summary).toMatchObject({ objective: "Who controls this mailbox today?", depth: "Deep", budget: "Server per-run cap" });
-  });
-
-  it("states the agent default when no objective is given, rather than inventing one", () => {
-    expect(run("jordan.vale@example.test").summary.objective).toMatch(/Agent default/);
+  it("the pre-submit summary names the target and nothing the run does not honour", () => {
+    expect(run("jordan.vale@example.test").summary).toEqual({ target: "jordan.vale@example.test (email)" });
   });
 
   it("a follow-up needs no new target", () => {

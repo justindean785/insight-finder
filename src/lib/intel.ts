@@ -8,7 +8,7 @@ import {
   type AuthoritativeFindings,
 } from "@/lib/authoritative-findings";
 import { detectSeed, extractDisplaySeed } from "@/lib/seed";
-import { toolActionLabel } from "@/lib/tool-display";
+import { auditEntryToolName, toolActionLabel } from "@/lib/tool-display";
 import { humanizeSourceChain, primaryToolSlug, tokenizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
 import { isSubjectUnlinked, isQuarantined } from "@/lib/quarantine";
@@ -1438,7 +1438,11 @@ export function buildReportMarkdown(input: ReportInput): string {
     attested: attested.length,
   });
   const keyFindings = (() => {
-    const strong = [...confirmed, ...attested].filter((a) => !isOutOfSet(a));
+    // An exclusion the analyst confirmed is an attested NON-finding: "this is not
+    // the subject". It already has a home in the Collision section below; leading
+    // Key Findings with it (production export 2026-09-20: the only Key Finding
+    // was the excluded namesake) inverts what the heading promises.
+    const strong = [...confirmed, ...attested].filter((a) => !isOutOfSet(a) && !isCollisionArtifact(a));
     if (strong.length) {
       return [
         ...(keyFindingsHeading.lead ? [keyFindingsHeading.lead, ""] : []),
@@ -1688,7 +1692,7 @@ export function buildReportMarkdown(input: ReportInput): string {
   const toolCoverage = audit.tools.length === 0
     ? "_No tools produced artifacts._"
     : audit.tools.map((t) =>
-        `- ${toolActionLabel(t.tool)} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
+        `- ${toolActionLabel(auditEntryToolName(t))} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
       ).join("\n");
 
   const weakAreas = (() => {
@@ -1727,7 +1731,7 @@ export function buildReportMarkdown(input: ReportInput): string {
 
   const sourceAppendix = audit.tools.length === 0
     ? "_None._"
-    : audit.tools.map((t) => `- ${toolActionLabel(t.tool)} — produced ${t.kinds.join(", ") || "—"}`).join("\n");
+    : audit.tools.map((t) => `- ${toolActionLabel(auditEntryToolName(t))} — produced ${t.kinds.join(", ") || "—"}`).join("\n");
 
   if (reportType === "brief") {
     return [
@@ -2159,6 +2163,118 @@ function collectStrings(...vals: unknown[]): string[] {
   return out;
 }
 
+/**
+ * Phone merge key: digits only, with a leading US/CA country code stripped, so
+ * a breach row's `phones: ["8087838763"]` and the standalone `+18087838763`
+ * artifact land on ONE key. Measured 2026-09-20 on thread d72fa44a: the Serus
+ * row carried both 808 phones as bare digits, the phone artifacts carried them
+ * in E.164, and the two never merged — two of the fifteen singleton clusters
+ * that case produced for one person. Below 7 digits nothing is a phone.
+ */
+export function phoneMergeKey(raw: string): string | null {
+  let digits = raw.replace(/\D/g, "");
+  if (digits.length < 7) return null;
+  if (digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
+  return `phone:${digits}`;
+}
+
+/**
+ * `parent:`-namespaced key for "this row came from a lookup on selector X" (the
+ * auto-persist `queried_selector`) and for X's own row, so the two union under
+ * the weakest signal. Shape-gated: anything with whitespace is a person name
+ * and is never a merge key; emails and phones are normalised like their
+ * value-based keys so the namespaces cannot drift apart.
+ */
+export function recordMateKey(raw: string): string | null {
+  const t = raw.trim().toLowerCase();
+  if (!t || /\s/.test(t) || t.length < 5) return null;
+  if (t.includes("@")) return `parent:${t}`;
+  const pk = phoneMergeKey(t);
+  if (pk && /^[\d\s()+.-]+$/.test(t)) return `parent:${pk.slice("phone:".length)}`;
+  const h = normalizeHandle(t);
+  return h ? `parent:${h}` : null;
+}
+
+/**
+ * Metadata keys that describe HOW a row was obtained, not what it contains.
+ * They are excluded from the corroboration scan below — `queried_selector` is
+ * itself stamped into metadata, so scanning it would make the check a no-op.
+ */
+const PROVENANCE_META_KEYS: ReadonlySet<string> = new Set([
+  "queried_selector",
+  "parent_selector",
+  "parent",
+  "parent_seed",
+  "seed",
+  "auto_persist_source",
+  "via",
+  "tool",
+  "source",
+]);
+
+/**
+ * Does the returned record ITSELF name the selector it was looked up on?
+ *
+ * ⚠️ Query provenance alone is NOT linkage. A lookup on A@example.com can return
+ * a row that is about an unrelated B@example.com — a broker mis-hit, a shared
+ * breach dump, a fuzzy provider match. Publishing `parent:A` for that row unions
+ * B's cluster into A's on nothing but "this came back from that query", and
+ * because both are well-formed emails the shape gate in `recordMateKey` cannot
+ * see it. Two identities with no NAME rows then merge silently, since the
+ * collision detector only splits on conflicting names.
+ *
+ * So the record-mate key is published only when the row's own content names the
+ * selector — its value, or one of its non-provenance metadata fields.
+ */
+export function recordCorroboratesSelector(
+  value: string,
+  metadata: Record<string, unknown> | null | undefined,
+  selector: string,
+): boolean {
+  const needle = selector.trim().toLowerCase();
+  if (!needle) return false;
+  if (namesSelector(value, needle)) return true;
+  const meta = metadata ?? {};
+  for (const [k, v] of Object.entries(meta)) {
+    if (PROVENANCE_META_KEYS.has(k)) continue;
+    if (typeof v === "string" && namesSelector(v, needle)) return true;
+    // One level of nesting: providers commonly nest the matched record.
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) {
+        if (PROVENANCE_META_KEYS.has(k2)) continue;
+        if (typeof v2 === "string" && namesSelector(v2, needle)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Anything outside a selector's own character set separates two tokens. */
+const SELECTOR_TOKEN_SPLIT = /[^a-z0-9_.%+@-]+/;
+
+/**
+ * Does `text` name `needle` as a WHOLE selector token?
+ *
+ * ⚠️ Never a substring test. `"johnsmith2".includes("johnsmith")` and
+ * `"xa@example.com".includes("a@example.com")` are both true, so substring
+ * corroboration lets a lookup on one identity publish its record-mate key on a
+ * row about a different one — the union this gate exists to stop. `text` is
+ * split on characters a selector cannot contain (spaces, `/`, `:`, `,`, …), so
+ * a profile URL or a prose sentence still yields the selector as one token;
+ * prose punctuation at a token's edge (`a@example.com.`) is trimmed, and an
+ * `@handle` mention also names `handle`.
+ */
+function namesSelector(text: string, needle: string): boolean {
+  for (const raw of text.toLowerCase().split(SELECTOR_TOKEN_SPLIT)) {
+    const t = raw.replace(/^[.-]+|[.-]+$/g, "");
+    if (!t) continue;
+    if (t === needle) return true;
+    if (t.startsWith("@") && t.slice(1) === needle) return true;
+    if (needle.startsWith("@") && t === needle.slice(1)) return true;
+  }
+  return false;
+}
+
 function normalizePersonName(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -2215,7 +2331,10 @@ export function buildIdentityClusters(
       const eh = emailHandleKey(v);
       if (eh) hits.push({ key: `handle:${eh}`, signal: "HANDLE_MATCH", raw: v, platform, derived: true });
     }
-    if (kind === "phone" && v) hits.push({ key: `phone:${v.toLowerCase()}`, signal: "PHONE_MATCH", raw: v, platform });
+    if (kind === "phone" && v) {
+      const pk = phoneMergeKey(v);
+      if (pk) hits.push({ key: pk, signal: "PHONE_MATCH", raw: v, platform });
+    }
 
     // Handle-bearing signals: the value of username/handle artifacts, plus a
     // `metadata.handle` on any artifact (social_profile, avatar, …). Display
@@ -2233,6 +2352,31 @@ export function buildIdentityClusters(
     }
     const parent = String(meta.parent ?? meta.parent_seed ?? meta.seed ?? "").trim().toLowerCase();
     if (parent) hits.push({ key: `parent:${parent}`, signal: "SHARED_INFRASTRUCTURE", raw: parent, platform });
+    // The auto-persist path stamps `queried_selector` — the selector the tool was
+    // called on — on every row it writes (21 of 79 rows on thread d72fa44a,
+    // 2026-09-20). Rows yielded by ONE lookup on one durable selector are
+    // record-mates and union under the same weakest signal as `parent`. Gated on
+    // shape, not kind: a selector with whitespace is a person name (the 19-identity
+    // name-only harvest), and name equality is never linkage (T1-2 §8).
+    // ⚠️ Gated on CORROBORATION, not merely on the stamp being present: a lookup
+    // on A can return a row about an unrelated B, and unioning on provenance
+    // alone puts two people in one identity cluster. See
+    // recordCorroboratesSelector.
+    const queriedRaw = String(meta.queried_selector ?? "");
+    const queriedKey = recordMateKey(queriedRaw);
+    if (
+      queriedKey && queriedKey !== `parent:${parent}` &&
+      recordCorroboratesSelector(v, meta, queriedRaw)
+    ) {
+      hits.push({ key: queriedKey, signal: "SHARED_INFRASTRUCTURE", raw: queriedRaw, platform });
+    }
+    // …and the selector's OWN row publishes the same key, so the email/phone/
+    // username artifact and the rows a lookup on it yielded land together. Still
+    // shared-infra: it says "came from the same lookup", never "corroborated".
+    if (kind === "email" || kind === "phone" || kind === "username" || kind === "handle") {
+      const own = recordMateKey(v);
+      if (own) hits.push({ key: own, signal: "SHARED_INFRASTRUCTURE", raw: v, platform });
+    }
 
     // Cross-link selectors carried in metadata: a breach/profile row commonly
     // names the OTHER concrete selectors of the same person (the email row lists
@@ -2250,13 +2394,26 @@ export function buildIdentityClusters(
       if (eh) hits.push({ key: `handle:${eh}`, signal: "HANDLE_MATCH", raw: e, platform, derived: true });
     }
     for (const p of collectStrings(meta.phone, meta.phones)) {
-      if (p.replace(/\D/g, "").length >= 7) hits.push({ key: `phone:${p.toLowerCase()}`, signal: "PHONE_MATCH", raw: p, platform });
+      const pk = phoneMergeKey(p);
+      if (pk) hits.push({ key: pk, signal: "PHONE_MATCH", raw: p, platform });
     }
-    for (const h of collectStrings(meta.instagram_handle, meta.instagram, meta.twitter, meta.username, meta.github, meta.tiktok)) {
+    // Breach extractors write the owner's OTHER handles as `usernames[]` and the
+    // record-mate as `associated_username` / `associated_email` (the MyFitnessPal
+    // row: "username LilDee808, email cnnamongirl90@…"). Same signal class as the
+    // singular keys; reading them is what lets a handle seed reach the email it
+    // co-occurs with in one breach record. Names stay out (T1-2 §8).
+    for (const e of collectStrings(meta.associated_email, meta.associated_emails)) {
+      if (!e.includes("@")) continue;
+      hits.push({ key: `email:${e.toLowerCase()}`, signal: "EMAIL_MATCH", raw: e, platform });
+    }
+    for (const h of collectStrings(
+      meta.instagram_handle, meta.instagram, meta.twitter, meta.username, meta.github, meta.tiktok,
+      meta.usernames, meta.handles, meta.associated_username, meta.associated_usernames,
+    )) {
       const norm = normalizeHandle(h);
       if (norm) hits.push({ key: `handle:${norm}`, signal: "HANDLE_MATCH", raw: h, platform });
     }
-    for (const ad of collectStrings(meta.address)) {
+    for (const ad of collectStrings(meta.address, meta.current_address)) {
       if (ad.length >= 6) hits.push({ key: `address:${ad.toLowerCase()}`, signal: "SHARED_INFRASTRUCTURE", raw: ad, platform });
     }
     return hits;

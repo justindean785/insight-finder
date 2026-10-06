@@ -107,6 +107,21 @@ Deno.test("write-guard: an intentional skip retries live and writes no cache ent
   assertEquals(cacheUpserts, 0, "a skip is never persisted");
 });
 
+// ---- partial: a provider run still in progress is a snapshot, never cached --------
+
+Deno.test("write-guard: a PARTIAL result retries live and writes no cache entry", async () => {
+  // opsis_search returns {ok:true, partial:true, run_id} when its run outlives the
+  // poll deadline. Replaying that snapshot for the TTL would hand back a half-run
+  // instead of the finished one (lib/opsis.ts).
+  const { executions, cacheUpserts } = await runTwice(
+    "dns_records",
+    "wg-partial",
+    () => ({ ok: true, partial: true, run_id: "run-1", results: [] }),
+  );
+  assertEquals(executions, 2, "a partial result must re-run live, never replay");
+  assertEquals(cacheUpserts, 0, "a partial result is never persisted");
+});
+
 // ---- provider_unavailable: not cached (isCacheable half of the gate) --------------
 
 Deno.test("write-guard: provider_unavailable is not cached even though deriveOk treats it as ok", async () => {

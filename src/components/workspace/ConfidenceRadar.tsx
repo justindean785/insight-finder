@@ -64,7 +64,10 @@ export function ConfidenceRadar({
     dims.map((d) => `${d.label} ${d.sufficient ? `${d.value} percent` : "insufficient data"}`).join(", ") + ".";
 
   return (
-    <section className="rounded-lg border border-border-subtle bg-surface-1 p-3" aria-label="Confidence signals">
+    // `.panel`, not a hand-rolled box: `bg-surface-1` is a SOLID navy plate
+    // (rgb 8,14,27) while the shared material is glass over true black, so on
+    // a page of panels this one read as the blue card.
+    <section className="panel p-3" aria-label="Confidence signals">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <Radar className="w-3.5 h-3.5 text-muted-foreground" aria-hidden />

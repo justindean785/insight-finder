@@ -155,6 +155,8 @@ export const TTL_24H_MS = 24 * 60 * 60 * 1000;
 export const TTL_7D_MS = 7 * TTL_24H_MS;
 export const DEFAULT_TOOL_TTL_MS = TTL_24H_MS;
 
+// A cached row outlives a deploy by up to its TTL. When a PR changes how a tool DECIDES its
+// result, bump that tool in lib/tool-cache-version.ts so pre-change rows stop matching.
 export const TOOL_TTL_MS: Record<string, number> = {
   socialfetch_lookup: TTL_6H_MS,
   username_sweep: TTL_6H_MS,
@@ -171,6 +173,10 @@ export const TOOL_TTL_MS: Record<string, number> = {
   shodan_internetdb: TTL_24H_MS,
   urlscan_search: TTL_24H_MS,
   wayback_snapshots: TTL_7D_MS,
+  // A credit balance or plan read is only useful fresh; the default 24h would
+  // replay yesterday's balance across investigations.
+  opsis_balance: 60_000,
+  opsis_status: 60_000,
 };
 
 // Tools that mutate state — never cache.

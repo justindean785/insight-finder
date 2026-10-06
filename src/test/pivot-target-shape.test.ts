@@ -144,3 +144,15 @@ describe("targetShapeProblems is the single shape authority", () => {
     }
   });
 });
+
+describe("email shape rejects Markdown around the address", () => {
+  it("backticks, quotes and brackets are not part of an email", async () => {
+    const { isWellFormedTarget } = await import("@/lib/pivot-target-shape");
+    for (const v of ["`jane@uni.example`", "'jane@uni.example'", "\"jane@uni.example\"", "(jane@uni.example)", "<jane@uni.example>"]) {
+      expect(isWellFormedTarget("email", v), v).toBe(false);
+    }
+    expect(isWellFormedTarget("email", "jane.doe+tag@uni.example")).toBe(true);
+    expect(isWellFormedTarget("email", "o'connor@site.example")).toBe(true);
+    expect(isWellFormedTarget("email", "'o'connor@site.example")).toBe(false);
+  });
+});

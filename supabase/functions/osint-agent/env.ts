@@ -91,6 +91,25 @@ export const ALLOW_LOVABLE_FALLBACK =
 export function promotionQuarantineEnabled(): boolean {
   return (Deno.env.get("PROMOTION_QUARANTINE_DISABLED") ?? "").trim().toLowerCase() !== "true";
 }
+
+/**
+ * The prompt char budget as a HARD ceiling (default ON, 2026-09-19).
+ *
+ * `capTotalToBudget` used to treat its `keepRecent` tail as exempt, so once the
+ * last few messages alone exceeded TOTAL_PROMPT_CHAR_BUDGET it returned over
+ * budget and reported nothing — 68 of 779 production steps (8.7%), peaking at
+ * 290,961 chars against a 220,000 budget. With this ON, elision continues into
+ * the recent window, oldest first, only as far as needed.
+ *
+ * Set `PROMPT_BUDGET_HARD_CEILING_DISABLED=true` to restore the old tail-exempt
+ * behaviour. Read at CALL TIME so the switch takes effect on the running build
+ * without a deploy: this changes what the model is shown on long threads, and
+ * the termination machinery is sensitive to that (see CLAUDE.md's oscillation
+ * history), so it must be revertible in seconds.
+ */
+export function promptBudgetHardCeilingEnabled(): boolean {
+  return (Deno.env.get("PROMPT_BUDGET_HARD_CEILING_DISABLED") ?? "").trim().toLowerCase() !== "true";
+}
 export const lovableGateway = LOVABLE_API_KEY
   ? createOpenAICompatible({
       name: "lovable-ai-gateway",
@@ -253,6 +272,8 @@ export const INTELBASE_API_KEY = Deno.env.get("INTELBASE_API_KEY");
 // showed 33% OK rate. Re-enable by flipping this flag once provider is healthy.
 export const INTELBASE_ENABLED = false;
 export const HIBP_API_KEY = Deno.env.get("HIBP_API_KEY");
+// Opsis OSINT API (lib/opsis.ts) — paid account enumeration; Pro/Unlimited plan + API credits.
+export const OPSIS_API_KEY = Deno.env.get("OPSIS_API_KEY");
 export const GITHUB_API_TOKEN = Deno.env.get("GITHUB_API_TOKEN") ?? Deno.env.get("GITHUB_TOKEN");
 export const FIRECRAWL_API_KEY = Deno.env.get("FIRECRAWL_API_KEY");
 export const EXA_API_KEY = Deno.env.get("EXA_API_KEY");

@@ -331,15 +331,124 @@ function allMutuallyCompatible(values: string[], compat: (a: string, b: string) 
   return true;
 }
 
-export function detectContradictions(artifacts: ArtifactLike[]): ContradictionFinding[] {
+/** Relationship values that describe the subject themself rather than another person. */
+const SELF_RELATIONSHIPS = new Set(["self", "subject", "same person"]);
+
+/**
+ * True when a row can carry a claim about the SUBJECT's own name, location or
+ * employer. Two kinds of row cannot, and both were being read as the subject
+ * "being" someone else or somewhere else:
+ *   - a row the case has EXCLUDED (status `excluded`, `excluded_collision`,
+ *     `false_positive`, or kind `excluded_collision`) is, by the analyst's or the
+ *     model's own determination, a different entity;
+ *   - a relative / associate (`metadata.relationship`, e.g. "Spouse",
+ *     "Associate") is another person by construction.
+ * Measured on a production case (2026-10-01): a finding resting on a federal
+ * wanted listing, a DOJ release and ~20 news reports was persisted `contradicted` at
+ * case confidence 15, because the thread-wide fallback in `artifactsForFinding`
+ * fed it four people-search relatives, an excluded neighbour and a collided
+ * employer profile as "11 distinct names" and "4 distinct locations".
+ * Disclosure is unchanged — those rows stay in the case; they just stop
+ * testifying about who the subject is.
+ */
+export function makesSubjectClaim(a: ArtifactLike): boolean {
+  const m = a.metadata ?? {};
+  if (a.kind === "excluded_collision") return false;
+  // Same exclusion signals lib/cluster.ts isExcluded reads (status compared
+  // case-insensitively, as its regex does), plus an explicit false_positive.
+  const status = typeof m.status === "string" ? m.status.trim().toLowerCase() : "";
+  if (status === "excluded" || m.excluded_collision === true || m.false_positive === true) return false;
+  const rel = typeof m.relationship === "string" ? m.relationship.trim().toLowerCase() : "";
+  if (rel && !SELF_RELATIONSHIPS.has(rel)) return false;
+  return true;
+}
+
+/**
+ * True when a row's location fields describe where a NETWORK resource sits —
+ * an IP's geolocation, an ASN, an ISP block — rather than where the subject
+ * lives. A breach record's login IP resolving to another city says where one
+ * connection came from; it was being scored as the subject "being based"
+ * there, a HIGH location conflict. Measured on the same production case: one
+ * leaked IP's geolocation city, plus the breach row's ISO country code "CA"
+ * (Canada) read as the state California. Such rows are still reported, as the
+ * advisory `network_location_mismatch`.
+ */
+export function isNetworkLocationRow(a: ArtifactLike): boolean {
+  const k = a.kind.toLowerCase();
+  if (k === "ip" || k === "ipv4" || k === "ipv6" || k === "asn") return true;
+  const m = a.metadata ?? {};
+  return m.location_kind === "origin" ||
+    typeof m.isp === "string" || typeof m.asn === "string" || typeof m.asn_org === "string";
+}
+
+function readEnv(k: string): string | undefined {
+  try {
+    return (globalThis as { Deno?: { env: { get(key: string): string | undefined } } }).Deno?.env.get(k);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Kill switch, read at call time: `CONTRADICTION_CLAIM_FILTER_DISABLED=true`
+ *  restores the pre-filter behaviour — every row testifies (excluded rows,
+ *  relatives, one-word names, network geolocation), and computeAxes charges
+ *  every advisory signal once per row again. */
+export function contradictionClaimFilterDisabled(
+  env: (k: string) => string | undefined = readEnv,
+): boolean {
+  return (env("CONTRADICTION_CLAIM_FILTER_DISABLED") ?? "").trim().toLowerCase() === "true";
+}
+
+/**
+ * /health self-test for the claim filter. Pure: runs the live detector on a
+ * fixed synthetic case and checks both directions — excluded rows, relatives,
+ * one-word names and an IP's geolocation raise no name/location conflict (the
+ * IP is disclosed as a medium advisory instead), and a genuinely different
+ * named person in a different state still fires. Its PRESENCE proves the
+ * filter build is live.
+ */
+export function contradictionClaimSelfTest(): { ok: boolean; detail: string } {
+  const rows: ArtifactLike[] = [
+    { kind: "name", value: "Jane Q Example", metadata: { location: "Springfield, IL" } },
+    { kind: "name", value: "John Other", metadata: { status: "excluded", location: "Portland, OR" } },
+    { kind: "name", value: "Mary Example", metadata: { relationship: "Spouse" } },
+    { kind: "name", value: "Jqe", metadata: {} },
+    { kind: "ip", value: "192.0.2.10", metadata: { city: "Toronto", isp: "Example Cable" } },
+  ];
+  const filtered = detectContradictions(rows, { claimFilter: true });
+  const quiet = !filtered.some((f) => f.kind === "name_conflict" || f.kind === "location_conflict") &&
+    filtered.some((f) => f.kind === "network_location_mismatch" && f.severity === "medium" && !f.field);
+  const control = detectContradictions(
+    [...rows, { kind: "name", value: "Robert Different", metadata: { location: "Austin, TX" } }],
+    { claimFilter: true },
+  );
+  const fires = control.some((f) => f.kind === "name_conflict") && control.some((f) => f.kind === "location_conflict");
+  if (!quiet || !fires) return { ok: false, detail: `self-test failed (non-claims quiet: ${quiet}, real conflict fires: ${fires})` };
+  return {
+    ok: true,
+    detail: contradictionClaimFilterDisabled()
+      ? "LEGACY via CONTRADICTION_CLAIM_FILTER_DISABLED — every row testifies; advisories charged per row"
+      : "excluded rows, relatives, one-word names and network geolocation make no identity claim; advisories charged once per kind",
+  };
+}
+
+export function detectContradictions(
+  input: ArtifactLike[],
+  opts: { claimFilter?: boolean } = {},
+): ContradictionFinding[] {
   const out: ContradictionFinding[] = [];
+  const claimFilter = opts.claimFilter ?? !contradictionClaimFilterDisabled();
+  const artifacts = claimFilter ? input.filter(makesSubjectClaim) : input;
 
   // Location conflict — reads the keys the orchestrator actually writes
   // (`based`/`residence`/…), capturing each claim's source so the conflict can
   // be structured rather than buried in prose.
-  const locClaims = artifacts
+  const allLocClaims = artifacts
     .map((a) => ({ a, loc: rawMetaStr(a, LOCATION_META_KEYS) }))
     .filter((x): x is { a: ArtifactLike; loc: string } => !!x.loc);
+  // A network resource's geolocation is not a residence claim (isNetworkLocationRow).
+  const netLocClaims = claimFilter ? allLocClaims.filter((x) => isNetworkLocationRow(x.a)) : [];
+  const locClaims = claimFilter ? allLocClaims.filter((x) => !isNetworkLocationRow(x.a)) : allLocClaims;
   const distinctLocs = new Set(locClaims.map((x) => x.loc.toLowerCase()));
   const distinctRawLocs = [...new Set(locClaims.map((x) => x.loc))];
   // Only fire HIGH when the distinct locations are GENUINELY incompatible.
@@ -353,6 +462,21 @@ export function detectContradictions(artifacts: ArtifactLike[]): ContradictionFi
       involved: locClaims.map((x) => x.a.value),
       claims: locClaims.map((x) => ({ value: x.loc, source: x.a.source ?? null })),
       severity: "high",
+    });
+  }
+  // Disclosed, never a verdict: no `field`, so it carries an advisory penalty
+  // and cannot mark a finding `contradicted` (isExplicitContradiction).
+  const offNetLocs = [...new Set(
+    netLocClaims
+      .filter((n) => locClaims.some((s) => !locationsCompatible(n.loc, s.loc)))
+      .map((n) => n.loc),
+  )];
+  if (offNetLocs.length > 0) {
+    out.push({
+      kind: "network_location_mismatch",
+      detail: `network geolocation (${offNetLocs.join(", ")}) differs from the subject's recorded location (${distinctRawLocs.join(", ")}) — where a connection came from, not where the subject lives`,
+      involved: netLocClaims.filter((n) => offNetLocs.includes(n.loc)).map((n) => n.a.value),
+      severity: "medium",
     });
   }
 
@@ -399,7 +523,12 @@ export function detectContradictions(artifacts: ArtifactLike[]): ContradictionFi
   // If a cluster carries two or more distinct full names (e.g. one handle that
   // resolves to "John Daniels" on GitHub but "John Demos" on Twitter), that is
   // strong evidence two different people share the selector.
-  const names = artifacts.filter((a) => a.kind === "name" && a.value.trim());
+  // A one-word "name" cannot establish a different person — it is a handle,
+  // a given name, a surname, or (measured) a token a breach parser mislabelled.
+  // It is still reported, as the `thin_name` advisory above.
+  const names = artifacts.filter((a) =>
+    a.kind === "name" && a.value.trim() && (!claimFilter || a.value.trim().split(/\s+/).length >= 2)
+  );
   const distinctNames = new Set(names.map((a) => a.value.trim().toLowerCase()));
   const distinctRawNames = [...new Set(names.map((a) => a.value.trim()))];
   // Only fire HIGH when the distinct names are GENUINELY incompatible. Compatible

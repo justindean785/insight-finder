@@ -12,7 +12,7 @@
 // them). For back-compat, classifySource / SourceClass are re-exported here.
 
 import { tierOf, TIER_SOURCE_RELIABILITY, TIER_C_ONLY_CONFIDENCE_CAP } from "./tiers.ts";
-import type { ContradictionFinding } from "./contradictions.ts";
+import { contradictionClaimFilterDisabled, type ContradictionFinding } from "./contradictions.ts";
 import { canonicalSourceToolIdentity, classifySource, splitSourceLabels, countIndependentClasses, type IndependentSourceEntry, type SourceClass } from "./source-classification.ts";
 
 // Back-compat re-export: historically these lived in confidence.ts / artifact_types.ts.
@@ -32,6 +32,34 @@ export function sourceConfidence(toolNames: string[]): number {
   return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
 }
 
+const SEVERITY_PENALTY = { high: 25, medium: 12, low: 5 } as const;
+
+/**
+ * Identity-axis penalty for a set of detector findings.
+ *
+ * An EXPLICIT conflict (it carries `field`) is one statement about the case and
+ * is charged in full. An ADVISORY signal (thin_name, stale_breach,
+ * network_location_mismatch, …) is a risk that is either present or not: it is
+ * charged ONCE per kind, at the worst severity seen. It used to be charged once
+ * per ROW, so one fact — "this case's breach data is old" — cost 35 points on a
+ * production finding because seven rows carried the same breach date, and four
+ * one-word tokens from a single breach record cost another 20. Every signal is
+ * still disclosed in `advisory_signals`; only the double-charging stops.
+ * `CONTRADICTION_CLAIM_FILTER_DISABLED=true` restores per-row charging.
+ */
+export function contradictionPenalty(contradictions: readonly ContradictionFinding[]): number {
+  const perRow = contradictionClaimFilterDisabled();
+  let sum = 0;
+  const worstAdvisory = new Map<string, number>();
+  for (const c of contradictions) {
+    const p = SEVERITY_PENALTY[c.severity] ?? SEVERITY_PENALTY.low;
+    if (c.field || perRow) sum += p;
+    else worstAdvisory.set(c.kind, Math.max(worstAdvisory.get(c.kind) ?? 0, p));
+  }
+  for (const p of worstAdvisory.values()) sum += p;
+  return sum;
+}
+
 export function computeAxes(input: {
   sources: string[];                  // tool names that produced the evidence
   corroborationCount: number;         // distinct independent sources
@@ -43,11 +71,7 @@ export function computeAxes(input: {
   const corroBoost = Math.min(20, Math.max(0, input.corroborationCount - 1) * 8);
   const artifact = Math.min(100, src + corroBoost);
 
-  const contraPenalty = input.contradictions.reduce((sum, c) => {
-    if (c.severity === "high") return sum + 25;
-    if (c.severity === "medium") return sum + 12;
-    return sum + 5;
-  }, 0);
+  const contraPenalty = contradictionPenalty(input.contradictions);
 
   const identity = Math.max(0, input.identityEvidenceStrength - contraPenalty);
   const relationship = Math.max(0, input.relationshipEvidenceStrength - Math.floor(contraPenalty / 2));

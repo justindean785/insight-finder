@@ -299,6 +299,22 @@ export interface AuthorityLegendEntry {
   hint: string;
 }
 
+/**
+ * Short labels for the authority DISTRIBUTION (Overview, case sheet), in ladder
+ * order. One list, so the two surfaces that draw the distribution cannot
+ * disagree about which states appear or what they are called.
+ */
+export const AUTHORITY_DISTRIBUTION: { state: AuthorityState; short: string }[] = [
+  { state: "verified", short: "Verified" },
+  { state: "infrastructure", short: "Infra" },
+  { state: "probable", short: "Probable" },
+  { state: "review", short: "Review" },
+  { state: "conflict", short: "Conflict" },
+  { state: "quarantined", short: "Quarantined" },
+  { state: "weak", short: "Leads" },
+  { state: "failed", short: "Excluded" },
+];
+
 /** The canonical vocabulary, in ladder order, for every legend in the app. */
 export const AUTHORITY_LEGEND: AuthorityLegendEntry[] = [
   { state: "verified", label: LABEL.verified, hint: "Corroborated by 2+ independent source classes, or analyst-confirmed." },

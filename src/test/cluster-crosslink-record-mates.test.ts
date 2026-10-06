@@ -1,0 +1,236 @@
+import { describe, it, expect } from "vitest";
+import { buildIdentityClusters, phoneMergeKey, recordCorroboratesSelector } from "@/lib/intel";
+import type { Artifact } from "@/hooks/useThreadArtifacts";
+
+/**
+ * Regression fixture from production thread d72fa44a (seed `lildee808`,
+ * 2026-09-20). The engine split ONE person into fifteen singleton clusters
+ * because (1) phone keys were the raw string, so `8087838763` in a breach row
+ * never met `+18087838763` the artifact; (2) the breach extractors write the
+ * owner's other handles as `usernames[]` / `associated_username`, which the
+ * cross-link union did not read. Values below are shaped like the real rows but
+ * are not the real selectors.
+ */
+function mk(p: { id: string; kind: string; value: string; metadata?: Record<string, unknown>; source?: string }): Artifact {
+  return {
+    id: p.id,
+    kind: p.kind,
+    value: p.value,
+    confidence: 60,
+    source: p.source ?? "serus_darkweb_scan",
+    created_at: "2026-09-20T11:54:35Z",
+    metadata: p.metadata ?? null,
+  };
+}
+
+const ids = (c: { artifacts: Artifact[] }) => new Set(c.artifacts.map((a) => a.id));
+
+describe("phoneMergeKey", () => {
+  it("lands bare digits, E.164 and punctuated forms on one key", () => {
+    expect(phoneMergeKey("8087838763")).toBe("phone:8087838763");
+    expect(phoneMergeKey("+18087838763")).toBe("phone:8087838763");
+    expect(phoneMergeKey("(808) 783-8763")).toBe("phone:8087838763");
+    expect(phoneMergeKey("1-808-783-8763")).toBe("phone:8087838763");
+  });
+  it("does not strip a leading 1 from a non-NANP length, and rejects short strings", () => {
+    expect(phoneMergeKey("+4420712345678")).toBe("phone:4420712345678");
+    expect(phoneMergeKey("12345")).toBeNull();
+    expect(phoneMergeKey("no digits")).toBeNull();
+  });
+});
+
+describe("buildIdentityClusters — record-mates from breach extractors", () => {
+  it("a breach row's bare-digit phones[] merge with the E.164 phone artifacts", () => {
+    const email = mk({ id: "e", kind: "email", value: "cnnamongirl90@example.com" });
+    const serus = mk({
+      id: "s", kind: "breach_exposure",
+      value: "cnnamongirl90@example.com - 24 breaches",
+      metadata: { email: "cnnamongirl90@example.com", phones: ["8087838763", "8086527289"] },
+    });
+    const p1 = mk({ id: "p1", kind: "phone", value: "+18087838763", metadata: { area_code: "808 Hawaii" } });
+    const p2 = mk({ id: "p2", kind: "phone", value: "+18086527289", metadata: { area_code: "808 Hawaii" } });
+
+    const { clusters } = buildIdentityClusters([email, serus, p1, p2], "lildee808");
+    const c = clusters.find((x) => ids(x).has("e"));
+    expect(c).toBeTruthy();
+    expect(ids(c!)).toEqual(new Set(["e", "s", "p1", "p2"]));
+  });
+
+  it("associated_username on a breach row joins the handle seed to its record-mate email", () => {
+    const seed = mk({ id: "seed", kind: "username", value: "lildee808", source: "user_seed" });
+    const mfp = mk({
+      id: "mfp", kind: "breach_exposure",
+      value: "LilDee808 - MyFitnessPal breach - email: cnnamongirl90@example.com",
+      metadata: { associated_username: "LilDee808", associated_email: "cnnamongirl90@example.com" },
+      source: "leakcheck_lookup",
+    });
+    const email = mk({ id: "e", kind: "email", value: "cnnamongirl90@example.com" });
+
+    const { clusters } = buildIdentityClusters([seed, mfp, email], "lildee808");
+    const c = clusters.find((x) => ids(x).has("seed"));
+    expect(c).toBeTruthy();
+    expect(ids(c!)).toEqual(new Set(["seed", "mfp", "e"]));
+  });
+
+  it("usernames[] on a breach row is read like the singular key", () => {
+    const seed = mk({ id: "seed", kind: "username", value: "lildee808", source: "user_seed" });
+    const serus = mk({
+      id: "s", kind: "breach_exposure", value: "cnnamongirl90@example.com - 24 breaches",
+      metadata: { email: "cnnamongirl90@example.com", usernames: ["Cnnamongirl90", "VitaminD8", "LilDee808"] },
+    });
+    const { clusters } = buildIdentityClusters([seed, serus], "lildee808");
+    expect(ids(clusters.find((x) => ids(x).has("seed"))!)).toEqual(new Set(["seed", "s"]));
+  });
+
+  it("current_address on a name row joins the standalone address artifact", () => {
+    const name = mk({
+      id: "n", kind: "name", value: "Desiree M. Example",
+      metadata: { current_address: "2514 S Example St Unit 15 Honolulu HI 96826" },
+      source: "indicia_person",
+    });
+    const addr = mk({ id: "a", kind: "address", value: "2514 S Example St Unit 15 Honolulu HI 96826", source: "indicia_person" });
+    const { clusters } = buildIdentityClusters([name, addr], "lildee808");
+    expect(ids(clusters.find((x) => ids(x).has("n"))!)).toEqual(new Set(["n", "a"]));
+  });
+
+  it("names, cities and zips are still never merge keys", () => {
+    // Two rows that share only a person name and a city must stay apart.
+    const a = mk({ id: "a", kind: "name", value: "Desiree Example", metadata: { cities: ["Kapaa"], zips: ["96746"] } });
+    const b = mk({ id: "b", kind: "breach_exposure", value: "other@example.com - 3 breaches", metadata: { names: ["Desiree Example"], cities: ["Kapaa"], zips: ["96746"] } });
+    const { clusters } = buildIdentityClusters([a, b], "lildee808");
+    const together = clusters.find((x) => ids(x).has("a") && ids(x).has("b"));
+    expect(together).toBeFalsy();
+  });
+
+  it("two people sharing no selector stay apart even when both carry phones[]", () => {
+    const one = mk({ id: "1", kind: "email", value: "one@example.com", metadata: { phones: ["8087838763"] } });
+    const two = mk({ id: "2", kind: "email", value: "two@example.net", metadata: { phones: ["2125551234"] } });
+    const { clusters } = buildIdentityClusters([one, two], "lildee808");
+    expect(clusters.find((x) => ids(x).has("1") && ids(x).has("2"))).toBeFalsy();
+  });
+});
+
+describe("buildIdentityClusters — queried_selector as a record-mate key", () => {
+  it("rows auto-persisted from one lookup on a durable selector union with that selector's row", () => {
+    const email = mk({ id: "e", kind: "email", value: "cnnamongirl90@example.com" });
+    const b1 = mk({ id: "b1", kind: "breach_exposure", value: "Breach exposure: cnnamongirl90@example.com (oathnet_db)", metadata: { queried_selector: "cnnamongirl90@example.com" }, source: "oathnet_lookup" });
+    const b2 = mk({ id: "b2", kind: "breach_exposure", value: "Breach exposure: cnnamongirl90@example.com (leakcheck)", metadata: { queried_selector: "cnnamongirl90@example.com" }, source: "leakcheck_lookup" });
+    const { clusters } = buildIdentityClusters([email, b1, b2], "lildee808");
+    expect(ids(clusters.find((x) => ids(x).has("e"))!)).toEqual(new Set(["e", "b1", "b2"]));
+  });
+
+  it("a name-shaped queried_selector (whitespace) never unions anything", () => {
+    const a = mk({ id: "a", kind: "email", value: "one@example.com", metadata: { queried_selector: "Desiree Example" }, source: "indicia_person" });
+    const b = mk({ id: "b", kind: "phone", value: "+18085550000", metadata: { queried_selector: "Desiree Example" }, source: "indicia_person" });
+    const { clusters } = buildIdentityClusters([a, b], "lildee808");
+    expect(clusters.find((x) => ids(x).has("a") && ids(x).has("b"))).toBeFalsy();
+  });
+});
+
+/**
+ * ⚠️ Query provenance is NOT linkage.
+ *
+ * A row stamped `queried_selector: A` published `parent:A`, and that same row —
+ * if its own value is an email — also published `parent:B`. One row carried both
+ * keys, so a lookup on A that returned a record about an unrelated B unioned the
+ * two identities' clusters. Both are well-formed emails, so the shape gate in
+ * recordMateKey cannot see it, and the collision detector only splits on
+ * conflicting NAME rows — two emails with no name rows merged silently.
+ *
+ * Proven from the code path, not from an observed mismerge: a read-only
+ * aggregate found zero different-email rows among 268 active queried-selector
+ * rows in production. The counterexample below is the one the old tests missed.
+ */
+describe("queried_selector unions only when the record corroborates the selector", () => {
+  it("MATCHING: a row that names the queried selector still joins its cluster", () => {
+    const seed = mk({ id: "seed", kind: "email", value: "a@example.com" });
+    const hit = mk({
+      id: "hit",
+      kind: "breach_exposure",
+      value: "Breach exposure: a@example.com (oathnet_db)",
+      metadata: { queried_selector: "a@example.com" },
+      source: "oathnet_lookup",
+    });
+    const report = buildIdentityClusters([seed, hit], "a@example.com");
+    const together = report.clusters.find((c) => ids(c).has("seed") && ids(c).has("hit"));
+    expect(together, "a corroborated record-mate must still union").toBeTruthy();
+  });
+
+  it("UNRELATED: a lookup on A returning a record about B does NOT merge A and B", () => {
+    const a = mk({ id: "a", kind: "email", value: "a@example.com" });
+    const b = mk({ id: "b", kind: "email", value: "b@example.com" });
+    // The broker answered the query about A with a row that is entirely about B.
+    const stray = mk({
+      id: "stray",
+      kind: "email",
+      value: "b@example.com",
+      metadata: { queried_selector: "a@example.com" },
+      source: "indicia_person",
+    });
+    const report = buildIdentityClusters([a, b, stray], "a@example.com");
+    const merged = report.clusters.find((c) => ids(c).has("a") && ids(c).has("b"));
+    expect(merged, "A and B must NOT share a cluster on query provenance alone").toBeFalsy();
+  });
+
+  it("UNRELATED: provenance metadata alone never counts as corroboration", () => {
+    // Every auto-persisted row carries queried_selector IN metadata, so a naive
+    // metadata scan would match itself and re-open the hole.
+    const a = mk({ id: "a", kind: "email", value: "a@example.com" });
+    const stray = mk({
+      id: "stray",
+      kind: "email",
+      value: "b@example.com",
+      metadata: {
+        queried_selector: "a@example.com",
+        parent_selector: "a@example.com",
+        via: "a@example.com",
+        tool: "indicia_person",
+      },
+      source: "indicia_person",
+    });
+    const report = buildIdentityClusters([a, stray], "a@example.com");
+    const merged = report.clusters.find((c) => ids(c).has("a") && ids(c).has("stray"));
+    expect(merged, "provenance fields must be excluded from the corroboration scan").toBeFalsy();
+  });
+});
+
+/**
+ * Codex P1 on #609: corroboration was a SUBSTRING test, so a lookup on
+ * `johnsmith` that returned an unrelated `johnsmith2` row still published
+ * `parent:johnsmith` beside its own key and merged the two identities. The
+ * selector must appear as a whole token.
+ */
+describe("record corroboration is a whole-token match, never a substring", () => {
+  it("UNRELATED: a lookup on johnsmith returning a johnsmith2 row does NOT merge them", () => {
+    const seed = mk({ id: "seed", kind: "username", value: "johnsmith" });
+    const other = mk({ id: "other", kind: "username", value: "johnsmith2" });
+    const stray = mk({
+      id: "stray",
+      kind: "url",
+      value: "https://github.com/johnsmith2",
+      metadata: { queried_selector: "johnsmith", handle: "johnsmith2" },
+      source: "username_sweep",
+    });
+    const report = buildIdentityClusters([seed, other, stray], "johnsmith");
+    const merged = report.clusters.find((c) => ids(c).has("seed") && ids(c).has("other"));
+    expect(merged, "johnsmith and johnsmith2 must NOT share a cluster").toBeFalsy();
+    const strayWithSeed = report.clusters.find((c) => ids(c).has("seed") && ids(c).has("stray"));
+    expect(strayWithSeed, "a johnsmith2 row does not corroborate johnsmith").toBeFalsy();
+  });
+
+  it("rejects superstrings in the value and in (nested) metadata", () => {
+    expect(recordCorroboratesSelector("johnsmith2", null, "johnsmith")).toBe(false);
+    expect(recordCorroboratesSelector("xa@example.com", null, "a@example.com")).toBe(false);
+    expect(recordCorroboratesSelector("a@example.com.au", null, "a@example.com")).toBe(false);
+    expect(recordCorroboratesSelector("row", { handle: "johnsmith_alt" }, "johnsmith")).toBe(false);
+    expect(recordCorroboratesSelector("row", { record: { email: "xa@example.com" } }, "a@example.com")).toBe(false);
+  });
+
+  it("still accepts the selector as a whole token inside URLs, prose and mentions", () => {
+    expect(recordCorroboratesSelector("https://github.com/johnsmith", null, "johnsmith")).toBe(true);
+    expect(recordCorroboratesSelector("Breach exposure: a@example.com (oathnet_db)", null, "a@example.com")).toBe(true);
+    expect(recordCorroboratesSelector("seen at a@example.com.", null, "a@example.com")).toBe(true);
+    expect(recordCorroboratesSelector("mentioned @JohnSmith in a post", null, "johnsmith")).toBe(true);
+    expect(recordCorroboratesSelector("row", { record: { email: "A@Example.com" } }, "a@example.com")).toBe(true);
+  });
+});

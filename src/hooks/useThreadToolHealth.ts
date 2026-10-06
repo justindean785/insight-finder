@@ -71,6 +71,9 @@ interface RawRow {
   created_at: string | null;
 }
 
+/** Attempts on one case with zero data back before a tool is flagged regardless of category. */
+export const REPEAT_FAILURE_FLOOR = 3;
+
 function worstOf(counts: Record<CanonicalOutcome, number>): CanonicalOutcome {
   for (const cat of SEVERITY) if (counts[cat] > 0) return cat;
   return "success";
@@ -110,7 +113,25 @@ export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "load
   }
 
   const rows = [...byTool.values()];
-  for (const row of rows) row.worst = worstOf(row.counts);
+  for (const row of rows) {
+    row.worst = worstOf(row.counts);
+    // A category nobody flags (timeout, cancelled, denied…) becomes attention-
+    // worthy by REPETITION: a tool that was tried REPEAT_FAILURE_FLOOR+ times on
+    // this case and never once returned data is a dead source for this case,
+    // whatever each attempt was labelled. Production 2026-09-20: seven
+    // socialfetch_web_read aborts on one YouTube channel read as "Cancelled ×3 ·
+    // Needs attention 0" while the model retried it across three runs.
+    if (!row.needsAttention && row.total >= REPEAT_FAILURE_FLOOR && row.counts.success === 0 && row.counts.empty === 0) {
+      row.needsAttention = true;
+      if (!row.lastIssue) {
+        row.lastIssue = {
+          category: row.worst,
+          message: `${row.total} attempts on this case, none returned data — stop calling it here.`,
+          statusCode: null,
+        };
+      }
+    }
+  }
 
   const sevRank = (c: CanonicalOutcome) => SEVERITY.indexOf(c);
   rows.sort(

@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { captureError, getBreadcrumbs, type CapturedError } from "@/lib/telemetry";
+import { isStaleChunkError, tryStaleChunkReload } from "@/lib/stale-chunk-reload";
 
 type Props = { children: ReactNode };
 type State = { record: CapturedError | null };
@@ -16,6 +17,9 @@ export class ErrorBoundary extends Component<Props, State> {
     const record = captureError(error, "react.errorBoundary", {
       componentStack: info.componentStack,
     });
+    // Backstop for the vite:preloadError listener: a lazy chunk from a previous
+    // deploy reloads once (loop-guarded) rather than showing this screen.
+    if (isStaleChunkError(error) && tryStaleChunkReload()) return;
     this.setState({ record });
   }
 

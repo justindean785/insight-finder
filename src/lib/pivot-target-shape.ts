@@ -32,7 +32,10 @@ export type PivotTargetType = (typeof PIVOT_TARGET_TYPES)[number];
 export const MAX_NAME_WORDS = 6;
 
 export const TARGET_SHAPE: Record<PivotTargetType, { re: RegExp; problem: string }> = {
-  email: { re: /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/, problem: "is not an email address" },
+  // Backticks, quotes and brackets are Markdown around a selector, never part
+  // of one — "`jane@uni.example`" must not validate as runnable (2026-10-01).
+  // An apostrophe BETWEEN local-part characters is legal ("o'connor@…").
+  email: { re: /^[^\s@`'"()<>[\],;]+(?:'[^\s@`'"()<>[\],;]+)*@[^\s@`'"()<>[\],;]+\.[^\s@`'"()<>[\],;]{2,}$/, problem: "is not an email address" },
   username: { re: /^@?[\p{L}\p{N}._-]{2,40}$/u, problem: "is not a single username" },
   domain: { re: /^(?=.{3,253}$)(?:[a-z0-9-]+\.)+[a-z]{2,}$/i, problem: "is not a domain name" },
   url: { re: /^https?:\/\/[^\s]+$/i, problem: "is not a URL" },

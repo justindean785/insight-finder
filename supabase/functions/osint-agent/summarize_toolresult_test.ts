@@ -40,7 +40,17 @@ Deno.test("summarizeToolResultValue: CORE AC — a selector buried past the old 
   assert(out.includes("main@target.com"), "primary selector preserved");
   assert(out.includes("hidden@pivot.org"), "buried secondary selector preserved (the whole point)");
   assert(out.includes("@secret_handle"), "buried handle preserved");
-  assert(out.includes("memory_recall"), "retrieval pointer present");
+  // 2026-09-22: was `assert(out.includes("memory_recall"), "retrieval pointer
+  // present")`. There is no such pointer to be present — memory_recall queries
+  // only `agent_memory` and nothing in the tool registry reads `tool_call_cache`,
+  // so the marker was directing the model to a retrieval it cannot perform. The
+  // preserved selectors above ARE the durable carry-over; assert the marker says
+  // so, and that it no longer advertises the route that does not exist.
+  assert(
+    !out.includes("memory_recall"),
+    "marker must not advertise a memory_recall retrieval that cannot return this result",
+  );
+  assert(out.includes("selectors below are preserved"), "marker states what actually survives");
 });
 
 Deno.test("summarizeToolResultValue: preserves selectors from a structured (JSON) value", () => {

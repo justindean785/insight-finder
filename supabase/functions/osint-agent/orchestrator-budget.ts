@@ -11,17 +11,28 @@
  * over. We keep the system prompt + the last N messages VERBATIM and replace the
  * tool-result PAYLOADS of older messages with a short reference+summary.
  *
- * SAFE TO ELIDE BY REFERENCE: every tool result is already persisted independently
- * of the transcript — tools call record_artifacts → the `artifacts` table, and a
- * finished run is cached in `investigation_cache` (see index.ts persistFinalMessages).
- * The model can pull any of it back on demand via memory_recall. So we forward a
- * pointer (tool name + original size), never a duplicate of the bytes.
+ * WHAT "SAFE TO ELIDE" ACTUALLY MEANS — corrected 2026-09-22, read before widening
+ * elision anywhere. This header used to claim "every tool result is already
+ * persisted independently of the transcript … the model can pull any of it back on
+ * demand via memory_recall". BOTH HALVES ARE FALSE and the claim was load-bearing:
+ *   - `memory_recall` reads ONLY the `agent_memory` table (tool-registry.ts). No
+ *     tool in the registry reads `tool_call_cache` at all, so there is no path by
+ *     which the model can retrieve a raw tool result. The pointer names a retrieval
+ *     route that does not exist.
+ *   - Raw bytes reach `tool_call_cache` only for an `ok`, cacheable, hashable call,
+ *     under a TTL, and auto-persist to `artifacts` is DETACHED (EdgeRuntime.waitUntil)
+ *     and stores extracted findings, not the response — so at the moment we elide,
+ *     the write may not have landed and unextracted selectors are gone for good.
+ * So elision by bare reference is only safe for results the model has already READ
+ * and acted on — genuinely older messages, which is pass 1. Anything the model may
+ * still need is SUMMARIZED instead (pass 2 below), preserving every pivot selector.
  *
  * These helpers touch NO evidence ranking, confidence, or attribution logic — they
  * only bound prompt size so a deep run degrades gracefully instead of timing out.
  */
 
 import type { ModelMessage } from "npm:ai@6";
+import { summarizeToolResultValue } from "./message-sanitize.ts";
 
 // ---- Named budget constants -------------------------------------------------
 // Total serialized-char ceiling for the message array handed to the orchestrator.
@@ -285,10 +296,16 @@ export function approxMsgChars(msgs: ModelMessage[]): number {
 }
 
 /**
- * Build the reference+summary that replaces an elided tool-result payload. The full
- * result lives in the artifact store, so we forward a pointer (tool name + original
- * size) instead of the bytes — keeping the model aware the data exists and is
- * retrievable, without re-sending it every step.
+ * Build the bare reference that replaces an elided tool-result payload in PASS 1 —
+ * i.e. for messages outside the recent window, which the model has already read.
+ *
+ * ⚠️ This does NOT promise retrievability, and must not start promising it again.
+ * It used to end "full result persisted in the artifact store, retrieve via
+ * memory_recall"; `memory_recall` reads only `agent_memory` and no tool reads
+ * `tool_call_cache`, so that named a route that does not exist and invited the
+ * model to go looking for data it cannot reach. It now says what is true: the
+ * payload is gone from the transcript. Anything the model may still need is
+ * summarized (selectors preserved) rather than referenced — see capTotalToBudget.
  */
 export function elidedToolResultRef(toolName: unknown, originalValue: unknown): string {
   const name = typeof toolName === "string" && toolName ? toolName : "tool";
@@ -298,8 +315,8 @@ export function elidedToolResultRef(toolName: unknown, originalValue: unknown): 
   } catch {
     size = 0;
   }
-  return `[older ${name} result elided to fit context budget — ${size} chars; ` +
-    `full result persisted in the artifact store, retrieve via memory_recall]`;
+  return `[older ${name} result (${size} chars) dropped from this transcript to fit ` +
+    `the context budget — it was already used in an earlier step; re-run the tool if needed]`;
 }
 
 function capText(text: string, max: number, label: string): string {
@@ -334,17 +351,160 @@ export function capUserTextToBudget(
   });
 }
 
+/** Below this serialized size a tool-result payload is not worth touching. */
+const RESULT_ELIDE_FLOOR = 80;
+
 /**
- * Bound the total serialized size of a ModelMessage[] by eliding the tool-result
- * OUTPUTS of the oldest messages (outside the keepRecent window) first, replacing
- * each with elidedToolResultRef(). NEVER drops a message (so every tool-call keeps
- * its matching tool-result and we can't trip MissingToolResults) and never touches
- * the last `keepRecent` messages. Returns a new array; does not mutate the input.
+ * Target size for a PASS-2 summary. Large enough to hold the full preserved
+ * selector list plus a head snippet; small enough that compacting a handful of
+ * recent results actually moves a 250k+ array. `summarizeToolResultValue` never
+ * returns anything larger than the original, so this is a target, not a floor.
+ */
+const TAIL_SUMMARY_TARGET_CHARS = 1200;
+
+/**
+ * PASS-2 compaction, for messages the model may NOT have read yet.
+ *
+ * Two differences from `elideMessageParts`, and both are the fix for the
+ * 2026-09-22 finding — do not collapse this back into one shared helper:
+ *
+ *  1. It SUMMARIZES rather than referencing. `summarizeToolResultValue` keeps every
+ *     pivot selector it can extract and fills the remaining room with a head
+ *     snippet, so a result the model has not consumed survives in a form it can
+ *     still pivot on. A bare `elidedToolResultRef` here destroyed the evidence
+ *     outright: measured on production-shaped input (130 tool calls, ~2,000-char
+ *     tool inputs, a 2-way fan-out of fresh 12k results) the old pass 2 replaced
+ *     2 of 2 unconsumed results with references.
+ *  2. It works PART BY PART and stops the instant `done()` is true. The old code
+ *     wiped every part of a message in one call while the budget check was per
+ *     MESSAGE, so one oversized result in a parallel fan-out made its N siblings
+ *     collateral damage.
+ *
+ * Returns the number of parts it compacted.
+ */
+function summarizeMessagePartsIncrementally(
+  m: ModelMessage,
+  reprice: () => void,
+  done: () => boolean,
+): number {
+  if ((m.role !== "tool" && m.role !== "assistant") || !Array.isArray(m.content)) return 0;
+  // Copy before mutating. `out` holds SHALLOW message copies, so `m.content` is
+  // still the caller's array object; capTotalToBudget promises not to mutate its
+  // input, and pass 1's `.map()` preserved that by replacing the array.
+  const parts = [...(m.content as TrimPart[])];
+  m.content = parts as unknown as typeof m.content;
+
+  let compacted = 0;
+  for (let p = 0; p < parts.length; p++) {
+    if (done()) break;
+    const part = parts[p];
+    if (part?.type === "tool-result" && part.output != null) {
+      if (JSON.stringify(part.output).length <= RESULT_ELIDE_FLOOR) continue;
+      // Preserve the tool-result output's discriminator, exactly as pass 1 does:
+      // the AI SDK validates each output against a typed union ({ type, value }),
+      // and a bare { value } fails the ModelMessage[] schema and aborts the run.
+      const hasValue = typeof part.output === "object" && "value" in part.output;
+      const originalValue = hasValue
+        ? (part.output as { value: unknown }).value
+        : part.output;
+      const summarized = summarizeToolResultValue(
+        originalValue, TAIL_SUMMARY_TARGET_CHARS, part.toolName,
+      );
+      if (summarized === originalValue) continue; // already small enough
+      parts[p] = {
+        ...part,
+        output: hasValue
+          ? { ...(part.output as Record<string, unknown>), value: summarized }
+          : summarized,
+      } as TrimPart;
+      compacted++;
+      reprice();
+      continue;
+    }
+    if (part?.type === "text" && typeof part.text === "string" && part.text.length > 200) {
+      parts[p] = { ...part, text: part.text.slice(0, 200) + " …[elided]" } as TrimPart;
+      compacted++;
+      reprice();
+    }
+  }
+  return compacted;
+}
+
+/**
+ * Elide one message's oversized tool-result outputs and text parts in place.
+ * Shared by both passes of capTotalToBudget so the recent-window pass cannot
+ * drift from the older-message pass — in particular so BOTH preserve the
+ * tool-result output discriminator and neither ever removes a part.
+ * Returns the message unchanged (same object) when nothing was elidable.
+ */
+function elideMessageParts(m: ModelMessage): ModelMessage {
+  if ((m.role !== "tool" && m.role !== "assistant") || !Array.isArray(m.content)) return m;
+  m.content = (m.content as TrimPart[]).map((part: TrimPart) => {
+    if (part?.type === "tool-result" && part.output != null && JSON.stringify(part.output).length > RESULT_ELIDE_FLOOR) {
+      // Preserve the tool-result output's discriminator. The AI SDK validates each
+      // output against a typed union ({ type:'json'|'text'|…, value }); a bare
+      // { value } (no `type`) fails the ModelMessage[] schema and aborts the whole
+      // run. Spread the original output (keeps `type`) and only swap `value` for a
+      // reference+summary pointing at the persisted artifact.
+      const originalValue = part.output && typeof part.output === "object" && "value" in part.output
+        ? (part.output as { value: unknown }).value
+        : part.output;
+      const ref = elidedToolResultRef(part.toolName, originalValue);
+      const nextOutput = part.output && typeof part.output === "object" && "value" in part.output
+        ? { ...(part.output as Record<string, unknown>), value: ref }
+        : ref;
+      return { ...part, output: nextOutput };
+    }
+    if (part?.type === "text" && typeof part.text === "string" && part.text.length > 200) {
+      return { ...part, text: part.text.slice(0, 200) + " …[elided]" };
+    }
+    return part;
+  }) as unknown as typeof m.content;
+  return m;
+}
+
+/**
+ * Bound the total serialized size of a ModelMessage[] in two passes. NEVER drops a
+ * message (so every tool-call keeps its matching tool-result and we can't trip
+ * MissingToolResults). Returns a new array; does not mutate the input.
+ *
+ * The two passes treat their messages DIFFERENTLY ON PURPOSE (2026-09-22):
+ *   - Pass 1, outside the keepRecent window: the model has already read these, so
+ *     their tool-result payloads are replaced by a bare `elidedToolResultRef()`.
+ *   - Pass 2, inside the window: the model may not have read these yet — the last
+ *     index in `prepareStep` is the result of the call that just completed — so
+ *     they are SUMMARIZED with every pivot selector preserved, part by part,
+ *     stopping the instant the array is under budget.
+ *
+ * ⚠️ `keepRecent` is a PRIORITY, not an exemption — this is the 2026-09-19 fix.
+ * The first pass elides only messages before the last `keepRecent`, exactly as
+ * before. But when the protected tail ALONE exceeds `budget`, the old code ran out
+ * of elidable messages and returned over budget reporting nothing: measured on
+ * thread a8643383, one persisted assistant message was 99,887 chars — 45% of the
+ * whole 220,000 budget in a single protected message — and production carried
+ * 68 of 779 steps (8.7%) over budget, peaking at 290,961 chars against a meter
+ * (`approxPromptChars`) that is itself a documented undercount. So a second pass
+ * now continues INTO the recent window, still oldest-first, stopping the instant
+ * the array is under budget: the newest messages are elided last and only if
+ * nothing else will do. A trailing `user` message is untouched either way — both
+ * passes only ever transform `tool`/`assistant` roles.
+ *
+ * `hardCeiling=false` restores the pre-fix behaviour (first pass only). Call sites
+ * pass `promptBudgetHardCeilingEnabled()`, read from the env at call time, so the
+ * switch takes effect on the running build without a deploy.
+ *
+ * This bounds what elision can bound. It is NOT a guarantee that the result is
+ * under budget for every input: a long enough array of already-elided messages
+ * (each reference is ~150 chars) can still exceed it, and tool-call metadata,
+ * tool INPUTS and assistant text are not elidable to zero. Callers that need to
+ * know use `reportBudgetCeiling`, which says so out loud rather than letting the
+ * array go out silently over.
  */
 export function capTotalToBudget(
   msgs: ModelMessage[],
   budget: number,
   keepRecent: number,
+  hardCeiling = true,
 ): ModelMessage[] {
   msgs = capUserTextToBudget(msgs);
   // O(n), not O(n^2): serialize each message's length ONCE and keep a running
@@ -356,36 +516,89 @@ export function capTotalToBudget(
   if (total <= budget) return msgs;
   const out: ModelMessage[] = msgs.map((m) => ({ ...m }));
   const cutoff = Math.max(0, out.length - keepRecent);
-  for (let i = 0; i < cutoff; i++) {
-    if (total <= budget) break;
-    const m = out[i];
-    if ((m.role !== "tool" && m.role !== "assistant") || !Array.isArray(m.content)) continue;
-    m.content = (m.content as TrimPart[]).map((part: TrimPart) => {
-      if (part?.type === "tool-result" && part.output != null && JSON.stringify(part.output).length > 80) {
-        // Preserve the tool-result output's discriminator. The AI SDK validates each
-        // output against a typed union ({ type:'json'|'text'|…, value }); a bare
-        // { value } (no `type`) fails the ModelMessage[] schema and aborts the whole
-        // run. Spread the original output (keeps `type`) and only swap `value` for a
-        // reference+summary pointing at the persisted artifact.
-        const originalValue = part.output && typeof part.output === "object" && "value" in part.output
-          ? (part.output as { value: unknown }).value
-          : part.output;
-        const ref = elidedToolResultRef(part.toolName, originalValue);
-        const nextOutput = part.output && typeof part.output === "object" && "value" in part.output
-          ? { ...(part.output as Record<string, unknown>), value: ref }
-          : ref;
-        return { ...part, output: nextOutput };
-      }
-      if (part?.type === "text" && typeof part.text === "string" && part.text.length > 200) {
-        return { ...part, text: part.text.slice(0, 200) + " …[elided]" };
-      }
-      return part;
-    }) as unknown as typeof m.content;
-    // Reprice only the message we just elided and fold the delta into the
-    // running total (subtract its old serialized length, add the new one).
-    const newLen = JSON.stringify(m).length;
+  // Reprice only the message we just elided and fold the delta into the
+  // running total (subtract its old serialized length, add the new one).
+  const elideAt = (i: number) => {
+    elideMessageParts(out[i]);
+    const newLen = JSON.stringify(out[i]).length;
     total += newLen - lengths[i];
     lengths[i] = newLen;
+  };
+  // Pass 1 — everything outside the recent window, oldest first (unchanged).
+  for (let i = 0; i < cutoff; i++) {
+    if (total <= budget) break;
+    elideAt(i);
+  }
+  // Pass 2 — the recent window itself, still oldest first, and only as far as it
+  // takes to get under budget. Without this the protected tail is an exemption
+  // rather than a priority and the budget is not a ceiling at all.
+  //
+  // ⚠️ It SUMMARIZES, it does not elide by reference (2026-09-22). These are the
+  // messages the model has not necessarily read yet — including, at the last
+  // index in `prepareStep`, the tool result of the call that just completed. A
+  // bare reference there destroys evidence the run still needs, and the reference
+  // named a `memory_recall` retrieval path that does not exist, so it was not
+  // recoverable in any form. Summarizing preserves every pivot selector.
+  // Compaction is per PART with the budget re-checked after each, so one fat
+  // result in a fan-out no longer takes its siblings with it.
+  if (hardCeiling) {
+    let compactedParts = 0;
+    let touchedMessages = 0;
+    for (let i = cutoff; i < out.length; i++) {
+      if (total <= budget) break;
+      const n = summarizeMessagePartsIncrementally(
+        out[i],
+        () => {
+          const newLen = JSON.stringify(out[i]).length;
+          total += newLen - lengths[i];
+          lengths[i] = newLen;
+        },
+        () => total <= budget,
+      );
+      if (n > 0) { compactedParts += n; touchedMessages++; }
+    }
+    if (compactedParts > 0) {
+      // Durable signal that the protected tail had to be compacted, and whether
+      // doing so was even enough. `reached_budget:false` means the non-elidable
+      // floor — tool-call INPUTS and message metadata, which nothing trims —
+      // already exceeds the budget, so no amount of summarizing can reach it.
+      // That is the number to watch before tuning TOTAL_PROMPT_CHAR_BUDGET.
+      console.warn(JSON.stringify({
+        event: "prompt_budget_tail_compacted",
+        compacted_parts: compactedParts,
+        touched_messages: touchedMessages,
+        recent_window: keepRecent,
+        budget,
+        total_chars: total,
+        reached_budget: total <= budget,
+      }));
+    }
   }
   return out;
+}
+
+/**
+ * Say out loud when a prepared array is still over budget after `capTotalToBudget`
+ * has done everything elision can do. The budget's whole purpose is to be a
+ * ceiling; an array that exceeds it and says nothing is the failure mode this
+ * repo keeps hitting — an instrument reporting something other than what it
+ * observed. Returns the overage in chars (0 when within budget) so a caller can
+ * assert on it; emits one structured warn when positive.
+ */
+export function reportBudgetCeiling(
+  msgs: ModelMessage[],
+  budget: number,
+  where: string,
+): number {
+  const over = approxMsgChars(msgs) - budget;
+  if (over > 0) {
+    console.warn(JSON.stringify({
+      event: "prompt_budget_ceiling_unmet",
+      where,
+      budget,
+      over_chars: over,
+      messages: msgs.length,
+    }));
+  }
+  return Math.max(0, over);
 }

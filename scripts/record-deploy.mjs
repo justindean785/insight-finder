@@ -38,6 +38,7 @@ import {
   readLedger,
   verifyDeployedCommit,
   compareSourceTrees,
+  verifyMirrorPushed,
   buildLogEntry,
 } from "./lib/deploy-provenance.mjs";
 
@@ -145,15 +146,30 @@ const mirrorGit = (...args) => {
     return null;
   }
 };
+// Reaches out to the mirror's GitHub remote so `remoteMain` below reflects what
+// Lovable would actually fetch, not a stale ref left over from whenever this
+// checkout last talked to origin. A FAILED fetch fails closed: after it,
+// `origin/main` still resolves to the old cached ref, which can equal local HEAD
+// while GitHub has moved on — so the failure is recorded (`remoteFetchFailed`)
+// and verifyMirrorPushed turns it into a blocking mirror_fetch_failed problem.
+const mirrorFetchOk = mirrorPath ? mirrorGit("fetch", "origin", "main") !== null : false;
 const mirror = {
   commit: mirrorGit("rev-parse", "--short", "HEAD"),
   treeDigest: mirrorGit("rev-parse", "HEAD:supabase/functions/osint-agent"),
+  localHead: mirrorGit("rev-parse", "HEAD"),
+  remoteMain: mirrorFetchOk ? mirrorGit("rev-parse", "origin/main") : null,
+  remoteFetchFailed: Boolean(mirrorPath) && !mirrorFetchOk,
 };
 
-const verdict = verifyDeployedCommit({ live, repo, ledger });
+const verdict = verifyDeployedCommit({ live, repo, ledger, mirror });
 const treeComparison = compareSourceTrees({
   canonicalTreeDigest: repo.sourceTreeDigest,
   mirrorTreeDigest: mirror.treeDigest,
+});
+const pushComparison = verifyMirrorPushed({
+  localHead: mirror.localHead,
+  remoteMain: mirror.remoteMain,
+  remoteFetchFailed: mirror.remoteFetchFailed,
 });
 
 console.log(`live build       : ${live.build}${live.committedAt ? ` (${live.committedAt})` : ""}`);
@@ -162,6 +178,7 @@ console.log(`in this repo     : ${repo.exists ? "yes" : "NO"}`);
 console.log(`stamp commit     : ${repo.stampCommit ? `${repo.stampCommit.slice(0, 7)} (parent ${repo.stampParent?.slice(0, 7)})` : "NOT FOUND"}`);
 console.log(`canonical tree   : ${repo.sourceTreeDigest?.slice(0, 12) ?? "n/a"}`);
 console.log(`mirror tree      : ${mirror.treeDigest?.slice(0, 12) ?? "(no mirror checkout)"} -> ${treeComparison.status}`);
+console.log(`mirror pushed    : ${mirror.localHead?.slice(0, 12) ?? "(no mirror checkout)"} -> ${pushComparison.status}`);
 console.log(`reachable from main: ${repo.onMain === null ? "n/a" : repo.onMain ? "yes" : "no"}`);
 console.log(`ledger / ref     : ${ledger.lastEntryBuild ?? "(empty)"} / ${ledger.refBuild?.slice(0, 7) ?? "(no ref)"}`);
 for (const w of verdict.warnings) console.log(`warning [${w.code}] ${w.detail}`);
@@ -178,6 +195,7 @@ console.log(`  runtime marker observed          : ${live.build}`);
 console.log(`  marker commit in canonical history: ${repo.exists ? "yes" : "no"}`);
 console.log(`  stamp commit / parent verified   : ${verdict.markerProvenanceOk ? "yes" : "no"}`);
 console.log(`  mirror tree vs canonical         : ${treeComparison.status}`);
+console.log(`  mirror local HEAD vs origin/main : ${pushComparison.status}`);
 console.log("  deployed artifact digest         : unavailable (deploy path exposes none)");
 console.log("  DEPLOYED BYTES VERIFIED          : NO — unknown, and not established by this check");
 
