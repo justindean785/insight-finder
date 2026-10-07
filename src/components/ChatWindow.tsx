@@ -29,7 +29,7 @@ import { composerPrimary } from "@/lib/composer-primary";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import {
-  AUTO_RUN_MAX_CYCLES, AUTO_RUN_SETTLE_MS, CONTINUE_PROMPT, REPORT_PROMPT,
+  AUTO_RUN_MAX_CYCLES, AUTO_RUN_OVERLAP_MAX_WAIT_MS, AUTO_RUN_OVERLAP_POLL_MS, AUTO_RUN_SETTLE_MS, CONTINUE_PROMPT, REPORT_PROMPT,
   autoRunStopMessage, canShowRunControls, decideAutoContinue,
 } from "@/lib/run-controls";
 import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
@@ -2468,11 +2468,16 @@ function ChatWindowInner({
   autoRunRef.current = autoRun;
   const errorRef = useRef(error);
   errorRef.current = error;
+  // Read at CALL time by the delayed auto-continue so it sees the live snapshot.
+  const serverRunActiveRef = useRef(serverRunActive);
+  serverRunActiveRef.current = serverRunActive;
   useEffect(() => {
     const ended = wasLoadingRef.current && !isLoading;
     wasLoadingRef.current = isLoading;
     if (!ended || !autoRunRef.current.enabled) return;
-    const timer = window.setTimeout(() => {
+    let timer = 0;
+    let waitedMs = 0;
+    const attempt = () => {
       if (unmountedRef.current || isLoadingRef.current) return;
       const state = autoRunRef.current;
       if (!state.enabled) return;
@@ -2484,14 +2489,28 @@ function ChatWindowInner({
         artifactsNow: artifactsCountRef.current,
         runFailed: Boolean(errorRef.current),
         threadFinished: !stoppedByAnalystRef.current,
+        serverRunActive: serverRunActiveRef.current,
       });
       if (decision.action === "continue") {
         void sendCycle(CONTINUE_PROMPT, true);
         return;
       }
+      if (decision.action === "wait") {
+        // The stream ended but the server run did not. Poll its own state
+        // instead of overlapping it, and give up (visibly) after a bound.
+        if (waitedMs >= AUTO_RUN_OVERLAP_MAX_WAIT_MS) {
+          setAutoRun((prev) => ({ ...prev, enabled: false }));
+          toast.info(autoRunStopMessage("run_overlap", AUTO_RUN_MAX_CYCLES));
+          return;
+        }
+        waitedMs += AUTO_RUN_OVERLAP_POLL_MS;
+        timer = window.setTimeout(attempt, AUTO_RUN_OVERLAP_POLL_MS);
+        return;
+      }
       setAutoRun((prev) => ({ ...prev, enabled: false }));
       if (decision.reason !== "disabled") toast.info(autoRunStopMessage(decision.reason, AUTO_RUN_MAX_CYCLES));
-    }, AUTO_RUN_SETTLE_MS);
+    };
+    timer = window.setTimeout(attempt, AUTO_RUN_SETTLE_MS);
     return () => window.clearTimeout(timer);
   }, [isLoading, sendCycle]);
 
