@@ -1452,6 +1452,10 @@ function ChatWindowInner({
   // controls off a thread whose run is live in another tab (overlap guard).
   const caseSnapshot = useOptionalCaseSnapshot();
   const serverRunActive = caseSnapshot?.snapshot?.run.state === "running";
+  // Read at CALL time (delayed auto-continue, send guards) so a callback built
+  // while a run was live does not keep refusing after it ends.
+  const serverRunActiveRef = useRef(serverRunActive);
+  serverRunActiveRef.current = serverRunActive;
   // Targets tools have already been run against — the "already investigated"
   // signal that stops the rail re-suggesting a pivot that's already been run.
   const queriedTargets = useThreadQueriedTargets(threadId);
@@ -1933,7 +1937,7 @@ function ChatWindowInner({
     // An empty box stays silent — the button is disabled and nothing was asked
     // for. A refused submission does not: the analyst pressed a live control.
     if (!text && !hasFiles) return;
-    const sendRefusal = submitRefusal(status, submitLockRef.current);
+    const sendRefusal = submitRefusal(status, submitLockRef.current, serverRunActiveRef.current);
     if (sendRefusal) {
       toast.info(submitRefusalMessage(sendRefusal));
       return;
@@ -2103,7 +2107,7 @@ function ChatWindowInner({
   // Send arbitrary text without going through the input (used by pivots + suggestions).
   const sendText = useCallback(async (text: string) => {
     const t = text.trim();
-    if (!t || isSubmitBlocked(status, submitLockRef.current)) return;
+    if (!t || isSubmitBlocked(status, submitLockRef.current, serverRunActiveRef.current)) return;
     submitLockRef.current = true;
     try {
       await beginInvestigation();
@@ -2126,7 +2130,7 @@ function ChatWindowInner({
     // Continue / Write report / arming Auto-run all land here, and all three are
     // buttons the analyst just pressed. A bare `return` is what made Continue
     // look broken — see submit-guard.ts for the operator report this comes from.
-    const refusal = submitRefusal(status, submitLockRef.current);
+    const refusal = submitRefusal(status, submitLockRef.current, serverRunActiveRef.current);
     if (refusal) {
       toast.info(submitRefusalMessage(refusal));
       return;
@@ -2468,9 +2472,6 @@ function ChatWindowInner({
   autoRunRef.current = autoRun;
   const errorRef = useRef(error);
   errorRef.current = error;
-  // Read at CALL time by the delayed auto-continue so it sees the live snapshot.
-  const serverRunActiveRef = useRef(serverRunActive);
-  serverRunActiveRef.current = serverRunActive;
   useEffect(() => {
     const ended = wasLoadingRef.current && !isLoading;
     wasLoadingRef.current = isLoading;
