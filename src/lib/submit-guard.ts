@@ -31,26 +31,36 @@
 export type ChatRunStatus = "ready" | "submitted" | "streaming" | "error" | (string & {});
 
 /** Why a submission cannot proceed, or null when it can. */
-export type SubmitRefusal = "starting" | "running";
+export type SubmitRefusal = "starting" | "running" | "server_running";
 
 /**
  * `running` wins when both hold: once the stream is up, "a run is in progress"
  * is the more useful thing to tell someone than "your click registered".
  */
-export function submitRefusal(status: ChatRunStatus, locked: boolean): SubmitRefusal | null {
+export function submitRefusal(
+  status: ChatRunStatus,
+  locked: boolean,
+  serverRunActive = false,
+): SubmitRefusal | null {
   if (status === "submitted" || status === "streaming") return "running";
   if (locked) return "starting";
+  // This tab's stream is idle but the server still reports a live run on the
+  // thread (dropped stream, second tab, reload). The edge run is not bound to the
+  // request signal, so a new send here starts a SECOND run on top of it.
+  if (serverRunActive) return "server_running";
   return null;
 }
 
 /** Unchanged truth table — `locked || submitted || streaming`. Every existing
  *  caller keeps its behaviour; only the ones that now explain themselves differ. */
-export function isSubmitBlocked(status: ChatRunStatus, locked: boolean): boolean {
-  return submitRefusal(status, locked) !== null;
+export function isSubmitBlocked(status: ChatRunStatus, locked: boolean, serverRunActive = false): boolean {
+  return submitRefusal(status, locked, serverRunActive) !== null;
 }
 
 export function submitRefusalMessage(refusal: SubmitRefusal): string {
-  return refusal === "starting"
-    ? "Already starting that run — give it a second."
-    : "A run is in progress on this case. It'll be ready when this cycle finishes.";
+  if (refusal === "starting") return "Already starting that run — give it a second.";
+  if (refusal === "server_running") {
+    return "The previous run is still working on the server. Wait for it to finish — sending now would start a second run on top of it.";
+  }
+  return "A run is in progress on this case. It'll be ready when this cycle finishes.";
 }

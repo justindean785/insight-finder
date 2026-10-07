@@ -70,3 +70,20 @@ describe("isSubmitBlocked keeps its exact truth table", () => {
     }
   });
 });
+
+describe("server-side run (stream idle, server live)", () => {
+  it("refuses a send while the server still reports a live run", () => {
+    expect(submitRefusal("ready", false, true)).toBe("server_running");
+    expect(isSubmitBlocked("ready", false, true)).toBe(true);
+  });
+  it("this tab's own stream and the click lock still win", () => {
+    expect(submitRefusal("streaming", false, true)).toBe("running");
+    expect(submitRefusal("ready", true, true)).toBe("starting");
+  });
+  it("is off by default, so existing callers are unchanged", () => {
+    expect(submitRefusal("ready", false)).toBeNull();
+  });
+  it("explains the refusal as a second run, not a generic busy", () => {
+    expect(submitRefusalMessage("server_running")).toMatch(/second run/);
+  });
+});

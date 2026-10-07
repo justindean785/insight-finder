@@ -45,15 +45,28 @@ export const AUTO_RUN_MAX_CYCLES = 3;
  *  before "did this cycle record anything new?" is evaluated. */
 export const AUTO_RUN_SETTLE_MS = 2_000;
 
+/** The browser stream ending is NOT the server run ending: the edge run is not
+ *  bound to the request signal, so a dropped stream (phone backgrounded, network
+ *  blip) leaves it running. Auto-run therefore re-checks the server's own run
+ *  state before sending the next cycle, polling at this interval... */
+export const AUTO_RUN_OVERLAP_POLL_MS = 3_000;
+/** ...for at most this long. A live run keeps a fresh heartbeat, a dead one goes
+ *  stale on its own, so this only has to outlast the stale window; if the server
+ *  still reports a live run after it, Auto-run stops rather than overlap it. */
+export const AUTO_RUN_OVERLAP_MAX_WAIT_MS = 120_000;
+
 export type AutoRunStopReason =
   | "disabled"
   | "max_cycles"
   | "no_new_evidence"
   | "run_failed"
-  | "run_not_finished";
+  | "run_not_finished"
+  | "run_overlap";
 
 export type AutoRunDecision =
   | { action: "continue"; cyclesRun: number }
+  /** The server still reports a live run on this thread: do not send yet. */
+  | { action: "wait" }
   | { action: "stop"; reason: AutoRunStopReason };
 
 export interface AutoRunInput {
@@ -71,6 +84,10 @@ export interface AutoRunInput {
   /** The thread is no longer in a terminal state the UI can continue from
    *  (e.g. the analyst pressed Stop, or a recovery banner is up). */
   threadFinished: boolean;
+  /** The case snapshot says a run is still live on this thread (fresh
+   *  heartbeat), even though this tab's stream has ended. Sending a cycle now
+   *  would start a second run on top of it. */
+  serverRunActive?: boolean;
 }
 
 /**
@@ -86,6 +103,7 @@ export function decideAutoContinue(input: AutoRunInput): AutoRunDecision {
   if (input.runFailed) return { action: "stop", reason: "run_failed" };
   if (!input.threadFinished) return { action: "stop", reason: "run_not_finished" };
   if (input.cyclesRun >= max) return { action: "stop", reason: "max_cycles" };
+  if (input.serverRunActive) return { action: "wait" };
   // The first armed cycle has no "before" snapshot; saturation is only judged
   // once a cycle has actually run under Auto-run.
   if (input.artifactsBefore !== null && input.artifactsNow <= input.artifactsBefore) {
@@ -104,6 +122,8 @@ export function autoRunStopMessage(reason: AutoRunStopReason, maxCycles = AUTO_R
       return "Auto-run stopped because the last run failed.";
     case "run_not_finished":
       return "Auto-run stopped: the run did not finish cleanly.";
+    case "run_overlap":
+      return "Auto-run stopped: the previous run is still active on the server. Wait for it to finish, then continue.";
     case "disabled":
       return "Auto-run is off.";
   }
