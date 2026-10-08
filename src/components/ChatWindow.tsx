@@ -24,6 +24,7 @@ import { KIND_TO_PIVOT } from "@/lib/intel";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked, submitRefusal, submitRefusalMessage } from "@/lib/submit-guard";
+import { messageIntegrity, narrativeIsUnadjudicated } from "@/lib/message-integrity";
 import { RunChips, RunMenu } from "@/components/pivots/RunControls";
 import { composerPrimary } from "@/lib/composer-primary";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -1184,12 +1185,22 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
         .map((p) => stripThinkTags(p.text ?? "")),
     ),
   );
+  const integrity = messageIntegrity(parts as Array<{ type?: string; text?: string; state?: string }>, Boolean(live));
+  const unadjudicated = narrativeIsUnadjudicated(prose);
   const timeLabel = createdAt
     ? new Date(createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : null;
 
   return (
     <div className="flex w-full flex-col gap-3">
+      {integrity.interrupted && (
+        <div role="status" data-message-integrity="interrupted" className="rounded-lg border border-dashed border-white/[0.14] bg-surface-1/60 px-3 py-2 text-[13px] leading-snug text-muted-foreground">
+          <span className="font-medium text-foreground/85">Interrupted response.</span>{" "}
+          {integrity.appendedAfterInterruption
+            ? "This reply stopped mid-sentence. The report below was generated automatically from everything recorded for the whole case, not from this step alone."
+            : "This reply stopped before it finished, so the text may be incomplete."}
+        </div>
+      )}
       {cacheMeta && onRerun && (
         <CacheBanner cachedAt={cacheMeta.cachedAt} onRerun={onRerun} busy={!!rerunBusy} />
       )}
@@ -1246,9 +1257,11 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             >
               <CopyIcon className="w-3 h-3" /> Copy
             </button>
-            {hasStatedLabel(prose) && (
+            {(hasStatedLabel(prose) || unadjudicated) && (
               <span className="ml-auto min-w-0 text-balance text-right text-[11px] leading-snug text-faint-foreground">
-                Labels are the agent&rsquo;s wording. Computed confidence is in Evidence.
+                {unadjudicated
+                  ? "No finding rows were adjudicated for this run: labels and confidence figures in this text are the agent\u2019s wording, not computed results."
+                  : "Labels are the agent\u2019s wording. Computed confidence is in Evidence."}
               </span>
             )}
           </div>

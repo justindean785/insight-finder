@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { AlertTriangle, Play, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { PivotEligibility, RunnablePivot } from "@/lib/pivot-schema";
+import { describeRepair } from "@/lib/pivot-repair-copy";
 
 const TYPE_LABEL: Record<RunnablePivot["targetType"], string> = {
   email: "email", username: "username", domain: "domain", url: "URL",
@@ -141,9 +142,13 @@ export function RepairNotice({ action, target, problems }: { action: string; tar
       {target && (
         <p className="col-start-2 mt-1 truncate font-mono text-[12px] text-muted-foreground" title={target}>{target}</p>
       )}
-      <p className="col-start-2 mt-1 text-[13px] leading-snug text-muted-foreground">
-        Not runnable: {problems.join("; ")}.
-      </p>
+      <p className="col-start-2 mt-1 text-[13px] leading-snug text-muted-foreground">{describeRepair(problems)}</p>
+      <details className="col-start-2 mt-1 text-[12px] text-faint-foreground">
+        <summary className="inline-flex min-h-6 cursor-pointer select-none items-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:min-h-11">
+          Why it was rejected
+        </summary>
+        <p className="mt-1 break-words font-mono">{problems.join("; ")}</p>
+      </details>
     </div>
   );
 }
