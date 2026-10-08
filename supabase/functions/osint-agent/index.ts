@@ -4,6 +4,7 @@
  */
 
 import { convertToModelMessages, streamText, generateText, stepCountIs, type UIMessage, type ModelMessage } from "npm:ai@6";
+import { classifyRunEnd, runEndLogDisabled, runEndNote } from "./lib/run-end.ts";
 
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import * as circuit from "./circuit.ts";
@@ -1216,6 +1217,10 @@ Deno.serve(async (req) => {
     const stepLimitReached: typeof rawStepLimitReached = (options) =>
       !finalizeStarted && rawStepLimitReached(options);
 
+    // Run-end observability (lib/run-end.ts): did the streamText LOOP itself finish before the
+    // UI-stream persistence handler ran? Plain flags; they steer nothing.
+    let loopDone = false;
+    let loopAborted = false;
     const result = streamText({
       // Top-level orchestrator runs on the smart tier — it's the multi-source
       // synthesis step that produces the final report. Per-tool sub-calls use
@@ -1290,6 +1295,8 @@ Deno.serve(async (req) => {
       // Third condition (P0 fix A): once the forced finalize phase has run its
       // budgeted step(s), stop — the model has written its report, so don't spin
       // the remaining reserve window re-synthesizing (and re-recording) artifacts.
+      onFinish: () => { loopDone = true; },
+      onAbort: () => { loopAborted = true; },
       stopWhen: [
         stepLimitReached,
         () => !finalizeStarted && orchestratorDeadlineReached(),
@@ -1644,9 +1651,28 @@ Deno.serve(async (req) => {
     });
 
     let finalPersisted = false;
-    const persistFinalMessages = async ({ messages: finalMessages }: { messages: UIMessage[] }) => {
+    const persistFinalMessages = async (
+      { messages: finalMessages, isAborted: uiAborted }: { messages: UIMessage[]; isAborted?: boolean },
+    ) => {
       if (finalPersisted) return;
       finalPersisted = true;
+      // WHY is this handler running? It fires from BOTH the stream's flush (normal end) and its
+      // cancel (the browser went away), and the first caller wins — so a browser cancel persists a
+      // PARTIAL transcript while the loop is still going. Observability only: see lib/run-end.ts.
+      const runEnd = classifyRunEnd({
+        loopDone,
+        isAborted: Boolean(uiAborted) || loopAborted,
+        clientSignalAborted: req.signal.aborted,
+      });
+      if (!runEndLogDisabled()) {
+        console.log(JSON.stringify({
+          event: "run_end", thread_id: threadId, cause: runEnd.cause, premature: runEnd.premature,
+          loop_done: loopDone, client_signal_aborted: req.signal.aborted,
+          step_count: invocationTelemetry.getStepCount(),
+          last_finish_reason: invocationTelemetry.getLastFinishReason(),
+          finalize_started: finalizeStarted, elapsed_ms: Date.now() - runStartedAt,
+        }));
+      }
       // Capture the detected seed kind so it can be persisted onto the thread
       // row at completion — historically seed_type was only stored in the
       // triage decision JSON and the threads.seed_type column stayed null.
@@ -2112,7 +2138,7 @@ Deno.serve(async (req) => {
           finalizeStarted,
           hadStreamError: false,
           creditsMicroUsd: runCostMicroUsd,
-          errorMessage: null,
+          errorMessage: runEndNote(runEnd),
           budgetExhausted: budgetCeiling.fired,
         });
         heartbeat?.stop();
