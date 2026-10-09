@@ -620,6 +620,39 @@ function readEnvSafe(key: string): string | undefined {
   }
 }
 
+// ── Breach-material origin (E1) ──────────────────────────────────────────────
+//
+// A page-fetch tool reading a user-supplied breach export labels its rows
+// "jina_reader_scrape (FloeIntel breach PDF)". The slug strip below discards the
+// parenthetical, so the row classified as `independent_public` and escaped the
+// breach cap (60): measured 75 on production thread 7a2968e1. The parenthetical
+// IS the provenance. Only ever LOWERS a cap (class becomes `breach`).
+// Lookarounds, not \b: filenames use underscores ("FloeIntel_Breach_Search.pdf").
+const BREACH_ORIGIN_QUALIFIER_RE =
+  /\([^)]*(?<![a-z])(?:breach(?:es|ed)?|leaked?|stealer[ _-]?logs?)(?![a-z])[^)]*(?<![a-z])(?:pdf|file|dump|export|attachment|csv|spreadsheet|compilation|database|list)(?![a-z])[^)]*\)\s*$/i;
+
+export function breachOriginCapDisabled(env: (k: string) => string | undefined = readEnvSafe): boolean {
+  return (env("BREACH_ORIGIN_CAP_DISABLED") ?? "").trim().toLowerCase() === "true";
+}
+
+export function isBreachOriginLabel(label: string): boolean {
+  return !breachOriginCapDisabled() && BREACH_ORIGIN_QUALIFIER_RE.test(label);
+}
+
+/** /health self-test for the E1 rule. */
+export function breachOriginCapSelfTest(): { ok: boolean; detail: string } {
+  if (breachOriginCapDisabled()) return { ok: true, detail: "LEGACY via BREACH_ORIGIN_CAP_DISABLED" };
+  const breachy = ["jina_reader_scrape (FloeIntel breach PDF)", "user_supplied (FloeIntel_Breach_Search.pdf)"];
+  const clean = ["jina_reader_scrape (https://www.fbi.gov/wanted/example)", "exa_search (athletics roster)"];
+  const wrong = [
+    ...breachy.filter((s) => classifySource(s) !== "breach"),
+    ...clean.filter((s) => classifySource(s) === "breach"),
+  ];
+  return wrong.length
+    ? { ok: false, detail: `misclassified: ${wrong.join(" | ")}` }
+    : { ok: true, detail: "breach-material qualifier (pdf/file/dump/export…) -> breach class; cap 60 applies" };
+}
+
 export function sourceOriginRulesDisabled(env: (k: string) => string | undefined = readEnvSafe): boolean {
   return (env("SOURCE_ORIGIN_RULES_DISABLED") ?? "").trim().toLowerCase() === "true";
 }
@@ -664,6 +697,9 @@ function classifySourceByLabel(toolOrSource: string | null | undefined): SourceC
   // straight through to the tool-slug fast path below, unchanged.
   const originId = extractOriginId(toolOrSource);
   if (originId && ORIGIN_CLASS_MAP[originId]) return ORIGIN_CLASS_MAP[originId];
+
+  // E1: a breach-material qualifier is provenance, not decoration.
+  if (isBreachOriginLabel(toolOrSource)) return "breach";
 
   // Internal-slug fast path: strip a trailing parenthetical qualifier
   // ("socialfetch_lookup (instagram)" → "socialfetch_lookup") so the slug lookup
