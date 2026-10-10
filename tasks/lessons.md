@@ -2,6 +2,25 @@
 
 Running log of non-obvious gotchas learned while working in this repo. Newest first.
 
+## 2026-10-10 (audit revalidation)
+- **An audit baseline is a dated measurement, not a state.** The 2026-10-10 audit's baseline (`main`
+  `219732c`, live `2e5f78c`, "#724 not live") was overtaken within hours: `main` is `811acf3`, live is
+  `f9fc281`, #724 is merged and live. Re-measure `git log` and `/health` (once) before acting on any
+  audit number.
+- **`invalid_type` on a required string is not catalog name drift.** The catalog entries for
+  `serus_darkweb_scan`, `google_dorks`, `oathnet_lookup` and `socialfetch_lookup` already name the real
+  zod fields; the 82 rejected calls sent the wrong *shape or type*. #698's five drifts are a different
+  set. Read `tool_usage_log.input_json.sent_keys` (#697) before designing a fix.
+- **`markRunStarted` is unconditional** (`recovery.ts:873`): it is a marker, not a lease. The frontend
+  `server_running` refusal is per-tab and advisory. Overlapping invocations (21 of 94 in the window) are
+  therefore expected, not anomalous, until an atomic conditional update lands.
+- **`persistFinalMessages` runs from the browser's stream cancel too** (`lib/run-end.ts` header). The
+  `premature_client_cancel` marker is the measurement; it is not a mobile-backgrounding diagnosis.
+- **#593 (dedupe) is the correct fix shape and is still a draft**; `main`'s `dedupeArtifacts` still
+  takes max confidence and spreads later metadata. Do not re-implement it; rebase it.
+- **The lineage table is absent on the live DB** regardless of what any ledger says (`schema2` query
+  returned null). A deployment ledger records a deploy, not a migration.
+
 ## 2026-06-27
 - **Two `<think>`-strip paths existed, only one was wired.** `ChatWindow.tsx` strips
   `<think>` for *rendered* chat text (line ~828) but the **Next Steps** cards parse the
