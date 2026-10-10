@@ -37,8 +37,10 @@ INSERT INTO lease_cases VALUES
   ('aaaaaaaa-0000-4000-8000-000000000003', 'active + exactly 75 s (strict <, not stale)',    false),
   ('aaaaaaaa-0000-4000-8000-000000000004', 'active + 76 s (stale)',                          true),
   ('aaaaaaaa-0000-4000-8000-000000000005', 'finished + fresh heartbeat',                     true),
-  ('aaaaaaaa-0000-4000-8000-000000000006', 'stopped + fresh heartbeat (stated S1a limit)',   true),
-  ('aaaaaaaa-0000-4000-8000-000000000007', 'status NULL + fresh heartbeat',                  true);
+  ('aaaaaaaa-0000-4000-8000-000000000006', 'stopped + fresh heartbeat (stated S1a limit)',   true);
+-- No "status NULL" case: threads.status is NOT NULL (measured 2026-10-10 by this file's
+-- first CI run), so the `status IS NULL` branch of the predicate is unreachable here. It
+-- stays in the filter for a schema that may relax it; it is not evidence for anything.
 
 INSERT INTO public.threads (id, user_id, title, status, run_started_at, last_heartbeat_at) VALUES
   ('aaaaaaaa-0000-4000-8000-000000000001', '11111111-1111-4111-8111-111111111111', 'c1', 'active',   NULL, NULL),
@@ -46,8 +48,7 @@ INSERT INTO public.threads (id, user_id, title, status, run_started_at, last_hea
   ('aaaaaaaa-0000-4000-8000-000000000003', '11111111-1111-4111-8111-111111111111', 'c3', 'active',   now() - interval '90 s', now() - interval '75 s'),
   ('aaaaaaaa-0000-4000-8000-000000000004', '11111111-1111-4111-8111-111111111111', 'c4', 'active',   now() - interval '90 s', now() - interval '76 s'),
   ('aaaaaaaa-0000-4000-8000-000000000005', '11111111-1111-4111-8111-111111111111', 'c5', 'finished', now() - interval '90 s', now() - interval '1 s'),
-  ('aaaaaaaa-0000-4000-8000-000000000006', '11111111-1111-4111-8111-111111111111', 'c6', 'stopped',  now() - interval '90 s', now() - interval '1 s'),
-  ('aaaaaaaa-0000-4000-8000-000000000007', '11111111-1111-4111-8111-111111111111', 'c7', NULL,       NULL, now() - interval '1 s');
+  ('aaaaaaaa-0000-4000-8000-000000000006', '11111111-1111-4111-8111-111111111111', 'c6', 'stopped',  now() - interval '90 s', now() - interval '1 s');
 
 -- The lease as the edge function issues it (admission clause + version clause), as a function
 -- so every case runs the identical statement.
