@@ -10,11 +10,13 @@
 // cleanup (review finding 1) are exercised as behaviour, not described.
 // `.github/ci/assert-run-lease.sql` drives the SQL predicate on a real Postgres.
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { ORCHESTRATOR_WALL_CLOCK_MS } from "../orchestrator-budget.ts";
 import {
   acquireRunLease,
   admitsRow,
   leaseAdmissionFilter,
   releaseRunLease,
+  RUN_LEASE_MAX_RUN_MS,
   RUN_LEASE_STALE_MS,
   runLeaseRefusalResponse,
   runLeaseSelfTest,
@@ -62,10 +64,14 @@ function fakeDb(initial: RunRowVersion | null, opts: { between?: (r: RunRowVersi
       });
       c.is = rec("is", (col) => filters.push((r) => (r as unknown as Record<string, unknown>)[col as string] === null));
       c.or = rec("or", (f) => {
-        const m = /last_heartbeat_at\.lt\.(\S+)$/.exec(String(f));
+        const m = /last_heartbeat_at\.lt\.([^,]+)/.exec(String(f));
         const cutoff = m ? new Date(m[1]).getTime() : NaN;
+        const ms = /run_started_at\.lt\.([^,]+)/.exec(String(f));
+        const oldestStart = ms ? new Date(ms[1]).getTime() : NaN;
         filters.push((r) =>
-          r.status === null || r.status !== "active" || r.last_heartbeat_at === null || new Date(r.last_heartbeat_at).getTime() < cutoff
+          r.status === null || r.status !== "active" ||
+          r.run_started_at === null || new Date(r.run_started_at).getTime() < oldestStart ||
+          r.last_heartbeat_at === null || new Date(r.last_heartbeat_at).getTime() < cutoff
         );
       });
       c.then = (res: (v: unknown) => void) => {
@@ -89,17 +95,33 @@ Deno.test("the admission filter admits only a thread with no LIVE run, by the sa
   assertEquals(RUN_LEASE_STALE_MS, 75_000);
   assertEquals(
     leaseAdmissionFilter(NOW.getTime()),
-    "status.is.null,status.neq.active,last_heartbeat_at.is.null,last_heartbeat_at.lt.2026-10-10T06:00:24.882Z",
+    "status.is.null,status.neq.active,run_started_at.is.null,run_started_at.lt.2026-10-10T05:55:39.882Z,last_heartbeat_at.is.null,last_heartbeat_at.lt.2026-10-10T06:00:24.882Z",
   );
+  // The run wall the guard keys on must cover a real run with headroom for finalize.
+  assert(RUN_LEASE_MAX_RUN_MS >= 2 * ORCHESTRATOR_WALL_CLOCK_MS, "max run must be at least twice the orchestrator wall clock");
+});
+
+Deno.test("incident 2026-10-10: a fresh heartbeat with NO run start, or on an ancient start, is NOT a live run", () => {
+  const t = NOW.getTime();
+  // Thread 6d55b8da: created 09:35:56, client stamped heartbeat 09:36:11, run_started_at NULL.
+  assertEquals(admitsRow(row({ last_heartbeat_at: ago(1_000) }), t), true, "client-stamp shape on a blank thread");
+  // Thread cfe70631: run_started_at 06:02:19, client stamped heartbeat 09:36:34 (3.5 h later).
+  assertEquals(admitsRow(row({ run_started_at: ago(3.5 * 3_600_000), last_heartbeat_at: ago(1_000) }), t), true, "foreign stamp on an old start");
+  // A genuinely live run: started 40 s ago, pulsing.
+  assertEquals(admitsRow(row({ run_started_at: ago(40_000), last_heartbeat_at: ago(5_000) }), t), false, "real live run");
+  // Exactly at the run wall: strict <, so a start exactly MAX_RUN ago still counts as live.
+  assertEquals(admitsRow(row({ run_started_at: ago(RUN_LEASE_MAX_RUN_MS), last_heartbeat_at: ago(5_000) }), t), false);
+  assertEquals(admitsRow(row({ run_started_at: ago(RUN_LEASE_MAX_RUN_MS + 1), last_heartbeat_at: ago(5_000) }), t), true);
 });
 
 Deno.test("predicate matrix: blank, fresh, stale, exact threshold, finished, stopped, null status", () => {
   const t = NOW.getTime();
   const cases: Array<[string, RunRowVersion | null, boolean]> = [
     ["blank thread (active, heartbeat NULL) — I-1: no marker is not a run", row({}), true],
-    ["active + fresh heartbeat (20 s)", row({ last_heartbeat_at: ago(20_000) }), false],
-    ["active + exactly 75 s is NOT yet stale (strict <)", row({ last_heartbeat_at: ago(75_000) }), false],
-    ["active + 75 s + 1 ms is stale", row({ last_heartbeat_at: ago(75_001) }), true],
+    ["active + fresh heartbeat (20 s) + recent start", row({ run_started_at: ago(30_000), last_heartbeat_at: ago(20_000) }), false],
+    ["active + exactly 75 s is NOT yet stale (strict <)", row({ run_started_at: ago(90_000), last_heartbeat_at: ago(75_000) }), false],
+    ["active + 75 s + 1 ms is stale", row({ run_started_at: ago(90_000), last_heartbeat_at: ago(75_001) }), true],
+    ["active + fresh heartbeat but NO run start (client stamp)", row({ last_heartbeat_at: ago(20_000) }), true],
     ["active + old heartbeat + run marker (dead run)", row({ run_started_at: ago(90_000), last_heartbeat_at: ago(80_000) }), true],
     ["finished + fresh heartbeat (terminal write just landed)", row({ status: "finished", last_heartbeat_at: ago(1_000) }), true],
     ["stopped + fresh heartbeat (admitted — stated S1a limit)", row({ status: "stopped", last_heartbeat_at: ago(1_000) }), true],
@@ -128,7 +150,7 @@ Deno.test("a thread with no live run is admitted; the UPDATE is conditional on a
 
 Deno.test("a live heartbeat REFUSES admission with the live marker and a retry hint, and writes nothing", async () => {
   Deno.env.delete(KILL);
-  const live = row({ run_started_at: "2026-10-10T05:59:00.134Z", last_heartbeat_at: ago(20_000) });
+  const live = row({ run_started_at: ago(60_000), last_heartbeat_at: ago(20_000) });
   const db = fakeDb(live);
   const r = await acquireRunLease(db as never, "t1", "u1", { now: NOW });
   assertEquals(r.admitted, false);
@@ -136,7 +158,7 @@ Deno.test("a live heartbeat REFUSES admission with the live marker and a retry h
   assert(!db.calls.some((c) => c.op === "threads.update"));
   if (!r.admitted && r.code === "RUN_IN_PROGRESS") {
     assertEquals(r.lastHeartbeatAt, live.last_heartbeat_at);
-    assertEquals(r.runStartedAt, "2026-10-10T05:59:00.134Z");
+    assertEquals(r.runStartedAt, live.run_started_at);
     assertEquals(r.retryAfterMs, 55_000);
     const res = runLeaseRefusalResponse(r, { "X-Test": "1" });
     assertEquals(res.status, 409);
@@ -144,7 +166,7 @@ Deno.test("a live heartbeat REFUSES admission with the live marker and a retry h
     assertEquals(res.headers.get("Retry-After"), "55");
     const body = await res.json();
     assertEquals(body.code, "RUN_IN_PROGRESS");
-    assertStringIncludes(String(body.detail), "still running");
+    assertStringIncludes(String(body.detail), "active on this case right now");
   } else throw new Error("expected RUN_IN_PROGRESS");
 });
 

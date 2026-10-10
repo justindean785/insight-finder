@@ -63,12 +63,27 @@
 //   S1a removes duplicate ADMISSION. Fencing every heartbeat / start / terminal / recovery
 //   / persistence writer behind a run generation is S1b and needs a schema change.
 //
+// GUARD (2026-10-10 incident). A fresh heartbeat ALONE is not a live run. The client used to
+// stamp status:"active" + last_heartbeat_at before every send (fixed in #733), and any stale
+// bundle still can, so for ~20 minutes every send refused itself with 409. A run the server
+// started always carries run_started_at (the lease and markRunStarted both write it) and
+// cannot outlive its wall clock by much (ORCHESTRATOR_WALL_CLOCK_MS = 3 min, then finalize).
+// So "live" now means ALL of: status active, run_started_at set, run_started_at within
+// RUN_LEASE_MAX_RUN_MS, heartbeat set, heartbeat within 75 s. A heartbeat with no start
+// (the client-stamp shape, invariant I-1: no marker is not a run) or with a start older
+// than any run can be (thread cfe70631: start 06:02, stamp 09:36) admits.
+//
 // KILL SWITCH, read at CALL TIME: RUN_LEASE_DISABLED=true (admission is unconditional,
 // as before). /health proof key: checks.run_lease.
 
 import { STALE_RUN_AFTER_MS } from "../recovery.ts";
 
 export const RUN_LEASE_STALE_MS = STALE_RUN_AFTER_MS;
+/** Longest a server-started run can plausibly still be live: twice the orchestrator wall
+ *  clock (3 min) to cover finalize, salvage and persistence. A fresh heartbeat on a start
+ *  older than this is a foreign stamp, not a run. Pinned to ORCHESTRATOR_WALL_CLOCK_MS by
+ *  run_lease_test.ts. */
+export const RUN_LEASE_MAX_RUN_MS = 6 * 60_000;
 /** Retry hint on a 503: long enough for a transient fault, short enough not to feel stuck. */
 export const RUN_LEASE_UNAVAILABLE_RETRY_MS = 5_000;
 const VERSION_ATTEMPTS = 2;
@@ -78,9 +93,14 @@ export function runLeaseDisabled(): boolean {
 }
 
 /** The PostgREST `.or()` clause that admits only a thread with no LIVE run. */
-export function leaseAdmissionFilter(nowMs: number, staleMs: number = RUN_LEASE_STALE_MS): string {
+export function leaseAdmissionFilter(
+  nowMs: number,
+  staleMs: number = RUN_LEASE_STALE_MS,
+  maxRunMs: number = RUN_LEASE_MAX_RUN_MS,
+): string {
   const cutoff = new Date(nowMs - staleMs).toISOString();
-  return `status.is.null,status.neq.active,last_heartbeat_at.is.null,last_heartbeat_at.lt.${cutoff}`;
+  const oldestStart = new Date(nowMs - maxRunMs).toISOString();
+  return `status.is.null,status.neq.active,run_started_at.is.null,run_started_at.lt.${oldestStart},last_heartbeat_at.is.null,last_heartbeat_at.lt.${cutoff}`;
 }
 
 /** The columns the lease overwrites, as one row version. */
@@ -103,9 +123,17 @@ const VERSION_COLUMNS: ReadonlyArray<keyof RunRowVersion> = [
 /** The admission predicate, in code, for the decision on a RE-READ row. The database
  *  evaluates the same predicate in `leaseAdmissionFilter`; `assert-run-lease.sql` pins
  *  the two to each other on a real Postgres. */
-export function admitsRow(row: RunRowVersion | null, nowMs: number, staleMs: number = RUN_LEASE_STALE_MS): boolean {
+export function admitsRow(
+  row: RunRowVersion | null,
+  nowMs: number,
+  staleMs: number = RUN_LEASE_STALE_MS,
+  maxRunMs: number = RUN_LEASE_MAX_RUN_MS,
+): boolean {
   if (!row) return false;
   if (row.status === null || row.status !== "active") return true;
+  if (row.run_started_at === null) return true;
+  const started = new Date(row.run_started_at).getTime();
+  if (!Number.isFinite(started) || started < nowMs - maxRunMs) return true;
   if (row.last_heartbeat_at === null) return true;
   const hb = new Date(row.last_heartbeat_at).getTime();
   return Number.isFinite(hb) ? hb < nowMs - staleMs : true;
@@ -174,11 +202,12 @@ export async function acquireRunLease(
   db: LeaseDb,
   threadId: string,
   userId: string,
-  opts?: { now?: Date; staleMs?: number },
+  opts?: { now?: Date; staleMs?: number; maxRunMs?: number },
 ): Promise<RunLeaseResult> {
   const now = opts?.now ?? new Date();
   const iso = now.toISOString();
   const staleMs = opts?.staleMs ?? RUN_LEASE_STALE_MS;
+  const maxRunMs = opts?.maxRunMs ?? RUN_LEASE_MAX_RUN_MS;
   if (runLeaseDisabled()) {
     log({ event: "run_lease_disabled", thread_id: threadId });
     return { admitted: true, mode: "disabled", startedAt: iso, prior: null };
@@ -191,7 +220,7 @@ export async function acquireRunLease(
       // Decide from the row we just read first: a live heartbeat is a refusal, and the
       // UPDATE below would only confirm it. (Two reads are still cheaper than a 409 path
       // that mis-attributes a version mismatch as a live run.)
-      if (!admitsRow(seen.row, now.getTime(), staleMs)) return refusal(threadId, seen.row, now, staleMs);
+      if (!admitsRow(seen.row, now.getTime(), staleMs, maxRunMs)) return refusal(threadId, seen.row, now, staleMs);
       let q = db
         .from("threads")
         .update({
@@ -204,7 +233,7 @@ export async function acquireRunLease(
         })
         .eq("id", threadId)
         .eq("user_id", userId)
-        .or(leaseAdmissionFilter(now.getTime(), staleMs));
+        .or(leaseAdmissionFilter(now.getTime(), staleMs, maxRunMs));
       // Version clause: the UPDATE replaces exactly the row version we read, or nothing.
       for (const col of VERSION_COLUMNS) {
         const v = seen.row[col];
@@ -221,7 +250,7 @@ export async function acquireRunLease(
       log({ event: "run_lease_version_miss", thread_id: threadId, attempt });
     }
     const again = await readVersion(db, threadId);
-    if (!again.error && again.row && !admitsRow(again.row, now.getTime(), staleMs)) {
+    if (!again.error && again.row && !admitsRow(again.row, now.getTime(), staleMs, maxRunMs)) {
       return refusal(threadId, again.row, now, staleMs);
     }
     return unavailable(threadId, `row version changed ${VERSION_ATTEMPTS} times during admission`);
@@ -307,8 +336,8 @@ export function runLeaseRefusalResponse(r: RunLeaseRefusal, cors: Record<string,
       JSON.stringify({
         error: "Conflict",
         code: r.code,
-        detail: `A run is still running on this case (last heartbeat ${r.lastHeartbeatAt ?? "unknown"}). ` +
-          `Sending now would start a second run on top of it. Wait for it to finish, or about ${secs}s if it has stalled, then try again.`,
+        detail: `A run is active on this case right now (last heartbeat ${r.lastHeartbeatAt ?? "unknown"}); its result will appear in this thread when it finishes. ` +
+          `Sending now would start a second run on top of it. If it has stalled, a resend is accepted about ${secs}s after its last heartbeat.`,
         last_heartbeat_at: r.lastHeartbeatAt,
         run_started_at: r.runStartedAt,
         retry_after_ms: r.retryAfterMs,
@@ -335,12 +364,17 @@ export function runLeaseSelfTest(): { ok: boolean; detail: string } {
   const f = leaseAdmissionFilter(now);
   const fresh = new Date(now - 20_000).toISOString();
   const stale = new Date(now - 80_000).toISOString();
-  const row = (status: string | null, hb: string | null): RunRowVersion => ({ status, run_started_at: null, last_heartbeat_at: hb, recovered_at: null, recovery_reason: null });
-  const ok = f === "status.is.null,status.neq.active,last_heartbeat_at.is.null,last_heartbeat_at.lt.2026-10-10T06:00:24.882Z" &&
+  const recentStart = new Date(now - 60_000).toISOString();
+  const ancientStart = new Date(now - 3 * 3_600_000).toISOString();
+  const row = (status: string | null, start: string | null, hb: string | null): RunRowVersion => ({ status, run_started_at: start, last_heartbeat_at: hb, recovered_at: null, recovery_reason: null });
+  const ok = f === "status.is.null,status.neq.active,run_started_at.is.null,run_started_at.lt.2026-10-10T05:55:39.882Z,last_heartbeat_at.is.null,last_heartbeat_at.lt.2026-10-10T06:00:24.882Z" &&
     RUN_LEASE_STALE_MS === STALE_RUN_AFTER_MS &&
-    !admitsRow(row("active", fresh), now) && admitsRow(row("active", stale), now) &&
-    admitsRow(row("active", null), now) && admitsRow(row("finished", fresh), now);
+    !admitsRow(row("active", recentStart, fresh), now) &&   // a real live run refuses
+    admitsRow(row("active", recentStart, stale), now) &&    // dead run admits
+    admitsRow(row("active", null, fresh), now) &&           // client-stamp shape (no start) admits
+    admitsRow(row("active", ancientStart, fresh), now) &&   // foreign stamp on an old start admits
+    admitsRow(row("active", null, null), now) && admitsRow(row("finished", recentStart, fresh), now);
   return ok
-    ? { ok: true, detail: `atomic versioned conditional-update lease; live heartbeat (<${RUN_LEASE_STALE_MS / 1000}s) -> 409, db fault -> 503, both before the message insert` }
-    : { ok: false, detail: "lease predicate drifted from the recovery stale bar" };
+    ? { ok: true, detail: `atomic versioned conditional-update lease; live = active + run_started_at within ${RUN_LEASE_MAX_RUN_MS / 60_000}m + heartbeat within ${RUN_LEASE_STALE_MS / 1000}s -> 409, db fault -> 503, both before the message insert` }
+    : { ok: false, detail: "lease predicate drifted from the recovery stale bar or the run wall" };
 }
