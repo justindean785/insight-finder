@@ -44,6 +44,7 @@ import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
 import { clusterBookkeepingSelfTest, legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
+import { memoryContextSelfTest } from "./lib/memory-context.ts";
 import { breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 
 /**
@@ -490,6 +491,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // proves the build is live; ok:false means a rule misclassified its own probe.
   r.checks.source_origin_rules = sourceOriginRulesSelfTest();
   r.checks.breach_origin_cap = breachOriginCapSelfTest();
+  r.checks.memory_context = memoryContextSelfTest();
 
   // Are the agent's own setup rows (triage_decision / cluster_decision / coverage_audit /
   // tool_audit) kept out of identity clusters? A row naming the seed handle used to join

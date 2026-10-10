@@ -1,3 +1,4 @@
+import { applyMemoryContext } from "./lib/memory-context.ts";
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -5465,7 +5466,10 @@ export function buildTools(ctx: ToolContext) {
           recorded_confidence: number;
           attempted_confidence: number;
         }> = [];
-        artifacts.forEach((a, i) => {
+        artifacts.forEach((aRaw, i) => {
+          // E3: recalled memory is context, never a source (lib/memory-context.ts).
+          const memCtx = applyMemoryContext(aRaw.source, aRaw.metadata as Record<string, unknown> | undefined);
+          const a = memCtx.memory ? { ...aRaw, source: memCtx.source, metadata: memCtx.metadata } : aRaw;
           // A QUEUED tool call is not an observation. Ten rows like
           // "hawkcapo - socialfetch_lookup (pending Instagram)" were persisted
           // on a measured run BEFORE their tool returned, each carrying
@@ -5969,7 +5973,11 @@ export function buildTools(ctx: ToolContext) {
         source: z.string().optional(),
         metadata: z.record(z.unknown()).optional(),
       })),
-      execute: async ({ kind, value, confidence, source, metadata }) => {
+      execute: async ({ kind, value, confidence, source: sourceIn, metadata: metadataIn }) => {
+        // E3: recalled memory is context, never a source (lib/memory-context.ts).
+        const memCtx = applyMemoryContext(sourceIn, metadataIn);
+        const source = memCtx.source;
+        const metadata = memCtx.metadata;
         // G1/G2 apply HERE TOO. This shim is advertised in catalog.ts, so the
         // model may call it, and it wrote artifacts with none of the write-path
         // gates the plural tool enforces — an open bypass of the entire #466
