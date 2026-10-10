@@ -84,6 +84,7 @@ import {
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
+import { releaseRunLease } from "./lib/run-lease.ts";
 import {
   deepseekPreflightAlways,
   geminiPreflightPivotEnabled,
@@ -206,6 +207,8 @@ Deno.serve(async (req) => {
         const gate = evaluateCreditGate(creditRow, isAdmin, CREDIT_RUN_RESERVE_MICRO_USD);
         creditsExempt = gate.exempt;
         if (!gate.allow) {
+          // This request will not start a run: give the admission lease back (S1a).
+          await releaseRunLease(supabaseAdmin, threadId, ctx.lease, "credit_gate_402");
           return new Response(JSON.stringify({
             error: "Out of credits",
             code: gate.code,
@@ -235,6 +238,7 @@ Deno.serve(async (req) => {
               | null;
             const dailyGate = evaluateDailyCapGate(dailyRow);
             if (!dailyGate.allow) {
+              await releaseRunLease(supabaseAdmin, threadId, ctx.lease, "daily_cap_402");
               return new Response(JSON.stringify({
                 error: "Daily credit cap reached",
                 code: dailyGate.code,

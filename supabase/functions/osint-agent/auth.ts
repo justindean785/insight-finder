@@ -11,6 +11,7 @@ import { corsHeaders, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY } from "./env
 import { checkRateLimit as checkRateLimitDistributed, MAX_REQS_PER_MIN, MAX_REQS_PER_HOUR } from "./ratelimit.ts";
 import { detectSeedServer, formatThreadTitle } from "./validation.ts";
 import { recoverStaleThreadById } from "./recovery.ts";
+import { acquireRunLease, runLeaseRefusalResponse, type RunLeaseResult } from "./lib/run-lease.ts";
 
 // Hard cap on the parsed request body so an authenticated caller can't inflate
 // DB storage (the `messages` insert below persists `lastUser.parts` verbatim)
@@ -50,6 +51,9 @@ export interface SetupContext {
   archiveEnabled: boolean;
   detectedSeedType: string;
   messages: UIMessage[];
+  /** The admission lease this request holds (S1a, lib/run-lease.ts). An early exit that
+   *  will not start a run must hand it to `releaseRunLease`. */
+  lease: Extract<RunLeaseResult, { admitted: true }>;
 }
 
 /**
@@ -237,6 +241,15 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
   } catch (e) {
     console.warn("[stale-recovery] current-thread recovery threw:", e);
   }
+  // ---- Atomic admission (S1a) ------------------------------------------------
+  // ONE conditional UPDATE is the run marker: it succeeds only when no run is live on
+  // the thread (status not active, or heartbeat absent/older than the 75 s stale bar
+  // recovery itself uses). A live run ⇒ 409 RUN_IN_PROGRESS, thrown HERE — after the
+  // stale recovery above has closed a dead run, and BEFORE the user message insert
+  // below, so a refused send leaves nothing behind. See lib/run-lease.ts for the race
+  // argument and the stated limit (time lease, not fencing — that is S1b).
+  const lease = await acquireRunLease(supabaseAdmin, threadId, userId);
+  if (!lease.admitted) throw runLeaseRefusalResponse(lease, corsHeaders);
   const archiveEnabled: boolean = !!(thread as { archive_attachments?: boolean }).archive_attachments;
   let detectedSeedType: string = String(
     (thread as { seed_type?: string | null }).seed_type ?? "unknown",
@@ -287,5 +300,6 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
     archiveEnabled,
     detectedSeedType,
     messages,
+    lease,
   };
 }
