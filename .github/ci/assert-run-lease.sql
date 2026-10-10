@@ -5,7 +5,8 @@
 -- schema the migrations just built, so "a live heartbeat refuses, everything else admits,
 -- and a second UPDATE after a successful one changes nothing" is proven on the engine
 -- that will evaluate it, not on a fake. The WHERE below is the PostgREST rendering of
---   .or("status.is.null,status.neq.active,last_heartbeat_at.is.null,last_heartbeat_at.lt.<cutoff>")
+--   .or("status.is.null,status.neq.active,run_started_at.is.null,run_started_at.lt.<now-6m>,
+--        last_heartbeat_at.is.null,last_heartbeat_at.lt.<cutoff>")
 -- plus the version clause the edge code adds (every lease column IS NOT DISTINCT FROM the
 -- value it read).
 --
@@ -37,7 +38,9 @@ INSERT INTO lease_cases VALUES
   ('aaaaaaaa-0000-4000-8000-000000000003', 'active + exactly 75 s (strict <, not stale)',    false),
   ('aaaaaaaa-0000-4000-8000-000000000004', 'active + 76 s (stale)',                          true),
   ('aaaaaaaa-0000-4000-8000-000000000005', 'finished + fresh heartbeat',                     true),
-  ('aaaaaaaa-0000-4000-8000-000000000006', 'stopped + fresh heartbeat (stated S1a limit)',   true);
+  ('aaaaaaaa-0000-4000-8000-000000000006', 'stopped + fresh heartbeat (stated S1a limit)',   true),
+  ('aaaaaaaa-0000-4000-8000-000000000008', 'active + fresh heartbeat + NO run start (client stamp, 2026-10-10 incident)', true),
+  ('aaaaaaaa-0000-4000-8000-000000000009', 'active + fresh heartbeat + start 3.5 h ago (foreign stamp)', true);
 -- No "status NULL" case: threads.status is NOT NULL (measured 2026-10-10 by this file's
 -- first CI run), so the `status IS NULL` branch of the predicate is unreachable here. It
 -- stays in the filter for a schema that may relax it; it is not evidence for anything.
@@ -48,7 +51,9 @@ INSERT INTO public.threads (id, user_id, title, status, run_started_at, last_hea
   ('aaaaaaaa-0000-4000-8000-000000000003', '11111111-1111-4111-8111-111111111111', 'c3', 'active',   now() - interval '90 s', now() - interval '75 s'),
   ('aaaaaaaa-0000-4000-8000-000000000004', '11111111-1111-4111-8111-111111111111', 'c4', 'active',   now() - interval '90 s', now() - interval '76 s'),
   ('aaaaaaaa-0000-4000-8000-000000000005', '11111111-1111-4111-8111-111111111111', 'c5', 'finished', now() - interval '90 s', now() - interval '1 s'),
-  ('aaaaaaaa-0000-4000-8000-000000000006', '11111111-1111-4111-8111-111111111111', 'c6', 'stopped',  now() - interval '90 s', now() - interval '1 s');
+  ('aaaaaaaa-0000-4000-8000-000000000006', '11111111-1111-4111-8111-111111111111', 'c6', 'stopped',  now() - interval '90 s', now() - interval '1 s'),
+  ('aaaaaaaa-0000-4000-8000-000000000008', '11111111-1111-4111-8111-111111111111', 'c8', 'active',   NULL, now() - interval '1 s'),
+  ('aaaaaaaa-0000-4000-8000-000000000009', '11111111-1111-4111-8111-111111111111', 'c9', 'active',   now() - interval '210 min', now() - interval '1 s');
 
 -- The lease as the edge function issues it (admission clause + version clause), as a function
 -- so every case runs the identical statement.
@@ -61,8 +66,9 @@ BEGIN
      SET status = 'active', run_started_at = p_now, last_heartbeat_at = p_now,
          recovered_at = NULL, recovery_reason = NULL, updated_at = p_now
    WHERE id = p_thread AND user_id = p_user
-     AND (status IS NULL OR status <> 'active' OR last_heartbeat_at IS NULL
-          OR last_heartbeat_at < p_now - make_interval(secs => 75))
+     AND (status IS NULL OR status <> 'active'
+          OR run_started_at IS NULL OR run_started_at < p_now - make_interval(mins => 6)
+          OR last_heartbeat_at IS NULL OR last_heartbeat_at < p_now - make_interval(secs => 75))
      AND status            IS NOT DISTINCT FROM seen.status
      AND run_started_at    IS NOT DISTINCT FROM seen.run_started_at
      AND last_heartbeat_at IS NOT DISTINCT FROM seen.last_heartbeat_at
@@ -104,7 +110,8 @@ BEGIN
   UPDATE public.threads
      SET status = 'active', run_started_at = t, last_heartbeat_at = t, recovered_at = NULL, recovery_reason = NULL
    WHERE id = seen.id
-     AND (status IS NULL OR status <> 'active' OR last_heartbeat_at IS NULL OR last_heartbeat_at < t - make_interval(secs => 75))
+     AND (status IS NULL OR status <> 'active' OR run_started_at IS NULL OR run_started_at < t - make_interval(mins => 6)
+          OR last_heartbeat_at IS NULL OR last_heartbeat_at < t - make_interval(secs => 75))
      AND status            IS NOT DISTINCT FROM seen.status
      AND run_started_at    IS NOT DISTINCT FROM seen.run_started_at
      AND last_heartbeat_at IS NOT DISTINCT FROM seen.last_heartbeat_at
