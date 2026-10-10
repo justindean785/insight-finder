@@ -45,6 +45,7 @@ import { clusterBookkeepingSelfTest, legacyNeedsReviewContradiction } from "./li
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 import { memoryContextSelfTest } from "./lib/memory-context.ts";
+import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
 import { breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 
 /**
@@ -492,6 +493,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.source_origin_rules = sourceOriginRulesSelfTest();
   r.checks.breach_origin_cap = breachOriginCapSelfTest();
   r.checks.memory_context = memoryContextSelfTest();
+  r.checks.user_supplied_status = userSuppliedStatusSelfTest();
 
   // Are the agent's own setup rows (triage_decision / cluster_decision / coverage_audit /
   // tool_audit) kept out of identity clusters? A row naming the seed handle used to join

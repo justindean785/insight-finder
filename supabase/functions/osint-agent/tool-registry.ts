@@ -1,3 +1,4 @@
+import { guardUserSuppliedStatus } from "./lib/user-supplied-status.ts";
 import { applyMemoryContext } from "./lib/memory-context.ts";
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
@@ -5553,7 +5554,12 @@ export function buildTools(ctx: ToolContext) {
               : cap.confidence;
           // Resolve the confirmation gap, then DERIVE a coherent status from it
           // (status can never contradict reason_not_confirmed).
-          const ordinaryStatus = resolveRecordingStatus(cap, a.metadata ?? null);
+          // E2: pasted is not checked — analyst-supplied-only rows never reach verified/confirmed.
+          const ordinaryStatus = guardUserSuppliedStatus(
+            resolveRecordingStatus(cap, a.metadata ?? null),
+            a.source,
+            a.metadata as Record<string, unknown> | null | undefined,
+          );
           const resolvedReasonNotConfirmed = bioName
             ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
             : ordinaryStatus.reasonNotConfirmed;
@@ -5584,6 +5590,7 @@ export function buildTools(ctx: ToolContext) {
             source_category: cap.source_classes,
             query_types: queryTypesOf({ value: v.value, kind: v.kind, metadata: a.metadata ?? null }),
             status: derivedStatus,
+            ...(ordinaryStatus.userSuppliedUnreviewed ? { user_supplied_unreviewed: true } : {}),
             cluster_id: a.metadata?.cluster_id ?? null,
             reason_for_confidence: collisionExcluded
               ? (surnameOnly
@@ -6024,7 +6031,12 @@ export function buildTools(ctx: ToolContext) {
           : bioName
             ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
             : cap.confidence;
-        const ordinaryStatus = resolveRecordingStatus(cap, metadata ?? null);
+        // E2: pasted is not checked — analyst-supplied-only rows never reach verified/confirmed.
+        const ordinaryStatus = guardUserSuppliedStatus(
+          resolveRecordingStatus(cap, metadata ?? null),
+          source,
+          metadata as Record<string, unknown> | null | undefined,
+        );
         const resolvedReasonNotConfirmed = bioName
           ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
           : ordinaryStatus.reasonNotConfirmed;
@@ -6044,6 +6056,7 @@ export function buildTools(ctx: ToolContext) {
           source_category: cap.source_classes,
           query_types: queryTypesOf({ value: v.value, kind: v.kind, metadata: metadata ?? null }),
           status: derivedStatus,
+          ...(ordinaryStatus.userSuppliedUnreviewed ? { user_supplied_unreviewed: true } : {}),
           cluster_id: metadata?.cluster_id ?? null,
           reason_for_confidence: collisionExcluded
             ? (surnameOnly
