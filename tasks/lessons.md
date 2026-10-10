@@ -3,6 +3,23 @@
 Running log of non-obvious gotchas learned while working in this repo. Newest first.
 
 ## 2026-10-10 (audit revalidation)
+- **A lease without cleanup on every exit is a ghost-run factory.** S1a's first cut released only on the two
+  402 exits; a thrown setup error after acquisition would have stranded a heartbeat-less marker for the stale
+  sweep to reap as an "interrupted run". Hold startup-only state at the handler top, release it in the outer
+  catch, and clear it at the real handoff so a genuine interruption marker is never erased.
+- **A rollback snapshot is only trustworthy if the UPDATE proves it.** Reading the row and then updating it
+  lets the row change in between (a run finishing), and restoring the stale read resurrects it. Add the read
+  values to the UPDATE's WHERE (`IS NOT DISTINCT FROM`), retry once from a fresh read, and never admit on a
+  persistent mismatch.
+- **CI's Frontend job lints `supabase/functions/` too.** A Deno lint comment does not satisfy
+  `@typescript-eslint/no-explicit-any`; type the structural db chain instead and cast supabase-js at the call
+  site, as `reviews.ts` does for `ReviewDb`.
+- **`threads.status` is NOT NULL.** A fixture row with `status NULL` fails the insert in the Migrations job; the
+  `status IS NULL` branch of a predicate is unreachable on this schema.
+- **The Lovable `send_message` MCP call can time out client-side at 60 s while the message never landed.**
+  Check `list_messages` before resending; use `wait=false` and poll `get_message`, and treat `/health` as the
+  only proof either way.
+
 - **An audit baseline is a dated measurement, not a state.** The 2026-10-10 audit's baseline (`main`
   `219732c`, live `2e5f78c`, "#724 not live") was overtaken within hours: `main` is `811acf3`, live is
   `f9fc281`, #724 is merged and live. Re-measure `git log` and `/health` (once) before acting on any

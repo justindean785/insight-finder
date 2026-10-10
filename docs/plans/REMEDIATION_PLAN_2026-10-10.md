@@ -186,6 +186,10 @@ projected speedups from the historical documents.
 
 ## 6. First implementation slice for approval
 
+> **Status 2026-10-10:** S1a shipped as #730 and is live at build `2e0d3ee` (`checks.run_lease`). The review
+> of head `a4480fa` added a version clause, fail-closed acquisition and release-on-every-exit; the stated
+> limit is a time lease, not fencing. S1b is next and needs the schema PR.
+
 **S1a — the no-schema admission lease** (one edge PR, kill switch, `/health` key, four tests).
 It removes the duplicate-admission path with no migration and is fully reversible. S5 (#593
 rebase) can go in parallel as a frontend PR. S7 (memory axis) is ready to build the moment JD
