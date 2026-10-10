@@ -84,7 +84,7 @@ import {
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
-import { releaseRunLease, type LeaseDb } from "./lib/run-lease.ts";
+import { releaseRunLease, type LeaseDb, type RunLeaseHeld } from "./lib/run-lease.ts";
 import {
   deepseekPreflightAlways,
   geminiPreflightPivotEnabled,
@@ -135,6 +135,12 @@ function extractManualOverrideSelector(messages: UIMessage[]): string | null {
 Deno.serve(async (req) => {
   let heartbeat: ReturnType<typeof startRunHeartbeat> | null = null;
   let releaseRunState = () => {};
+  // The admission lease (S1a) is held from setupRequest until startRunHeartbeat takes the
+  // row over. Any exit in that window that does not start a run must give it back, so the
+  // outer catch can release it without a ctx reference (a thrown setup error never
+  // returns one). Cleared at the handoff: once a run is live, an interruption marker is
+  // genuine and must NOT be erased by cleanup.
+  let startupLease: { db: LeaseDb; threadId: string; lease: RunLeaseHeld } | null = null;
   if (isHealthProbe(req)) return handleHealthProbe(req);
 
   degradedTools.clear();
@@ -164,6 +170,7 @@ Deno.serve(async (req) => {
     // ---- setupRequest handles CORS, auth, thread verification, message persistence ----
     const ctx = await setupRequest(req);
     const { supabase, supabaseAdmin, user, userId, threadId, archiveEnabled, detectedSeedType, messages } = ctx;
+    startupLease = { db: supabaseAdmin as unknown as LeaseDb, threadId, lease: ctx.lease };
     recoverStaleActiveThreads(supabaseAdmin, { limit: 10, reason: "stale heartbeat recovered at run startup" })
       .then((r) => {
         if (r.recovered || r.errors) console.log(JSON.stringify({ event: "stale_thread_sweeper", ...r }));
@@ -209,6 +216,7 @@ Deno.serve(async (req) => {
         if (!gate.allow) {
           // This request will not start a run: give the admission lease back (S1a).
           await releaseRunLease(supabaseAdmin as unknown as LeaseDb, threadId, ctx.lease, "credit_gate_402");
+          startupLease = null;
           return new Response(JSON.stringify({
             error: "Out of credits",
             code: gate.code,
@@ -239,6 +247,7 @@ Deno.serve(async (req) => {
             const dailyGate = evaluateDailyCapGate(dailyRow);
             if (!dailyGate.allow) {
               await releaseRunLease(supabaseAdmin as unknown as LeaseDb, threadId, ctx.lease, "daily_cap_402");
+              startupLease = null;
               return new Response(JSON.stringify({
                 error: "Daily credit cap reached",
                 code: dailyGate.code,
@@ -943,7 +952,12 @@ Deno.serve(async (req) => {
     // Wall-clock start for BOTH the finalize-reserve check (prepareStep) and the hard
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
-    heartbeat = startRunHeartbeat(supabaseAdmin, threadId, { startedAt: new Date(runStartedAt) });
+    // Handoff: the run is live from here, so the lease is no longer "startup" state and
+    // the heartbeat keeps the lease's own run_started_at (markRunStarted re-stamps it
+    // unconditionally; passing the same value keeps the admission timestamp stable).
+    const leaseStartedAt = ctx.lease.mode === "leased" ? new Date(ctx.lease.startedAt) : new Date(runStartedAt);
+    startupLease = null;
+    heartbeat = startRunHeartbeat(supabaseAdmin, threadId, { startedAt: leaseStartedAt });
     // Invocation-level performance telemetry (2026-09-08 audit PR 1). Non-blocking,
     // best-effort — see telemetry.ts. One recorder per streamText call below.
     const invocationTelemetry = createInvocationTelemetry({
@@ -2202,6 +2216,12 @@ Deno.serve(async (req) => {
   } catch (e) {
     heartbeat?.stop();
     releaseRunState();
+    // A lease still held here belongs to a request that never started its run.
+    if (startupLease) {
+      const held = startupLease;
+      startupLease = null;
+      await releaseRunLease(held.db, held.threadId, held.lease, "startup_failed");
+    }
     // setupRequest throws Response objects for 401/403/400 — return them directly
     if (e instanceof Response) return e;
     // Redacted before it is logged or returned (lib/orchestrator-fault.ts).
