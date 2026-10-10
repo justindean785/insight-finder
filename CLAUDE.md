@@ -387,7 +387,8 @@ promotion-quarantine switch, §3 the trap list of four instruments that lied) �
 `…_2026-09-13_instrument-truth-and-the-lineage-prerequisite.md` →
 `…_2026-09-14_sweep-false-positives-and-the-memory-retrieval-gap.md` →
 `…_2026-09-20_prompt-ceiling-payload-store-and-the-overlap-wedge.md` →
-**`SESSION_HANDOFF_2026-10-06_release-train-and-audit-queue.md` (newest — read this one first)**.
+**`SESSION_HANDOFF_2026-10-10_evidence-guards-and-the-learning-loop.md` (newest — read this one first; its §5 is the plan for making the agent learn from every run, §3 the ordered queue, §6 the release traps)** →
+`SESSION_HANDOFF_2026-10-06_release-train-and-audit-queue.md` (the draft-PR queue and release-recipe traps; `docs/proposals/` holds the P1/P2/P3 and E1-E4 design proposals).
 Its §1 is the state and the caveat that Releases 1–2 are not yet observed in production, §3 JD's
 standing rules, §4 the draft-PR queue with proof keys and recommended order, §5 the release-recipe
 traps, §7 the decisions only JD can make, §9 the ordered plan.
