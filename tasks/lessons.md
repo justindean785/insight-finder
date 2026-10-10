@@ -3,6 +3,20 @@
 Running log of non-obvious gotchas learned while working in this repo. Newest first.
 
 ## 2026-10-10 (audit revalidation)
+- **Audit every CLIENT writer of a server liveness column before gating on it.** S1a's lease read
+  `last_heartbeat_at < 75 s` as "a run is live". `ChatWindow.beginInvestigation` had stamped
+  `status:"active"` + a fresh heartbeat before every send since long before the lease, so every send
+  refused itself with 409 for ~20 minutes on 2026-10-10 (09:36Z–09:43Z) until `RUN_LEASE_DISABLED=true`
+  was set. The recovery module's own comment described that client stamp and I read past it. Rule: grep
+  `src/` for every write to a column the edge is about to treat as a signal, and say in the PR which
+  writers exist. The wiring test checked server-side ORDER and could never have caught a client write.
+- **The kill switch earned its keep.** Rollback was one secret write through the Lovable agent and
+  `/health` showed `LEGACY` within a minute, with no deploy. Every behaviour-changing edge PR keeps one.
+- **`/health` is also the fastest honest instrument for an incident**, and the live DB is readable
+  through the Lovable project's `query_database` (SELECT only): the two threads' rows, the empty
+  `tool_usage_log` and the empty `orchestrator_invocations` window proved "no run was live" in three
+  queries. Use it before theorising.
+
 - **A lease without cleanup on every exit is a ghost-run factory.** S1a's first cut released only on the two
   402 exits; a thrown setup error after acquisition would have stranded a heartbeat-less marker for the stale
   sweep to reap as an "interrupted run". Hold startup-only state at the handler top, release it in the outer
