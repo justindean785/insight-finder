@@ -11,7 +11,7 @@ import { corsHeaders, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY } from "./env
 import { checkRateLimit as checkRateLimitDistributed, MAX_REQS_PER_MIN, MAX_REQS_PER_HOUR } from "./ratelimit.ts";
 import { detectSeedServer, formatThreadTitle } from "./validation.ts";
 import { recoverStaleThreadById } from "./recovery.ts";
-import { acquireRunLease, runLeaseRefusalResponse, type RunLeaseResult } from "./lib/run-lease.ts";
+import { acquireRunLease, runLeaseRefusalResponse, type LeaseDb, type RunLeaseResult } from "./lib/run-lease.ts";
 
 // Hard cap on the parsed request body so an authenticated caller can't inflate
 // DB storage (the `messages` insert below persists `lastUser.parts` verbatim)
@@ -248,7 +248,7 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
   // stale recovery above has closed a dead run, and BEFORE the user message insert
   // below, so a refused send leaves nothing behind. See lib/run-lease.ts for the race
   // argument and the stated limit (time lease, not fencing — that is S1b).
-  const lease = await acquireRunLease(supabaseAdmin, threadId, userId);
+  const lease = await acquireRunLease(supabaseAdmin as unknown as LeaseDb, threadId, userId);
   if (!lease.admitted) throw runLeaseRefusalResponse(lease, corsHeaders);
   const archiveEnabled: boolean = !!(thread as { archive_attachments?: boolean }).archive_attachments;
   let detectedSeedType: string = String(

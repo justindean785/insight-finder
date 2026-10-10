@@ -74,9 +74,17 @@ export type PriorRunState = {
   recovery_reason: string | null;
 };
 
-// Structural, so tests can drive it with a fake chain and production passes supabase-js.
-// deno-lint-ignore no-explicit-any
-type LeaseDb = { from(table: string): any };
+// Structural, so tests can drive it with a fake chain and production passes supabase-js
+// (cast `as unknown as LeaseDb`, the same way reviews.ts takes its ReviewDb).
+type LeaseReply = { data: unknown; error: { message?: string } | null };
+interface LeaseQuery extends PromiseLike<LeaseReply> {
+  update(patch: Record<string, unknown>): LeaseQuery;
+  select(columns: string): LeaseQuery;
+  eq(column: string, value: unknown): LeaseQuery;
+  or(filter: string): LeaseQuery;
+  maybeSingle(): LeaseQuery;
+}
+export type LeaseDb = { from(table: string): LeaseQuery };
 
 export async function acquireRunLease(
   db: LeaseDb,
