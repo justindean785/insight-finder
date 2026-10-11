@@ -67,17 +67,23 @@ lease with enforcement **on** against real traffic after #734. No post-#734 prod
 
 ## 5. Open work, in order (all JD-gated)
 
-1. **Controlled re-enable** — only on JD's explicit authorization. Procedure: have the Lovable agent (project `4ce11bc3-039d-4439-b293-acacca9e1e3a`)
-   remove the `RUN_LEASE_DISABLED` secret; confirm `/health` `checks.run_lease` no longer says LEGACY and names the 6-minute wall; watch one real
-   send succeed; deliberately double-send on a test thread and expect the second to get 409 with a truthful reason. Rollback is the same secret set to `true`.
-2. **S1b fencing** — `threads.run_generation` / `run_owner` columns, then fenced heartbeat/finalize/persistence writes (`checks.run_fencing`).
-   Schema first, through Lovable, verified against the live DB, as its own PR. Not started.
-3. **#729** — JD reviews the plan; it must not ride with any release.
-4. **Engine defects, separate PRs, evidence-ranking so each needs JD's sign-off:** `confidence.ts:432` removes only `unknown` from the corroboration
+Status vocabulary used everywhere in these docs: **implemented** (merged) → **deployed** (`/health` build moved) → **enabled** (enforcing in
+production) → **production-verified** (exercised live with enforcement on and observed). S1a is implemented and deployed. It is not enabled and
+not production-verified.
+
+1. **S1b generation fencing, Option A** (JD-approved direction, 2026-10-11). Schema first (its own PR, applied through Lovable and verified on the live
+   DB), then edge code that ships **dark** behind `RUN_FENCING_DISABLED`. It does nothing until the lease is on, because generations are minted at lease
+   acquisition. A revised design with acceptance criteria is awaiting JD's approval; nothing is built. Design rule: fencing must not be described as
+   complete run isolation while any evidence write remains unfenced.
+2. **Controlled re-enable of the lease and fencing together** — only on JD's separate, explicit authorization, after item 1 is verified dark. Procedure:
+   have the Lovable agent (project `4ce11bc3-039d-4439-b293-acacca9e1e3a`) remove the `RUN_LEASE_DISABLED` secret; confirm `/health` `checks.run_lease`
+   no longer says LEGACY and names the 6-minute wall; watch one real send succeed; deliberately double-send on a test thread and expect the second to get
+   409 with a truthful reason. Rollback is the same secret set to `true`.
+3. **Engine defects, separate PRs, evidence-ranking so each needs JD's sign-off:** `confidence.ts:432` removes only `unknown` from the corroboration
    count while `source-classification.ts:930 NON_CORROBORATING_CLASSES` also excludes `ai_summary`, `web_search`, etc.; the model emits kinds outside
    the taxonomy (`threat_reputation` coerces to `other`); negative lookups should count as coverage, not artifacts. Not built.
-5. **L2 memory tool axis (S7)** — `memory_recall` matches on `subject` only; unstarted beyond reconnaissance.
-6. Optional pivots on the juba-osint.com case (verification tokens, registrar reseller, Reddit author).
+4. **L2 memory tool axis (S7)** — `memory_recall` matches on `subject` only; unstarted beyond reconnaissance.
+5. Optional pivots on the juba-osint.com case (verification tokens, registrar reseller, Reddit author).
 
 ## 6. Release recipe traps this session re-hit
 
