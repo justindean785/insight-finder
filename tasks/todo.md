@@ -1,18 +1,24 @@
 # tasks/todo.md — remediation workstream (audit 2026-10-10)
 
 Plan of record: `docs/plans/REMEDIATION_PLAN_2026-10-10.md`. This file is the checklist and the
-running results. The previous contents (June UI/UX upgrade plan, all items shipped) were retired.
+running results. The previous contents (June UI/UX upgrade plan) are preserved verbatim in
+`docs/archive/TODO_2026-06_workspace-ui-plan.md`; its 20 unchecked items belong to retired sub-sections, not current work.
 
-## Status: S1a deployed (build 2e0d3ee) but DISABLED via RUN_LEASE_DISABLED after a self-inflicted 409 incident (client heartbeat stamp, fixed in #733); re-enable after the frontend is live and the edge guard ships
+## Status: S1a is IMPLEMENTED and DEPLOYED (live `811929c`) but enforcement is DISABLED (`RUN_LEASE_DISABLED=true`)
 
-Baseline revalidated 2026-10-10 (details in the plan §1): `main` `811acf3`, live build `f9fc281`,
-#724 merged and live, #613 schema still unapplied, 13 open PRs all draft.
+Three different states, kept apart on purpose: **implemented** (merged) → **deployed** (`/health` build moved) → **enabled** (enforcing in production).
+S1a is the first two and not the third. Re-enabling needs JD's explicit authorization. Handoff: `SESSION_HANDOFF_2026-10-10_s1a-admission-lease-and-the-heartbeat-incident.md`.
+
+Audit baseline revalidated 2026-10-10 (plan §1, historical): `main` `811acf3`, live build `f9fc281`, #724 merged and live, #613 schema
+unapplied, 13 open PRs all draft. **Current (2026-10-11T06:43Z):** `main` `88f853e`, live `811929c`, `deploy/live` `811929c`, mirror `8d59968`.
 
 ## Plan
 
 ### S1 — run ownership (P0)
-- [x] S1a admission lease (#730, live `2e0d3ee`): versioned conditional UPDATE, 409 on a live run, 503 on an unprovable claim, release on every startup exit, `RUN_LEASE_DISABLED`, `checks.run_lease`, `.github/ci/assert-run-lease.sql`
-- [ ] S1a-guard (edge): a heartbeat counts as live only with `run_started_at` set and within a plausible run wall; then unset `RUN_LEASE_DISABLED`
+- [x] S1a admission lease (#730): implemented and deployed (`2e0d3ee`): versioned conditional UPDATE, 409 on a live run, 503 on an unprovable claim, release on every startup exit, `RUN_LEASE_DISABLED`, `checks.run_lease`, `.github/ci/assert-run-lease.sql`
+- [x] Frontend 409 correction (#733): `beginInvestigation` no longer stamps `status`/`last_heartbeat_at`; implemented and deployed (Vercel, on merge)
+- [x] Six-minute server guard (#734): a heartbeat is live only with `run_started_at` within `RUN_LEASE_MAX_RUN_MS` (6 min); implemented and deployed (`811929c`)
+- [ ] **Lease enforcement: DISABLED.** Controlled re-enable is pending JD's authorization, then verification: `/health` no longer `LEGACY` and names the 6-minute wall, one real send succeeds, a deliberate double-send on a test thread gets a truthful 409. **Not yet exercised in production with enforcement on.**
 - [ ] S1b schema: `threads.run_generation`, `threads.run_owner` (through Lovable, verified live)
 - [ ] S1c fenced heartbeat / finalize / persistence writes; cause vocabulary; `/health` `checks.run_fencing`
 - [~] regression fixtures: stateful-fake race and finish-between-read-and-write covered (15 Deno tests + Postgres predicate assertion); a two-session Postgres concurrency test and refresh/stop/crash end-to-end fixtures remain for S1b
@@ -45,6 +51,8 @@ Baseline revalidated 2026-10-10 (details in the plan §1): `main` `811acf3`, liv
 - [ ] table keyed by `call_id`; sweep enabled only after coverage proof
 
 ## Results
+- 2026-10-10: S1a incident. #730 live as `2e0d3ee` returned 409 on every send (client heartbeat stamp). Rolled back by kill switch, no redeploy. Fixed by
+  #733 (client) and #734 (server guard, live `811929c`, stamp #735, mirror #111, ledger #736). Lease remains OFF.
 - 2026-10-10: plan written and revalidated; no code changed. Memory-axis work (S7) was read-only
   reconnaissance only.
 - 2026-10-10: S1a built, reviewed (3 confirmed findings fixed, 1 narrowed, 1 answered), merged as #730,
@@ -52,6 +60,8 @@ Baseline revalidated 2026-10-10 (details in the plan §1): `main` `811acf3`, liv
   Edge suite 2232/0/6. Stated limit: time lease, not fencing (S1b).
 
 ## Blockers / decisions for JD
+- **Re-enable the S1a lease?** Explicit authorization required; the kill switch stays `true` until then.
+- Engine fixes (separate PRs, evidence-ranking, need sign-off): corroboration should filter through `NON_CORROBORATING_CLASSES`; add a `reputation` kind; negative lookups as coverage, not artifacts.
 - S1b (fencing) needs the schema change `threads.run_generation` / `run_owner` through Lovable: approve the schema PR when ready.
 - Historical `verified` rows on `7a2968e1` (F5): remediate through Lovable with an audit row, or leave and document.
 - #612: supersede (recommended) or extend.

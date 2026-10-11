@@ -1,5 +1,7 @@
 # SESSION HANDOFF — 2026-10-10 — evidence guards shipped, the learning loop is the next job
 
+> **Update (later 2026-10-10):** the run lease this file calls "unbuilt" (§5 L5) shipped as S1a (#730/#733/#734) and is deployed but DISABLED. Read `SESSION_HANDOFF_2026-10-10_s1a-admission-lease-and-the-heartbeat-incident.md` first.
+
 > **Take the state from `/health`, `git log origin/main` and the ledger, never from this file's numbers.** Everything dated below is a
 > measurement from 2026-10-10 and was already moving when written. Address the user as **JD**. Engineering only — never investigate any
 > person who appears in a scan.

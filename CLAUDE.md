@@ -20,8 +20,9 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 > `SESSION_HANDOFF_*.md`. The old dated blocks (2026-09-13 .. 2026-09-22) are archived verbatim in
 > `docs/archive/CLAUDE_STATE_HISTORY_2026-09.md`.
 >
-> Last verified when this note was written (2026-10-10): live `osint-agent` = `2e5f78c` (E3), `deploy/live` -> `2e5f78c`, mirror `c722971`.
-> Recent proof keys, newest last: `checks.run_end_log` (#714), `checks.breach_origin_cap` (#718), `checks.memory_context` (#721).
+> Last verified (2026-10-11T06:43Z): live `osint-agent` = `811929c` (S1a run-wall guard, #734), `deploy/live` -> `811929c`, mirror `8d59968`, canonical `main` `88f853e`.
+> **The S1a run lease is deployed but DISABLED** (`RUN_LEASE_DISABLED=true`; `/health` `checks.run_lease` reads `LEGACY`). Do not re-enable it, or change that secret, without JD's explicit authorization. Details: `SESSION_HANDOFF_2026-10-10_s1a-admission-lease-and-the-heartbeat-incident.md`.
+> Recent proof keys, newest last: `checks.run_end_log` (#714), `checks.breach_origin_cap` (#718), `checks.memory_context` (#721), `checks.user_supplied_status` (#724), `checks.run_lease` (#730/#734).
 > Baselines drift every PR: edge 2217 passed / 0 failed / 6 ignored, `npm run test:e2e` 51 passed / 2 skipped (re-measure before blaming a diff).
 >
 > **Release-recipe traps that still bite** (details in the deploy section below and the archive): the stamp PR must merge while `main` is the marker
@@ -387,7 +388,8 @@ promotion-quarantine switch, §3 the trap list of four instruments that lied) �
 `…_2026-09-13_instrument-truth-and-the-lineage-prerequisite.md` →
 `…_2026-09-14_sweep-false-positives-and-the-memory-retrieval-gap.md` →
 `…_2026-09-20_prompt-ceiling-payload-store-and-the-overlap-wedge.md` →
-**`SESSION_HANDOFF_2026-10-10_evidence-guards-and-the-learning-loop.md` (newest — read this one first; its §5 is the plan for making the agent learn from every run, §3 the ordered queue, §6 the release traps)** →
+**`SESSION_HANDOFF_2026-10-10_s1a-admission-lease-and-the-heartbeat-incident.md` (newest — read this one first; the run lease is built, deployed and switched OFF, §5 is the JD-gated queue, §6 the release traps)** →
+`SESSION_HANDOFF_2026-10-10_evidence-guards-and-the-learning-loop.md` (read second; its §5 is the plan for making the agent learn from every run, §3 the ordered queue, §6 the release traps. **Superseded on one point:** its §5 L5 says the server-side run lease is "unbuilt" — S1a shipped as #730/#734 and is disabled by switch) →
 `SESSION_HANDOFF_2026-10-06_release-train-and-audit-queue.md` (the draft-PR queue and release-recipe traps; `docs/proposals/` holds the P1/P2/P3 and E1-E4 design proposals).
 Its §1 is the state and the caveat that Releases 1–2 are not yet observed in production, §3 JD's
 standing rules, §4 the draft-PR queue with proof keys and recommended order, §5 the release-recipe

@@ -3,11 +3,17 @@
 Running log of non-obvious gotchas learned while working in this repo. Newest first.
 
 ## 2026-10-10 (audit revalidation)
+- **Implemented, deployed and enabled are three states; documents must say which.** S1a is the first two. A PR body that read "not started" outlived
+  the work by hours, and a handoff saying "unbuilt" would have sent a fresh session to rebuild it. Update the status line in the same PR that changes it.
+- **A `.git/handoffs/` note is local to one clone.** Fresh cloud sessions clone anew and never see it. Durable handoffs live in the repo root as
+  `SESSION_HANDOFF_<date>_<slug>.md` and are linked from `CLAUDE.md`.
+- **Never replace a checklist file without archiving it.** `tasks/todo.md` was overwritten; the old content (20 unchecked items) now lives in
+  `docs/archive/TODO_2026-06_workspace-ui-plan.md`.
 - **Audit every CLIENT writer of a server liveness column before gating on it.** S1a's lease read
   `last_heartbeat_at < 75 s` as "a run is live". `ChatWindow.beginInvestigation` had stamped
   `status:"active"` + a fresh heartbeat before every send since long before the lease, so every send
-  refused itself with 409 for ~20 minutes on 2026-10-10 (09:36Z–09:43Z) until `RUN_LEASE_DISABLED=true`
-  was set. The recovery module's own comment described that client stamp and I read past it. Rule: grep
+  refused itself with 409 on 2026-10-10 (one captured refusal carried `last heartbeat 09:36:34Z`) until
+  `RUN_LEASE_DISABLED=true` was set. The recovery module's own comment described that client stamp and I read past it. Rule: grep
   `src/` for every write to a column the edge is about to treat as a signal, and say in the PR which
   writers exist. The wiring test checked server-side ORDER and could never have caught a client write.
 - **The kill switch earned its keep.** Rollback was one secret write through the Lovable agent and

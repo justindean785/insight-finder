@@ -6,6 +6,10 @@ preparing this. Labels: **Confirmed** = directly supported by inspected code or 
 records; **Likely** = supported but needs reproduction or instrumentation; **Unverified** =
 material evidence gap.
 
+> **Current state (2026-10-11T06:43Z), added after this plan was written:** `main` `88f853e`, live `osint-agent` `811929c`, `deploy/live` `811929c`, mirror `8d59968`.
+> S1a shipped (#730, #733, #734) and is deployed but **disabled** (`RUN_LEASE_DISABLED=true`). The §1 table below is the audit-day baseline and is kept as a
+> historical measurement. See `SESSION_HANDOFF_2026-10-10_s1a-admission-lease-and-the-heartbeat-incident.md`.
+
 ## 1. Baseline vs. the audit — what changed
 
 | Surface | Audit baseline (07:07–07:25Z) | Now (re-measured this session) | Label |
@@ -186,9 +190,10 @@ projected speedups from the historical documents.
 
 ## 6. First implementation slice for approval
 
-> **Status 2026-10-10:** S1a shipped as #730 and is live at build `2e0d3ee` (`checks.run_lease`). The review
-> of head `a4480fa` added a version clause, fail-closed acquisition and release-on-every-exit; the stated
-> limit is a time lease, not fencing. S1b is next and needs the schema PR.
+> **Status 2026-10-11:** S1a shipped as #730 (live `2e0d3ee`), then caused an every-send HTTP 409 incident (the client stamped a fresh heartbeat
+> before each send). It was rolled back by `RUN_LEASE_DISABLED=true`, the client stamp was removed (#733), and the server guard (#734, live `811929c`) now
+> requires a recent `run_started_at`. **Implemented and deployed; enforcement is disabled** pending JD's authorization. The review of head `a4480fa` added a version
+> clause, fail-closed acquisition and release-on-every-exit; the stated limit is a time lease, not fencing. S1b is next and needs the schema PR.
 
 **S1a — the no-schema admission lease** (one edge PR, kill switch, `/health` key, four tests).
 It removes the duplicate-admission path with no migration and is fully reversible. S5 (#593
