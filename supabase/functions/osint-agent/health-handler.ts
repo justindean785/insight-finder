@@ -29,6 +29,7 @@ import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
 import { negativeLookupSelfTest } from "./lib/negative-lookup.ts";
 import { toolInputFailureSelfTest } from "./lib/tool-input-failure.ts";
 import { runEndSelfTest } from "./lib/run-end.ts";
+import { runLeaseSelfTest } from "./lib/run-lease.ts";
 import { recordNameQuarantineEnabled } from "./lib/record-name-quarantine.ts";
 import {
   deepseekPreflightAlways,
@@ -378,6 +379,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.tool_input_failure_log = toolInputFailureSelfTest();
   // Why a run's persistence/finish handler fired (lib/run-end.ts). Pure, no DB; presence proves the build.
   r.checks.run_end_log = runEndSelfTest();
+  // S1a — is admission atomic (one conditional UPDATE, 409 on a live heartbeat)? Pure.
+  // Its PRESENCE proves the build with the lease is live; ok:false means the filter
+  // drifted from the recovery stale bar. Kill switch: RUN_LEASE_DISABLED.
+  r.checks.run_lease = runLeaseSelfTest();
   // Per-case dead-target memory (lib/dead-target.ts). Pure, no DB. Its PRESENCE is the
   // behavioural proof that the build carrying the gate is the one running.
   r.checks.dead_target_memory = describeDeadTargetMemory();

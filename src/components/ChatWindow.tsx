@@ -1881,26 +1881,18 @@ function ChatWindowInner({
   useEffect(() => { inputRef.current?.focus(); }, [threadId]);
 
   const beginInvestigation = useCallback(async () => {
-    // Stamp last_heartbeat_at alongside status:"active" so a run that starts on a
-    // thread with a stale heartbeat (e.g. a 2nd message after a prior run finished
-    // long ago) does not look heartbeat-stale to the server-side stale-run recovery
-    // (recoverStaleActiveThreads, >75s). Without this, the auto-sweep below fires on
-    // isLoading→true, health hits recovery, the just-started run is reaped to
-    // "finished", and the watchdog aborts its stream — the "starts, then stops" bug.
-    // The server takes over pulsing the heartbeat (~15s) once the run is under way.
-    const { error: statusError } = await supabase
-      .from("threads")
-      .update({
-        status: "active",
-        updated_at: new Date().toISOString(),
-        last_heartbeat_at: new Date().toISOString(),
-      })
-      .eq("id", threadId);
-    if (statusError) throw statusError;
+    // The client writes NOTHING to `threads` here. It used to stamp status:"active" and
+    // a fresh last_heartbeat_at before each send so the stale-run sweep would not reap a
+    // just-started run (the "starts, then stops" bug). Since #730 the server's admission
+    // lease stamps status, run_started_at and last_heartbeat_at itself, atomically, before
+    // the user message is stored — and it reads a heartbeat younger than 75 s as a LIVE
+    // run. The client stamp therefore made every send refuse itself with 409
+    // RUN_IN_PROGRESS (production, 2026-10-10 09:36Z, threads cfe70631 and 6d55b8da).
+    // Liveness is the server's signal; the client must never write it.
     lastUserScrollUpRef.current = 0; // a new run is an implicit "follow the latest"
     followLatestRef.current = true;
     setShowJumpToLatest(false);
-  }, [threadId]);
+  }, []);
 
   const stopInvestigation = useCallback(async () => {
     if (stopping) return;
