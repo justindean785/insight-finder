@@ -1,5 +1,8 @@
 # Next-session prompt — Insight Finder
 
+> **⚠ SUPERSEDED IN PART — read first.** This prompt was written 2026-10-06, before S1a (the run admission lease, #730/#733/#734) and the 2026-10-10 HTTP 409 incident. Its build numbers, PR queue and "Current Problem" list are historical. Start from `SESSION_HANDOFF_2026-10-10_s1a-admission-lease-and-the-heartbeat-incident.md`, then re-verify `/health`, `git log origin/main`, the ledger and the open-PR list yourself.
+> **Standing rule:** the run lease is deployed but DISABLED (`RUN_LEASE_DISABLED=true`). Do not change lease enforcement or that secret without JD's explicit authorization.
+
 > **Target agent:** Claude Code (fresh context, remote/web sandbox). Paste this whole file as the opening message.
 > **Prerequisites:** GitHub MCP access to `justindean785/insight-finder` and `justindean785/seeker-spark-search-5362c57c`; the Lovable MCP (project `4ce11bc3-039d-4439-b293-acacca9e1e3a`, SELECT-only DB queries) for deploys.
 > **Written 2026-10-06T21:30Z.** Every number is a dated measurement, not a state — re-verify. This file replaces the 2026-09-20 prompt, whose queue has drained.
