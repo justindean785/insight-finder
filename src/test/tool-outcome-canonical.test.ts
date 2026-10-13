@@ -288,43 +288,89 @@ describe("the Faulted tile and the Needs attention list count different things",
   });
 });
 
-describe("normalizeProviderError — a plan/quota 403 is not bot protection (LeakCheck, 2026-10-06)", () => {
-  // LeakCheck's docs give 403 exactly two meanings: "Active plan required" and "Limit reached". The row the
-  // edge writes for a refused lookup carries only the status, so the tool name is what identifies it — and the
-  // status alone cannot say WHICH of the two, so the wording must not pick one without the provider's words.
-  it("leakcheck_lookup 403 with no provider text says 'either', says it was not told which, and drops 'bot protection'", () => {
-    const m = normalizeProviderError("leakcheck_lookup", "upstream returned HTTP 403", 403);
-    expect(m).toMatch(/documents 403 as either an inactive plan or a reached quota, and did not say which/i);
-    expect(m).toMatch(/Check the plan and quota/);
-    expect(m).not.toMatch(/IP reputation|bot protection/i);
-    expect(m).not.toMatch(/point to an inactive plan|point to a reached usage quota/i); // does NOT pick one
-    expect(m).not.toMatch(/upstream returned HTTP 403/); // bare transport text is not quoted back
+describe("normalizeProviderError — LeakCheck's documented 403 meanings (and only LeakCheck's)", () => {
+  // LeakCheck's docs (docs.leakcheck.io/errors) give 403 exactly two meanings: "Active plan required" and
+  // "Limit reached". The row the edge writes for a refused lookup usually carries only the status — cache.ts
+  // extractToolError synthesises "upstream returned HTTP 403" — so the tool name identifies it, and the status
+  // alone cannot say WHICH of the two. The account-limit reading is keyed on the tool name AND the 403 status,
+  // never on keywords: a 403 from a website, a CDN or a scraping tool is the target's, not a provider plan problem.
+  const GENERIC = "Access denied (HTTP 403) — the provider blocked this request, usually bot protection or IP reputation, not a bad key.";
+
+  it("leakcheck_lookup 403 with only transport text says 'either', says it was not told which, and drops 'bot protection'", () => {
+    for (const raw of ["upstream returned HTTP 403", null, ""]) {
+      const m = normalizeProviderError("leakcheck_lookup", raw, 403);
+      expect(m.startsWith("Refused (HTTP 403).")).toBe(true);
+      expect(m).toMatch(/documents 403 as either an inactive plan or a reached usage quota, and the response did not say which/i);
+      expect(m).toMatch(/Check the plan and remaining quota on the LeakCheck account/);
+      expect(m).not.toMatch(/IP reputation|bot protection|account grounds/i);
+      expect(m).not.toMatch(/upstream returned HTTP 403/); // bare transport text is not quoted back
+    }
   });
 
-  it("names WHICH only when the provider's own words did, and quotes them", () => {
+  it("names WHICH only when LeakCheck's own documented words did, and quotes them", () => {
     const plan = normalizeProviderError("leakcheck_lookup", "Active plan required", 403);
-    expect(plan).toContain('"Active plan required"');
-    expect(plan).toMatch(/point to an inactive plan/i);
-    expect(plan).not.toMatch(/reached usage quota/i);
+    expect(plan.startsWith('Refused (HTTP 403) — "Active plan required".')).toBe(true);
+    expect(plan).toMatch(/no active plan/i);
+    expect(plan).not.toMatch(/usage quota/i);
     const lim = normalizeProviderError("leakcheck_lookup", "Limit reached", 403);
-    expect(lim).toContain('"Limit reached"');
-    expect(lim).toMatch(/point to a reached usage quota/i);
-    expect(lim).not.toMatch(/inactive plan/i);
+    expect(lim.startsWith('Refused (HTTP 403) — "Limit reached".')).toBe(true);
+    expect(lim).toMatch(/usage quota is used up/i);
+    expect(lim).not.toMatch(/no active plan/i);
+    expect(normalizeProviderError("leakcheck_lookup", "active plan required", 403)).toMatch(/no active plan/i);
   });
 
-  it("any other provider that says plan in its own words gets the honest reading too", () => {
-    const m = normalizeProviderError("some_paid_api", "403 Active plan required", 403);
-    expect(m).toMatch(/point to an inactive plan/i);
-    expect(m).not.toMatch(/IP reputation/i);
+  it("never asserts a cause in the headline", () => {
+    for (const raw of [null, "Active plan required", "Limit reached"]) {
+      expect(normalizeProviderError("leakcheck_lookup", raw, 403)).not.toMatch(/account grounds/i);
+    }
   });
 
-  it("NEGATIVE CONTROL — an ordinary 403 keeps the bot-protection wording", () => {
-    expect(normalizeProviderError("jina_reader_scrape", "jina 403", 403)).toMatch(/bot protection or IP reputation/i);
-    expect(normalizeProviderError("reddit_user", "reddit 403 Blocked", 403)).toMatch(/bot protection or IP reputation/i);
-    expect(normalizeProviderError("nominatim_geocode", "nominatim 403", 403)).toMatch(/bot protection or IP reputation/i);
+  it("both documented phrases at once → no single cause is named", () => {
+    const m = normalizeProviderError("leakcheck_lookup", "Active plan required / Limit reached", 403);
+    expect(m).toMatch(/either an inactive plan or a reached usage quota/i);
+    expect(m).not.toMatch(/Active plan required"/);
   });
 
-  it("does not change the category: it is still http_denied (the calm bucket), only the wording moves", () => {
+  it("provider text that is NOT one of the two documented messages keeps the generic wording", () => {
+    expect(normalizeProviderError("leakcheck_lookup", "Attention Required! | Cloudflare", 403)).toBe(GENERIC);
+  });
+
+  it("a LeakCheck refusal with no 403 status is not read through the 403 documentation", () => {
+    // Category is http_denied only because the text said "forbidden"; the docs' claim is about the 403 status.
+    expect(classifyDetailedOutcome("failed", "forbidden", null)).toBe("http_denied");
+    expect(normalizeProviderError("leakcheck_lookup", "forbidden", null)).toBe(GENERIC);
+    // Defence in depth: even handed the category directly, the 403 documentation needs a 403.
+    expect(normalizeProviderError("leakcheck_lookup", "Active plan required", null, "http_denied")).toBe(GENERIC);
+    expect(normalizeProviderError("leakcheck_lookup", "Limit reached", 200, "http_denied")).toBe("Access denied (HTTP 200) — the provider blocked this request, usually bot protection or IP reputation, not a bad key.");
+  });
+
+  // The regression the review found: a keyword rule would send an analyst to "check your plan" for a paywalled
+  // page, a CDN quota page or a shodan-style 403. Every one of these must be byte-identical to the generic wording.
+  const UNRELATED: Array<[string, string]> = [
+    ["jina_reader_scrape", "403 Forbidden: Subscription required to read this article"],
+    ["jina_reader_scrape", "Target returned 403: please log in to your subscription"],
+    ["jina_reader_scrape", "Active plan required"],
+    ["firecrawl_scrape", "HTTP 403 — daily limit reached for anonymous readers"],
+    ["http_fingerprint", "HTTP 403 — Cloudflare: request quota for your IP"],
+    ["reddit_user", "Whoa there, pardner! Reddit's awfully busy; your IP quota"],
+    ["shodan_host", "403 Forbidden: subscription required"],
+    ["some_paid_api", "403 Active plan required"],
+    ["nominatim_geocode", "nominatim 403 account limit exceeded"],
+    ["leakcheck_lookup_lookalike", "Limit reached"],
+  ];
+  it.each(UNRELATED)("NEGATIVE CONTROL — %s 403 saying %j keeps the generic wording", (tool, raw) => {
+    expect(normalizeProviderError(tool, raw, 403)).toBe(GENERIC);
+  });
+
+  it("ordinary 403s with no account words keep the generic wording", () => {
+    expect(normalizeProviderError("jina_reader_scrape", "jina 403", 403)).toBe(GENERIC);
+    expect(normalizeProviderError("reddit_user", "reddit 403 Blocked", 403)).toBe(GENERIC);
+    expect(normalizeProviderError("nominatim_geocode", "nominatim 403", 403)).toBe(GENERIC);
+  });
+
+  it("does not change the category: still http_denied (the calm bucket) for every case above", () => {
     expect(classifyDetailedOutcome("failed", "Active plan required", 403)).toBe("http_denied");
+    expect(classifyDetailedOutcome("failed", "upstream returned HTTP 403", 403)).toBe("http_denied");
+    for (const [, raw] of UNRELATED) expect(classifyDetailedOutcome("failed", raw, 403)).toBe("http_denied");
   });
 });
