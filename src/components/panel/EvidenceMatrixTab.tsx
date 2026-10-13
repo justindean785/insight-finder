@@ -42,6 +42,8 @@ export function EvidenceMatrixTab({
       return {
         a,
         review: r,
+        // A rejection recorded on another record of the same value (lib/selector-group.ts → expandRejections).
+        inherited: review.isInherited(a.id),
         label: labelForArtifact(a, r),
         score: effectiveConfidenceOrZero(a),
       };
@@ -173,7 +175,7 @@ export function EvidenceMatrixTab({
           </div>
         ) : (
           <ul className="grid grid-cols-1 gap-2 lg:grid-cols-2">
-            {rows.map(({ a, label, review: rState, score }) => {
+            {rows.map(({ a, label, review: rState, inherited, score }) => {
               const meta = (a.metadata ?? {}) as Record<string, unknown>;
               const previewFacts = metaFacts(meta);
               // ONE value drives the bar AND the numeral. They used to disagree
@@ -255,6 +257,7 @@ export function EvidenceMatrixTab({
                         </TooltipTrigger>
                         <TooltipContent side="left" className="max-w-[240px] text-xs">
                           {REVIEW_HELP[rState]}
+                          {inherited && " Recorded on another record of this value; reset it there to lift it."}
                         </TooltipContent>
                       </Tooltip>
                     </div>
@@ -369,7 +372,7 @@ export function EvidenceMatrixTab({
                           >
                             <Ban className="w-3 h-3 mr-2" /> Mark false &amp; teach agent
                           </DropdownMenuItem>
-                          {rState !== "new" && (
+                          {rState !== "new" && !inherited && (
                             <>
                               <DropdownMenuSeparator />
                               <DropdownMenuItem onClick={() => review.set(a.id, null, { value: a.value, kind: a.kind, confidence: shownConf.effective ?? undefined, source: a.source })}>

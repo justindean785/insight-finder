@@ -177,3 +177,80 @@ describe("buildConfidenceProfile — honest, deterministic confidence axes", () 
     expect(many.value).toBeGreaterThan(one.value);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Corroboration is a property of the SELECTOR (#593 review, finding B2).
+//
+// The hook keeps one item per database ROW when rows differ in authority, so the same email recorded by a breach tool and
+// by a public-source tool is two items, each with ONE source class. The axis counted rows, so that selector — the
+// textbook corroborated finding — read 0%. It now unions the independent classes of every live row of a selector before
+// counting, and divides by selectors. Duplicates are not independent evidence: a second row from the SAME class adds
+// nothing, a quarantined or conflicted sibling lends nothing, and the result does not depend on row order.
+// ---------------------------------------------------------------------------
+
+describe("buildConfidenceProfile — corroboration unions source classes across rows of one selector", () => {
+  const row = (id: string, source: string, over: Partial<Artifact> = {}) =>
+    A({ id, kind: "email", value: "jordan.vale@example.com", source, metadata: { sources: [source] }, ...over });
+  const corroboration = (artifacts: Artifact[]) => dim(buildConfidenceProfile({ artifacts, seedValue: null, nowMs: NOW }), "corroboration");
+
+  it("one email recorded by two DIFFERENT source classes counts as corroborated (it read 0% when counted by row)", () => {
+    const c = corroboration([row("1", "breach_check"), row("2", "github_user")]);
+    expect(c.value).toBe(100);
+    expect(c.reason).toContain("1 of 1 findings");
+  });
+
+  it("…in either row order", () => {
+    const a = corroboration([row("1", "breach_check"), row("2", "github_user")]);
+    const b = corroboration([row("2", "github_user"), row("1", "breach_check")]);
+    expect(b).toEqual(a);
+  });
+
+  it("two rows from the SAME class are not independent: still not corroborated", () => {
+    // oathnet and leakcheck are both breach tools — one class.
+    const c = corroboration([row("1", "oathnet_lookup"), row("2", "leakcheck_lookup")]);
+    expect(c.value).toBe(0);
+    expect(c.reason).toContain("0 of 1 findings");
+  });
+
+  it("many duplicate rows of one class never add up to corroboration", () => {
+    const c = corroboration(Array.from({ length: 6 }, (_, i) => row(String(i), "oathnet_lookup", { confidence: 40 + i })));
+    expect(c.value).toBe(0);
+  });
+
+  it("the denominator is SELECTORS, not rows: a corroborated selector with a twin is not diluted", () => {
+    const other = A({ id: "9", kind: "email", value: "someone.else@example.com", source: "breach_check", metadata: { sources: ["breach_check"] } });
+    const c = corroboration([row("1", "breach_check"), row("2", "github_user"), other]);
+    expect(c.value).toBe(50); // 1 corroborated selector of 2, not 2 rows of 3
+    expect(c.reason).toContain("1 of 2 findings");
+  });
+
+  it("a QUARANTINED sibling lends no class: the live row stands alone", () => {
+    const quarantined = row("2", "github_user", { metadata: { sources: ["github_user"], subject_unlinked: true } });
+    expect(corroboration([row("1", "breach_check"), quarantined]).value).toBe(0);
+  });
+
+  it("a collision/conflict sibling lends no class", () => {
+    const collision = row("2", "github_user", { metadata: { sources: ["github_user"], collision: true } });
+    expect(corroboration([row("1", "breach_check"), collision]).value).toBe(0);
+    const fp = row("3", "github_user", { metadata: { sources: ["github_user"], false_positive: true } });
+    expect(corroboration([row("1", "breach_check"), fp]).value).toBe(0);
+  });
+
+  it("different SELECTORS never pool their classes (one breach email + one unrelated public email)", () => {
+    const a = A({ id: "1", kind: "email", value: "a@example.com", source: "breach_check", metadata: { sources: ["breach_check"] } });
+    const b = A({ id: "2", kind: "email", value: "b@example.com", source: "github_user", metadata: { sources: ["github_user"] } });
+    expect(corroboration([a, b]).value).toBe(0);
+  });
+
+  it("the selector is matched the way the hook dedupes it: case and @ prefixes do not split a group", () => {
+    const u1 = A({ id: "1", kind: "username", value: "@JordanVale", source: "breach_check", metadata: { sources: ["breach_check"] } });
+    const u2 = A({ id: "2", kind: "username", value: "jordanvale", source: "github_user", metadata: { sources: ["github_user"] } });
+    expect(corroboration([u1, u2]).value).toBe(100);
+  });
+
+  it("a single row that already carries two classes is unchanged by the grouping", () => {
+    const one = A({ id: "1", kind: "email", value: "a@example.com", source: "breach_check", metadata: { sources: ["breach_check", "github_user"] } });
+    const c = corroboration([one, A({ id: "2", kind: "phone", value: "555-1", source: "web_search" })]);
+    expect(c.value).toBe(50);
+  });
+});

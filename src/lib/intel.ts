@@ -16,6 +16,7 @@ import { isSubjectUnlinked, isQuarantined } from "@/lib/quarantine";
 // frontend consumer shares — analyst verdict OR the legacy `false_positive` flag.
 import { isRejectedArtifact as isRejectedArtifactRow, buildRejectedDerivationIds } from "@/lib/analyst-decisions";
 import { normalizeTarget } from "@/lib/next-step-cards";
+import { distinctSelectorCount, selectorKey } from "@/lib/selector-group";
 // Derived models built here (timeline entries, pivot candidates) carry a
 // per-artifact confidence that is later RENDERED, so they must carry the
 // effective value — otherwise a surface displays a raw number without ever
@@ -1338,6 +1339,30 @@ export function buildReportMarkdown(input: ReportInput): string {
   // bind on the report (the network section excludes rejected rows by id).
   const artifacts = foldAliasTwins(dedupeBreachDatasets(input.artifacts), reviews);
   const total = artifacts.length;
+  // Records vs values. The hook keeps one item per database record when records of the same value differ in authority
+  // (each under its own), so `total` counts a value recorded by two tools twice. The summary counts VALUES and says so
+  // when the record count differs; the Key Findings list names each value once.
+  const valueCount = distinctSelectorCount(artifacts);
+  const recordsNote = valueCount === total ? "" : ` (${total} records)`;
+  const recordsPerValue = new Map<string, number>();
+  for (const a of artifacts) {
+    const k = selectorKey(a.kind, a.value);
+    recordsPerValue.set(k, (recordsPerValue.get(k) ?? 0) + 1);
+  }
+  /** Keep the first record of each value, in the order given. The caller orders by strength, so the entry shown is the record's OWN authority — nothing is merged. */
+  const onePerValue = (list: Artifact[]): Artifact[] => {
+    const seen = new Set<string>();
+    return list.filter((a) => {
+      const k = selectorKey(a.kind, a.value);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  };
+  const alsoRecorded = (a: Artifact): string => {
+    const n = (recordsPerValue.get(selectorKey(a.kind, a.value)) ?? 1) - 1;
+    return n > 0 ? `; ${n} other record${n === 1 ? "" : "s"} of this value` : "";
+  };
 
   // Analyst review wins over source-derived label/confidence so a marked
   // artifact reads the same here as in the Evidence view.
@@ -1418,7 +1443,7 @@ export function buildReportMarkdown(input: ReportInput): string {
       return `No artifacts have been recorded for this investigation yet. The agent has not produced any observations against the seed.`;
     }
     const parts: string[] = [];
-    parts.push(`Observed ${total} artifact${total === 1 ? "" : "s"} across ${audit.tools.length} tool${audit.tools.length === 1 ? "" : "s"}.`);
+    parts.push(`Observed ${valueCount} artifact${valueCount === 1 ? "" : "s"}${recordsNote} across ${audit.tools.length} tool${audit.tools.length === 1 ? "" : "s"}.`);
     if (confirmed.length) parts.push(`${confirmed.length} finding${confirmed.length === 1 ? "" : "s"} corroborated by 2+ independent source classes.`);
     if (attested.length) parts.push(`${attested.length} item${attested.length === 1 ? "" : "s"} analyst-confirmed (a decision, not a second source).`);
     if (verify.length + low.length) parts.push(`${verify.length + low.length} item${verify.length + low.length === 1 ? "" : "s"} need verification before reporting.`);
@@ -1452,25 +1477,26 @@ export function buildReportMarkdown(input: ReportInput): string {
     // the subject". It already has a home in the Collision section below; leading
     // Key Findings with it (production export 2026-09-20: the only Key Finding
     // was the excluded namesake) inverts what the heading promises.
-    const strong = [...confirmed, ...attested].filter((a) => !isOutOfSet(a) && !isCollisionArtifact(a));
+    const strong = onePerValue([...confirmed, ...attested].filter((a) => !isOutOfSet(a) && !isCollisionArtifact(a)));
     if (strong.length) {
       return [
         ...(keyFindingsHeading.lead ? [keyFindingsHeading.lead, ""] : []),
         ...strong.slice(0, 10).map((a) =>
-          `- **${a.kind}** — \`${a.value}\` _(${lbl(a) === "ATTESTED" ? "analyst-confirmed" : "corroborated"}; source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"})_`,
+          `- **${a.kind}** — \`${a.value}\` _(${lbl(a) === "ATTESTED" ? "analyst-confirmed" : "corroborated"}; source indicates via ${humanizeSourceChain(a.source)}, confidence ${conf(a) ?? "—"}${alsoRecorded(a)})_`,
         ),
       ].join("\n");
     }
-    const leads = artifacts
-      .filter((a) => { const l = lbl(a); return (l === "CORRELATED" || l === "INFERRED") && !isOutOfSet(a); })
-      .sort((a, b) => (conf(b) ?? 0) - (conf(a) ?? 0))
-      .slice(0, 10);
+    const leads = onePerValue(
+      artifacts
+        .filter((a) => { const l = lbl(a); return (l === "CORRELATED" || l === "INFERRED") && !isOutOfSet(a); })
+        .sort((a, b) => (conf(b) ?? 0) - (conf(a) ?? 0)),
+    ).slice(0, 10);
     if (!leads.length) return "_No findings recorded yet._";
     return [
       "_No fully-corroborated findings yet (none reach CONFIRMED — 2+ independent source classes — and none is analyst-confirmed). Strongest uncorroborated leads:_",
       "",
       ...leads.map((a) =>
-        `- **${a.kind}** — \`${sanitizeValueForLabel(a.value, false)}\` _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${humanizeSourceChain(a.source)})_`,
+        `- **${a.kind}** — \`${sanitizeValueForLabel(a.value, false)}\` _(${lbl(a)}, confidence ${conf(a) ?? "—"}, via ${humanizeSourceChain(a.source)}${alsoRecorded(a)})_`,
       ),
     ].join("\n");
   })();
@@ -1793,7 +1819,7 @@ export function buildReportMarkdown(input: ReportInput): string {
     `- **Type:** ${display.kind}`,
     ...(clusterReport.seedName ? [`- **Detected subject:** ${clusterReport.seedName}`] : []),
     ...(clusterReport.seedState ? [`- **Detected location target:** ${clusterReport.seedState}`] : []),
-    `- **Artifacts recorded:** ${total}`,
+    `- **Artifacts recorded:** ${valueCount}${recordsNote}`,
     "",
     `## Candidate Identity Clusters`,
     buildClusterSection(clusterReport, { includeWarnings: false }),
@@ -2601,18 +2627,40 @@ export function buildIdentityClusters(
     // T1-2: explain the merge and reward corroborating signals. Aggregate the
     // keys actually shared by >=2 artifacts in this group, skipping any
     // selector the T1-1 fan-out guard disqualified.
-    const agg = new Map<string, { signal: MergeSignal; count: number; raws: Set<string>; platforms: Set<string> }>();
+    const agg = new Map<string, {
+      signal: MergeSignal;
+      holders: Set<string>;
+      /** independent source classes backing each holder (selector), unioned over that selector's rows */
+      classes: Map<string, Set<string>>;
+      /** records per holder — one record backed by two classes is still ONE record */
+      rows: Map<string, number>;
+      raws: Set<string>;
+      platforms: Set<string>;
+    }>();
     for (const a of group) {
-      // A merge needs the key shared by two distinct artifacts, so count each
+      // A merge needs the key shared by two distinct SELECTORS. Count each
       // artifact at most once per key — an artifact that repeats the same handle
-      // in both its value and metadata.handle must not look like two sources.
+      // in both its value and metadata.handle must not look like two sources —
+      // and count rows that record the same selector (same kind + value, kept
+      // separate because their analyst authority differs) as ONE holder: two
+      // rows of one email are one email, not a merge. Source-aware: a selector
+      // recorded by two INDEPENDENT source classes is still corroborated (that
+      // is the signal's meaning), so the rows' classes are kept per holder.
+      const holder = selectorKey(a.kind, a.value);
+      const rowClasses = artifactSourceClasses(a).filter((c) => !NON_CORROBORATING_CLASSES.has(c));
       const countedHere = new Set<string>();
       for (const h of signalsFor(a)) {
         if (sharedInfraKeys.has(h.key)) continue;
         let entry = agg.get(h.key);
-        if (!entry) agg.set(h.key, (entry = { signal: h.signal, count: 0, raws: new Set(), platforms: new Set() }));
+        if (!entry) {
+          agg.set(h.key, (entry = { signal: h.signal, holders: new Set(), classes: new Map(), rows: new Map(), raws: new Set(), platforms: new Set() }));
+        }
         if (!countedHere.has(h.key)) {
-          entry.count += 1;
+          entry.holders.add(holder);
+          const seen = entry.classes.get(holder) ?? new Set<string>();
+          for (const c of rowClasses) seen.add(c);
+          entry.classes.set(holder, seen);
+          entry.rows.set(holder, (entry.rows.get(holder) ?? 0) + 1);
           countedHere.add(h.key);
           if (h.platform) entry.platforms.add(h.platform);
         }
@@ -2623,11 +2671,21 @@ export function buildIdentityClusters(
     let maxHandlePlatforms = 0;
     const ranked: { rank: number; sub: number; text: string }[] = [];
     for (const [key, entry] of agg) {
-      if (entry.count < 2) continue; // only one artifact carries it → not a merge
+      // Distinct selectors holding the key. Rows of ONE selector are one holder unless two INDEPENDENT source classes
+      // back it (then the selector is corroborated, which is what the signal rewards); duplicates from one class are not.
+      let count = entry.holders.size;
+      if (count === 1) {
+        const only = entry.classes.values().next().value as Set<string> | undefined;
+        const records = entry.rows.values().next().value as number | undefined;
+        // ≥2 RECORDS of the selector, and ≥2 independent classes among them: a single record that cites two classes is
+        // one record, exactly as it was before records of a value were kept separate.
+        if (only && only.size >= 2 && (records ?? 0) >= 2) count = 2;
+      }
+      if (count < 2) continue; // one uncorroborated selector carries it → not a merge
       signalsPresent.add(entry.signal);
       const value = key.slice(key.indexOf(":") + 1);
       if (entry.signal === "HANDLE_MATCH") {
-        maxHandlePlatforms = Math.max(maxHandlePlatforms, entry.platforms.size || entry.count);
+        maxHandlePlatforms = Math.max(maxHandlePlatforms, entry.platforms.size || count);
         ranked.push({ rank: 0, sub: 0, text: `HANDLE_MATCH: ${value}` });
         for (const raw of Array.from(entry.raws).sort()) {
           if (raw !== value) ranked.push({ rank: 0, sub: 1, text: `HANDLE_MATCH: ${raw} -> ${value}` });

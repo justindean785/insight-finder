@@ -126,7 +126,8 @@ describe("buildEntityGraph — honest, deterministic edge derivation", () => {
     const g = buildEntityGraph(
       [
         A({ id: "m", kind: "phone", value: "555-0001", confidence: 70, metadata: { parent: "sam.cole@example.com" } }),
-        A({ id: "p", kind: "phone", value: "555-0001", confidence: 60 }),
+        // A DIFFERENT selector (another spelling of the same number), not a second row of the same one.
+        A({ id: "p", kind: "phone", value: "555 0001", confidence: 60 }),
       ],
       "sam.cole@example.com",
       "email",
@@ -155,5 +156,49 @@ describe("buildEntityGraph — honest, deterministic edge derivation", () => {
     expect(g.nodes).toHaveLength(0);
     expect(g.edges).toHaveLength(0);
     expect(g.stats.nodeCount).toBe(0);
+  });
+});
+
+describe("buildEntityGraph — twin rows are one selector, not an identity link (#593)", () => {
+  it("two rows recording the SAME email draw no identity edge between themselves", () => {
+    const g = buildEntityGraph(
+      [
+        A({ id: "t1", kind: "email", value: "sam@example.com", confidence: 80 }),
+        A({ id: "t2", kind: "email", value: "SAM@example.com", confidence: 60, source: "other_tool" }),
+      ],
+      null,
+      null,
+    );
+    expect(g.nodes.filter((n) => !n.isSeed)).toHaveLength(2); // rows are preserved, both nodes stay
+    expect(edgeBetween(g, "t1", "t2")).toBeUndefined();
+    expect(g.edges.filter((e) => e.type === "identity")).toHaveLength(0);
+  });
+
+  it("a twin still reaches a DIFFERENT selector that references its value (no orphaned twin)", () => {
+    // t1/t2 both record the handle; p carries it in metadata (a distinct selector). Hero = t1 (highest confidence).
+    const g = buildEntityGraph(
+      [
+        A({ id: "t1", kind: "username", value: "nuhdeem", confidence: 90 }),
+        A({ id: "t2", kind: "username", value: "nuhdeem", confidence: 60 }),
+        A({ id: "p", kind: "social", value: "nuhdeem on x", confidence: 50, metadata: { handle: "nuhdeem" } }),
+      ],
+      null,
+      null,
+    );
+    expect(edgeBetween(g, "t1", "t2")).toBeUndefined();
+    expect(edgeBetween(g, "t1", "p")?.type).toBe("identity");
+    expect(edgeBetween(g, "t2", "p")?.type).toBe("identity");
+  });
+
+  it("twin rows of an IP keep their weak shared-infra link (unchanged, never identity)", () => {
+    const g = buildEntityGraph(
+      [
+        A({ id: "i1", kind: "ip", value: "98.207.141.88", confidence: 40 }),
+        A({ id: "i2", kind: "ip", value: "98.207.141.88", confidence: 40 }),
+      ],
+      null,
+      null,
+    );
+    expect(edgeBetween(g, "i1", "i2")?.type).toBe("shared-infra");
   });
 });

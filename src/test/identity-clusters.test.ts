@@ -357,7 +357,9 @@ describe("buildIdentityClusters handle-based merging (T1-2)", () => {
       artifact("email", "m@example.com", { source_record: "second" }),
     ], null);
     expect(report.clusters).toHaveLength(1);
-    expect(report.clusters[0].mergeReasons).toContain("EMAIL_MATCH: m@example.com");
+    // The second email row records the SAME selector as the first (#593 keeps such rows separate when their authority
+    // differs). Two rows of one email from ONE source class are one email, not a merge — so no EMAIL_MATCH reason.
+    expect(report.clusters[0].mergeReasons).not.toContain("EMAIL_MATCH: m@example.com");
     expect(report.clusters[0].mergeReasons.some((r) => r.startsWith("SHARED_INFRASTRUCTURE"))).toBe(true);
     expect(report.warnings.some((w) => w.includes("Shared-infrastructure split"))).toBe(false);
   });
@@ -487,5 +489,59 @@ describe("buildIdentityClusters — the headline never exceeds its strongest mem
       mk("name", "Q. A. Strong", 85, { email, phone: "+15555550100" }),
     ], null);
     expect(report.clusters[0].confidence).toBe(90);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// #593 — twin rows (one selector recorded by two rows) are ONE holder of a key, not two.
+// ---------------------------------------------------------------------------------------------------------------------
+describe("buildIdentityClusters counts selector holders, not rows (#593 twin rows)", () => {
+  const twin = (kind: string, value: string, id: string, source: string, metadata: Record<string, unknown> | null = null): Artifact => ({
+    id,
+    kind,
+    value,
+    confidence: 80,
+    source,
+    created_at: "2026-06-12T00:00:00.000Z",
+    metadata,
+  });
+
+  it("two rows of the SAME email do not manufacture an EMAIL_MATCH merge reason or its bonus", () => {
+    // One email, recorded twice (two tools). Nothing else links anything: this is one selector, not a merge.
+    const solo = [twin("email", "m@example.com", "e1", "tool_a")];
+    const twins = [twin("email", "m@example.com", "e1", "tool_a"), twin("email", "m@example.com", "e2", "tool_b")];
+    const one = buildIdentityClusters(solo, null);
+    const two = buildIdentityClusters(twins, null);
+    const reasons = two.clusters.flatMap((c) => c.mergeReasons);
+    expect(reasons.filter((r) => r.startsWith("EMAIL_MATCH"))).toEqual([]);
+    // Same headline either way: a duplicate row neither adds a merge signal nor lifts the cluster.
+    expect(two.clusters.map((c) => c.confidence)).toEqual(one.clusters.map((c) => c.confidence));
+  });
+
+  it("two rows of the same email from TWO independent source classes are still corroborated (EMAIL_MATCH kept)", () => {
+    const twins = [twin("email", "m@example.com", "e1", "hibp"), twin("email", "m@example.com", "e2", "census")];
+    const reasons = buildIdentityClusters(twins, null).clusters.flatMap((c) => c.mergeReasons);
+    expect(reasons).toContain("EMAIL_MATCH: m@example.com");
+  });
+
+  it("ONE row citing two source classes is still one record: no EMAIL_MATCH", () => {
+    const one = twin("email", "m@example.com", "e1", "hibp", { source_category: ["breach", "public_record"] });
+    const reasons = buildIdentityClusters([one], null).clusters.flatMap((c) => c.mergeReasons);
+    expect(reasons.filter((r) => r.startsWith("EMAIL_MATCH"))).toEqual([]);
+  });
+
+  it("two rows of the same handle across ONE platform are not a multi-platform HANDLE_MATCH", () => {
+    const twins = [
+      twin("username", "nuhdeem", "u1", "tool_a"),
+      twin("username", "nuhdeem", "u2", "tool_b"),
+    ];
+    const r = buildIdentityClusters(twins, null);
+    expect(r.clusters.flatMap((c) => c.mergeReasons).filter((x) => x.startsWith("HANDLE_MATCH"))).toEqual([]);
+  });
+
+  it("DISTINCT selectors that share a derived key still merge (the guard counts holders, it does not hide merges)", () => {
+    // Two DIFFERENT selectors (two platform profile URLs) carrying one handle → a real HANDLE_MATCH.
+    const r = buildIdentityClusters([profile("instagram", "nuhdeem"), profile("tiktok", "nuhdeem")], null);
+    expect(r.clusters.flatMap((c) => c.mergeReasons)).toContain("HANDLE_MATCH: nuhdeem");
   });
 });

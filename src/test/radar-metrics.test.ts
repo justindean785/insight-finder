@@ -53,4 +53,40 @@ describe("buildAnalyticRadar (display metrics — counts only)", () => {
     ];
     expect(axis(buildAnalyticRadar(arts, "LOW"), "Cross-source").value).toBe(50);
   });
+
+  // #593 review, finding B2: the radar counted ROWS, so one email recorded by a breach tool and by a public source read as
+  // two single-class findings. Corroboration is a property of the selector.
+  it("Cross-source unions the classes of every row of one selector (breach row + public row = corroborated)", () => {
+    const arts = [
+      mk({ kind: "email", value: "jordan.vale@example.com", metadata: { source_category: ["breach"] } }),
+      mk({ kind: "email", value: "Jordan.Vale@example.com", metadata: { source_category: ["public_record"] } }),
+    ];
+    const m = axis(buildAnalyticRadar(arts, "LOW"), "Cross-source");
+    expect(m.value).toBe(100);
+    expect(m.detail).toContain("1/1 finding");
+  });
+
+  it("…two rows of the SAME class are one class: not corroborated", () => {
+    const arts = [
+      mk({ kind: "email", value: "a@example.com", metadata: { source_category: ["breach"] } }),
+      mk({ kind: "email", value: "a@example.com", metadata: { source_category: ["breach"], note: "second tool" } }),
+    ];
+    expect(axis(buildAnalyticRadar(arts, "LOW"), "Cross-source").value).toBe(0);
+  });
+
+  it("…the denominator is selectors, so a corroborated selector with a twin is not diluted", () => {
+    const arts = [
+      mk({ kind: "email", value: "a@example.com", metadata: { source_category: ["breach"] } }),
+      mk({ kind: "email", value: "a@example.com", metadata: { source_category: ["public_record"] } }),
+      mk({ kind: "email", value: "b@example.com", metadata: { source_category: ["breach"] } }),
+    ];
+    expect(axis(buildAnalyticRadar(arts, "LOW"), "Cross-source").value).toBe(50);
+  });
+
+  it("…a rejected sibling lends no class (analyst-rejected rows never strengthen a positive metric)", () => {
+    const keep = mk({ id: "keep", kind: "email", value: "a@example.com", metadata: { source_category: ["breach"] } });
+    const rejected = mk({ id: "rej", kind: "email", value: "a@example.com", metadata: { source_category: ["public_record"] } });
+    const m = axis(buildAnalyticRadar([keep, rejected], "LOW", { rej: "dismissed" }), "Cross-source");
+    expect(m.value).toBe(0);
+  });
 });

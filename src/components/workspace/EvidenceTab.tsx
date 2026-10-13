@@ -3,6 +3,7 @@ import { ToolbarSlotContext } from "@/hooks/useToolbarSlot";
 import { MenuSelect } from "@/components/ui/compact-controls";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useReviewStates } from "@/lib/review";
+import { distinctSelectorCount } from "@/lib/selector-group";
 import { tallyAuthority } from "@/lib/authority";
 import { EvidenceBoard } from "@/components/ResourcesPanel";
 import { EvidenceMatrixTab } from "@/components/panel/EvidenceMatrixTab";
@@ -79,7 +80,12 @@ export function EvidenceTab({
     return { verified: authority.verified, rejected, recheck };
   }, [items, review]);
 
-  const parts: ReactNode[] = [`${items.length} artifact${items.length === 1 ? "" : "s"}`];
+  // Artifacts are counted by VALUE. The hook keeps one item per database record when records of the same value differ in
+  // authority (each under its own), so the raw item count would count one email recorded by two tools twice. The record
+  // count is still shown when it differs, so the number is honest about both.
+  const selectorCount = distinctSelectorCount(items);
+  const parts: ReactNode[] = [`${selectorCount} artifact${selectorCount === 1 ? "" : "s"}`];
+  if (items.length !== selectorCount) parts.push(<span className="text-muted-foreground">{items.length} records</span>);
   if (tally.verified) parts.push(<span className="text-[hsl(var(--confidence-high))]">{tally.verified} verified</span>);
   if (tally.rejected) parts.push(<span className="text-destructive">{tally.rejected} rejected</span>);
   if (tally.recheck) parts.push(<span className="text-[hsl(var(--confidence-mid))]">{tally.recheck} to recheck</span>);

@@ -161,19 +161,38 @@ describe("a derived email→handle link cannot corroborate the evidence that pro
   });
 
   it("the cap holds even though the email side agrees with itself (EMAIL_MATCH)", () => {
-    // Two artifacts carry `vernjjulian@gmail.com`, so EMAIL_MATCH is a genuine
-    // merge signal. It corroborates THE EMAIL. It says nothing about whether the
+    // Two artifacts carry `vernjjulian@gmail.com` from two INDEPENDENT source
+    // classes (breach + public_record), so EMAIL_MATCH is a genuine merge
+    // signal. It corroborates THE EMAIL. It says nothing about whether the
     // swept accounts belong to that email's owner, and the only thing joining
     // them is the local-part spelled twice.
+    //
+    // (#593: the second row used to be a second BREACH record, the same class as
+    // the first. Two rows of one selector from ONE class are a duplicate, not a
+    // corroboration — see the next test — so this fixture now brings its own
+    // class, keeping the test about the cap and not about duplicate counting.)
     const richEmail = mk({
       id: "e2", kind: "email", value: "vernjjulian@gmail.com",
       confidence: 85, source: "breach_check (ApexSMS breach)",
-      metadata: { confidence_cap_applied: 85 },
+      metadata: { confidence_cap_applied: 85, source_category: ["public_record"] },
     });
     const { clusters } = buildIdentityClusters(
       [prodEmailOathnet, richEmail, prodSweptHackerRank, prodSweptTelegram], null);
     const c = clusters.find((x) => x.artifacts.some((a) => a.id === "e2"))!;
     expect(c.mergeReasons.some((r) => r.startsWith("EMAIL_MATCH"))).toBe(true);
+    expect(c.confidence).toBeLessThanOrEqual(CAP);
+  });
+
+  it("two rows of the same email from ONE class are a duplicate: no EMAIL_MATCH, and the cap still holds", () => {
+    const sameClassTwin = mk({
+      id: "e2", kind: "email", value: "vernjjulian@gmail.com",
+      confidence: 85, source: "breach_check (ApexSMS breach)",
+      metadata: { confidence_cap_applied: 85 },
+    });
+    const { clusters } = buildIdentityClusters(
+      [prodEmailOathnet, sameClassTwin, prodSweptHackerRank, prodSweptTelegram], null);
+    const c = clusters.find((x) => x.artifacts.some((a) => a.id === "e2"))!;
+    expect(c.mergeReasons.some((r) => r.startsWith("EMAIL_MATCH"))).toBe(false);
     expect(c.confidence).toBeLessThanOrEqual(CAP);
   });
 

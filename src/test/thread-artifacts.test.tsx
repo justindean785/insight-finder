@@ -4,6 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { isClusterIneligible } from "@/lib/report-hygiene";
 import { wrapJsonExport, type ExportGate } from "@/lib/report-export-gate";
+import { computePivots } from "@/lib/pivot-engine";
+import { artifactsToSources } from "@/lib/audit/from-artifacts";
+import { adjustedConfidence, labelForArtifact } from "@/lib/intel";
+import { displayConfidence } from "@/lib/display-confidence";
+import { stripDerivedItemMetadata, MINOR_DERIVED_MARKER } from "@/lib/selector-group";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -603,5 +608,251 @@ describe("useThreadArtifacts dedupe never transfers authority between rows", () 
     expect(rows["row-quarantined-email"]?.metadata?.linkage_confirmed).toBeUndefined();
     expect(rows["row-tool-username"]?.metadata?.parent_seed).toBeUndefined();
     expect(Object.keys(rows).sort()).toEqual(DIVERGENT_ROWS.map((r) => r.id).sort());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Realtime cost + hidden-twin reconciliation (owner-requested follow-up on #593).
+//
+// Cost. The fingerprint that keeps rows of different authority apart is the WHOLE
+// metadata blob, and the first version of the hook re-fingerprinted EVERY row on
+// EVERY realtime delta: 50 inserts into a 1,000-row store measured 75 ms on main
+// and 663 ms / 4,577 ms for 0.6 KB / 4.9 KB of metadata per row (jsdom). The
+// fingerprint of a row that has not changed must not be computed again.
+//
+// Hidden twins. When two rows collapsed (identical authority), the store kept only
+// the survivor, so a later realtime UPDATE of the survivor — or its DELETE — could
+// not bring the other row back until a full reload.
+// ---------------------------------------------------------------------------
+
+function bigRow(i: number, kb: number): TestRow {
+  return {
+    id: `perf-${i}`,
+    kind: "email",
+    value: `perf${i}@example.com`,
+    confidence: 50,
+    source: `tool_${i % 7}`,
+    created_at: new Date(1_700_000_000_000 + i).toISOString(),
+    metadata: { status: "observed", source_category: ["breach"], blob: "x".repeat(kb * 1024), n: i },
+  };
+}
+
+describe("useThreadArtifacts realtime cost and hidden-twin reconciliation", () => {
+  beforeEach(() => {
+    mock.rowsByThread.clear();
+    mock.channels.length = 0;
+    mock.queriedTables.length = 0;
+  });
+  afterEach(() => {
+    for (const root of mountedRoots.splice(0)) act(() => root.unmount());
+  });
+
+  it("50 realtime inserts into a 1,000-row store of ~5 KB metadata cost a small fraction of the first version's ~4.5 s", async () => {
+    mock.rowsByThread.set("perf-a", Array.from({ length: 1000 }, (_, i) => bigRow(i, 5)));
+    const { result } = renderArtifactsHook("perf-a");
+    await waitFor(() => expect(result.current.items).toHaveLength(1000));
+
+    const t0 = performance.now();
+    for (let i = 1000; i < 1050; i++) {
+      await emit("artifacts", { eventType: "INSERT", new: bigRow(i, 5), old: null });
+    }
+    const ms = performance.now() - t0;
+    expect(result.current.items).toHaveLength(1050);
+    console.info(`[perf] 50 inserts into 1000 rows x 5 KB: ${ms.toFixed(0)} ms`);
+    // Measured here (jsdom): first version ~2,000 ms (4,500 ms on a slower machine), this version ~100 ms, main ~70 ms.
+    // 600 ms is 3x under the regression and ~6x over the fixed cost, so a slower runner does not flake it.
+    expect(ms).toBeLessThan(600);
+  });
+
+  it("an UPDATE of a survivor brings its collapsed twin back instead of losing it until reload", async () => {
+    const twin = (id: string, created: string): TestRow => ({
+      id, kind: "email", value: "twin@example.com", confidence: 60, source: "oathnet_lookup",
+      created_at: created, metadata: { status: "observed" },
+    });
+    mock.rowsByThread.set("twin-a", [twin("t1", "2026-10-01T00:00:00.000Z"), twin("t2", "2026-10-01T00:00:01.000Z")]);
+    const { result } = renderArtifactsHook("twin-a");
+    await waitFor(() => expect(result.current.items).toHaveLength(1));
+    expect(result.current.items[0].id).toBe("t1");
+
+    // The survivor is updated so that it now differs in authority from its twin: both must be visible again.
+    await emit("artifacts", {
+      eventType: "UPDATE",
+      new: { ...twin("t1", "2026-10-01T00:00:00.000Z"), confidence: 30, metadata: { status: "needs_review" } },
+      old: { id: "t1" },
+    });
+    await waitFor(() => expect(result.current.items.map((a) => a.id).sort()).toEqual(["t1", "t2"]));
+  });
+
+  it("deleting the survivor of a collapsed pair reveals the other row (no reload needed)", async () => {
+    const twin = (id: string, created: string): TestRow => ({
+      id, kind: "email", value: "twin2@example.com", confidence: 60, source: "oathnet_lookup",
+      created_at: created, metadata: { status: "observed" },
+    });
+    mock.rowsByThread.set("twin-b", [twin("t1", "2026-10-01T00:00:00.000Z"), twin("t2", "2026-10-01T00:00:01.000Z")]);
+    const { result } = renderArtifactsHook("twin-b");
+    await waitFor(() => expect(result.current.items).toHaveLength(1));
+
+    await emit("artifacts", { eventType: "DELETE", new: null, old: { id: "t1" } });
+    await waitFor(() => expect(result.current.items.map((a) => a.id)).toEqual(["t2"]));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The minor-safety ceiling is a property of the SELECTOR, not of the row a surface happens to read.
+//
+// #593 review, finding B1: pivot-engine's minor guard reads ONE row (the candidate's source row), and its own comment says
+// the ceiling "must never be restorable by another row". On main the merge spread the flag onto the single merged
+// item by accident; with separate rows an unflagged twin was pivotable (`[email:<same address>]` offered) and its value
+// was shown unredacted. The flags are copied across the group — and ONLY the flags: never a review, a confidence, a
+// source class, a cluster or a quarantine release.
+// ---------------------------------------------------------------------------
+
+describe("useThreadArtifacts: a minor-safety flag protects every row of the selector", () => {
+  beforeEach(() => {
+    mock.rowsByThread.clear();
+    mock.channels.length = 0;
+    mock.queriedTables.length = 0;
+  });
+  afterEach(() => {
+    for (const root of mountedRoots.splice(0)) act(() => root.unmount());
+  });
+
+  const plain = (id: string, created: string, extra: Partial<TestRow> = {}): TestRow => ({
+    id, kind: "email", value: "jordan.vale@example.com", confidence: 70, source: "oathnet_lookup",
+    created_at: created, metadata: { status: "observed", source_category: ["breach"] }, ...extra,
+  });
+  const flagged = (id: string, created: string, flag: Record<string, unknown> = { possible_minor: true }): TestRow => ({
+    id, kind: "email", value: "Jordan.Vale@Example.com", confidence: 55, source: "socialfetch_lookup",
+    created_at: created, metadata: { status: "observed", source_category: ["social_profile_passive"], ...flag },
+  });
+  const byId = (items: Array<{ id: string }>, id: string) => items.find((a) => a.id === id) as unknown as TestRow;
+  const meta = (a: TestRow) => (a.metadata ?? {}) as Record<string, unknown>;
+
+  async function load(thread: string, rows: TestRow[]) {
+    mock.rowsByThread.set(thread, rows);
+    const { result } = renderArtifactsHook(thread);
+    await waitFor(() => expect(result.current.items.length).toBe(rows.length));
+    return result;
+  }
+
+  it.each([
+    ["earlier unflagged row, later flagged row", false],
+    ["the same rows in the opposite database order", true],
+  ])("%s: BOTH rows carry the ceiling", async (_name, reversed) => {
+    const rows = [plain("a", "2026-10-01T00:00:00.000Z"), flagged("b", "2026-10-01T00:00:05.000Z")];
+    const result = await load(reversed ? "mino-r" : "mino-f", reversed ? [...rows].reverse() : rows);
+    for (const id of ["a", "b"]) {
+      const m = meta(byId(result.current.items, id));
+      expect(m.possible_minor, id).toBe(true);
+      expect(m.minor_warning, id).toBe(true);
+      expect(m.auto_pivot_blocked, id).toBe(true);
+    }
+    // the flagged row's own flags are its own: nothing is marked as derived on it beyond what it lacked
+    expect(meta(byId(result.current.items, "b")).possible_minor).toBe(true);
+    expect(meta(byId(result.current.items, "a"))[MINOR_DERIVED_MARKER]).toEqual(["possible_minor", "minor_warning", "auto_pivot_blocked"]);
+  });
+
+  it.each([
+    [{ minor_warning: true }],
+    [{ auto_pivot_blocked: true }],
+    [{ flag: "MINOR_SAFETY_FLAG" }],
+  ])("any of the recognised flags %j protects the twin", async (flag) => {
+    const result = await load(`mino-${Object.keys(flag)[0]}`, [plain("a", "2026-10-01T00:00:00.000Z"), flagged("b", "2026-10-01T00:00:05.000Z", flag)]);
+    const m = meta(byId(result.current.items, "a"));
+    expect(m.possible_minor).toBe(true);
+    expect(m.minor_warning).toBe(true);
+  });
+
+  it("copies ONLY the protective flags: no review, confidence, source class, cluster or quarantine release crosses rows", async () => {
+    const analystRow = flagged("b", "2026-10-01T00:00:05.000Z", {
+      possible_minor: true, reviewed: true, linkage_confirmed: true, cluster_id: "clus_b", status: "confirmed",
+      confidence_cap_applied: 99, parent_seed: "seed@example.com",
+    });
+    analystRow.confidence = 95;
+    const result = await load("mino-nt", [plain("a", "2026-10-01T00:00:00.000Z"), analystRow]);
+    const a = byId(result.current.items, "a");
+    const m = meta(a);
+    expect(a.confidence).toBe(70);
+    expect(a.source).toBe("oathnet_lookup");
+    expect(m.source_category).toEqual(["breach"]);
+    for (const k of ["reviewed", "linkage_confirmed", "cluster_id", "confidence_cap_applied", "parent_seed"]) {
+      expect(k in m, `${k} must not cross rows`).toBe(false);
+    }
+    expect(m.status).toBe("observed");
+  });
+
+  it("a selector with NO flagged row is untouched", async () => {
+    const result = await load("mino-none", [plain("a", "2026-10-01T00:00:00.000Z"), plain("c", "2026-10-01T00:00:03.000Z", { confidence: 60 })]);
+    for (const a of result.current.items) {
+      expect("possible_minor" in meta(a as unknown as TestRow)).toBe(false);
+      expect(MINOR_DERIVED_MARKER in meta(a as unknown as TestRow)).toBe(false);
+    }
+  });
+
+  it("a different selector is untouched, even with a flagged neighbour", async () => {
+    const other: TestRow = { ...plain("o", "2026-10-01T00:00:01.000Z"), value: "someone.else@example.com" };
+    const result = await load("mino-other", [plain("a", "2026-10-01T00:00:00.000Z"), other, flagged("b", "2026-10-01T00:00:05.000Z")]);
+    expect("possible_minor" in meta(byId(result.current.items, "o"))).toBe(false);
+  });
+
+  it("realtime: a flagged row arriving LATER protects the rows already on screen, and a twin arriving later is protected on arrival", async () => {
+    const result = await load("mino-rt", [plain("a", "2026-10-01T00:00:00.000Z")]);
+    expect(meta(byId(result.current.items, "a")).possible_minor).toBeUndefined();
+    await emit("artifacts", { eventType: "INSERT", new: flagged("b", "2026-10-01T00:00:05.000Z"), old: null });
+    await waitFor(() => expect(meta(byId(result.current.items, "a")).possible_minor).toBe(true));
+    await emit("artifacts", { eventType: "INSERT", new: plain("c", "2026-10-01T00:00:09.000Z", { confidence: 61 }), old: null });
+    await waitFor(() => expect(meta(byId(result.current.items, "c")).possible_minor).toBe(true));
+  });
+
+  it("when the flagged row is deleted the protection it lent goes with it (derived at read time, never stored)", async () => {
+    const result = await load("mino-del", [plain("a", "2026-10-01T00:00:00.000Z"), flagged("b", "2026-10-01T00:00:05.000Z")]);
+    expect(meta(byId(result.current.items, "a")).possible_minor).toBe(true);
+    await emit("artifacts", { eventType: "DELETE", new: null, old: { id: "b" } });
+    await waitFor(() => expect(meta(byId(result.current.items, "a")).possible_minor).toBeUndefined());
+  });
+
+  it("the consumers that read ONE row now agree for every row: no pivot, redacted label, capped number, never ATTESTED", async () => {
+    const attestedTwin = plain("a", "2026-10-01T00:00:00.000Z");
+    attestedTwin.metadata = { ...attestedTwin.metadata, reviewed: true };
+    const result = await load("mino-consumers", [attestedTwin, flagged("b", "2026-10-01T00:00:05.000Z")]);
+    const items = result.current.items;
+
+    // pivot-engine: the candidate's source row may be either; neither offers the address.
+    const pivots = computePivots({ artifacts: items, seedValue: null, reportPivots: [], skipSet: new Set(), reviews: {} });
+    expect(pivots.filter((p) => p.value.toLowerCase() === "jordan.vale@example.com")).toEqual([]);
+
+    // audit redaction: neither row lends its value to a guardrail line
+    const labels = artifactsToSources(items).map((s) => s.label);
+    expect(labels).toEqual(["(minor-safety redacted)", "(minor-safety redacted)"]);
+
+    // the analyst's OWN attestation on the twin is capped by the ceiling, exactly as on the flagged row
+    expect(labelForArtifact(byId(items, "a") as never)).not.toBe("ATTESTED");
+    expect(labelForArtifact(byId(items, "a") as never)).not.toBe("CONFIRMED");
+    expect(adjustedConfidence(byId(items, "a") as never)).toBeLessThanOrEqual(55);
+    expect(displayConfidence(byId(items, "a") as never).ceilings.map((c) => c.kind)).toContain("possible_minor");
+    // …while the attestation itself is still recorded on that row and was not moved
+    expect(meta(byId(items, "a")).reviewed).toBe(true);
+    expect(meta(byId(items, "b")).reviewed).toBeUndefined();
+  });
+
+  it("stripDerivedItemMetadata removes exactly what the hook derived, and nothing the row carried itself", async () => {
+    const result = await load("mino-strip", [plain("a", "2026-10-01T00:00:00.000Z"), flagged("b", "2026-10-01T00:00:05.000Z", { possible_minor: true, minor_warning: true })]);
+    const a = meta(byId(result.current.items, "a"));
+    const stripped = stripDerivedItemMetadata(a);
+    expect("possible_minor" in stripped).toBe(false);
+    expect("minor_warning" in stripped).toBe(false);
+    expect("auto_pivot_blocked" in stripped).toBe(false);
+    expect(MINOR_DERIVED_MARKER in stripped).toBe(false);
+    expect(stripped.status).toBe("observed");
+    // the flagged row carried possible_minor / minor_warning ITSELF, so only the key it lacked is derived on it
+    const b = meta(byId(result.current.items, "b"));
+    expect(b[MINOR_DERIVED_MARKER]).toEqual(["auto_pivot_blocked"]);
+    const bStripped = stripDerivedItemMetadata(b);
+    expect(bStripped.possible_minor).toBe(true);
+    expect(bStripped.minor_warning).toBe(true);
+    expect("auto_pivot_blocked" in bStripped).toBe(false);
+    // a row without a marker is returned as-is
+    const clean = { status: "observed" };
+    expect(stripDerivedItemMetadata(clean)).toBe(clean);
   });
 });

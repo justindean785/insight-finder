@@ -33,6 +33,7 @@
  * afterwards, and it is why this returns a PATCH rather than a rebuilt object.
  */
 import { isQuarantined } from "@/lib/quarantine";
+import { stripDerivedItemMetadata } from "@/lib/selector-group";
 
 /** The additive ruling. `linkage_confirmed` is what every predicate reads; the
  *  timestamp is audit provenance and is deliberately consulted by nothing. */
@@ -55,6 +56,20 @@ export type ReleasePatch = {
 export function releasePatch(metadata: unknown, now: Date = new Date()): ReleasePatch | null {
   if (!isQuarantined(metadata)) return null;
   return { linkage_confirmed: true, linkage_confirmed_at: now.toISOString() };
+}
+
+/**
+ * The metadata the release writes back: the row's metadata with the release patch layered over it.
+ *
+ * `meta` here comes from an ITEM, and items carry read-time derivations that are not in the database row — the minor-safety
+ * ceiling lent by a sibling row (lib/selector-group.ts) and the folded `sources`. Writing those back would turn a
+ * display-time restriction into a stored fact about THIS row, which is a rewrite of a record the analyst never touched.
+ * The derived minor-safety keys are therefore stripped; everything else is spread exactly as before. (`sources` was
+ * already written back by the previous code and is deliberately left alone: removing it is a behaviour change nobody
+ * asked for.)
+ */
+export function releasedMetadata(meta: Record<string, unknown>, patch: ReleasePatch): Record<string, unknown> {
+  return { ...stripDerivedItemMetadata(meta), ...patch };
 }
 
 /** Is the release action offerable for this row? Exactly `isQuarantined`, named

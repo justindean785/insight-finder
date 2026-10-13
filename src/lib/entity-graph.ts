@@ -15,6 +15,7 @@ import { isRejectedArtifact } from "@/lib/analyst-decisions";
 // display a raw number without any component ever naming `a.confidence`.
 import { effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { isBreachKind } from "@/lib/breach-kinds";
+import { selectorKey } from "@/lib/selector-group";
 
 /**
  * Entity-connection graph transform — PURE and DETERMINISTIC.
@@ -313,6 +314,13 @@ export function buildEntityGraph(
     }
   };
 
+  /** Do two graph nodes record the same selector (same kind + canonical value)? The seed is never a twin. */
+  const sameSelector = (aId: string, bId: string): boolean => {
+    const a = nodeById.get(aId)?.art;
+    const b = nodeById.get(bId)?.art;
+    return !!a && !!b && selectorKey(a.kind, a.value) === selectorKey(b.kind, b.value);
+  };
+
   for (const [, bucket] of selectorMembers) {
     if (bucket.ids.length < 2) continue;
     // Hero = highest confidence (ties broken by id for determinism).
@@ -321,6 +329,18 @@ export function buildEntityGraph(
     const isParent = bucket.kind === "parent";
     for (const id of bucket.ids) {
       if (id === hero) continue;
+      // Two ROWS that record the SAME selector (kept separate because their analyst authority differs) are not two
+      // holders of a shared value: an "identity" edge between them would claim a link the data does not contain, and
+      // would inflate the edge count. A twin of the hero connects to the best holder of a DIFFERENT selector instead
+      // (it shares the value with that holder just as the hero does), and to nobody when there is none.
+      let from = hero;
+      if (!infra && !isParent && sameSelector(hero, id)) {
+        const other = [...bucket.ids]
+          .filter((o) => o !== id && !sameSelector(o, id))
+          .sort((a, b) => conf(b) - conf(a) || (a < b ? -1 : 1))[0];
+        if (!other) continue;
+        from = other;
+      }
       let type: EdgeType;
       let reason: string;
       if (isParent) {
@@ -336,7 +356,7 @@ export function buildEntityGraph(
         type = "identity";
         reason = `Shares ${bucket.kind} ${bucket.raw}`;
       }
-      upsertEdge(hero, id, type, reason, SELECTOR_STRENGTH[bucket.kind]);
+      upsertEdge(from, id, type, reason, SELECTOR_STRENGTH[bucket.kind]);
     }
   }
 
