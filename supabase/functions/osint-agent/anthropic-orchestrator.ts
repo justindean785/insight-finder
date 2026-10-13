@@ -207,21 +207,26 @@ export function runBudgetExhausted(
  * Admission RESERVES the request's worst case rather than comparing only what is already spent
  * (Codex P2 on #748): a run just under the line would otherwise start a request that finishes
  * well over it, and with small operator-set limits one salvage could exceed the ceiling many
- * times over. The reserve is the estimated prompt (conservatively chars/3) priced as uncached
- * input, plus the request's full output cap priced as output.
+ * times over. The reserve is the prompt priced as uncached input, plus the request's full output
+ * cap priced as output.
+ *
+ * The input side is a deliberate UPPER BOUND, not an average (Codex P2 on #748): one token per
+ * UTF-16 code unit. Real tokenizers run ~3-4 characters per token even on URLs, hashes and
+ * non-Latin text, so this over-reserves several-fold; at default limits that costs ~$0.10 of
+ * headroom, which is the right side to err on for a finite credit balance.
  */
 export const ANTHROPIC_SALVAGE_HEADROOM = 1.5;
 
 export interface SalvageReserve {
-  /** Estimated input tokens of the salvage prompt (system + prompt). */
+  /** Upper-bound input tokens of the salvage prompt (system + prompt): 1 token per UTF-16 code unit. */
   inputTokens: number;
   /** Worst-case micro-USD of the request: estimated input at the uncached rate + max output tokens. */
   costMicroUsd: number;
 }
 
-/** Conservative reserve for a salvage request: ~3 chars/token (the newer tokenizer runs ~30% denser). */
+/** Reserve for a salvage request: input bounded at 1 token per UTF-16 code unit, output at its full cap. */
 export function salvageReserve(modelId: string, promptChars: number, maxOutputTokens: number): SalvageReserve {
-  const inputTokens = Math.ceil(Math.max(0, promptChars) / 3);
+  const inputTokens = Math.ceil(Math.max(0, promptChars));
   return {
     inputTokens,
     costMicroUsd: anthropicCostMicroUsd(modelId, { input: inputTokens, output: maxOutputTokens, cacheRead: 0, cacheWrite: 0 }),

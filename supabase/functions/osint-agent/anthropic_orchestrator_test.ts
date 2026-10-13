@@ -180,8 +180,11 @@ Deno.test("salvage: admission reserves the request's own worst case, not just wh
 });
 
 Deno.test("salvageReserve prices the prompt as uncached input plus the full output cap", () => {
-  // 30,000 chars -> 10,000 est. tokens; Sonnet 5: 10k*2 + 8192*10 = 20,000 + 81,920
-  assertEquals(salvageReserve("claude-sonnet-5", 30_000, 8192), { inputTokens: 10_000, costMicroUsd: 101_920 });
+  // Upper bound: 1 token per UTF-16 unit. 30,000 chars -> 30,000 tokens; Sonnet 5: 30k*2 + 8192*10 = 60,000 + 81,920
+  assertEquals(salvageReserve("claude-sonnet-5", 30_000, 8192), { inputTokens: 30_000, costMicroUsd: 141_920 });
+  // Token-dense text (hashes, URLs, CJK) can never exceed the reserved input: the bound is 1 token/unit.
+  const dense = "a1b2c3d4e5f6".repeat(1000) + "日本語".repeat(1000);
+  assert(salvageReserve("claude-sonnet-5", dense.length, 0).inputTokens >= dense.length);
   assertEquals(salvageReserve("claude-sonnet-5", -5, 0), { inputTokens: 0, costMicroUsd: 0 });
 });
 

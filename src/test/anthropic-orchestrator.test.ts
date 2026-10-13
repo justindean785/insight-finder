@@ -172,6 +172,6 @@ describe("salvage admission", () => {
     expect(salvageWithinBudget({ inputTokens: 0, costMicroUsd: 740 }, limits, { inputTokens: 0, costMicroUsd: 10 })).toBe(true);
   });
   it("prices the reserve as uncached input plus the full output cap", () => {
-    expect(salvageReserve("claude-sonnet-5", 30_000, 8192)).toEqual({ inputTokens: 10_000, costMicroUsd: 101_920 });
+    expect(salvageReserve("claude-sonnet-5", 30_000, 8192)).toEqual({ inputTokens: 30_000, costMicroUsd: 141_920 });
   });
 });
