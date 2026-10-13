@@ -38,6 +38,13 @@ export const TOOL_CACHE_VERSION: Readonly<Record<string, number>> = {
   // deploy failed (the #599 lesson, applied in the PR that changes the interpretation).
   shodan_internetdb: 2,
   jina_reader_scrape: 2,
+  // v2 — lib/memory-provenance.ts. memory_recall's OUTPUT SHAPE changed: every row carries a
+  // `provenance` tag and the payload carries `provenance_legend` + `authority_note` (recalled memory is
+  // prior-run context, never evidence). The tool is cacheable (24h, user-scoped) and the key names no
+  // build, so a v1 row — untagged rows, no legend, no note — would replay for the full TTL after deploy
+  // and bypass the provenance controls the PR exists to add. The bump is the whole fix: v1 rows stop
+  // matching on both hashes and age out. (#738 independent review, 2026-10-13.)
+  memory_recall: 2,
 };
 
 /**

@@ -95,6 +95,72 @@ Deno.test("idempotent; string content handled; empty text and no-user inputs are
   });
 });
 
+// #738 independent review (nit 9): the guards tested `.length`, not `.trim().length`. A whitespace-only prior
+// assistant text part therefore became `LABEL + "\n"` — a historical-output marker wrapped around nothing, which
+// costs ~200 chars per part and tells the model a "claim" exists where none was made. Whitespace-only text has
+// no claim to label, exactly like empty text.
+Deno.test("whitespace-only prior assistant text is NOT labelled — array part and string content alike", async () => {
+  await withSwitch(undefined, () => {
+    // \u00a0 (NBSP) and \u2003 (em space) are stripped by String.prototype.trim, as in real model output.
+    for (const ws of [" ", "\n", " \n\t ", "\r\n", "\u00a0", "\u2003\n"]) {
+      const asPart = [user("a"), { role: "assistant", content: [{ type: "text", text: ws }] } as ModelMessage, user("b")];
+      const outPart = labelHistoricalAssistantText(asPart);
+      assert(outPart[1] === asPart[1], `array part ${JSON.stringify(ws)} must be returned untouched`);
+
+      const asString = [user("a"), { role: "assistant", content: ws } as ModelMessage, user("b")];
+      const outString = labelHistoricalAssistantText(asString);
+      assert(outString[1] === asString[1], `string content ${JSON.stringify(ws)} must be returned untouched`);
+    }
+  });
+});
+
+Deno.test("a whitespace-only part beside a real part: only the real part is labelled; no label ever wraps nothing", async () => {
+  await withSwitch(undefined, () => {
+    const mixed = {
+      role: "assistant",
+      content: [
+        { type: "text", text: "  \n" },
+        { type: "text", text: "report body" },
+        { type: "tool-call", toolCallId: "c9", toolName: "whois_lookup", input: { domain: "example.test" } },
+      ],
+    } as ModelMessage;
+    const out = labelHistoricalAssistantText([user("a"), mixed, user("b")]);
+    const parts = out[1].content as Array<{ type: string; text?: string }>;
+    assertEquals(parts[0].text, "  \n", "whitespace-only part unchanged");
+    assertEquals(parts[1].text, HISTORICAL_OUTPUT_LABEL + "report body");
+    assertEquals(parts[2], (mixed.content as unknown[])[2]);
+    // Invariant over the whole output: no text is the label followed by nothing but whitespace.
+    for (const m of out) for (const t of textsOf(m)) {
+      assertFalse(t.startsWith(HISTORICAL_OUTPUT_LABEL) && t.slice(HISTORICAL_OUTPUT_LABEL.length).trim() === "", JSON.stringify(t));
+    }
+  });
+});
+
+Deno.test("real text with surrounding whitespace is still labelled, byte-for-byte as before", async () => {
+  await withSwitch(undefined, () => {
+    const out = labelHistoricalAssistantText([user("a"), assistant("\n  report one  \n"), user("b")]);
+    assertEquals(textsOf(out[1])[0], HISTORICAL_OUTPUT_LABEL + "\n  report one  \n");
+    const str = labelHistoricalAssistantText([user("a"), { role: "assistant", content: "  plain  " } as ModelMessage, user("b")]);
+    assertEquals(str[1].content, HISTORICAL_OUTPUT_LABEL + "  plain  ");
+  });
+});
+
+Deno.test("a whitespace-only part survives the real UI→model conversion and trimming without a stranded label", async () => {
+  await withSwitch(undefined, async () => {
+    const ui = [
+      { id: "u1", role: "user", parts: [{ type: "text", text: "seed" }] },
+      { id: "a1", role: "assistant", parts: [{ type: "text", text: "  \n" }, { type: "text", text: "earlier report" }] },
+      { id: "u2", role: "user", parts: [{ type: "text", text: "follow up" }] },
+    ];
+    const labelled = labelHistoricalAssistantText(await convertToModelMessages(ui as never));
+    const trimmed = capTotalToBudget(labelled, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW);
+    for (const m of trimmed) for (const t of textsOf(m)) {
+      assertFalse(t.startsWith(HISTORICAL_OUTPUT_LABEL) && t.slice(HISTORICAL_OUTPUT_LABEL.length).trim() === "", JSON.stringify(t));
+    }
+    assert(trimmed.flatMap(textsOf).some((t) => t === HISTORICAL_OUTPUT_LABEL + "earlier report"), "the real text is still labelled");
+  });
+});
+
 Deno.test("kill switch: messages come back untouched", async () => {
   await withSwitch("true", () => {
     const input = [user("a"), assistant("x"), user("b")];

@@ -35,7 +35,8 @@ const labeled = (text: string): string =>
 
 function labelContent(content: unknown): { content: unknown; changed: boolean } {
   if (typeof content === "string") {
-    return content.length && !content.startsWith(HISTORICAL_OUTPUT_LABEL)
+    // `.trim().length`, not `.length`: a whitespace-only turn has no claim to label (#738 review, nit 9).
+    return content.trim().length > 0 && !content.startsWith(HISTORICAL_OUTPUT_LABEL)
       ? { content: labeled(content), changed: true }
       : { content, changed: false };
   }
@@ -43,7 +44,7 @@ function labelContent(content: unknown): { content: unknown; changed: boolean } 
   let changed = false;
   const out = content.map((part) => {
     const p = part as { type?: string; text?: unknown } | null;
-    if (p && p.type === "text" && typeof p.text === "string" && p.text.length > 0 && !p.text.startsWith(HISTORICAL_OUTPUT_LABEL)) {
+    if (p && p.type === "text" && typeof p.text === "string" && p.text.trim().length > 0 && !p.text.startsWith(HISTORICAL_OUTPUT_LABEL)) {
       changed = true;
       return { ...(p as Record<string, unknown>), text: labeled(p.text) };
     }

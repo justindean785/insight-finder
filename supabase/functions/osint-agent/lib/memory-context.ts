@@ -14,8 +14,21 @@
 //     metadata.memory_only=true — nothing in THIS run observed it.
 // It can only lower or relabel; it never raises confidence or promotes status.
 // Kill switch, read at call time: MEMORY_AS_SOURCE_DISABLED=true.
+//
+// The CITATION LABEL (lib/memory-provenance.ts MEMORY_CITATION_LABEL, "[MEMORY - prior run, unverified]") is the
+// string the system prompt tells the model to cite recalled memory under, so it is the shape this rule MOST needs
+// to recognise (#738 independent review, finding 5). Two things make that work: a leading "[" is allowed, and a
+// bracketed group is ONE token — the comma inside the label must not split it into a fake "unverified" source.
+// The unbracketed form "MEMORY - prior run, unverified" has the same comma and is rejoined before splitting.
 
-const MEMORY_TOKEN_RE = /^memory(?:_(?:recall|save|search))?(?:\s*\(|$|\s)/i;
+// Optional leading "[", then `memory`, then a boundary. "]" is a boundary so "[MEMORY]" matches; "memorial",
+// "memorybank.example.com" and "[memory-lane.example.com]" do not.
+const MEMORY_TOKEN_RE = /^\[?\s*memory(?:_(?:recall|save|search))?(?:\s*\(|\s*\]|$|\s)/i;
+
+// "MEMORY - prior run, unverified" (brackets dropped by the model): drop the comma so it stays one token.
+// The lookbehind skips the BRACKETED form, which splitTopLevel already keeps whole and whose text must survive
+// verbatim in `memory_context_label`.
+const UNBRACKETED_CITATION_COMMA_RE = /(?<!\[\s*)\b(memory\s*[-\u2013\u2014]\s*prior[\s-]+run),\s*(unverified)\b/gi;
 
 function readEnvSafe(k: string): string | undefined {
   try {
@@ -29,14 +42,14 @@ export function memoryAsSourceDisabled(env: (k: string) => string | undefined = 
   return (env("MEMORY_AS_SOURCE_DISABLED") ?? "").trim().toLowerCase() === "true";
 }
 
-/** Split on top-level separators only (a "+" inside a parenthetical stays put). */
+/** Split on top-level separators only (a "+" inside a parenthetical or a [bracketed label] stays put). */
 function splitTopLevel(label: string): string[] {
   const parts: string[] = [];
   let depth = 0;
   let cur = "";
   for (const ch of label) {
-    if (ch === "(") depth++;
-    else if (ch === ")") depth = Math.max(0, depth - 1);
+    if (ch === "(" || ch === "[") depth++;
+    else if (ch === ")" || ch === "]") depth = Math.max(0, depth - 1);
     if (depth === 0 && (ch === "+" || ch === "|" || ch === ";" || ch === ",")) {
       parts.push(cur);
       cur = "";
@@ -70,7 +83,7 @@ export function applyMemoryContext(
     memoryOnly: false,
   };
   if (memoryAsSourceDisabled() || typeof source !== "string" || !source) return passthrough;
-  const tokens = splitTopLevel(source);
+  const tokens = splitTopLevel(source.replace(UNBRACKETED_CITATION_COMMA_RE, "$1 $2"));
   const memTokens = tokens.filter(isMemoryContextToken);
   if (!memTokens.length) return passthrough;
   const rest = tokens.filter((t) => !isMemoryContextToken(t));
@@ -95,8 +108,12 @@ export function memoryContextSelfTest(): { ok: boolean; detail: string } {
   const mixed = applyMemoryContext("memory_recall + FastPeopleSearch + CA Notary", {});
   const only = applyMemoryContext("memory_recall (prior investigation)", {});
   const clean = applyMemoryContext("FastPeopleSearch", {});
+  // The citation label the prompt teaches (finding 5): one token, removed from a mixed source, memory-only alone.
+  const cited = applyMemoryContext("[MEMORY - prior run, unverified] + FastPeopleSearch", {});
+  const citedOnly = applyMemoryContext("[MEMORY - prior run, unverified]", {});
   const ok = mixed.source === "FastPeopleSearch + CA Notary" && mixed.metadata?.context_from_memory === true &&
-    only.memoryOnly && only.metadata?.status === "needs_review" && !clean.memory;
+    only.memoryOnly && only.metadata?.status === "needs_review" && !clean.memory &&
+    cited.source === "FastPeopleSearch" && citedOnly.memoryOnly;
   return ok
     ? { ok: true, detail: "memory tokens leave the source label (context_from_memory); memory-only rows -> needs_review" }
     : { ok: false, detail: "memory-context rule misbehaving" };
