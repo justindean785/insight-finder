@@ -152,6 +152,11 @@ Deno.test("no false positives: look-alike labels, brackets elsewhere and stray b
     "FastPeopleSearch [archived copy]",
     "FastPeopleSearch + CA Notary [2024 filing]",
     "FastPeopleSearch ] + CA Notary",
+    // Second review round: a bracketed name that merely STARTS with the word is a source, not a memory citation.
+    "[Memory Alpha] wiki",
+    "[Memory Care Facility Directory]",
+    "[memory lane blog]",
+    "FastPeopleSearch + [Memory Care Facility Directory]",
   ]) {
     const r = applyMemoryContext(s, meta);
     assertEquals(r.memory, false, s);
@@ -160,11 +165,43 @@ Deno.test("no false positives: look-alike labels, brackets elsewhere and stray b
   }
 });
 
-Deno.test("an UNCLOSED bracket can only lower: the row becomes memory-only (needs_review), never keeps a real-looking source", () => {
-  const r = applyMemoryContext("[MEMORY - prior run, unverified + breach_check", {});
-  assertEquals(r.memory, true);
-  assertEquals(r.memoryOnly, true);
-  assertEquals(r.metadata?.status, "needs_review");
+Deno.test("an UNCLOSED bracket changes nothing: the memory token is still found and stripped, exactly as before bracket support", () => {
+  // Second review round: tracking "[" as depth swallowed every later separator when the bracket never closed, so
+  // these rows lost the memory disclosure they got before. An unmatched "[" is an ordinary character.
+  const a = applyMemoryContext("[FastPeopleSearch + memory_recall", {});
+  assertEquals([a.memory, a.memoryOnly, a.source], [true, false, "[FastPeopleSearch"]);
+  assertEquals(a.metadata?.context_from_memory, true);
+  const b = applyMemoryContext("FastPeopleSearch [archived + memory_recall", {});
+  assertEquals([b.memory, b.memoryOnly, b.source], [true, false, "FastPeopleSearch [archived"]);
+  // An unclosed bracket in front of the label itself: the label is still one memory token, the real source survives.
+  const c = applyMemoryContext("[MEMORY - prior run, unverified + breach_check", {});
+  assertEquals([c.memory, c.memoryOnly, c.source], [true, false, "breach_check"]);
+  // A CLOSED bracket still groups: the separators inside it do not split (a comma, so a split-and-rejoin with " + "
+  // would be visible in the result).
+  const d = applyMemoryContext("[FastPeopleSearch, archived] + memory_recall", {});
+  assertEquals(d.source, "[FastPeopleSearch, archived]");
+  // …including inside a citation: the whole closed group is ONE memory token whatever separator the model used.
+  const e = applyMemoryContext("[MEMORY - prior run + unverified]", {});
+  assertEquals([e.memory, e.memoryOnly], [true, true]);
+  const f = applyMemoryContext("[MEMORY - prior run; unverified] + breach_check", {});
+  assertEquals([f.memory, f.memoryOnly, f.source], [true, false, "breach_check"]);
+});
+
+Deno.test("a stray \"unverified\" never survives as a source after a memory token", () => {
+  for (const s of [
+    "MEMORY - prior run , unverified",
+    "MEMORY - earlier run, unverified",
+    "memory_recall, unverified",
+    "memory_recall (prior investigation), unverified",
+    "[MEMORY - prior run , unverified]",
+  ]) {
+    const r = applyMemoryContext(s, {});
+    assertEquals(r.memoryOnly, true, `${JSON.stringify(s)} is memory and nothing else — no stray "unverified" source`);
+    assertEquals(r.source, s);
+  }
+  // …but only AFTER a memory token: "unverified" beside a real source is left to the normal rules.
+  const real = applyMemoryContext("FastPeopleSearch, unverified + memory_recall", {});
+  assertEquals(real.source, "FastPeopleSearch + unverified");
 });
 
 Deno.test("the label cannot count as independent corroboration — before or after the rule, alone or beside a real source", () => {
@@ -221,6 +258,8 @@ type Row = Record<string, unknown>;
 
 function makeRuntime(agentMemory: Row[] = []) {
   const inserted: Row[] = [];
+  const updates: unknown[] = [];
+  const rpcs: Array<[string, unknown]> = [];
   const table = (name: string) => {
     const builder: Record<string, unknown> = {
       then: (resolve: (value: unknown) => unknown) =>
@@ -237,12 +276,16 @@ function makeRuntime(agentMemory: Row[] = []) {
         return Promise.resolve({ error: null });
       },
       select: () => builder,
-      update: () => builder,
+      update: (payload: unknown) => {
+        updates.push([name, payload]);
+        return builder;
+      },
     };
   };
   const supabase = {
     from: (t: string) => table(t),
-    rpc() {
+    rpc(fn: string, args: unknown) {
+      rpcs.push([fn, args]);
       return Promise.resolve({ data: [{ id: "evidence", seq: 1, chain_hash: "hash" }], error: null });
     },
   };
@@ -250,7 +293,7 @@ function makeRuntime(agentMemory: Row[] = []) {
     supabase, supabaseAdmin: supabase, userId: "memory-user", threadId: "memory-thread",
     archiveEnabled: false, detectedSeedType: "email", messages: [], manualOverrideSelector: null,
   } as unknown as ToolContext;
-  return { inserted, tools: buildTools(ctx).tools };
+  return { inserted, updates, rpcs, tools: buildTools(ctx).tools };
 }
 
 const exec = (tools: unknown, name: string) =>
@@ -323,6 +366,15 @@ Deno.test("auto-recall cannot manufacture authority: memory rows that CLAIM anal
   // The persisted artifact is unchanged by the recall.
   assertEquals(withMemory.inserted.length, 1);
   assertEquals(withMemory.inserted[0], without.inserted[0]);
+  // …and so is everything ELSE the recall could have touched afterwards: no UPDATE of any row, and no RPC beyond the
+  // intended hit-count bump (second review round: an escalation via a later .update() or rpc() was not observed).
+  assertEquals(withMemory.updates, without.updates, "auto-recall must not UPDATE any row");
+  assertEquals(
+    withMemory.rpcs.filter(([fn]) => fn !== "bump_memory_hits"),
+    without.rpcs,
+    "auto-recall may call only bump_memory_hits beyond what a no-memory run calls",
+  );
+  assertEquals(withMemory.rpcs.filter(([fn]) => fn === "bump_memory_hits").length, 1);
   const meta = withMemory.inserted[0].metadata as Row;
   for (const k of ["reviewed", "linkage_confirmed", "false_positive", "attested", "human_verified", "analyst_confirmed", "memory_only", "context_from_memory"]) {
     assertEquals(k in meta, false, `${k} must not appear because memory exists`);
