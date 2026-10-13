@@ -16,6 +16,11 @@
  */
 
 import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@1";
+import { createAnthropic } from "npm:@ai-sdk/anthropic@3";
+import {
+  ANTHROPIC_DEFAULT_RUN_COST_CEILING_MICRO_USD, ANTHROPIC_DEFAULT_RUN_INPUT_TOKEN_BUDGET,
+  parseAnthropicEffort, parseAnthropicThinking, parsePositiveInt, resolveAnthropicModelId,
+} from "./anthropic-orchestrator.ts";
 import { MODELS } from "./models.ts";
 import { createIdleTimeoutFetch } from "./fetch_retry.ts";
 
@@ -230,6 +235,26 @@ export const grokGateway = XAI_API_KEY
       headers: { Authorization: `Bearer ${XAI_API_KEY}` },
       fetch: ORCHESTRATOR_FETCH,
     })
+  : null;
+
+// Anthropic (Claude API) — lead orchestrator, PIN-ONLY (ORCHESTRATOR_PROVIDER=anthropic|claude).
+// The operator's credit balance is finite, so this is never a default or a fallback
+// (orchestrator_select.ts). With ANTHROPIC_API_KEY unset the gateway is null and nothing
+// in the run path changes. Activate via Supabase secrets — never the repo. The key is read
+// once here and only ever handed to createAnthropic; health reports presence as a boolean.
+export const ANTHROPIC_API_KEY = (Deno.env.get("ANTHROPIC_API_KEY") ?? "").trim();
+const _anthropicModel = resolveAnthropicModelId(Deno.env.get("ANTHROPIC_MODEL_ID"));
+export const ANTHROPIC_MODEL_ID = _anthropicModel.id;
+export const ANTHROPIC_MODEL_SOURCE = _anthropicModel.source;
+export const ANTHROPIC_THINKING = parseAnthropicThinking(Deno.env.get("ANTHROPIC_THINKING"));
+export const ANTHROPIC_EFFORT = parseAnthropicEffort(Deno.env.get("ANTHROPIC_EFFORT"));
+/** Hard per-invocation ceilings that force-finalize the run (see anthropic-orchestrator.ts). */
+export const ANTHROPIC_RUN_LIMITS = {
+  maxInputTokens: parsePositiveInt(Deno.env.get("ANTHROPIC_RUN_INPUT_TOKEN_BUDGET"), ANTHROPIC_DEFAULT_RUN_INPUT_TOKEN_BUDGET),
+  maxCostMicroUsd: parsePositiveInt(Deno.env.get("ANTHROPIC_RUN_COST_CEILING_MICRO_USD"), ANTHROPIC_DEFAULT_RUN_COST_CEILING_MICRO_USD),
+};
+export const anthropicGateway = ANTHROPIC_API_KEY
+  ? createAnthropic({ apiKey: ANTHROPIC_API_KEY, fetch: ORCHESTRATOR_FETCH })
   : null;
 
 // OpenAdapter — operator-supplied OpenAI-compatible gateway (base URL required).

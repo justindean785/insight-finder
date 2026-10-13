@@ -204,3 +204,60 @@ export function microUsdToDollars(micro: number): string {
   if (usd < 1) return `$${usd.toFixed(3)}`;
   return `$${usd.toFixed(2)}`;
 }
+
+// ---- Anthropic (Claude API) orchestrator pricing --------------------------------------
+//
+// The orchestrator's own LLM spend is metered per step (index.ts onStepFinish) into the
+// same run-cost / credit ledger as the other orchestrators. Units: micro-USD per token,
+// which is numerically identical to USD per MTok ($2/MTok === 2 micro-USD/token).
+//
+// Source: https://platform.claude.com/docs/en/about-claude/pricing, fetched 2026-10-13.
+// `cacheWrite` is the 5-minute ephemeral write price (1.25x input) — the only TTL this
+// integration requests. Cache-read multiplier differs by model (0.1x by default, 0.05x on
+// Sonnet 5.5 / Opus 5.5, 0.025x on Fable 5.1), so each row states it explicitly rather
+// than deriving it. ⚠️ An earlier cached copy of this table listed Sonnet 5.5 cache reads at
+// $0.20; the live page says $0.10. Re-check against the pricing page when adding a model.
+export interface AnthropicRates {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export const ANTHROPIC_RATES_MICRO_USD_PER_TOKEN: Record<string, AnthropicRates> = {
+  "claude-sonnet-5":   { input: 2,  output: 10, cacheRead: 0.2,  cacheWrite: 2.5 },
+  "claude-sonnet-5-5": { input: 2,  output: 10, cacheRead: 0.1,  cacheWrite: 2.5 },
+  "claude-sonnet-4-6": { input: 3,  output: 15, cacheRead: 0.3,  cacheWrite: 3.75 },
+  "claude-opus-5":     { input: 5,  output: 25, cacheRead: 0.5,  cacheWrite: 6.25 },
+  "claude-opus-5-5":   { input: 4,  output: 20, cacheRead: 0.2,  cacheWrite: 5 },
+  "claude-fable-5-1":  { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
+};
+
+/**
+ * Rates for a model id the table does not list: the most expensive known row with the
+ * priciest cache-read multiplier ($1/MTok, as on Fable 5). Deliberately pessimistic — an
+ * unknown or mistyped ANTHROPIC_MODEL_ID must OVER-meter the finite credit balance, never
+ * under-meter it. /health reports `pricing_known: false` so the operator sees it.
+ */
+export const ANTHROPIC_UNKNOWN_MODEL_RATES: AnthropicRates = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 };
+
+export function anthropicRatesFor(modelId: string): AnthropicRates & { known: boolean } {
+  const key = modelId.trim().toLowerCase().replace(/-\d{8}$/, "");
+  const row = ANTHROPIC_RATES_MICRO_USD_PER_TOKEN[key];
+  return row ? { ...row, known: true } : { ...ANTHROPIC_UNKNOWN_MODEL_RATES, known: false };
+}
+
+/** The four billable token buckets of one request (see extractAnthropicUsage). */
+export interface AnthropicUsageTokens {
+  /** Uncached input remainder only — NOT the SDK's total inputTokens. */
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** Micro-USD for one request, rounded to the nearest micro-USD. */
+export function anthropicCostMicroUsd(modelId: string, u: AnthropicUsageTokens): number {
+  const r = anthropicRatesFor(modelId);
+  return Math.round(u.input * r.input + u.output * r.output + u.cacheRead * r.cacheRead + u.cacheWrite * r.cacheWrite);
+}

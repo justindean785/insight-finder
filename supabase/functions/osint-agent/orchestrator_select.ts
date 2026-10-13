@@ -8,7 +8,7 @@
 // provider is selected only when its key is configured AND it is either pinned
 // via ORCHESTRATOR_PROVIDER or is the only available provider.
 
-export type OrchestratorProvider = "deepseek" | "minimax" | "grok" | "openadapter" | "lovable";
+export type OrchestratorProvider = "deepseek" | "minimax" | "grok" | "openadapter" | "anthropic" | "lovable";
 
 export interface OrchestratorAvailability {
   /** ORCHESTRATOR_PROVIDER secret, lowercased/trimmed ("" if unset). */
@@ -21,6 +21,8 @@ export interface OrchestratorAvailability {
   grok: boolean;
   /** OpenAdapter gateway configured (key + base URL present). */
   openadapter: boolean;
+  /** Anthropic (Claude API) configured (ANTHROPIC_API_KEY present). PIN-ONLY: never a default or fallback. */
+  anthropic: boolean;
 }
 
 export interface OrchestratorChoice {
@@ -35,6 +37,7 @@ function normalizePin(pin: string): OrchestratorProvider | "" {
   if (p === "deepseek") return "deepseek";
   if (p === "grok" || p === "xai") return "grok";
   if (p === "openadapter" || p === "open-adapter") return "openadapter";
+  if (p === "anthropic" || p === "claude") return "anthropic";
   if (p === "minimax") return "minimax";
   return "";
 }
@@ -46,7 +49,11 @@ function normalizePin(pin: string): OrchestratorProvider | "" {
  *   1. A valid pin whose provider is configured → that provider ("pinned").
  *   2. Otherwise DeepSeek if configured → "deepseek" ("default-deepseek").
  *   3. Otherwise MiniMax if configured → "minimax" ("default-minimax").
- *   4. Otherwise the first configured alternative → "only-available".
+ *   4. Otherwise the first configured alternative → "only-available". Anthropic
+ *      is deliberately NOT in that list: Claude spends finite prepaid credits, so
+ *      it is selected ONLY by an explicit ORCHESTRATOR_PROVIDER=anthropic|claude
+ *      pin (rule 1) and never by default, by absence of other keys, or as a
+ *      fallback.
  *   5. Nothing configured → "minimax" / "none-configured" (caller errors,
  *      same contract as before).
  */
@@ -56,6 +63,7 @@ export function selectOrchestratorProvider(a: OrchestratorAvailability): Orchest
     minimax: a.minimax,
     grok: a.grok,
     openadapter: a.openadapter,
+    anthropic: a.anthropic,
   };
 
   const pin = normalizePin(a.pin);

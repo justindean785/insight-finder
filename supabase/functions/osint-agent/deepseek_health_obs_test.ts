@@ -88,27 +88,27 @@ Deno.test("checkDeepseek: network throw → preflight_failed (visible, not maske
 // ---- resolveSelectedOrchestrator: selected_provider + selected_model -------------
 
 Deno.test("selection: pinned deepseek → deepseek + deepseek model", () => {
-  const s = resolveSelectedOrchestrator({ pin: "deepseek", deepseek: true, minimax: true, grok: false, openadapter: false });
+  const s = resolveSelectedOrchestrator({ pin: "deepseek", deepseek: true, minimax: true, grok: false, openadapter: false, anthropic: false });
   assertEquals(s.provider, "deepseek");
   assertEquals(s.reason, "pinned");
   assertEquals(s.model, "deepseek-v4-pro");
 });
 
 Deno.test("selection: no pin but DeepSeek keyed → deepseek by default", () => {
-  const s = resolveSelectedOrchestrator({ pin: "", deepseek: true, minimax: true, grok: false, openadapter: false });
+  const s = resolveSelectedOrchestrator({ pin: "", deepseek: true, minimax: true, grok: false, openadapter: false, anthropic: false });
   assertEquals(s.provider, "deepseek");
   assertEquals(s.reason, "default-deepseek");
   assertEquals(s.model, "deepseek-v4-pro");
 });
 
 Deno.test("selection: DeepSeek not configured → falls back to MiniMax (+ minimax model)", () => {
-  const s = resolveSelectedOrchestrator({ pin: "", deepseek: false, minimax: true, grok: false, openadapter: false });
+  const s = resolveSelectedOrchestrator({ pin: "", deepseek: false, minimax: true, grok: false, openadapter: false, anthropic: false });
   assertEquals(s.provider, "minimax");
   assert(s.model.length > 0, "a minimax model id must be reported");
 });
 
 Deno.test("selection: explicit minimax pin wins even with DeepSeek keyed", () => {
-  const s = resolveSelectedOrchestrator({ pin: "minimax", deepseek: true, minimax: true, grok: false, openadapter: false });
+  const s = resolveSelectedOrchestrator({ pin: "minimax", deepseek: true, minimax: true, grok: false, openadapter: false, anthropic: false });
   assertEquals(s.provider, "minimax");
   assertEquals(s.reason, "pinned");
 });
