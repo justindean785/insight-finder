@@ -18,6 +18,11 @@ const IP_RE = /^(?:\d{1,3}\.){3}\d{1,3}$/;
 const URL_RE = /^https?:\/\/\S+$/i;
 const DOMAIN_RE = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i;
 const PHONE_RE = /^\+?[\d\s\-().]{7,}$/;
+/** E.164 caps a phone number at 15 digits. A longer bare digit run is a platform
+ *  account ID (a 17–20 digit Discord/Twitter snowflake, a Steam64 ID), not a phone.
+ *  MUST match E164_MAX_DIGITS in supabase/functions/osint-agent/validation.ts. */
+const E164_MAX_DIGITS = 15;
+const digitCount = (s: string) => s.replace(/\D/g, "").length;
 const ETH_RE = /^0x[a-f0-9]{40}$/i;
 const BTC_RE = /^(?:bc1|[13])[a-z0-9]{25,62}$/i;
 const USERNAME_RE = /^[a-z0-9_.-]{2,40}$/i;
@@ -150,7 +155,7 @@ export function extractDisplaySeed(
   const url = raw.match(URL_ANYWHERE)?.[0];
   if (url) return { selector: url.replace(/[).,]+$/, ""), kind: "url", title: url };
   const phone = raw.match(PHONE_ANYWHERE)?.[0]?.trim();
-  if (phone && phone.replace(/\D/g, "").length >= 10) {
+  if (phone && digitCount(phone) >= 10 && digitCount(phone) <= E164_MAX_DIGITS) {
     return { selector: phone, kind: "phone", title: phone };
   }
   const domain = raw.match(DOMAIN_ANYWHERE)?.[0];
@@ -217,7 +222,11 @@ export function detectSeed(input: string): DetectedSeed | null {
   }
   if (IP_RE.test(raw)) return { kind: "ip", raw, normalized: raw };
   if (ETH_RE.test(raw) || BTC_RE.test(raw)) return { kind: "crypto", raw, normalized: raw.toLowerCase() };
-  if (PHONE_RE.test(raw)) {
+  // A bare digit run past E.164's 15 digits is an account ID. Classify it before
+  // PHONE_RE (which it matches) and USERNAME_RE (which it also matches — a username
+  // sweep on a snowflake is as wrong as a phone playbook).
+  if (/^\d+$/.test(raw) && raw.length > E164_MAX_DIGITS) return { kind: "other", raw, normalized: raw };
+  if (PHONE_RE.test(raw) && digitCount(raw) <= E164_MAX_DIGITS) {
     const digits = raw.replace(/[^\d+]/g, "");
     return { kind: "phone", raw, normalized: digits };
   }

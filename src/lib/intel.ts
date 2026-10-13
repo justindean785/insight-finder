@@ -1927,6 +1927,12 @@ const US_STATE_TOKENS: Record<string, string> = {
   wy: "WY", dc: "DC",
 };
 
+/** Words that make an adjacent "id" mean "identifier" rather than Idaho. */
+const ACCOUNT_ID_CONTEXT_TOKENS = new Set([
+  "discord", "steam", "roblox", "telegram", "twitter", "tiktok", "instagram", "snapchat",
+  "twitch", "reddit", "github", "facebook", "xbox", "psn", "epic", "user", "account", "player", "uid",
+]);
+
 function tokenize(s: string): string[] {
   return s.toLowerCase().replace(/[^a-z0-9\s-]/g, " ").split(/\s+/).filter(Boolean);
 }
@@ -1995,7 +2001,15 @@ export function detectNameLocationSeed(seedValue: string | null): { name: string
   // object) keeps `isNameSearch` false for URL/link seeds, so no phantom subject
   // is emitted and clusters fall back to their own names, not a URL fragment.
   if (toks.length < 2) return null;
-  const state = extractStateFromText(cleaned);
+  // A long digit run is an account identifier (Discord snowflake, Steam64, user
+  // ID), never part of a person's name — ZIPs are 5 digits. Live case 2026-09-25:
+  // "<19-digit id> discord ID" became subject "<id> discord", location "ID"
+  // (Idaho), and a fabricated Seed-Location section.
+  if (toks.some((t) => /^\d{6,}$/.test(t))) return null;
+  // Beside a platform/account word, "id" is the word ID, not Idaho.
+  const state = toks.includes("id") && toks.some((t) => ACCOUNT_ID_CONTEXT_TOKENS.has(t))
+    ? extractStateFromText(toks.filter((t) => t !== "id").join(" "))
+    : extractStateFromText(cleaned);
   const nameToks = toks.filter((t) => !US_STATE_TOKENS[t]);
   const name = nameToks.length ? nameToks.slice(0, 3).join(" ") : null;
   return { name, state };
