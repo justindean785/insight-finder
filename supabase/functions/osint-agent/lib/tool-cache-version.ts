@@ -13,6 +13,8 @@
 // their TTL. Tools NOT listed keep byte-identical keys: adding this table invalidates nothing
 // else. Bump a tool's number in the same PR that changes how that tool decides its result.
 
+import { memoryAuthorityWordingDisabled } from "./memory-provenance.ts";
+
 /** Current result-interpretation version per tool. Absent ⇒ unversioned (legacy key). */
 export const TOOL_CACHE_VERSION: Readonly<Record<string, number>> = {
   // v2 — #594: echo-unsafe sites (HackerRank, Mixcloud, Spotify, Telegram, Trakt, NameMC) are
@@ -56,17 +58,36 @@ export function toolCacheVersioningEnabled(): boolean {
   return (Deno.env.get("TOOL_CACHE_VERSION_DISABLED") ?? "").trim().toLowerCase() !== "true";
 }
 
+/**
+ * Tools whose cached OUTPUT SHAPE is chosen by a RUNTIME switch, not by the build. For these the key must follow
+ * the shape, or a row written in one state is served in the other (see memory_recall_cache_test.ts).
+ *
+ * memory_recall: while the provenance wording is ON the result is tagged (v2); while MEMORY_AUTHORITY_WORDING_DISABLED
+ * is thrown it is the pre-change legacy shape, so it takes the legacy (unversioned, byte-identical to before) key.
+ * Without this, rows written during a rollback were stored under v2 and replayed UNTAGGED for 24h after the switch was
+ * flipped back, and tagged rows kept replaying after a rollback (#738 independent review, 2026-10-13).
+ *
+ * These tools deliberately ignore TOOL_CACHE_VERSION_DISABLED: that switch means "undo versioning", but for these
+ * tools the key is the only thing keeping an untagged row from being served while the controls are on.
+ */
+const SHAPE_KEYED: Readonly<Record<string, () => number | null>> = {
+  memory_recall: () => (memoryAuthorityWordingDisabled() ? null : (TOOL_CACHE_VERSION.memory_recall ?? null)),
+};
+
 /** The version to fold into this tool's cache keys, or null for the legacy key. */
 export function cacheVersionFor(tool: string): number | null {
+  const byShape = SHAPE_KEYED[tool];
+  if (byShape) return byShape();
   if (!toolCacheVersioningEnabled()) return null;
   return TOOL_CACHE_VERSION[tool] ?? null;
 }
 
 /** `/health` → `checks.tool_cache_version`. Presence of the key proves this build is deployed. */
 export function describeToolCacheVersions(): { ok: true; detail: string } {
+  const shape = memoryAuthorityWordingDisabled() ? "memory_recall=legacy-key (wording switch thrown)" : `memory_recall=v${TOOL_CACHE_VERSION.memory_recall}`;
   if (!toolCacheVersioningEnabled()) {
-    return { ok: true, detail: "disabled — TOOL_CACHE_VERSION_DISABLED=true, legacy keys" };
+    return { ok: true, detail: `disabled — TOOL_CACHE_VERSION_DISABLED=true, legacy keys; ${shape} (keyed by output shape, unaffected)` };
   }
-  const entries = Object.entries(TOOL_CACHE_VERSION).map(([tool, v]) => `${tool}=v${v}`);
+  const entries = Object.entries(TOOL_CACHE_VERSION).map(([tool, v]) => (tool === "memory_recall" ? shape : `${tool}=v${v}`));
   return { ok: true, detail: entries.length ? entries.join(", ") : "no versioned tools" };
 }
