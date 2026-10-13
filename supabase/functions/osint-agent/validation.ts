@@ -15,9 +15,16 @@ import { isNullishLiteral } from "./lib/nullish-literal.ts";
 // Must match src/lib/seed.ts so cache keys line up.
 export type DetectedSeed = { kind: string; raw: string; normalized: string };
 
-/** Kill switch, read at call time so it can be thrown on the running build. */
+/**
+ * Kill switch, read at call time so it can be thrown on the running build.
+ *
+ * This file is also compiled by the FRONTEND typecheck/tests (a parity test imports it), where the `Deno` global
+ * does not exist, so the read goes through `globalThis` rather than naming `Deno` directly. Outside the edge runtime the
+ * switch is simply absent (false).
+ */
 export function seedAccountIdDisabled(): boolean {
-  return Deno.env.get("SEED_ACCOUNT_ID_DISABLED") === "true";
+  const env = (globalThis as { Deno?: { env?: { get(k: string): string | undefined } } }).Deno?.env;
+  return env?.get("SEED_ACCOUNT_ID_DISABLED") === "true";
 }
 
 export function detectSeedServer(input: string): DetectedSeed | null {

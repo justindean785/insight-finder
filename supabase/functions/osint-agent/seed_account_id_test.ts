@@ -61,3 +61,9 @@ Deno.test("WIRING (source assertion): /health publishes checks.seed_account_id f
   assert(health.includes('import { seedAccountIdSelfTest } from "./validation.ts";'));
   assert(health.includes("r.checks.seed_account_id = seedAccountIdSelfTest();"));
 });
+
+Deno.test("validation.ts never names the `Deno` global: the FRONTEND typecheck/tests compile this file too (CI #744 failed on exactly that)", async () => {
+  const src = await Deno.readTextFile(new URL("./validation.ts", import.meta.url));
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  assert(!/\bDeno\./.test(code), "use globalThis.Deno?.env, not Deno.env, in validation.ts");
+});
