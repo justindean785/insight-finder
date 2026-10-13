@@ -50,6 +50,33 @@ unapplied, 13 open PRs all draft. **Current (2026-10-11T06:43Z):** `main` `88f85
 ### S8 — payload store, then cache sweep (P2)
 - [ ] table keyed by `call_id`; sweep enabled only after coverage proof
 
+## Report-integrity investigation (2026-10-13, read-only; no app code changed)
+
+Case: `coresint.xyz`, two runs on 2026-10-12 (first report generated 23:44:03Z; follow-up ~00:11Z 10-13). Plan below awaits JD approval; nothing here is implemented.
+
+- [ ] **R1 (first fix, edge, one PR + kill switch + new `/health` key):** at report finalize, when the Evidence Record has zero
+      authoritative rows (or retrieval/review is `unavailable`), rewrite model-authored tier tags (`[CONFIRMED]` etc.) to an
+      `[UNADJUDICATED]` marker before the message is stored. Fail-open, no new model step, never throws (CLAUDE.md termination invariants).
+- [ ] **R2 (separate edge PR):** gate `memory_save` of ownership/operator/identity conclusions that cite no evidence ids. The memory phase
+      runs BEFORE the report phase (per the 2026-10-13 code read of `orchestrator-finalize.ts`; re-verify), so R1 alone cannot stop memory contamination.
+- [ ] **R3 (frontend PR):** `badgesFor` ("Multi-source corroborated") counts raw source strings; count independent source CLASSES instead.
+      `dedupeArtifacts` takes max confidence and unions source strings, which inflates that count. Contradiction rows get no `kind` guard in `labelForArtifact`.
+- [ ] **R4 (edge PR):** `applyMemoryContext` only strips sources starting with `memory`; a recalled claim restated under a real-looking label is not flagged.
+- [ ] **T1 (edge PR):** `indicia_web_dbs` defaults to all services incl. `snusbase`, but the provider requires `snusbaseType` and the code never sends it (live HTTP 400). Needs the provider's allowed values before any fix.
+- [ ] **T2 (edge PR):** `shapeJinaBody` returns `ok:true` for empty, whitespace-only and challenge-page bodies; add an empty/challenge check (keep #696 semantics).
+- [ ] **T3:** `lib/tool-input-failure.ts` prints `(unspecified)` for an InvalidToolInput error with no zod issues, and the `unparsable_input` branch is unreachable for that error name. Cause of the live `minimax_correlate (unspecified)` is NOT reproduced; needs the row's `sent_keys`.
+- [ ] **U1 (Lovable frontend, not canonical):** mirror `ThreadSidebar.tsx` discards the `get_thread_sidebar_metrics` RPC error (silent zero); mirror has `/timing` with no nav link. Neither exists in canonical.
+- Not changed, by design: reddit_user stays enabled (settled operator decision); direct-Gemini-first fallback is intended (`resolveFallbackProvider`).
+
+### Reproduction status (run by me unless noted)
+- Edge baseline on `c4bd432`: 2233 passed / 0 failed / 6 ignored.
+- Synthetic repro against REAL functions (scratchpad, not committed): memory-restatement and zero-row-CONFIRMED-prose cases FAIL as expected;
+  two breach tools classify to ONE independent class; schema failures for jina/gemini reproduced; `shapeJinaBody` blank/challenge -> `ok:true` reproduced.
+- NOT reproduced: the 85 persisted on the model-authored `contradiction` row (real policy capped the synthetic row at 80); `minimax_correlate (unspecified)`.
+- Untested: frontend (vitest) badge/dedupe cases; lifecycle/lease Tasks 4-5 (no run, code not yet traced); PG17 DB behavior.
+- Access gaps: loveable connector `list_investigations` failed on every attempt, so thread, artifact and memory rows were never read;
+  `/health` NOT called (GET `?health=1` runs stale-thread recovery writes, sweeps and provider pings).
+
 ## Results
 - 2026-10-10: S1a incident. #730 live as `2e0d3ee` returned 409 on every send (client heartbeat stamp). Rolled back by kill switch, no redeploy. Fixed by
   #733 (client) and #734 (server guard, live `811929c`, stamp #735, mirror #111, ledger #736). Lease remains OFF.
