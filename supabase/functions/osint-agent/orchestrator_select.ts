@@ -8,7 +8,7 @@
 // provider is selected only when its key is configured AND it is either pinned
 // via ORCHESTRATOR_PROVIDER or is the only available provider.
 
-export type OrchestratorProvider = "deepseek" | "minimax" | "grok" | "openadapter" | "anthropic" | "lovable";
+export type OrchestratorProvider = "deepseek" | "minimax" | "grok" | "anthropic" | "lovable";
 
 export interface OrchestratorAvailability {
   /** ORCHESTRATOR_PROVIDER secret, lowercased/trimmed ("" if unset). */
@@ -19,8 +19,6 @@ export interface OrchestratorAvailability {
   minimax: boolean;
   /** xAI/Grok gateway configured (XAI_API_KEY present). */
   grok: boolean;
-  /** OpenAdapter gateway configured (key + base URL present). */
-  openadapter: boolean;
   /** Anthropic (Claude API) configured (ANTHROPIC_API_KEY present). PIN-ONLY: never a default or fallback. */
   anthropic: boolean;
 }
@@ -36,7 +34,6 @@ function normalizePin(pin: string): OrchestratorProvider | "" {
   const p = pin.trim().toLowerCase();
   if (p === "deepseek") return "deepseek";
   if (p === "grok" || p === "xai") return "grok";
-  if (p === "openadapter" || p === "open-adapter") return "openadapter";
   if (p === "anthropic" || p === "claude") return "anthropic";
   if (p === "minimax") return "minimax";
   return "";
@@ -62,7 +59,6 @@ export function selectOrchestratorProvider(a: OrchestratorAvailability): Orchest
     deepseek: a.deepseek,
     minimax: a.minimax,
     grok: a.grok,
-    openadapter: a.openadapter,
     anthropic: a.anthropic,
   };
 
@@ -76,7 +72,7 @@ export function selectOrchestratorProvider(a: OrchestratorAvailability): Orchest
 
   if (has.minimax) return { provider: "minimax", reason: "default-minimax" };
 
-  for (const p of ["grok", "openadapter"] as OrchestratorProvider[]) {
+  for (const p of ["grok"] as OrchestratorProvider[]) {
     if (has[p]) return { provider: p, reason: "only-available" };
   }
   return { provider: "minimax", reason: "none-configured" };

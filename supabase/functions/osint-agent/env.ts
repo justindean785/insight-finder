@@ -24,8 +24,7 @@ import {
 import { MODELS } from "./models.ts";
 import { createIdleTimeoutFetch } from "./fetch_retry.ts";
 
-// Every orchestrator LLM provider (minimax, lovable-ai-gateway, xai-grok,
-// openadapter) is built via createOpenAICompatible with this as its `fetch`.
+// Every orchestrator LLM provider (minimax, lovable-ai-gateway, xai-grok) is built via createOpenAICompatible with this as its `fetch`.
 // Without it, a stalled stream (upstream opens the connection then goes silent
 // mid-generation) hangs streamText() forever: stopWhen's wall-clock deadline is
 // only evaluated BETWEEN completed steps, so a step whose model call never
@@ -174,8 +173,6 @@ export const FALLBACK_MODEL_ID = MODELS.fallback;
 // default selection (see orchestrator_select.ts) stays MiniMax and behavior is
 // unchanged. Activate via Supabase secrets — never the repo.
 export const XAI_API_KEY = Deno.env.get("XAI_API_KEY") ?? "";
-export const OPENADAPTER_API_KEY = Deno.env.get("OPENADAPTER_API_KEY") ?? "";
-export const OPENADAPTER_BASE_URL = Deno.env.get("OPENADAPTER_BASE_URL") ?? "";
 // Lead-orchestrator credential. The slot is vendor-agnostic (see
 // DEEPSEEK_BASE_URL below): GLM_API_KEY wins when set to a NON-EMPTY value, so
 // pointing the slot at Z.AI GLM is a secret-only change; DEEPSEEK_API_KEY stays
@@ -190,7 +187,6 @@ export const ORCHESTRATOR_PROVIDER = (Deno.env.get("ORCHESTRATOR_PROVIDER") ?? "
  * agentic tool calling — the right properties for OSINT synthesis). Override
  * with GROK_ORCHESTRATOR_MODEL_ID if xAI's lineup changes. */
 export const GROK_ORCHESTRATOR_MODEL_ID = Deno.env.get("GROK_ORCHESTRATOR_MODEL_ID") ?? "grok-4.3";
-export const OPENADAPTER_ORCHESTRATOR_MODEL_ID = Deno.env.get("OPENADAPTER_ORCHESTRATOR_MODEL_ID") ?? "";
 // deepseek-v4-pro is DeepSeek's flagship (1M-token context, native tool calls).
 // Kept as Pro (not the cheaper Flash variant) for the initial quality canary —
 // the migration off MiniMax is about correctness/reliability, not just cost, so
@@ -255,16 +251,6 @@ export const ANTHROPIC_RUN_LIMITS = {
 };
 export const anthropicGateway = ANTHROPIC_API_KEY
   ? createAnthropic({ apiKey: ANTHROPIC_API_KEY, fetch: ORCHESTRATOR_FETCH })
-  : null;
-
-// OpenAdapter — operator-supplied OpenAI-compatible gateway (base URL required).
-export const openAdapterGateway = (OPENADAPTER_API_KEY && OPENADAPTER_BASE_URL)
-  ? createOpenAICompatible({
-      name: "openadapter",
-      baseURL: OPENADAPTER_BASE_URL,
-      headers: { Authorization: `Bearer ${OPENADAPTER_API_KEY}` },
-      fetch: ORCHESTRATOR_FETCH,
-    })
   : null;
 
 // DeepSeek — OpenAI-compatible chat completions at api.deepseek.com. When set,

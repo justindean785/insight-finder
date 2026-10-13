@@ -8,18 +8,18 @@ import { selectOrchestratorProvider, selectFallbackProvider } from "../../supaba
 
 describe("selectOrchestratorProvider — default safety", () => {
   it("defaults to minimax when only minimax is configured", () => {
-    expect(selectOrchestratorProvider({ pin: "", deepseek: false, minimax: true, grok: false, openadapter: false, anthropic: false }))
+    expect(selectOrchestratorProvider({ pin: "", deepseek: false, minimax: true, grok: false, anthropic: false }))
       .toEqual({ provider: "minimax", reason: "default-minimax" });
   });
 
   it("stays on minimax even when grok is ALSO configured but not pinned", () => {
     // This is the safety property: adding the key without pinning changes nothing.
-    expect(selectOrchestratorProvider({ pin: "", deepseek: false, minimax: true, grok: true, openadapter: true, anthropic: false }))
+    expect(selectOrchestratorProvider({ pin: "", deepseek: false, minimax: true, grok: true, anthropic: false }))
       .toEqual({ provider: "minimax", reason: "default-minimax" });
   });
 
   it("reports none-configured (still minimax) when nothing is set", () => {
-    expect(selectOrchestratorProvider({ pin: "", deepseek: false, minimax: false, grok: false, openadapter: false, anthropic: false }))
+    expect(selectOrchestratorProvider({ pin: "", deepseek: false, minimax: false, grok: false, anthropic: false }))
       .toEqual({ provider: "minimax", reason: "none-configured" });
   });
 });
@@ -29,78 +29,69 @@ describe("selectOrchestratorProvider — DeepSeek default precedence", () => {
     // DeepSeek is the new default lead — MiniMax stays wired as a
     // secondary/fallback provider (still runs sub-tools) but no longer wins
     // the top-level orchestrator role when both are available.
-    expect(selectOrchestratorProvider({ pin: "", deepseek: true, minimax: true, grok: false, openadapter: false, anthropic: false }))
+    expect(selectOrchestratorProvider({ pin: "", deepseek: true, minimax: true, grok: false, anthropic: false }))
       .toEqual({ provider: "deepseek", reason: "default-deepseek" });
   });
 
   it("does NOT select deepseek when its key is absent (safety property preserved)", () => {
-    expect(selectOrchestratorProvider({ pin: "", deepseek: false, minimax: true, grok: true, openadapter: true, anthropic: false }))
+    expect(selectOrchestratorProvider({ pin: "", deepseek: false, minimax: true, grok: true, anthropic: false }))
       .toEqual({ provider: "minimax", reason: "default-minimax" });
   });
 
   it("selects deepseek when pinned and configured", () => {
-    expect(selectOrchestratorProvider({ pin: "deepseek", deepseek: true, minimax: true, grok: false, openadapter: false, anthropic: false }))
+    expect(selectOrchestratorProvider({ pin: "deepseek", deepseek: true, minimax: true, grok: false, anthropic: false }))
       .toEqual({ provider: "deepseek", reason: "pinned" });
   });
 
   it("ignores a deepseek pin whose key is NOT configured (falls back to minimax)", () => {
-    expect(selectOrchestratorProvider({ pin: "deepseek", deepseek: false, minimax: true, grok: false, openadapter: false, anthropic: false }))
+    expect(selectOrchestratorProvider({ pin: "deepseek", deepseek: false, minimax: true, grok: false, anthropic: false }))
       .toEqual({ provider: "minimax", reason: "default-minimax" });
   });
 
   it("an explicit minimax pin overrides the deepseek default", () => {
-    expect(selectOrchestratorProvider({ pin: "minimax", deepseek: true, minimax: true, grok: false, openadapter: false, anthropic: false }))
+    expect(selectOrchestratorProvider({ pin: "minimax", deepseek: true, minimax: true, grok: false, anthropic: false }))
       .toEqual({ provider: "minimax", reason: "pinned" });
   });
 });
 
 describe("selectOrchestratorProvider — explicit pin", () => {
   it("selects grok when pinned and configured", () => {
-    expect(selectOrchestratorProvider({ pin: "grok", deepseek: false, minimax: true, grok: true, openadapter: false, anthropic: false }))
+    expect(selectOrchestratorProvider({ pin: "grok", deepseek: false, minimax: true, grok: true, anthropic: false }))
       .toEqual({ provider: "grok", reason: "pinned" });
   });
 
   it("accepts 'xai' as an alias for grok", () => {
-    expect(selectOrchestratorProvider({ pin: "xai", deepseek: false, minimax: true, grok: true, openadapter: false, anthropic: false }).provider)
+    expect(selectOrchestratorProvider({ pin: "xai", deepseek: false, minimax: true, grok: true, anthropic: false }).provider)
       .toBe("grok");
   });
 
-  it("selects openadapter when pinned and configured", () => {
-    expect(selectOrchestratorProvider({ pin: "openadapter", deepseek: false, minimax: true, grok: false, openadapter: true, anthropic: false }))
-      .toEqual({ provider: "openadapter", reason: "pinned" });
+  it("treats a retired `openadapter` pin as unset (provider removed; falls to the default)", () => {
+    expect(selectOrchestratorProvider({ pin: "openadapter", deepseek: false, minimax: true, grok: false, anthropic: false }))
+      .toEqual({ provider: "minimax", reason: "default-minimax" });
   });
 
   it("honors an explicit minimax pin", () => {
-    expect(selectOrchestratorProvider({ pin: "minimax", deepseek: false, minimax: true, grok: true, openadapter: true, anthropic: false }))
+    expect(selectOrchestratorProvider({ pin: "minimax", deepseek: false, minimax: true, grok: true, anthropic: false }))
       .toEqual({ provider: "minimax", reason: "pinned" });
   });
 
   it("ignores a pin whose provider is NOT configured (falls back to minimax)", () => {
-    expect(selectOrchestratorProvider({ pin: "grok", deepseek: false, minimax: true, grok: false, openadapter: false, anthropic: false }))
+    expect(selectOrchestratorProvider({ pin: "grok", deepseek: false, minimax: true, grok: false, anthropic: false }))
       .toEqual({ provider: "minimax", reason: "default-minimax" });
   });
 
   it("ignores an unknown pin value", () => {
-    expect(selectOrchestratorProvider({ pin: "gpt5", deepseek: false, minimax: true, grok: true, openadapter: false, anthropic: false }))
+    expect(selectOrchestratorProvider({ pin: "gpt5", deepseek: false, minimax: true, grok: true, anthropic: false }))
       .toEqual({ provider: "minimax", reason: "default-minimax" });
   });
 });
 
 describe("selectOrchestratorProvider — only-available fallthrough", () => {
   it("uses grok when it is the only provider configured", () => {
-    expect(selectOrchestratorProvider({ pin: "", deepseek: false, minimax: false, grok: true, openadapter: false, anthropic: false }))
+    expect(selectOrchestratorProvider({ pin: "", deepseek: false, minimax: false, grok: true, anthropic: false }))
       .toEqual({ provider: "grok", reason: "only-available" });
   });
 
-  it("uses openadapter when it is the only provider configured", () => {
-    expect(selectOrchestratorProvider({ pin: "", deepseek: false, minimax: false, grok: false, openadapter: true, anthropic: false }))
-      .toEqual({ provider: "openadapter", reason: "only-available" });
-  });
-
-  it("prefers grok over openadapter when both are configured and minimax is absent", () => {
-    expect(selectOrchestratorProvider({ pin: "", deepseek: false, minimax: false, grok: true, openadapter: true, anthropic: false }).provider)
-      .toBe("grok");
-  });
 });
 
 describe("selectFallbackProvider — tool-level fallback selection", () => {
@@ -133,7 +124,7 @@ describe("selectFallbackProvider — tool-level fallback selection", () => {
 });
 
 describe("selectOrchestratorProvider — Anthropic is PIN-ONLY", () => {
-  const base = { deepseek: false, minimax: false, grok: false, openadapter: false };
+  const base = { deepseek: false, minimax: false, grok: false, };
 
   it("selects anthropic when pinned `anthropic` and the key is configured", () => {
     expect(selectOrchestratorProvider({ ...base, pin: "anthropic", deepseek: true, minimax: true, anthropic: true }))

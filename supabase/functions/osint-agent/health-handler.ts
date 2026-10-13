@@ -13,7 +13,7 @@ import {
   OSINT_AGENT_PROBE_SECRET,
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL,
-  ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY, OPENADAPTER_API_KEY, OPENADAPTER_BASE_URL,
+  ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY,
   lovableGateway, geminiDirectGateway, ALLOW_LOVABLE_FALLBACK,
   promptBudgetHardCeilingEnabled,
 } from "./env.ts";
@@ -199,7 +199,6 @@ export function resolveSelectedOrchestrator(env?: {
   deepseek?: boolean;
   minimax?: boolean;
   grok?: boolean;
-  openadapter?: boolean;
   anthropic?: boolean;
 }): { provider: OrchestratorProvider; reason: string; model: string } {
   const choice = selectOrchestratorProvider({
@@ -207,7 +206,6 @@ export function resolveSelectedOrchestrator(env?: {
     deepseek: env?.deepseek ?? !!DEEPSEEK_API_KEY,
     minimax: env?.minimax ?? !!MINIMAX_API_KEY,
     grok: env?.grok ?? !!XAI_API_KEY,
-    openadapter: env?.openadapter ?? !!(OPENADAPTER_API_KEY && OPENADAPTER_BASE_URL),
     anthropic: env?.anthropic ?? !!ANTHROPIC_API_KEY,
   });
   const model =
@@ -546,7 +544,6 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     selected.provider === "deepseek" ? !!DEEPSEEK_API_KEY :
     selected.provider === "minimax" ? !!MINIMAX_API_KEY :
     selected.provider === "grok" ? !!XAI_API_KEY :
-    selected.provider === "openadapter" ? !!(OPENADAPTER_API_KEY && OPENADAPTER_BASE_URL) :
     selected.provider === "anthropic" ? !!ANTHROPIC_API_KEY :
     (!!MINIMAX_API_KEY || !!LOVABLE_API_KEY);
   const gate = orchestratorGate(selected.provider, selectedKeyPresent, r.checks.core?.ok === true);

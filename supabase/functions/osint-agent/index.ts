@@ -14,8 +14,8 @@ import {
   corsHeaders, MINIMAX_API_KEY, LOVABLE_API_KEY,
   lovableGateway, PRIMARY_ORCHESTRATOR_MODEL_ID, FALLBACK_MODEL_ID,
   geminiDirectGateway, GEMINI_FALLBACK_MODEL_ID, ALLOW_LOVABLE_FALLBACK,
-  grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
-  GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
+  grokGateway, ORCHESTRATOR_PROVIDER,
+  GROK_ORCHESTRATOR_MODEL_ID,
   deepseekGateway, DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL, DEEPSEEK_VENDOR_HOST,
   anthropicGateway, ANTHROPIC_MODEL_ID, ANTHROPIC_THINKING, ANTHROPIC_EFFORT, ANTHROPIC_RUN_LIMITS,
@@ -578,7 +578,7 @@ Deno.serve(async (req) => {
     const minimaxAvailable = !!MINIMAX_API_KEY;
     // Tranche 2: pick the PRIMARY orchestrator provider. With nothing new
     // configured this is always "minimax" and everything below is byte-for-byte
-    // the prior behavior. Grok/OpenAdapter only win when their key is set (and
+    // the prior behavior. Grok only wins when their key is set (and
     // ORCHESTRATOR_PROVIDER pins them, or they're the only provider available).
     // DeepSeek takes the lead role by default when its key is configured — see
     // orchestrator_select.ts precedence — with MiniMax staying wired as a
@@ -588,7 +588,6 @@ Deno.serve(async (req) => {
       deepseek: !!deepseekGateway,
       minimax: minimaxAvailable,
       grok: !!grokGateway,
-      openadapter: !!openAdapterGateway,
       anthropic: !!anthropicGateway,
     });
     const minimaxIsPrimary = orchChoice.provider === "minimax";
@@ -827,8 +826,6 @@ Deno.serve(async (req) => {
         ? { model: deepseekGateway!.chatModel(DEEPSEEK_ORCHESTRATOR_MODEL_ID), label: `${DEEPSEEK_ORCHESTRATOR_MODEL_ID} (${DEEPSEEK_VENDOR_HOST})` }
         : orchChoice.provider === "grok"
         ? { model: grokGateway!.chatModel(GROK_ORCHESTRATOR_MODEL_ID), label: `${GROK_ORCHESTRATOR_MODEL_ID} (xAI Grok)` }
-        : orchChoice.provider === "openadapter"
-        ? { model: openAdapterGateway!.chatModel(OPENADAPTER_ORCHESTRATOR_MODEL_ID), label: `${OPENADAPTER_ORCHESTRATOR_MODEL_ID} (OpenAdapter)` }
         : orchChoice.provider === "anthropic"
         ? { model: anthropicGateway!(ANTHROPIC_MODEL_ID), label: `${ANTHROPIC_MODEL_ID} (Anthropic)` }
         : { model: minimax.chatModel(PRIMARY_ORCHESTRATOR_MODEL_ID), label: `${PRIMARY_ORCHESTRATOR_MODEL_ID} (MiniMax direct)` };
@@ -1699,7 +1696,7 @@ Deno.serve(async (req) => {
           JSON.stringify({
             thread_id: threadId,
             // Reflects the ACTUAL primary provider (minimax/deepseek/grok/
-            // openadapter), not hardcoded to "minimax" — a pre-existing gap
+            // anthropic), not hardcoded to "minimax" — a pre-existing gap
             // that mislabeled every non-MiniMax primary in this log.
             provider: useFallback ? fallbackTarget!.provider : orchChoice.provider,
             model: useFallback ? fallbackTarget!.modelId : primaryLabel,
