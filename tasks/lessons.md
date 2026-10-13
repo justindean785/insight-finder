@@ -3,6 +3,11 @@
 Running log of non-obvious gotchas learned while working in this repo. Newest first.
 
 ## 2026-10-13
+- **A read-only DB trace beats inference.** Two separate corrections came only from queries: the thread holds THREE runs (not two), and the three cache hits in run 1 came from a different thread started 15s earlier. Ask for the data path before reasoning about it.
+- **`agent_memory` has no writer or provenance column, and the browser's analyst lesson and the model's `memory_save` use the same `save_agent_memories` RPC.** Analyst authorship can only be inferred from wording; never claim it. The upsert overwrites `source_thread_id`, ratchets confidence, keeps the longer content and bumps `hit_count`/`last_used_at`, so those columns are not recall evidence.
+- **`tool_usage_log` stores no tool output**, so which memory rows were recalled cannot be reconstructed from it.
+- **The orchestrator's budget elision cuts assistant text to 200 chars** (`elideAssistantText`); a prefix label longer than that is silently destroyed. Test any prompt prefix through the real `capTotalToBudget`, not just `truncateStr`.
+- **Frontend suites import `system-prompt.ts`**, so anything it imports must not touch `Deno` directly (use the `globalThis.Deno` pattern in `lib/memory-context.ts`); `npm run typecheck` catches it, `deno test` does not.
 - **`/health?health=1` is a GET with side effects.** `health-handler.ts` runs `recoverStaleActiveThreads` (DB writes), the rejected-cluster sweep,
   finding synthesis and live provider pings. Use `deploy-log.jsonl`, `deploy/live` and the mirror git log instead.
 - **A footer is not a control.** The Evidence Record already says "No authoritative finding rows ... nothing in the narrative above was adjudicated",

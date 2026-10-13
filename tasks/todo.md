@@ -104,6 +104,30 @@ Demonstrated escalations: `system-prompt.ts:145-146` ("INCORPORATE ... CITE as \
 - The 85/65 persisted scores vs 80/60 from the policy function: unresolved until the exact stored rows and inputs are available.
 - No blanket relationship caps and no keyword negation rules; claim-level semantics (claim meaning, supporting evidence, authority) must be specified and tested per invariant before any relationship change.
 
+## Read-only DB trace (2026-10-13, thread 4595c1b0; SELECT only, no text/values/subjects/content read)
+
+Established (query results; flags and counts are diagnostic, not proof of claim meaning):
+- One thread (created 2026-10-01) holds THREE runs: run 1 23:40:43-23:44:06Z (14 steps, 33 tools, `finalize_forced`), run 2 00:05:43-00:07:09Z (4 steps, 9 tools, `natural_stop`), run 3 00:08:09-00:11:07Z (9 steps, 22 tools, `finalize_forced`). 33+9+22 = 64 = header tool count. Artifacts 33+6+12 = 51 = the "51 artifacts" footer.
+- Final assistant text parts: run 1 13,474 chars / 20 `[CONFIRMED]` / has `[MEMORY]` (pos 2,804) / has "same operator" (pos 9,937); run 2 5,505 chars / 4 / no phrase; run 3 9,949 chars / 14 / has phrase (pos 7,459). All three messages carry the zero-row Evidence Record footer.
+- History path is POSSIBLE, not proven: run 1's final text part sits inside the 16,000-char recent window for runs 2 and 3. Run 2's report lacks the phrase and run 3's has it.
+- Memory rows about this case exist from 2026-10-09 04:07 (written by an earlier thread b5d26018, an Oct 9 run). Rows created by THIS thread's `memory_save`: 23:43:19 (`identity` 74 on the email subject, `connection` 60) and 00:10:17 (`connection` 70, `lesson` 74). Two Oct-9 rows now show this thread as `source_thread_id` because the live `save_agent_memories` upsert overwrites it, ratchets confidence with GREATEST, keeps the LONGER content and bumps hit_count/last_used_at (verified against the live function). So `hit_count`/`last_used_at` are NOT evidence of recall.
+- Run 1's first `memory_recall`, `whois_lookup` and `wayback_cdx_search` were served from the user-level cache, created 5-9s before this thread's first message by ANOTHER thread (6d55b8da, seed type url, `stopped` at 23:41:03) that started 15s earlier. `memory_recall` is cacheable (24h default TTL).
+- Artifacts flagged `context_from_memory` (writer `applyMemoryContext`, verified in code; other writers not enumerated): 4 `memory_only`/`needs_review` at 45-50 (email, floeintel.com domain, l5e.io, sitemap routes) and 4 that kept a real tool label and persisted `observed` at 65-75, including the organization row at 65.
+- Contradiction row: confidence 85, status `needs_corroboration`, same batch insert as a breach row, not memory-flagged. Still UNEXPLAINED against the policy function (80).
+- Tool failures: `minimax_correlate (unspecified)` had `sent_keys=[]` AND `invalid_fields=[]` at 0ms (a parsed-but-empty input produces named zod issues, so the arguments probably never parsed as an object; raw input not stored). The 24s was ONE successful call (23.8s). `gemini_deep_dork` sent `seed`+`dork_focus` (no `kind`, wrong name for `focus`). `jina_reader_scrape` `maxChars` wrong type (value not stored). All three schema failures were followed by deadline-skipped retries. `indicia_web_dbs` HTTP 400 (`snusbaseType`).
+
+NOT established: which memory rows `memory_recall` returned (tool outputs are not stored in `tool_usage_log`); whether history, memory or both fed run 3; who authored the Oct-9 rows. Coverage limit: the memory candidate filter (subject/related_values/source_thread_id) misses inherited memory about other selectors.
+
+## PR A (draft #738, edge only) and PR B (design only)
+PR A shipped as a draft: recall wording, read-time provenance tags (`unreviewed` / `analyst_marker_pattern`, authorship inferred from wording only), historical-output label surviving real trimming (elision fix), kill switch `MEMORY_AUTHORITY_WORDING_DISABLED`, `checks.memory_authority`. 24 new edge tests; suite 2257/0/6.
+
+PR B design (backward compatible, preview-preserving, additive; separate edge and frontend PRs):
+- Emit ONE additive non-text part `data-evidence-record` ({state, finding_count, record_version}) beside the unchanged text. The thread preview reads the last TEXT part, so it is unaffected; the existing markdown record in the text stays for legacy readers. Old clients ignore the unknown part.
+- States (note FOUR, not three): `adjudicated_findings`; `adjudicated_zero` (explicit `finalize_no_findings`); `adjudication_not_performed` (no rows and no decision); `adjudication_unavailable` (retrieval/review unreadable).
+- UI renders the model narrative inside a labelled container chosen by state or, when the part is absent (streaming, legacy, replay), by structure: "AI narrative - not adjudicated". With findings: "The engine record covers the N listed findings; the rest of this narrative is unadjudicated." Model-written confidence numbers and tier tags are displayed as narrative, never as scores; no stored text is altered.
+- Streaming: live assistant text has no engine part, so it is labelled unadjudicated by absence. Final persistence: the part is added in `composePersistedParts`. Exports: `evidence-export` reads `evidence_log`, not prose (confirm PDF content). Replay: `investigation_cache.assistant_parts` carries the part; replays show the state and "replayed from <date>". Historical rows unchanged.
+- Must not add work to or gate the finalize window. Kill switch + a new proof key; frontend and edge never mixed.
+
 ### Reproduction status (run by me unless noted)
 - Edge baseline on `c4bd432`: 2233 passed / 0 failed / 6 ignored.
 - Synthetic repro against REAL functions (scratchpad, not committed): memory-restatement and zero-row-CONFIRMED-prose cases FAIL as expected;
