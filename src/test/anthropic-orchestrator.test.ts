@@ -158,3 +158,13 @@ describe("checks.orchestrator_anthropic", () => {
     expect(anthropicOrchestratorHealth({ ...input, modelId: "claude-mystery-1" }).detail).toMatch(/model_not_in_rate_table/);
   });
 });
+
+import { salvageWithinBudget } from "../../supabase/functions/osint-agent/anthropic-orchestrator.ts";
+describe("salvageWithinBudget", () => {
+  const limits = { maxInputTokens: 1000, maxCostMicroUsd: 500 };
+  it("allows a bounded overrun (the backstop exists to guarantee a report) but not an unbounded one", () => {
+    expect(salvageWithinBudget({ inputTokens: 1000, costMicroUsd: 500 }, limits)).toBe(true);
+    expect(salvageWithinBudget({ inputTokens: 1500, costMicroUsd: 0 }, limits)).toBe(false);
+    expect(salvageWithinBudget({ inputTokens: 0, costMicroUsd: 750 }, limits)).toBe(false);
+  });
+});

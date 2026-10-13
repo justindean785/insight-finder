@@ -198,6 +198,18 @@ export function runBudgetExhausted(
   return { exhausted: false, reason: null };
 }
 
+/**
+ * The report-salvage backstop is a separate model request made after the loop. It is allowed a
+ * BOUNDED overrun of the ceilings (it exists to guarantee the analyst gets a report), but not an
+ * unbounded one: past 1.5x either ceiling it is skipped and the run ends visibly Interrupted.
+ */
+export const ANTHROPIC_SALVAGE_HEADROOM = 1.5;
+
+export function salvageWithinBudget(totals: RunBudgetTotals, limits: RunBudgetLimits): boolean {
+  return totals.inputTokens < limits.maxInputTokens * ANTHROPIC_SALVAGE_HEADROOM &&
+    totals.costMicroUsd < limits.maxCostMicroUsd * ANTHROPIC_SALVAGE_HEADROOM;
+}
+
 // ---- Error classification ------------------------------------------------------------
 
 export type AnthropicFailureKind =

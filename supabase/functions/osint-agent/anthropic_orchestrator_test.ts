@@ -8,7 +8,7 @@ import { createAnthropic } from "npm:@ai-sdk/anthropic@3";
 import { z } from "npm:zod@3";
 import {
   anthropicOrchestratorHealth, anthropicProviderOptions, classifyAnthropicError, extractAnthropicUsage,
-  runBudgetExhausted, splitCachedSystem, stepCostMicroUsd,
+  runBudgetExhausted, salvageWithinBudget, splitCachedSystem, stepCostMicroUsd,
 } from "./anthropic-orchestrator.ts";
 
 const OK_BODY = {
@@ -165,4 +165,25 @@ Deno.test("wiring: the Anthropic path can never fail over, and the budget feeds 
   assertStringIncludes(src, "const anthropicActive = anthropicIsPrimary && !useFallback;");
   assertStringIncludes(src, "|| stepCapDue || anthropicBudget.exhausted");
   assertStringIncludes(src, "anthropicBudgetStatus().exhausted");
+});
+
+Deno.test("salvage: allowed within 1.5x of either ceiling, refused beyond it", () => {
+  const limits = { maxInputTokens: 1000, maxCostMicroUsd: 500 };
+  assertEquals(salvageWithinBudget({ inputTokens: 1000, costMicroUsd: 500 }, limits), true, "just past the ceiling still gets its report");
+  assertEquals(salvageWithinBudget({ inputTokens: 1499, costMicroUsd: 749 }, limits), true);
+  assertEquals(salvageWithinBudget({ inputTokens: 1500, costMicroUsd: 0 }, limits), false);
+  assertEquals(salvageWithinBudget({ inputTokens: 0, costMicroUsd: 750 }, limits), false);
+});
+
+Deno.test("wiring: the report-salvage Anthropic request is metered and budget-gated (Codex P1 on #748)", async () => {
+  const src = await Deno.readTextFile(new URL("./index.ts", import.meta.url));
+  const gen = src.indexOf("const salvage = await generateText({");
+  assert(gen > 0);
+  const before = src.slice(Math.max(0, gen - 900), gen);
+  assertStringIncludes(before, "salvageWithinBudget(", );
+  assertStringIncludes(before, "anthropic_salvage_skipped_budget");
+  const after = src.slice(gen, gen + 600);
+  assertStringIncludes(after, 'meterAnthropicUsage(salvage?.usage, "salvage", null)');
+  // One shared metering function: the step callback must use it too, not a second copy.
+  assertStringIncludes(src, 'meterAnthropicUsage(usage, "step", stepNumber ?? 0)');
 });

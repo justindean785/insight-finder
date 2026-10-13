@@ -81,7 +81,7 @@ import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-i
 import { isMessageSchemaError, classifyStreamProviderError, describeStreamError } from "./stream-error-classify.ts";
 import {
   anthropicModelRejectsForcedToolChoice, anthropicProviderOptions, classifyAnthropicError,
-  extractAnthropicUsage, runBudgetExhausted, splitCachedSystem, stepCostMicroUsd,
+  extractAnthropicUsage, runBudgetExhausted, salvageWithinBudget, splitCachedSystem, stepCostMicroUsd,
 } from "./anthropic-orchestrator.ts";
 import {
   shouldFallbackAfterMinimaxPreflight,
@@ -957,6 +957,31 @@ Deno.serve(async (req) => {
           ANTHROPIC_RUN_LIMITS,
         )
         : { exhausted: false, reason: null };
+    // ONE metering path for every Anthropic request this run makes — the streamText steps AND
+    // the report-salvage generateText below — so no request can spend credits off-ledger or
+    // past the ceiling (Codex P1 on #748). Counts + cost only; feeds onCost (run cost + user
+    // credit debit) and anthropicRun (the hard budget).
+    const meterAnthropicUsage = (usage: unknown, phase: "step" | "salvage", stepNumber: number | null) => {
+      const su = extractAnthropicUsage(usage);
+      const micro = stepCostMicroUsd(ANTHROPIC_MODEL_ID, su);
+      anthropicRun.inputTokens += su.totalInput;
+      anthropicRun.outputTokens += su.output;
+      anthropicRun.cacheReadTokens += su.cacheRead;
+      anthropicRun.cacheWriteTokens += su.cacheWrite;
+      anthropicRun.costMicroUsd += micro;
+      // Durable home for cache-read tokens WITHOUT a schema change: the orchestrator
+      // telemetry tables have no token-bucket columns (and migrations are out of scope),
+      // so this structured edge-log event is the per-request record. Counts only.
+      console.log(JSON.stringify({
+        event: "orchestrator_usage", thread_id: threadId, provider: "anthropic", model: ANTHROPIC_MODEL_ID,
+        phase, step_number: stepNumber,
+        input_tokens: su.input, cache_read_tokens: su.cacheRead, cache_write_tokens: su.cacheWrite,
+        output_tokens: su.output, cost_micro_usd: micro,
+        run_input_tokens: anthropicRun.inputTokens, run_cache_read_tokens: anthropicRun.cacheReadTokens,
+        run_cost_micro_usd: anthropicRun.costMicroUsd,
+      }));
+      if (micro > 0) onCost(micro);
+    };
     // The stable base (tools + base system prompt) carries the cache breakpoint; the per-step
     // directive rides after it. Identity on every non-Anthropic provider.
     const stepSystem = (full: string) => anthropicActive ? splitCachedSystem(full, baseSystemPrompt) : full;
@@ -1622,25 +1647,7 @@ Deno.serve(async (req) => {
           if (anthropicActive) {
             // Anthropic bills four distinct buckets (uncached input, cache read, cache write,
             // output); the flat in/out meter below would double-charge the cached span.
-            const su = extractAnthropicUsage(usage);
-            const micro = stepCostMicroUsd(ANTHROPIC_MODEL_ID, su);
-            anthropicRun.inputTokens += su.totalInput;
-            anthropicRun.outputTokens += su.output;
-            anthropicRun.cacheReadTokens += su.cacheRead;
-            anthropicRun.cacheWriteTokens += su.cacheWrite;
-            anthropicRun.costMicroUsd += micro;
-            // Durable home for cache-read tokens WITHOUT a schema change: the orchestrator
-            // telemetry tables have no token-bucket columns (and migrations are out of scope),
-            // so this structured edge-log event is the per-step record. Counts only.
-            console.log(JSON.stringify({
-              event: "orchestrator_usage", thread_id: threadId, provider: "anthropic", model: ANTHROPIC_MODEL_ID,
-              step_number: stepNumber ?? 0,
-              input_tokens: su.input, cache_read_tokens: su.cacheRead, cache_write_tokens: su.cacheWrite,
-              output_tokens: su.output, cost_micro_usd: micro,
-              run_input_tokens: anthropicRun.inputTokens, run_cache_read_tokens: anthropicRun.cacheReadTokens,
-              run_cost_micro_usd: anthropicRun.costMicroUsd,
-            }));
-            if (micro > 0) onCost(micro);
+            meterAnthropicUsage(usage, "step", stepNumber ?? 0);
             return;
           }
           const u = usage as { inputTokens?: number; promptTokens?: number; outputTokens?: number; completionTokens?: number } | undefined;
@@ -1875,12 +1882,27 @@ Deno.serve(async (req) => {
             const cleanSalvageArts = applyReviewsToArtifacts(
               salvageArts.slice(0, 200), salvageReviews,
             );
+            // Salvage is a SEPARATE model request, outside the streamText loop and its
+            // per-step meter. On Anthropic it is metered below and gated here: it may use a
+            // bounded overrun of the ceiling (it exists to guarantee a report), but not an
+            // unbounded one. Skipped -> the run ends visibly Interrupted, never off-ledger.
+            if (anthropicActive && !salvageWithinBudget(
+              { inputTokens: anthropicRun.inputTokens, costMicroUsd: anthropicRun.costMicroUsd },
+              ANTHROPIC_RUN_LIMITS,
+            )) {
+              console.warn(JSON.stringify({
+                event: "anthropic_salvage_skipped_budget", thread_id: threadId,
+                run_input_tokens: anthropicRun.inputTokens, run_cost_micro_usd: anthropicRun.costMicroUsd,
+              }));
+              throw new Error("salvage synthesis skipped: anthropic run budget exhausted");
+            }
             const salvage = await generateText({
               model: orchestratorModel,
               maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
               system: baseSystemPrompt,
               prompt: buildSalvageSynthesisPrompt(seedValueRaw, cleanSalvageArts),
             });
+            if (anthropicActive) meterAnthropicUsage(salvage?.usage, "salvage", null);
             const salvageText = (salvage?.text ?? "").trim();
             if (salvageText) {
               const salvagePart = { type: "text", text: salvageText } as unknown;
