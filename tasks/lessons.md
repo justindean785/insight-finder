@@ -2,6 +2,26 @@
 
 Running log of non-obvious gotchas learned while working in this repo. Newest first.
 
+## 2026-10-13
+- **A read-only DB trace beats inference.** Two separate corrections came only from queries: the thread holds THREE runs (not two), and the three cache hits in run 1 came from a different thread started 15s earlier. Ask for the data path before reasoning about it.
+- **`agent_memory` has no writer or provenance column, and the browser's analyst lesson and the model's `memory_save` use the same `save_agent_memories` RPC.** Analyst authorship can only be inferred from wording; never claim it. The upsert overwrites `source_thread_id`, ratchets confidence, keeps the longer content and bumps `hit_count`/`last_used_at`, so those columns are not recall evidence.
+- **`tool_usage_log` stores no tool output**, so which memory rows were recalled cannot be reconstructed from it.
+- **The orchestrator's budget elision cuts assistant text to 200 chars** (`elideAssistantText`); a prefix label longer than that is silently destroyed. Test any prompt prefix through the real `capTotalToBudget`, not just `truncateStr`.
+- **Frontend suites import `system-prompt.ts`**, so anything it imports must not touch `Deno` directly (use the `globalThis.Deno` pattern in `lib/memory-context.ts`); `npm run typecheck` catches it, `deno test` does not.
+- **`/health?health=1` is a GET with side effects.** `health-handler.ts` runs `recoverStaleActiveThreads` (DB writes), the rejected-cluster sweep,
+  finding synthesis and live provider pings. Use `deploy-log.jsonl`, `deploy/live` and the mirror git log instead.
+- **A footer is not a control.** The Evidence Record already says "No authoritative finding rows ... nothing in the narrative above was adjudicated",
+  while the stored narrative keeps its `[CONFIRMED]` tags (14 in one case). `narrativeIsUnadjudicated` only shows a notice.
+- **Two breach tools are one source.** `breach_check` and `oathnet_stealer_search` classify to the same `breach` class (count 1), so "4 independent
+  stealer-log sources" is not a count the engine would produce.
+- **Do not trust a code-review subagent's single-tree answer.** It reported `/timing` and the sidebar RPC "not reproduced" because it read only canonical;
+  both exist in the Lovable mirror's frontend. Check both trees before classifying a Lovable warning.
+- **When calling a helper in a repro, read its signature.** `shapeJinaBody(url, text, maxChars)` was first called as `(body, 200)` and threw; the Jina
+  error format is anchored (`URL Source:` then `Warning: Target URL returned error N`). A repro that does not match the real input shape proves nothing.
+- **Activity "Succeeded" = Health "Succeeded" + "No record"** (26 = 24+2, 47 = 41+6). The header's "N evidence" is `evidence_log` custody entries, not artifacts.
+- **`deno test` rewrites `deno.lock`** even with `--no-lock` passed through `npm run`; `git checkout deno.lock` afterwards.
+
+
 ## 2026-10-10 (audit revalidation)
 - **Implemented, deployed and enabled are three states; documents must say which.** S1a is the first two. A PR body that read "not started" outlived
   the work by hours, and a handoff saying "unbuilt" would have sent a fresh session to rebuild it. Update the status line in the same PR that changes it.
