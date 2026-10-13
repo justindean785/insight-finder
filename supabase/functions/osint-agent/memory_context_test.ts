@@ -254,6 +254,36 @@ Deno.test("bracketed citation variants the model actually writes are still recog
   }
 });
 
+Deno.test("the citation tail is matched AT the comma, not searched for later in the label (sticky regex)", () => {
+  // A later "unverified" in the same label must not retroactively fold an earlier comma and swallow what sits between.
+  const r = applyMemoryContext("memory_recall, oathnet_lookup + unverified", {});
+  assertEquals(r.memory, true);
+  assertEquals(r.memoryOnly, false);
+  assert(String(r.source).includes("oathnet_lookup"), `the real source must survive: ${JSON.stringify(r.source)}`);
+});
+
+Deno.test("a bracketed tool-slug look-alike is a source: the slug must END at a word boundary", () => {
+  for (const s of ["[memory_recall_cache]", "[memory_search_engine]", "[memory_savepoint]"]) {
+    assertEquals(applyMemoryContext(s, {}).memory, false, s);
+  }
+  for (const s of ["[memory_recall]", "[memory_save (batch)]", "[memory_search + oathnet_lookup]"]) {
+    assertEquals(applyMemoryContext(s, {}).memory, true, s);
+  }
+});
+
+Deno.test("repeated folds stay LINEAR: a long run of ', unverified' tails costs milliseconds, not seconds", () => {
+  // Third-round review, finding A: the token check re-trimmed the WHOLE accumulated token at every folded comma
+  // (quadratic — 600 KB took ~9 s). The check only needs the START of the token (the rule is start-anchored).
+  const input = "memory_recall" + ", unverified".repeat(33_000); // ~400 KB, no separator, every comma folds
+  const t0 = performance.now();
+  const r = applyMemoryContext(input, {});
+  const ms = performance.now() - t0;
+  assertEquals(r.memoryOnly, true);
+  assert(ms < 1000, `took ${ms.toFixed(0)} ms — the fold path must be linear`);
+  const spaced = applyMemoryContext("memory_recall" + ", unverified ".repeat(30_000), {});
+  assertEquals(spaced.memory, true);
+});
+
 Deno.test("the label cannot count as independent corroboration — before or after the rule, alone or beside a real source", () => {
   const real = "breach_check";
   const cls = (s: string | undefined) => classifySourceLabel(s);

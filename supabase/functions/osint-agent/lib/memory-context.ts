@@ -35,6 +35,8 @@
 const MEMORY_TOKEN_RE =
   /^(?:\[\s*memory(?:_(?:recall|save|search)\b|\s*\]|\s+[-\u2013\u2014]|\s*:|\s*\(|\s+(?:prior|earlier|previous|recalled|unverified)\b)|memory(?:_(?:recall|save|search))?(?:\s*\(|$|\s|,))/i;
 
+const HEAD_CHARS = 256;
+
 /** "unverified" ENDING the token right after a memory token's comma is the tail of the citation, never a source. Sticky: tested at an index, no slicing. */
 const CITATION_TAIL_RE = /\s*unverified\s*(?=$|[\])+|;,])/iy;
 
@@ -66,6 +68,9 @@ function splitTopLevel(label: string): string[] {
   const unmatched = unmatchedOpenBrackets(label);
   let depth = 0;
   let cur = "";
+  // First HEAD_CHARS of the current token. MEMORY_TOKEN_RE is anchored at the start, so the verdict needs only the
+  // head; re-reading the whole accumulated token at every folded comma was quadratic (600 KB took ~9 s).
+  let head = "";
   for (let i = 0; i < label.length; i++) {
     const ch = label[i];
     if (ch === "(" || (ch === "[" && !unmatched.has(i))) depth++;
@@ -74,16 +79,18 @@ function splitTopLevel(label: string): string[] {
       // "<memory token>, unverified": the comma is part of the citation, not a boundary between two sources.
       if (ch === ",") {
         CITATION_TAIL_RE.lastIndex = i + 1;
-        if (CITATION_TAIL_RE.test(label) && MEMORY_TOKEN_RE.test(cur.trim())) {
+        if (CITATION_TAIL_RE.test(label) && MEMORY_TOKEN_RE.test(head.trimStart())) {
           cur += ch;
           continue;
         }
       }
       parts.push(cur);
       cur = "";
+      head = "";
       continue;
     }
     cur += ch;
+    if (head.length < HEAD_CHARS) head += ch;
   }
   parts.push(cur);
   return parts.map((p) => p.trim()).filter(Boolean);
