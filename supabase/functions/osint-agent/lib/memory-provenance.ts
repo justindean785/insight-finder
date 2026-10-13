@@ -59,6 +59,12 @@ export function historyLabelDisabled(): boolean {
     (readEnvSafe("HISTORY_LABEL_DISABLED") ?? "").trim().toLowerCase() === "true";
 }
 
+/** Marking replayed memory results (lib/historical-memory.ts) has its OWN switch; the master switch disables it too. */
+export function historicalMemoryMarkDisabled(): boolean {
+  return memoryAuthorityWordingDisabled() ||
+    (readEnvSafe("HISTORICAL_MEMORY_MARK_DISABLED") ?? "").trim().toLowerCase() === "true";
+}
+
 export type MemoryProvenance = "analyst_marker_pattern" | "unreviewed";
 
 /** The label the model is told to cite recalled memory under. */
@@ -130,7 +136,8 @@ export function renderPlannerMemoryHint(rows: ReadonlyArray<PlannerMemoryRow & M
     ).join("\n");
 }
 
-const LEGACY_AUTO_RECALL_HINT =
+/** The pre-change auto-recall hint, exported only so replayed history can recognise and neutralise it (lib/historical-memory.ts). */
+export const LEGACY_AUTO_RECALL_HINT =
   "Prior memory found for some of the artifacts you just recorded. Read `memory_hits` — incorporate confirmed connections/lessons and cite them as [MEMORY] in the final report. Do NOT re-investigate values already covered.";
 
 const AUTO_RECALL_HINT =

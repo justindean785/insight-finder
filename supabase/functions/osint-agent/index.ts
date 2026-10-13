@@ -46,6 +46,7 @@ import { selectOrchestratorProvider } from "./orchestrator_select.ts";
 import { FINDING_LABELS } from "./catalog.ts";
 import { assembleBaseSystemPrompt, staticSystemPrompt } from "./lib/base-prompt.ts";
 import { labelHistoricalAssistantText } from "./lib/history-label.ts";
+import { markHistoricalMemoryResults } from "./lib/historical-memory.ts";
 import { wrapToolsWithCache } from "./cache.ts";
 import { paidBudgetTier } from "./cache.ts";
 import { costForTool } from "./costs.ts";
@@ -273,7 +274,10 @@ Deno.serve(async (req) => {
     // Earlier assistant turns are HISTORICAL MODEL OUTPUT, not evidence (lib/history-label.ts).
     // Labels text parts of completed prior assistant turns only; tool parts, the current
     // turn and tool-call/result pairing are untouched. Kill switch: MEMORY_AUTHORITY_WORDING_DISABLED.
-    const modelMessages = labelHistoricalAssistantText(await convertToModelMessages(messages));
+    // Memory results REPLAYED from earlier turns (stored before provenance tagging) are marked unverified
+    // (lib/historical-memory.ts): model messages only, no stored row is rewritten.
+    // Kill switch: HISTORICAL_MEMORY_MARK_DISABLED (or the master switch above).
+    const modelMessages = markHistoricalMemoryResults(labelHistoricalAssistantText(await convertToModelMessages(messages)));
 
     // #238: older-result cap tightened 4000→1500. Safe only BECAUSE older results
     // now go through selector-preserving summarization (summarizeToolResultValue) —

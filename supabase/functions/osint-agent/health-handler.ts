@@ -48,6 +48,7 @@ import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 import { memoryContextSelfTest } from "./lib/memory-context.ts";
 import { memoryAuthoritySelfTest } from "./lib/memory-provenance.ts";
 import { historyLabelSelfTest } from "./lib/history-label.ts";
+import { historicalMemorySelfTest } from "./lib/historical-memory.ts";
 import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
 import { breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 
@@ -503,6 +504,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Recall surfaces carry no corroboration wording and tag rows unreviewed / analyst_marker_pattern. Pure.
   r.checks.memory_authority = memoryAuthoritySelfTest();
   r.checks.history_label = historyLabelSelfTest();
+  r.checks.historical_memory = historicalMemorySelfTest();
   r.checks.user_supplied_status = userSuppliedStatusSelfTest();
 
   // Are the agent's own setup rows (triage_decision / cluster_decision / coverage_audit /
