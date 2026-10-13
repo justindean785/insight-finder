@@ -23,7 +23,7 @@
  * finalize window.
  */
 import { detectContradictions, artifactsForFinding, isExplicitContradiction } from "../contradictions.ts";
-import { classifySourceWithOrigin, countIndependentClasses } from "../source-classification.ts";
+import { classifySourceWithOrigin, countIndependentClasses, sanitizeSourceLabelsForEvidence } from "../source-classification.ts";
 import { computeAxes, sourceConfidence } from "../confidence.ts";
 import { applyRecordingSourcePolicy, resolveRecordingStatus } from "../recording-source-policy.ts";
 
@@ -89,8 +89,11 @@ export function buildFindingRow(
   // tools, or on two of its own pages, is one source and must not corroborate
   // itself. Sources with no URL-bearing qualifier carry originId:null and are
   // counted by class exactly as before.
+  //
+  // Sources that record a lookup which found NOTHING ("shodan_internetdb (404)")
+  // are dropped first: a coverage fact is not corroboration.
   const corroborationCount = countIndependentClasses(
-    i.supporting_sources.map(classifySourceWithOrigin),
+    sanitizeSourceLabelsForEvidence(i.supporting_sources).map(classifySourceWithOrigin),
   );
   const axes = computeAxes({
     sources: i.supporting_sources,

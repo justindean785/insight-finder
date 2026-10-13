@@ -26,6 +26,10 @@ import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./
 import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
+import { negativeLookupSelfTest } from "./lib/negative-lookup.ts";
+import { toolInputFailureSelfTest } from "./lib/tool-input-failure.ts";
+import { runEndSelfTest } from "./lib/run-end.ts";
+import { runLeaseSelfTest } from "./lib/run-lease.ts";
 import { recordNameQuarantineEnabled } from "./lib/record-name-quarantine.ts";
 import {
   deepseekPreflightAlways,
@@ -38,10 +42,12 @@ import { positionalPairingSelfTest } from "./message-sanitize.ts";
 import { streamErrorDetailSelfTest } from "./stream-error-classify.ts";
 import { contradictionClaimSelfTest } from "./contradictions.ts";
 import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
-import { legacyNeedsReviewContradiction } from "./lib/cluster.ts";
+import { clusterBookkeepingSelfTest, legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
-import { sourceOriginRulesSelfTest } from "./source-classification.ts";
+import { memoryContextSelfTest } from "./lib/memory-context.ts";
+import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
+import { breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -369,6 +375,14 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // reported on every probe — and its PRESENCE is the behavioural proof that the build
   // with versioned cache keys is the one running (see lib/tool-cache-version.ts).
   r.checks.tool_cache_version = describeToolCacheVersions();
+  r.checks.negative_lookup_semantics = negativeLookupSelfTest();
+  r.checks.tool_input_failure_log = toolInputFailureSelfTest();
+  // Why a run's persistence/finish handler fired (lib/run-end.ts). Pure, no DB; presence proves the build.
+  r.checks.run_end_log = runEndSelfTest();
+  // S1a — is admission atomic (one conditional UPDATE, 409 on a live heartbeat)? Pure.
+  // Its PRESENCE proves the build with the lease is live; ok:false means the filter
+  // drifted from the recovery stale bar. Kill switch: RUN_LEASE_DISABLED.
+  r.checks.run_lease = runLeaseSelfTest();
   // Per-case dead-target memory (lib/dead-target.ts). Pure, no DB. Its PRESENCE is the
   // behavioural proof that the build carrying the gate is the one running.
   r.checks.dead_target_memory = describeDeadTargetMemory();
@@ -482,6 +496,23 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // from the HOST (source-classification.ts classifyOriginHost)? Pure. Its PRESENCE
   // proves the build is live; ok:false means a rule misclassified its own probe.
   r.checks.source_origin_rules = sourceOriginRulesSelfTest();
+  r.checks.breach_origin_cap = breachOriginCapSelfTest();
+  r.checks.memory_context = memoryContextSelfTest();
+  r.checks.user_supplied_status = userSuppliedStatusSelfTest();
+
+  // Are the agent's own setup rows (triage_decision / cluster_decision / coverage_audit /
+  // tool_audit) kept out of identity clusters? A row naming the seed handle used to join
+  // the subject's cluster and become the anchor every later merge was logged against.
+  // Pure. PRESENCE proves the deployed bundle; ok:false = the rule failed its own probe.
+  // Kill switch: CLUSTER_BOOKKEEPING_INERT_DISABLED.
+  r.checks.cluster_bookkeeping_inert = clusterBookkeepingSelfTest();
+
+  // Does a source token that records a lookup finding NOTHING — "(404)", "(0 hits)",
+  // "(no PTR)", "(circuit-broken)" — contribute a source class? It must not: an empty
+  // lookup supplied the second "independent" class on 11 of 14 IP rows of a live case.
+  // Pure. Its PRESENCE proves the deployed bundle carries the rule; ok:false means the
+  // rule misclassified its own probe. Kill switch: NEGATIVE_QUALIFIER_CLASS_DISABLED.
+  r.checks.negative_qualifier_rule = negativeSourceQualifierSelfTest();
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure

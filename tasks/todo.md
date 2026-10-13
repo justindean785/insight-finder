@@ -1,799 +1,172 @@
-# Investigation Workspace UI/UX Upgrade
+# tasks/todo.md — remediation workstream (audit 2026-10-10)
 
-## Context / findings from inspection
-The workspace already has a strong information architecture: five **top-level**
-tabs (Chat, Evidence, Report, Graph, Tools) live in `WorkspaceTabs`, driven by
-`ChatPage`, with a persistent `WorkspaceHeader` metric strip. So IA requirement
-#1 is largely satisfied. The real, high-value gaps are in **Tools Activity**,
-**Graph**, **shared primitives**, and **accessibility**. This pass targets those
-without touching evidence-integrity logic (`lib/intel.ts`, confidence/labels).
+Plan of record: `docs/plans/REMEDIATION_PLAN_2026-10-10.md`. This file is the checklist and the
+running results. The previous contents (June UI/UX upgrade plan) are preserved verbatim in
+`docs/archive/TODO_2026-06_workspace-ui-plan.md`; its 20 unchecked items belong to retired sub-sections, not current work.
 
-Baseline: `npx vitest run` → 45 files / 536 tests pass.
+## Status: S1a is IMPLEMENTED and DEPLOYED (live `811929c`) but enforcement is DISABLED (`RUN_LEASE_DISABLED=true`)
 
-## Plan (checkable)
+Four states, kept apart on purpose: **implemented** (merged) → **deployed** (`/health` build moved) → **enabled** (enforcing in production) →
+**production-verified** (exercised live with enforcement on). S1a is the first two and neither of the others. Re-enabling needs JD's explicit authorization. Handoff: `SESSION_HANDOFF_2026-10-10_s1a-admission-lease-and-the-heartbeat-incident.md`.
 
-### Shared primitives (reusable, typed)
-- [x] `CopyButton` — icon button, aria-label, copied state (replaces ad-hoc copy)
-- [x] `MetricCard` — labeled summary stat with icon + tone + optional tooltip
-- [x] `FilterChips` — accessible segmented filter (radiogroup) with counts
-- [x] `ToolStatusBadge` — succeeded/failed/skipped/pending icon+text chip
-- [x] `ExpandableRow` — keyboard-accessible disclosure row
-- [x] Reuse existing `EmptyState`, `ConfidenceMeter`, `TierBadge`, `StatusChip`
+Audit baseline revalidated 2026-10-10 (plan §1, historical): `main` `811acf3`, live build `f9fc281`, #724 merged and live, #613 schema
+unapplied, 13 open PRs all draft. **Current (2026-10-11T06:43Z):** `main` `88f853e`, live `811929c`, `deploy/live` `811929c`, mirror `8d59968`.
 
-### Tools Activity upgrade (req #4)
-- [x] Add short failure/skip `reason` to `useThreadToolActivity` events (additive)
-- [x] Status filter chips: All / Succeeded / Failed / Skipped / Pending with counts
-- [x] Summary `MetricCard`s (total, succeeded, failed, skipped)
-- [x] Sort failures to the top by default
-- [x] Expandable rows showing reason + tool id where available
-- [x] Empty state + no-results (filtered) state
-- [x] Status chips with icon + text (not color alone)
+## Plan
 
-### Graph view upgrade (req #5)
-- [x] Category filter toggles (identity/contact/social/infra/breach/web/crypto/other)
-- [x] Legend with color + shape/icon + text label
-- [x] Click-to-focus node detail panel (value, kind, source, confidence)
-- [x] Zoom controls (in/out/reset) + larger, higher-contrast labels
-- [x] Better edge contrast on focus; empty/loading states
-- [x] Keyboard-focusable nodes with aria labels
+### S1 — run ownership (P0)
+- [x] S1a admission lease (#730): implemented and deployed (`2e0d3ee`): versioned conditional UPDATE, 409 on a live run, 503 on an unprovable claim, release on every startup exit, `RUN_LEASE_DISABLED`, `checks.run_lease`, `.github/ci/assert-run-lease.sql`
+- [x] Frontend 409 correction (#733): `beginInvestigation` no longer stamps `status`/`last_heartbeat_at`; implemented and deployed (Vercel, on merge)
+- [x] Six-minute server guard (#734): a heartbeat is live only with `run_started_at` within `RUN_LEASE_MAX_RUN_MS` (6 min); implemented and deployed (`811929c`)
+- [ ] **Lease enforcement: DISABLED.** Per JD (2026-10-11) S1b fencing (Option A, shipped dark) comes BEFORE re-enable; then lease and fencing are enabled together in one separately authorized, controlled test. Verification: `/health` no longer `LEGACY` and names the 6-minute wall, one real send succeeds, a deliberate double-send on a test thread gets a truthful 409. **Not yet exercised in production with enforcement on.**
+- [ ] S1b schema: `threads.run_generation`, `threads.run_owner` (through Lovable, verified live)
+- [ ] S1c fenced heartbeat / finalize / persistence writes; cause vocabulary; `/health` `checks.run_fencing`
+- [~] regression fixtures: stateful-fake race and finish-between-read-and-write covered (15 Deno tests + Postgres predicate assertion); a two-session Postgres concurrency test and refresh/stop/crash end-to-end fixtures remain for S1b
 
-### Accessibility / polish
-- [x] `WorkspaceTabs`: arrow-key roving tab navigation + visible focus rings
-- [~] `WorkspaceHeader`: left as-is — it already carries `title` tooltips on every
-      metric and a DB-backed idle/active/completed status pip. Promoting to the
-      full running/gathering/manual_review vocabulary needs live-run state the
-      DB-backed header doesn't have; deferred to avoid a risky backend coupling.
-- [x] All new icon-only controls have `aria-label` / titles
+### S2 — tool contracts (P1)
+- [ ] review #698 for merge
+- [ ] authorized read-only query of `sent_keys` for the 82 rejected calls
+- [ ] `tool_input_contracts_test.ts` table-driven valid/invalid fixtures per changed tool
+- [ ] `/health` `checks.tool_input_contracts`
 
-### Verification
-- [x] `npx vitest run`
-- [x] `npm run build`
-- [x] `npm run lint` (new/changed files)
-- [x] Targeted unit test for new `toolActivityReason` helper
+### S3 — lineage (P1)
+- [ ] #613 rebase; add `messages.run_id`; apply through Lovable; verify `to_regclass`
+- [ ] writer behind `ARTIFACT_LINEAGE_DISABLED`; `/health` `checks.artifact_lineage`
+
+### S4 — spans and context (P1)
+- [ ] schema: `orchestrator_invocations.spans/build/request_bytes/post_trim_chars`, `orchestrator_step_metrics.prompt_terms`
+- [ ] writers; salvage bound by `abortSignal`; supersede #612
+- [ ] oversized-input fixture with defined bounded behaviour
+
+### S5 — authority-safe dedupe (P0 authority, frontend)
+- [ ] rebase #593 on `main`; contract in PR body; `npm run test:e2e` by hand
+
+### S6 — source outcome taxonomy (P2)
+- [ ] eight outcome classes on the edge; bounded recheck; #702/#703 wording after verifying codes; #701 stays OFF
+
+### S7 — memory tool axis (P2, no schema)
+- [ ] `tool:<name>` tags at `memory_save`; recall every run; bounded backfill; `MEMORY_TOOL_AXIS_DISABLED`; `/health` `checks.memory_tool_axis`
+
+### S8 — payload store, then cache sweep (P2)
+- [ ] table keyed by `call_id`; sweep enabled only after coverage proof
+
+## Report-integrity investigation (2026-10-13, read-only; no app code changed)
+
+Case: `coresint.xyz`, two runs on 2026-10-12 (first report generated 23:44:03Z; follow-up ~00:11Z 10-13). Plan below awaits JD approval; nothing here is implemented.
+
+- [x] **R1 WITHDRAWN (JD, 2026-10-13).** Rewriting `[CONFIRMED]` to `[UNADJUDICATED]` changes the label, not the assertion; "same operator", ownership language and invented confidence numbers would survive. At most a temporary display mitigation. Replaced by the plan in "Revised plan" below.
+- [ ] **R2 (separate edge PR):** gate `memory_save` of ownership/operator/identity conclusions that cite no evidence ids. The memory phase
+      runs BEFORE the report phase (per the 2026-10-13 code read of `orchestrator-finalize.ts`; re-verify), so R1 alone cannot stop memory contamination.
+- [ ] **R3 (frontend PR):** `badgesFor` ("Multi-source corroborated") counts raw source strings; count independent source CLASSES instead.
+      `dedupeArtifacts` takes max confidence and unions source strings, which inflates that count. Contradiction rows get no `kind` guard in `labelForArtifact`.
+- [ ] **R4 (edge PR):** `applyMemoryContext` only strips sources starting with `memory`; a recalled claim restated under a real-looking label is not flagged.
+- [ ] **T1 (edge PR):** `indicia_web_dbs` defaults to all services incl. `snusbase`, but the provider requires `snusbaseType` and the code never sends it (live HTTP 400). Needs the provider's allowed values before any fix.
+- [ ] **T2 (edge PR):** `shapeJinaBody` returns `ok:true` for empty, whitespace-only and challenge-page bodies; add an empty/challenge check (keep #696 semantics).
+- [ ] **T3:** `lib/tool-input-failure.ts` prints `(unspecified)` for an InvalidToolInput error with no zod issues, and the `unparsable_input` branch is unreachable for that error name. Cause of the live `minimax_correlate (unspecified)` is NOT reproduced; needs the row's `sent_keys`.
+- [ ] **U1 (Lovable frontend, not canonical):** mirror `ThreadSidebar.tsx` discards the `get_thread_sidebar_metrics` RPC error (silent zero); mirror has `/timing` with no nav link. Neither exists in canonical.
+- Not changed, by design: reddit_user stays enabled (settled operator decision); direct-Gemini-first fallback is intended (`resolveFallbackProvider`).
+
+### Cross-run propagation (static trace 2026-10-13; prompt lines verified by me, the rest from a subagent read of the code)
+How an unsupported run-N claim becomes a run-N+1 premise. None of these paths is the DB trace; which one fed the follow-up run is NOT yet established.
+- [ ] **P1 history replay:** `index.ts:272` `convertToModelMessages(messages)` resends prior assistant prose (tags, "same operator") verbatim; trims are by size only. No "prior/unverified" label.
+- [ ] **P2 prompt grants authority:** `system-prompt.ts:145` tells the model to cite recalled memory as "[MEMORY] previously corroborated"; `tool-registry.ts:5957` `memory_hint` says "incorporate confirmed connections ... Do NOT re-investigate". Both raise model-authored memory to corroborated status.
+- [ ] **P3 planner memory:** `tool-registry.ts:1288-1296` injects top-8 `agent_memory` rows as "PRIOR MEMORY (weight these ... confirmed links)".
+- [ ] **P4 memory_save:** a single-subject unsupported claim passes both gates and returns at its saved confidence (default 60, ratcheted by GREATEST).
+- [ ] **P5 investigation_cache:** replays the prior report prose to a later thread for the same seed (7 days).
+- [ ] **P6 tool_call_cache (corrected):** `cache.ts` wraps every tool not in `NO_CACHE_TOOLS` (mutators only); TTL is `DEFAULT_TOOL_TTL_MS` = 24h unless listed in `TOOL_TTL_MS`; a result is written only when `ok && isCacheableToolResult`. So `minimax_correlate`/`minimax_extract`/`gemini_deep_dork` ARE eligible at 24h. Replay needs an identical input hash, so a carried inference is low-probability for correlate (artifact list changes) and higher for gemini_deep_dork (seed+kind+focus). UNVERIFIED as an actual carrier; the screenshots show Cached 3 of 33 and 3 of 64, i.e. no new replays between views (assuming one thread).
+- Evidence the memory path was live: the first report's rows for the operator email, `floeintel.com`, `l5e.io` and the sitemap routes carried source "case memory recall".
+- Proposed (not started): R5 reword P2 so recalled memory is labelled prior/unverified, never "corroborated"; R6 label replayed prose.
+
+### Regression cases run against real functions (scratchpad, not committed)
+Pass: repetition adds no authority (stays 50); four providers = 1 independent class; sitemap-derived profile caps at 50; single vendor verdict caps at 65.
+Fail: relationship-bearing rows scored 60-80 (a score alone does not show wrong relationship semantics; the violated invariant still has to be stated and tested at claim level); "never archived" value persisted at 70 (the #693 negative rule reads source labels, not value text). Case 8 is NOT an end-to-end reproduction: `hasReportShape` is the completion contract (`resolveTerminalState`/recovery decide complete vs Interrupted), not an authority check, so it proves only that it does not enforce adjudication.
+Spec only: no count reconciler exists in app code ("20 routes" vs 9 + 12).
+
+## Queue status — six stages, tracked separately (verified 2026-10-13T00:54:41Z)
+
+documented → implemented → tested → merged → deployed → production-verified. A documented, green-but-open or draft change is NOT shipped. Every open PR below is a DRAFT; none is reviewed (no formal reviews or threads on #700-703). CI badges are from Oct 6 heads against the OLD base `8039235` (37 commits behind `main` `c4bd432`); the "tested" column for them is MY run on the PR merged onto current `main`, local only. Frontend PRs reach production on merge (Vercel); edge PRs need the separate stamp -> mirror sync -> `verify:deploy` -> Lovable deploy -> moved `/health` build cycle, one at a time.
+
+| Item | Kind | documented | implemented | tested (on current main, local) | merged | deployed | prod-verified | Blockers / notes |
+|---|---|---|---|---|---|---|---|---|
+| #737 docs | docs | yes | n/a | n/a | no | n/a | n/a | records the investigation; fixes no behaviour |
+| #738 PR A memory authority | edge | yes | yes | yes: edge 2257/0/6, vitest, typecheck, 24 new tests | no | no | no | not a complete integrity fix |
+| PR B report boundary | edge + frontend | design only | no | no | no | no | no | needs approval of the design |
+| #700 area-code warning | frontend | yes | yes | yes: 15 files/241 targeted, full vitest 190/2397+1 skip, typecheck, e2e 52+2 skip | no | no | no | clean vs main; no review |
+| #702 LeakCheck 403 wording | frontend | yes | yes | yes: 32 targeted, full vitest 189/2395+1 skip, typecheck, e2e 52+2 skip | no | no | no | clean vs main; no review |
+| #593 dedupe authority | frontend | yes | yes | yes: full vitest 189/2400+1 skip, typecheck, e2e 52+2 skip | no | no | no | clean vs main; covers the dedupe half of R3 only |
+| #703 Opsis 402 hint | edge | yes | yes | yes: edge 2244/0/6 | no | no | no | live Opsis contract NOT run (needs JD's key); Opsis unused in coresint |
+| #701 LeakCheck key probe | edge | yes | yes | scratch-resolved only: edge 2255/0/6 | no | no | no | CONFLICTS with main (health-handler imports); OFF by default; valid-key/no-quota assumption UNVERIFIED |
+
+Overlap with current work: #593 vs R3 (dedupe done there; the `badgesFor` raw-source-string count is NOT touched); #666 touches the report builder for zero-hit lookups (report layer only; the write-side value-text claim is separate); #698 changes catalog names for 5 other tools, not jina/gemini_deep_dork/minimax_correlate. Pairwise merge-tree: no conflicts among #593, #666, #698, #699, #695, #700, #702, #703 and #738. #701, #667, #613, #516 already conflict with `main`.
+
+## Revised plan (2026-10-13, awaiting JD approval; no application edits made)
+
+### PR A (edge): stop prompt/history authority escalation. One behaviour change + kill switch + one new `/health` key.
+Demonstrated escalations: `system-prompt.ts:145-146` ("INCORPORATE ... CITE as \"[MEMORY] previously corroborated\""), `tool-registry.ts:5957` `memory_hint` ("incorporate confirmed connections ... Do NOT re-investigate values already covered"), `tool-registry.ts:1292` planner header ("weight these ... confirmed links"), `index.ts:272` history replayed unlabeled.
+- A1 wording: recalled memory is prior-run context whose positive claims are leads to re-verify; cite as "[MEMORY - prior run, unverified]". Keep "do not re-investigate" ONLY for analyst-rejected values and existing dead-target memory.
+- A2 read-time provenance on recall output (`memory_recall`, `memory_hits`, planner rows), computed from existing signals only, no stored data changed: `analyst_false_lesson` (`isAnalystFalseLesson`), `superseded` (existing), else `model_authored_unreviewed`. agent_memory has NO provenance column and the only analyst writer is the false-positive lesson; analyst CONFIRMATIONS live in per-thread review state (`analystDecisionsBlock`), not in agent_memory. Cross-investigation analyst-confirmed memory therefore has no representation today (decision for JD; would need a schema change through Lovable).
+- A3 label earlier assistant text as historical model output, not independent evidence. Open check: confirm the budget trims (`orchestrator-budget.ts`) keep the head of a text part so a prefix survives; otherwise use a system-prompt statement instead.
+- Files: `system-prompt.ts`, `tool-registry.ts` (3 sites), new `lib/memory-provenance.ts`, new `lib/history-label.ts`, `index.ts` (one call), `health-handler.ts` (`checks.memory_authority`), `env.ts` kill switch `MEMORY_AUTHORITY_WORDING_DISABLED`.
+- Tests (Deno, real functions): forbidden phrases absent from the assembled prompt and `memory_hint`; mixed rows through the real `memory_recall` with a stubbed client; analyst FALSE lessons keep confidence 95 and still supersede; superseded rows unchanged; `analystDecisionsBlock` text for confirmed/rejected rows byte-identical (snapshot); history labeling leaves tool parts and the in-progress turn untouched and survives the trims; existing `memory_supersession_test`, `memory_context_test`, `reviews_wiring_test`, `system_prompt_*_test` still pass.
+- Limits: no schema change, no change to scoring/caps/finalization/dispatch, no frontend, no historical-record edits. Acceptance: edge suite 2233+N / 0 failed; `/health` key present after the normal stamp/sync/deploy cycle; one controlled scan ONLY with JD approval to confirm the model cites the new wording.
+
+### PR B (separate; design first): report-authority boundary
+- Facts: the Evidence Record is MERGED into the last text part of the model message as plain markdown (`evidence-record-persist.ts:65-74`, kept there so the thread preview still reads the report), so narrative and record are one text part and only a regex (`narrativeIsUnadjudicated`) separates them. The Report tab re-shows the latest assistant summary as "Analyst narrative" (`CaseReport.tsx:1225`). `investigation_cache.assistant_parts` replays prose to later threads. `evidence-export` reads `threads` and `evidence_log`, not prose (confirm PDF content before relying on it).
+- Three states to distinguish structurally: adjudicated with findings; adjudicated with zero findings (explicit `finalize_no_findings`, `hasNoFindingsDecision`); adjudication unavailable/failed (`retrieval`/`reviews` unavailable). Today "no rows" conflates the second with "never called".
+- Direction (not claim detection): label the whole narrative by the absence/presence of a structural engine marker; a nonempty findings table covers only its rows. No keyword or tag rewriting, no silent edits to stored messages; legacy messages render as "no engine record". Streaming: any assistant message without the engine marker is labelled unadjudicated by structure, not by scanning prose. Invented confidence numbers in prose: displayed as AI narrative, never as scores. Separate edge and frontend PRs; must not gate or add work in the finalize window (CLAUDE.md termination invariants).
+- Open design question for JD: a structural marker needs a part-level field or a separate part, which touches the preview constraint above.
+
+### Not concluded / unresolved
+- Which stored memory rows were retrieved in either run, and which path fed the follow-up run: needs the rows.
+- The 85/65 persisted scores vs 80/60 from the policy function: unresolved until the exact stored rows and inputs are available.
+- No blanket relationship caps and no keyword negation rules; claim-level semantics (claim meaning, supporting evidence, authority) must be specified and tested per invariant before any relationship change.
+
+## Read-only DB trace (2026-10-13, thread 4595c1b0; SELECT only, no text/values/subjects/content read)
+
+Established (query results; flags and counts are diagnostic, not proof of claim meaning):
+- One thread (created 2026-10-01) holds THREE runs: run 1 23:40:43-23:44:06Z (14 steps, 33 tools, `finalize_forced`), run 2 00:05:43-00:07:09Z (4 steps, 9 tools, `natural_stop`), run 3 00:08:09-00:11:07Z (9 steps, 22 tools, `finalize_forced`). 33+9+22 = 64 = header tool count. Artifacts 33+6+12 = 51 = the "51 artifacts" footer.
+- Final assistant text parts: run 1 13,474 chars / 20 `[CONFIRMED]` / has `[MEMORY]` (pos 2,804) / has "same operator" (pos 9,937); run 2 5,505 chars / 4 / no phrase; run 3 9,949 chars / 14 / has phrase (pos 7,459). All three messages carry the zero-row Evidence Record footer.
+- History path is POSSIBLE, not proven: run 1's final text part sits inside the 16,000-char recent window for runs 2 and 3. Run 2's report lacks the phrase and run 3's has it.
+- Memory rows about this case exist from 2026-10-09 04:07 (written by an earlier thread b5d26018, an Oct 9 run). Rows created by THIS thread's `memory_save`: 23:43:19 (`identity` 74 on the email subject, `connection` 60) and 00:10:17 (`connection` 70, `lesson` 74). Two Oct-9 rows now show this thread as `source_thread_id` because the live `save_agent_memories` upsert overwrites it, ratchets confidence with GREATEST, keeps the LONGER content and bumps hit_count/last_used_at (verified against the live function). So `hit_count`/`last_used_at` are NOT evidence of recall.
+- Run 1's first `memory_recall`, `whois_lookup` and `wayback_cdx_search` were served from the user-level cache, created 5-9s before this thread's first message by ANOTHER thread (6d55b8da, seed type url, `stopped` at 23:41:03) that started 15s earlier. `memory_recall` is cacheable (24h default TTL).
+- Artifacts flagged `context_from_memory` (writer `applyMemoryContext`, verified in code; other writers not enumerated): 4 `memory_only`/`needs_review` at 45-50 (email, floeintel.com domain, l5e.io, sitemap routes) and 4 that kept a real tool label and persisted `observed` at 65-75, including the organization row at 65.
+- Contradiction row: confidence 85, status `needs_corroboration`, same batch insert as a breach row, not memory-flagged. Still UNEXPLAINED against the policy function (80).
+- Tool failures: `minimax_correlate (unspecified)` had `sent_keys=[]` AND `invalid_fields=[]` at 0ms (a parsed-but-empty input produces named zod issues, so the arguments probably never parsed as an object; raw input not stored). The 24s was ONE successful call (23.8s). `gemini_deep_dork` sent `seed`+`dork_focus` (no `kind`, wrong name for `focus`). `jina_reader_scrape` `maxChars` wrong type (value not stored). All three schema failures were followed by deadline-skipped retries. `indicia_web_dbs` HTTP 400 (`snusbaseType`).
+
+NOT established: which memory rows `memory_recall` returned (tool outputs are not stored in `tool_usage_log`); whether history, memory or both fed run 3; who authored the Oct-9 rows. Coverage limit: the memory candidate filter (subject/related_values/source_thread_id) misses inherited memory about other selectors.
+
+## PR A (draft #738, edge only) and PR B (design only)
+PR A shipped as a draft: recall wording, read-time provenance tags (`unreviewed` / `analyst_marker_pattern`, authorship inferred from wording only), historical-output label surviving real trimming (elision fix), kill switch `MEMORY_AUTHORITY_WORDING_DISABLED`, `checks.memory_authority`. 24 new edge tests; suite 2257/0/6.
+
+PR B design (backward compatible, preview-preserving, additive; separate edge and frontend PRs):
+- Emit ONE additive non-text part `data-evidence-record` ({state, finding_count, record_version}) beside the unchanged text. The thread preview reads the last TEXT part, so it is unaffected; the existing markdown record in the text stays for legacy readers. Old clients ignore the unknown part.
+- States (note FOUR, not three): `adjudicated_findings`; `adjudicated_zero` (explicit `finalize_no_findings`); `adjudication_not_performed` (no rows and no decision); `adjudication_unavailable` (retrieval/review unreadable).
+- UI renders the model narrative inside a labelled container chosen by state or, when the part is absent (streaming, legacy, replay), by structure: "AI narrative - not adjudicated". With findings: "The engine record covers the N listed findings; the rest of this narrative is unadjudicated." Model-written confidence numbers and tier tags are displayed as narrative, never as scores; no stored text is altered.
+- Streaming: live assistant text has no engine part, so it is labelled unadjudicated by absence. Final persistence: the part is added in `composePersistedParts`. Exports: `evidence-export` reads `evidence_log`, not prose (confirm PDF content). Replay: `investigation_cache.assistant_parts` carries the part; replays show the state and "replayed from <date>". Historical rows unchanged.
+- Must not add work to or gate the finalize window. Kill switch + a new proof key; frontend and edge never mixed.
+
+### Reproduction status (run by me unless noted)
+- Edge baseline on `c4bd432`: 2233 passed / 0 failed / 6 ignored.
+- Synthetic repro against REAL functions (scratchpad, not committed): memory-restatement and zero-row-CONFIRMED-prose cases FAIL as expected;
+  two breach tools classify to ONE independent class; schema failures for jina/gemini reproduced; `shapeJinaBody` blank/challenge -> `ok:true` reproduced.
+- NOT reproduced: the 85 persisted on the model-authored `contradiction` row (real policy capped the synthetic row at 80); `minimax_correlate (unspecified)`.
+- Untested: frontend (vitest) badge/dedupe cases; lifecycle/lease Tasks 4-5 (no run, code not yet traced); PG17 DB behavior.
+- Access gaps: loveable connector `list_investigations` failed on every attempt, so thread, artifact and memory rows were never read;
+  `/health` NOT called (GET `?health=1` runs stale-thread recovery writes, sweeps and provider pings).
 
 ## Results
-
-### What shipped
-- **Shared primitives** (`src/components/ui/workspace-primitives.tsx`): `CopyButton`,
-  `MetricCard`, `FilterChips` (accessible `radiogroup`), `ToolStatusBadge`
-  (icon + text), `ExpandableRow` (keyboard disclosure). Typed and reusable.
-- **Tools / Activity** (`ToolsTab.tsx` + `useThreadToolActivity.ts`): status filter
-  chips with live counts (All/Succeeded/Failed/Skipped/Running), four summary
-  MetricCards, failures sorted to the top, expandable rows that reveal the short
-  failure/skip reason + tool id, icon+text status badges, and empty + no-results
-  states. Added an additive `reason` field to tool events via a new pure helper
-  `toolActivityReason` (unit-tested).
-- **Graph** (`GraphTab.tsx`): category filter toggles (with per-group counts),
-  a legend that pairs **color + distinct shape + text** (circle/diamond/triangle/
-  square/hexagon) so it never relies on color alone, click-to-open node detail
-  panel (value, copyable, confidence meter, source, link rationale), zoom in/out/
-  reset controls, higher-contrast + larger node labels, keyboard-focusable nodes
-  with descriptive `aria-label`s, and a proper empty state.
-- **Accessibility** (`WorkspaceTabs.tsx`): WAI-ARIA roving tabindex with
-  Arrow/Home/End keyboard navigation and visible focus rings.
-
-### Verification (all run locally)
-- `npx vitest run` → **46 files / 541 tests pass** (was 45 / 536; +1 file, +5 tests).
-- `npm run typecheck` → clean (no new errors).
-- `npm run build` → succeeds (`✓ built in ~8s`).
-- `npx eslint <changed files>` → clean.
-
-### Not done / honest gaps
-- No authenticated browser screenshots: this environment has no display,
-  Playwright is not installed, and the workspace is gated behind Supabase auth +
-  a live backend, so the real app cannot be driven headlessly here. Verification
-  is build/typecheck/lint/unit-test based.
-- Report/Evidence/Chat tabs were already mature; this pass focused on the
-  highest-value gaps (Tools, Graph, primitives, a11y) rather than touching the
-  integrity-critical evidence/confidence logic.
-
-## Follow-up pass — Evidence textual status + filters (2026-06-15)
-
-The Evidence board previously conveyed strength by a color-coded `%` only —
-violating the "never color alone" rule and making strong-vs-weak hard to scan.
-
-### Shipped
-- **`src/lib/evidence-status.ts`** — pure, integrity-safe presentation layer that
-  derives an analyst-facing status from the existing `labelForArtifact()` engine.
-  Statuses: Verified / Probable / Needs corroboration / Manual review / Lead /
-  Shared infrastructure / Contradicted / Rejected. Conservative by design:
-  single-source can never display "Verified", breach/leak → "Manual review",
-  shared-host/collision → "Shared infrastructure — not ownership proof".
-- **`EvidenceStatusBadge`** (workspace-primitives) — icon + text chip, never
-  color alone; distinct icon per status.
-- **Evidence board rows** (`ResourcesPanel.tsx`) — every row now shows the status
-  badge + an evidence-basis line (e.g. "Single-source · infrastructure").
-- **Filter + sort toolbar** — quick-filter chips (All / Findings / Needs review /
-  Leads / Excluded) with live counts, and sort (Strength / Confidence / Newest);
-  accessible `radiogroup`s; sticky header; no-results state.
-
-### Verification
-- `npx vitest run` → **48 files / 567 tests pass** (was 47 / 557; +1 file, +10 tests).
-- `npm run typecheck` → clean.
-- `npx eslint` on changed files → clean.
-- `npm run build` → succeeds.
-
-### Backend note
-The infra confidence sub-class split (earlier commit) is in the edge function and
-must be synced to `seeker-spark-search-5362c57c` + deployed via Lovable to affect
-new investigations. The Evidence-status UI works against whatever the backend
-stores today (it reads existing `confidence` + metadata), so it improves the
-display of past cases immediately once the frontend ships to Vercel.
-
-
-## Review fix pass — semantic correctness (2026-06-15, PR #56 review)
-
-Addressed all 6 blockers from the PR review.
-
-### 1. Infra-only no longer overstated as generic "Verified"
-- `evidence-status.ts` now reads the backend's authoritative `metadata.source_category`
-  (falls back to source-string split only for legacy rows).
-- New status `verified_infrastructure` ("Verified infrastructure", blue/probable
-  tone) with basis "Infrastructure-only · not ownership proof". Infra-only
-  findings can never display as a confirmed identity/owner claim.
-
-### 2. Shared-infrastructure detection broadened
-- `isSharedInfrastructure` now also catches `metadata.cdn`, `shared_infra`, and
-  Cloudflare/Akamai/Fastly/AWS/GCP/Azure/shared-host strings in
-  provider/org/asn_org/as_name/isp/asn (network-layer artifacts), plus
-  reverse-IP/shared-host source strings and the `infra_shared_host` class.
-
-### 3. New source sub-classes infra_passive + infra_shared_host
-- `artifact_types.ts`: urlscan/wayback/archive/passive_dns → `infra_passive`;
-  reverse-IP/shared-host sources → `infra_shared_host`.
-- `confidence.ts`: caps infra_passive 70, infra_shared_host 35. Shared-host is
-  excluded from infra corroboration counting and is in NEVER_HIGH.
-
-### 4. VirusTotal taxonomy
-- Added `threat_reputation` + `reputation_signal` to STRICT_KINDS.
-- Evidence status treats VirusTotal/URLScan/EmailRep/IPQS as a
-  "Threat/reputation signal" (Manual review), distinct from "Breach/exposure".
-
-### 5. Weak AI summaries can't unlock 90+
-- `confidence.ts`: new TRUSTED_NON_INFRA gate — only official_profile_match /
-  court_record / news / independent_public unlock the >85 ownership path. infra +
-  ai_summary (or many infra perspectives) stays ≤85.
-
-### 6. Tools tab Gated / Degraded statuses
-- `tool-run.ts` `deriveToolStatus()` → succeeded/failed/skipped/gated/degraded/pending.
-  Gated = triage/policy/budget/rate-limit block; Degraded = partial/stale/timeout.
-- `useThreadToolActivity` exposes status + gated/degraded counts; ToolsTab adds
-  Gated/Degraded filter chips and a "Skipped / Gated" metric card; ToolStatusBadge
-  gains Gated/Degraded variants.
-
-### Tests added
-- Backend (mirrored in vitest via `infra-confidence.test.ts`): shared-host cap 35
-  + no-corroboration, passive classification, infra+ai_summary ≤85,
-  infra+court_record >85, court+news = 95. Also in Deno `audit_fixes_test.ts`.
-- `evidence-status.test.ts`: VirusTotal→reputation, real breach→breach/exposure,
-  infra-only→Verified infrastructure, Cloudflare IP→shared infrastructure.
-- `tool-activity-reason.test.ts`: deriveToolStatus gated/degraded/skipped/failed.
-
-### Verification
-- `npx vitest run` → **48 files / 581 tests pass** (was 567).
-- `npm run typecheck` → clean. `npx eslint` (changed files) → clean.
-- `npm run build` → succeeds.
-
-### Remaining nuance
-- The client-side **markdown report** (`buildReportMarkdown`) still groups by
-  artifact `kind`, so a VirusTotal row stored as `kind:"breach"` lists under the
-  report's Breach/Exposure section even though the Evidence board now labels it
-  Threat/reputation. The board (the primary analyst surface) is correct; aligning
-  the markdown grouping is a small follow-up.
-- Backend confidence/taxonomy changes only affect new runs once synced to
-  `seeker-spark-search-5362c57c` + deployed via Lovable. Frontend display fixes
-  ship immediately via Vercel and improve existing cases.
-
-## Screenshot review fix pass — 6 more blockers (2026-06-15)
-
-Fixed all 6 issues found in the live preview screenshots.
-
-1. **VirusTotal no longer shows as BREACH.** Added `isReputationArtifact()` +
-   `displayKind()` to intel.ts (single source of truth). A breach-kinded row from
-   a reputation source (VirusTotal/URLScan/EmailRep/IPQS) now displays as
-   `threat_reputation`. Wired into the Evidence **Table** (EvidenceMatrixTab),
-   the on-screen **Report** (CaseReport leads table + excluded from Sensitive
-   Registrations), the markdown **entity table**, and the markdown **Network
-   Connections** section (new "Threat / Reputation" subsection, pulled out of
-   Breach/Exposure). evidence-status.ts now reuses the canonical helper.
-
-2. **Clusters view labels infrastructure correctly.** ClustersTab detects an
-   infrastructure-only cluster (all artifacts in the `infrastructure` group) and
-   renders an "infrastructure" / "shared infra" badge instead of the identity
-   "unknown" badge, with a "Shared infrastructure · not ownership proof" line for
-   Cloudflare/CDN/reverse-IP clusters.
-
-3. **Failures tab now matches Activity.** `extractFailedAndSkipped` was only
-   catching `errorText`/`output-error`, missing `ok:false` rows (why the tab was
-   empty while Activity showed 14). It now classifies every problem tool with the
-   SAME `deriveToolStatus` the Activity feed uses, so the counts can't disagree,
-   and groups Failed / Gated / Degraded / Skipped.
-
-4. **Budget/gating no longer shown as red FAILED.** `deriveToolStatus` now
-   inspects the reason text (errorText + output reason + runtime.rejection_reason)
-   before calling something a failure: "budget exhausted" → **Gated**, "provider
-   disabled / unavailable" → **Degraded**. Only real provider/runtime errors stay
-   Failed. ToolsTab + FailedSkippedTab surface Gated/Degraded as first-class.
-
-5. **Mobile primary nav.** Renamed "Chatbot" → "Chat", reordered to
-   Chat | Evidence | Tools | Graph | Report, added scroll-snap (snap-x +
-   snap-start) so tabs land cleanly and the active underline isn't clipped.
-
-6. **Shared-infra confidence nuance.** Board/Table/Clusters all carry the
-   "Shared infrastructure · not ownership proof" basis next to the confidence so
-   a 70% DNS-resolution number can't be misread as ownership confidence. Shared-
-   infra detection broadened to Cloudflare/Akamai/Fastly/AWS/GCP/Azure ASN/org.
-
-### Verification
-- `npx vitest run` → **49 files / 593 tests pass** (was 581; +12).
-- `npm run typecheck` → clean. `npx eslint` (changed files) → clean.
-- `npm run build` → succeeds.
-- Activity ↔ Failures parity now guaranteed (shared `deriveToolStatus`).
-- VirusTotal renders as Threat/Reputation across Table, Report, and markdown.
-- Clusters label infra IPs as infrastructure / shared infra, not "unknown".
-
----
-
-## 2026-06-22 — Workspace UI polish & IA audit (`feat/workspace-ui-polish-audit`)
-
-Builds ON the unmerged UI stack: #104 (segmented tabs + deduped counts),
-#105 (per-tab section headers), #106 (entity graph), #107 (confidence radar).
-Header overload (audit #1) and global repeated-counts (audit #2) were already
-resolved by #104/#105 — **verified, not redone**. This pass is presentation-only.
-
-### Plan
-- [x] Report card header: dropped the 6-chip count row (it duplicated the tab
-      badges for artifacts/tools AND the Executive-Summary prose for
-      confirmed/probable/leads) → one calm `type · N artifacts analyzed` scope
-      line; kept the analyst-review tally. Bumped the seed to `text-lg` so the
-      header reads as the title and Executive Summary is the first anchor.
-- [x] Report section headers: were RED for every section (number-soup of
-      warnings). Added a `tone` to `SectionHeader`; neutral by default, red
-      reserved for genuine-risk sections (Safety/Legal Flags, Contradictions).
-- [x] Report tables (bucket tables, Identity, Registrations): swapped
-      `overflow-hidden` → `overflow-x-auto` + `min-w-[…]` so narrow widths
-      scroll instead of exploding; row padding `py-2 → py-2.5`; reasoning
-      contrast lifted (`text-destructive/80 → text-destructive`, muted/90).
-- [x] Report export toolbar: primary downloads (Copy md / .md / PDF) split from
-      secondary/raw (Matrix / JSON) by a divider that collapses on mobile;
-      wrapped in a labelled `role="group"`.
-- [x] Sidebar: active case row strengthened (`bg-white/[0.08]` + `ring-white/20`).
-- [x] Contrast: lifted reasoning + reason-not-confirmed text where touched
-      (restrained; no neon).
-- [x] A11y: tables keep `<th>` semantics; export group labelled; status stays
-      text+colour (ConfPill / ReviewPill), never colour-only; focus rings intact.
-
-### Constraints
-Frontend-only. No backend / clustering / confidence-math / report-generation /
-graph / radar transform changes. No new/fake metrics. Presentation-only (no new
-pure logic → no new transform tests; full suite stayed green).
-
-### Results
-- Files: `CaseReport.tsx`, `ReportTab.tsx`, `ThreadSidebar.tsx` (+ this doc).
-- `npm run typecheck` clean · `eslint` 0 · `npm run build` OK · **675 tests pass**.
-- Diff: +70/−32 across 3 components — focused, presentation-only.
-- Header overload (#1) / global repeated-counts (#2) confirmed already handled
-  by #104/#105 — not duplicated here.
-
----
-
-## 2026-06-24 — Integrity fixes: safety DOB scan + breach caps (`fix/integrity-safety-breach-caps`)
-
-Backend/report integrity ONLY (no UI, no schema, no runtime policy). From the
-`gmansexybeast@att.net` trace. Priority #1 → #2 → #3.
-
-### #1 — False minor-signal collision from DOB date parts  ✅
-- Root cause: DOB reclassified `dob`→`other`; `safety.ts` scanned the raw value
-  `1958-10-11`; the bare-age regex matched the month `10` → `bare-10` →
-  `possible_minor`, conf cap 35, adult×minor collision, false top-of-report banner.
-- Fix (`supabase/functions/osint-agent/safety.ts`): skip the value haystack for
-  DOB artifacts (`kind==="dob"` or `metadata.original_kind==="dob"`); skip the
-  bare-age heuristic on date-like strings (`DATE_LIKE_RE`). Cue/phrase detection
-  (`age 16`, `i'm 15`, `minor`) untouched.
-- Tests (`safety_test.ts`, 5): `1958-10-11` not flagged · date month/day 10–17 not
-  flagged · adult-platform DOB no false collision · real cue/phrase/bare-age STILL
-  fire · explicit cue inside a date-bearing bio still fires.
-
-### #2 — Breach source caps misclassified as `unknown`  ✅
-- Root cause: `applyEvidenceCaps` mapped single-token `classifySource` over WHOLE
-  compound strings, so `breach_check+leakcheck+oathnet_lookup+deepfind_email_breach+serus_darkweb_scan`
-  fell to `unknown`/cap 50 unless " breach" appeared standalone.
-- Fix (`confidence.ts`): classify the whole label first; only `splitSourceLabels`
-  when the whole is `unknown`; per-element drop of split-noise `unknown` sub-labels
-  (keeps a genuine whole-element `unknown`, so court+news=95 stays). Added missing
-  breach slug aliases (`deepfind_email_breach`, `serus_darkweb_scan`,
-  `deepfind_dark_web_link`, `deepfind_ransomware_exposure`, `leakcheck`) to
-  `source-classification.ts`. Whole-string-first preserves the shared-host/35
-  downgrade (no split dilution) and the standalone-breach address at cap 60.
-- Tests (`compound_source_caps_test.ts`, 6): compound→breach not unknown · `/`+`+`
-  split · truly-unknown stays unknown/50 · two-breach nudge 65 / single 60 ·
-  shared-host still 35 · standalone-breach address still 60.
-
-### #3 — Duplicate Synthient breach artifacts  ✅
-- Root cause: same Synthient 1.9B breach recorded twice (`weak_lead` +
-  `breach_exposure`) under name variants from the same source pair; exact-match
-  insert dedup misses name variants → double-listed in table + Network Connections.
-- Fix (`report-hygiene.ts` `dedupeBreachDatasets`, wired into `intel.ts`
-  `buildReportMarkdown`): collapse ONLY when same normalized source AND same
-  count-magnitude token AND same year AND ≥1 shared significant word; keep the
-  richer `breach_exposure` representative. Report-layer only; non-destructive.
-- Tests (`report-hygiene.test.ts`, +5): two Synthient variants collapse to the
-  breach_exposure row · different breaches stay separate · different source pairs
-  stay separate · shared-number-only (no shared word) stays separate · non-breach
-  kinds / missing count or year ignored.
-
-### Verification (all run)
-- `deno test --allow-net --allow-env --allow-sys --no-check` → **223 pass / 0 fail**
-  (was 212; +11). `deno check` on changed modules → clean, no TS2304.
-- `npx vitest run` → **680 pass / 0 fail** (was 675; +5).
-- `npm run typecheck` clean · `eslint` (changed files) 0 · `npm run build` OK.
-- No UI files changed (edge fn + `src/lib` report logic + tests only).
-- Real-input confirmation (exact trace values used in tests): `1958-10-11` no
-  longer flags minor; the compound breach email source classifies as breach (cap
-  65, not unknown/50); the two Synthient rows collapse to one.
-
-### Preserved / not weakened
-- Real minor-age detection intact (cue + phrase + non-date bare age).
-- Source caps still use split compound labels; shared-host & infra ceilings, the
-  ownership guard, and the two-breach nudge all unchanged.
-- Dedup is conservative + dataset-specific (source+count+year+shared-word), not a
-  broad fuzzy collapse.
-
----
-
-## 2026-06-22 — Production UI overlap bugs (`fix/production-ui-overlap-bugs`)
-
-Small bugfix PR on top of the merged redesign (`main` @ b48406ef). Surfaced from
-production screenshots. Fixes #110. Frontend-only; no redesign.
-
-### Plan / findings
-- [x] **Bug 1 — sticky Report sub-header transparent / bleed-through.** Root
-      cause: shared `TabHeader` used `bg-[hsl(var(--surface-0))/0.98]`, which
-      compiles to invalid CSS (`background-color: hsl(0 0% 3%)/0.98`) → the
-      browser drops it → header has NO background. Only visible on Report (the
-      one sticky header). Fix: valid opaque `bg-[hsl(var(--surface-0))]`.
-      **Verified the generated CSS** is emitted (see Results), not assumed.
-- [x] **Bug 2 — confidence radar overlaps export toolbar.** Same root cause as
-      Bug 1 (transparent sticky header). The opaque-bg fix resolves it; the
-      radar already sits below the header in flow, so no layout change needed.
-- [x] **Bug 3 — possible duplicate vertical icon rail.** Investigated
-      `ChatPage` layout: exactly ONE `<aside><ThreadSidebar/></aside>` (desktop)
-      / one Sheet (mobile). The narrow icon rail in screenshots is the
-      **collapsed** sidebar (one icon per thread) — intentional, NOT a
-      duplicate. No change.
-- [x] **Bug 4 — stale old-UI screenshot.** A browser tab loaded before the
-      deploy still serving the cached SPA bundle. Not a code regression;
-      hard-refresh (Cmd+Shift+R) shows the new build. No cache/service-worker
-      work in this PR (none exists to hook into).
-
-### Out of scope (noted, not changed per "same overlap bug only")
-- `src/pages/ChatPage.tsx:117` mobile header carries the same malformed class,
-  but it is NOT sticky-over-content (flex-column header) and its target colour
-  equals the page background, so there is no visible bleed. Left as-is; can be
-  swept separately.
-
-### Results
-- Code change: `src/components/ui/workspace-primitives.tsx` only (`TabHeader` bg
-  → valid opaque `bg-[hsl(var(--surface-0))]`). +4/−1.
-- **Generated-CSS verified** (built `dist/assets/*.css`): the fixed class emits
-  `background-color:hsl(var(--surface-0))`; the old malformed
-  `hsl(var(--surface-0))/0.98` value is absent. Not assumed — grepped.
-- `npm run typecheck` clean · `eslint` 0 · `npm run build` OK · **675 tests pass**.
-- Bugs 2/3/4 required no code change (see above). Scope held: one-file fix.
-
----
-
-## 2026-06-25 — thread terminal status rejected by DB (`fix/thread-terminal-status`)
-
-Evidence: production edge logs show `[thread status] completion update failed: new row for
-relation "threads" violates check constraint "threads_status_check"`. Diagnosed from repo
-(read-only).
-
-### Root cause
-`threads_status_check` (migration `20260527120934`) allows **only** `('active','finished')`,
-but the code writes statuses outside that set:
-- `index.ts:486` success → `"completed"` (REJECTED) ← main symptom
-- `index.ts:388` overflow → `"failed_context_limit"` (REJECTED)
-- `ChatWindow.tsx:1199` Stop button → `"stopped"` (REJECTED)
-- Nothing ever writes the allowed terminal `"finished"`.
-Frontend header (`WorkspaceHeader.tsx:73-75`) shows COMPLETED only for `finished`/`stopped`;
-with `completed` rejected the thread stays `active` → **permanent ACTIVE badge** on finished runs.
-
-### Files inspected (read-only)
-`index.ts` (status writes), `ChatWindow.tsx`, `WorkspaceHeader.tsx`, `ThreadSidebar.tsx`,
-migrations `20260527120934` (constraint) + `20260613070000` (cache), `cache.ts`, `CLAUDE.md`.
-
-### Change in THIS PR (smallest safe fix — no migration, no decision needed)
-- [x] `index.ts:486` `status: "completed"` → `status: "finished"`.
-  DB-allowed + frontend-recognized (`WorkspaceHeader`/`ThreadSidebar` treat `finished` as done).
-  The `.eq("status","active")` guard is preserved (only `active→finished`).
-
-### Deliberately NOT changed here — needs operator decision (stop-and-report)
-- [ ] `failed_context_limit` (index.ts:388): rejected; **no existing persisted thread field**
-  stores the reason (only console-logged). Options reported separately — do not silently map
-  a failure to `finished`.
-- [ ] `stopped` (ChatWindow.tsx:1199 Stop button): also rejected. Options: widen constraint to
-  add `stopped` (already in the frontend vocabulary) vs map to `finished`. Reported separately.
-- Constraint-widening migration is NOT added here (would also hit the migration-deploy gap; see
-  the cache writeup). Awaiting decision.
-
-### Explicitly NOT touched
-Confidence caps / custody / credential masking / minor-safety / collision-exclusion / source
-classification / budget gating / dead-mirror `tools/*.ts` / PR #119/#120/#121/#122.
-
-### Verification
-- [ ] `npx eslint` (changed file) · `npm run typecheck` · `npx vitest run` · `npm run build` · `npm run test:edge`
-
-### Ship path
-Backend change → after merge, sync `osint-agent/` → `seeker-spark-search-5362c57c` → Lovable.
-
----
-
-## 2026-06-27 — Live investigation run + UX audit (`fix/live-investigation-polish`)
-
-Run a REAL scan through the app (safe domain seed), observe the lifecycle, audit all tabs at
-4 widths, then fix ONLY clearly-observed issues. Excludes what #135/#136/#137 already fix
-(think-leak, Next Steps dedupe, board+report source labels, threat_intel).
-
-### Audit plan (checkable)
-- [ ] Run scan: seed `example.com` (cheap), observe timing / loading / phase / frozen / dup-submit / input-preserve / errors.
-- [ ] Screenshot the scanning state + each tab (Chat/Evidence/Tools/Graph/Report) at 1440 + 390.
-- [ ] Check console for errors/warnings during + after scan.
-- [ ] Verify tab counts refresh after completion (realtime).
-- [ ] Inspect duplicate-submit guard (button disabled? rapid double-click?).
-- [ ] Second seed if needed for evidence depth; use Damien case as regression fixture.
-- [ ] Severity-rank findings (P0–P3) below.
-- [ ] Implement the single clearest observed fix; TDD; verify live.
-
-### Live run findings (severity-ranked) — seeds: example.com, iana.org, cloudflare.com
-
-- **P0 — Duplicate scan submission.** Observed: a rapid double/triple-click on
-  "Start investigation" fired **3 separate `POST /functions/v1/osint-agent`** scans
-  (network-verified). Root cause: `send()` awaits an investigation-cache lookup + a
-  readiness probe BEFORE `sendMessage()`, so useChat's `status` never flips to
-  "submitted" within a synchronous click burst → the status-only guard passes every
-  click. Why it matters: each scan POST costs credits, concurrent writes to one thread,
-  and it generated **50× React "duplicate key" console warnings**. File: `ChatWindow.tsx`
-  `send()` / `sendText()`. FIXED (below).
-- **P3 — Aborted HEAD readiness probes** (`net::ERR_ABORTED` on `threads/artifacts/agent_memory`
-  HEAD requests). These are intentional timeout-aborted probes; harmless but add console
-  noise. Not fixed (by-design; would need probe-cancellation cleanup). Documented only.
-- Other audit items (CONFIRMED wording P1, on-screen SourceBadge raw IDs P1, mobile report
-  tables P2) remain as previously reported — separate PRs, untouched here.
-
-### Fix implemented (this PR) — duplicate scan submission
-- New `src/lib/submit-guard.ts` `isSubmitBlocked(status, locked)` — folds a synchronous
-  re-entrancy lock into the submit guard (covers the pre-"submitted" async window).
-- `ChatWindow.tsx`: `submitLockRef` set synchronously before any await in `send()` +
-  `sendText()`, released in `finally`; both guards routed through `isSubmitBlocked`.
-- Test `src/test/submit-guard.test.ts` (4): allow-first, block-on-lock-before-status-flips,
-  block-on-submitted/streaming, re-allow-after-unlock.
-
-### Verification (evidence)
-- `npx vitest run` → **59 files / 703 tests pass** (+4). typecheck / eslint / build clean.
-- **LIVE:** before — 3 clicks → 3 scan POSTs + 50 duplicate-key warnings; after — 4 rapid
-  clicks → **1** scan POST + **0** duplicate-key warnings (fetch + console instrumented).
-## 2026-06-27 — P1-2: humanize report/export source labels (`fix/report-source-labels`)
-
-From the beta audit P1-2. `buildReportMarkdown` (src/lib/intel.ts) still emits raw tool
-slugs in analyst-facing report prose (`via oathnet_lookup+serus_darkweb_scan+…`). #135 fixed
-the Evidence board + Next Steps UI but NOT the generated report/export. Branch off `main`;
-#135 is unmerged and its `readableSourceLabel` summarizes (primary+N) — the report needs the
-FULL chain expanded, so a dedicated, conflict-free helper in a new file is the right call.
-
-Presentation-only. No confidence/classification/status/threshold changes. Raw source stays in
-the artifact data model (`metadata.sources`, machine fields).
-
-- [x] New `src/lib/report-source-labels.ts` → `humanizeSourceChain(raw|array)`:
-  split on `+`/`,`/`/`, map known slugs (conservative labels), dedupe, de-underscore unknowns,
-  leave free-text/domains untouched, safe non-empty fallback.
-- [x] Unit tests `src/test/report-source-labels.test.ts` (single, chain, web/deep, unknown, dedupe).
-- [x] Wire into intel.ts report paths: table Source col (:847), via-lines (:942/:954/:991/:1001/:1009),
-  timeline (:1042), corroborated clusters (:1148), "Source tools" (:1725).
-- [x] Report-markdown regression test: no raw `oathnet_lookup`/`serus_darkweb_scan` in output;
-  readable equivalents present; `<think>` still absent; Damien-style fixture keeps uncertainty +
-  collision-not-confirmed wording.
-- [x] Verify: vitest · typecheck · eslint · build · browser report-render smoke (live Damien case).
-
-### Results — implemented + LIVE-VERIFIED (2026-06-27)
-- New `src/lib/report-source-labels.ts` `humanizeSourceChain(raw|array)`: splits `+`/`,`/`/`,
-  maps known slugs to conservative labels, **replaces embedded slugs in "slug analysis" tokens**,
-  dedupes, de-underscores unknowns, leaves domains/free-text untouched, safe non-empty fallback.
-- Wired into `src/lib/intel.ts buildReportMarkdown`: Key Findings, Artifact/Entity Table (Source col),
-  Network Connections, Collision, Timeline, corroborated-cluster + "Source tools" lines.
-- Tests: `report-source-labels.test.ts` (13) + `report-source-labels-integration.test.ts` (5, Damien-style).
-- Verify: `vitest` **717 pass** (+18); typecheck/eslint/build clean.
-- **LIVE (real Damien case, Copy markdown export):** all analyst sections humanized — e.g.
-  `via breach_check+oathnet_lookup+serus_darkweb_scan+bosint_email_lookup+deepfind_email_breach`
-  → `via breach check + breach/profile lookup + dark-web scan + email intelligence lookup + email breach lookup`;
-  `observed via username_sweep analysis` → `observed via username sweep analysis`. Raw slugs remain ONLY in
-  `Activity Log → Tool breakdown` (intentionally-diagnostic `tool×count`, task-sanctioned).
-- Provenance preserved: raw `source` untouched in artifact data; only the rendered report TEXT humanized.
-
-### Deferred (deliberately out of scope — flagged)
-- On-screen Report tab raw slugs come from the **shared `SourceBadge` component** (artifact rows / pivots /
-  patterns) — humanizing it is a broad shared-component change ("do not broaden scope / no broad UI cleanup").
-  Follow-up: humanize SourceBadge's collapsed pill text, keep raw in its `title`/popover + DB queries.
-## 2026-06-27 — QoL: stop `<think>`/reasoning leakage in Next Steps cards (`fix/next-steps-think-leak`)
-
-Branch off `main` @ 6a7075d (clean, fresh worktree). Frontend-only, presentation +
-sanitization layer. No evidence-integrity, confidence, provenance, or backend logic touched.
-
-### Audit (done)
-- Branch state: on `claude/agitated-lalande-b1ceca` @ origin/main, clean tree.
-- Open PRs: #121 (DIRTY/CONFLICTING) + #84 (DIRTY) are **backend/secondary** — out of
-  scope, not touched. Building fresh off main is the safe base; #134's QoL polish already
-  merged into main.
-- Baseline: `npx vitest run` → **58 files / 699 tests pass**.
-- Root cause of the screenshot bug: Next Steps cards derive from
-  `extractRecommendedPivots(text)` where `text` is the **raw** latest-assistant message
-  (`ChatWindow.tsx:1603-1607`). The chat renderer strips `<think>` (`ChatWindow.tsx:828`)
-  but the pivot parser does **not**, so reasoning blocks (`<think>… the detect_contradictions
-  tool flagged …</think>`, "Let me also call …") get parsed into card titles/details.
-
-### Plan (checkable)
-- [ ] New shared, tested sanitizer `src/lib/sanitize-agent-text.ts`:
-  - `stripReasoningMarkup(text)` — closed `<think>…</think>`, trailing unclosed `<think>…`,
-    stray `</think>`, and sibling reasoning tags (`reasoning`/`scratchpad`/`analysis`/`internal`/`plan`).
-  - `stripInlineTags(text)` — drop any residual `<…>` tag fragments from a single field.
-- [ ] `recommended-pivots.ts`: sanitize the whole report text before parsing; skip any
-  candidate line that still smells of reasoning (`Let me`, `I'll`, `I should`, residual `<`);
-  run each emitted `label`/`detail`/`reason` through `stripInlineTags`.
-- [ ] `ChatWindow.tsx`: route `reportPivots` text through the shared sanitizer; replace the
-  local `stripThinkTags` with the shared `stripReasoningMarkup` (single source of truth).
-- [ ] Tests:
-  - [ ] `src/test/sanitize-agent-text.test.ts` — sanitizer unit coverage.
-  - [ ] extend `recommended-pivots.test.ts` — regression: a `<think>` block under the
-    Recommended-pivots heading produces no leaked pivot/detail.
-
-### Verification
-- [ ] `npx vitest run` (no regressions; new tests pass)
-- [ ] `npm run typecheck`
-- [ ] `npm run lint` (changed files)
-- [ ] `npm run build`
-- [ ] Browser: best-effort (auth-gated workspace — documented honestly below)
-
-### Constraints honored
-Hard rules 1–5: sanitizing reasoning leakage is integrity-neutral (it only removes
-model chain-of-thought, never weakens claims, hides uncertainty, or touches
-provenance/confidence). Rule 6: small, single-purpose diff. Rule 9: no backend logic.
-
-### RESULTS — implemented + LIVE-VERIFIED (2026-06-27)
-
-Scope grew slightly (same theme/helper) to also fix the Evidence board's raw source labels.
-
-**Shipped**
-- `src/lib/sanitize-agent-text.ts` (new) — `stripReasoningMarkup` / `stripInlineTags` /
-  `looksLikeReasoning`. Single source of truth for chain-of-thought stripping.
-- `src/lib/next-step-cards.ts` (new) — `normalizeTarget`, `humanizeLeadReason`, `dedupeCards`.
-- `src/lib/tool-display.ts` — `readableSourceLabel` (concise, compound-aware, domain-safe).
-- `src/lib/recommended-pivots.ts` — sanitize report text before parse; drop reasoning lines;
-  strip inline tags from emitted fields.
-- `src/components/ChatWindow.tsx` — shared sanitizer; humanize lead source; `dedupeCards`.
-- `src/components/ResourcesPanel.tsx` — Evidence subheader + per-row provenance now display
-  `readableSourceLabel(...)`; the raw string stays in the `title` tooltip (provenance kept).
-- Tests: `sanitize-agent-text.test.ts` (12), `next-step-cards.test.ts` (14), +2 in
-  `recommended-pivots.test.ts`.
-
-**Verification (evidence, not assertion)**
-- `npx vitest run` → **60 files / 727 tests pass** (was 58 / 699; +2 files, +28).
-- `npm run typecheck` → clean. `npx eslint` (6 changed files) → clean. `npm run build` → OK.
-- **LIVE browser QA** (signed in to the real backend, Damien `damienbunnyobrien@gmail.com`
-  case, 1440px + 390px):
-  - Next Steps: ONE "Review lead — Damien O Brien · …via **breach/profile lookup**" card —
-    the duplicate `Damien O Brien` / `Damien O'Brien` pair collapsed; `<think>` absent from
-    the whole DOM (`hasThinkInBody:false`); raw `oathnet_lookup` humanized.
-  - Evidence board: `breach_check+oathnet_lookup+…+deepfind_email_breach` → shown as
-    **"breach lookup +4 more"**, raw preserved in the hover `title`; `minimax_web_search` →
-    "public-source search"; `breach · mindjolt.com` left untouched.
-  - 0 console warnings/errors.
-
-**Deferred (audited, NOT done — out of scope for one reviewable PR)**
-- **A — `CONFIRMED` label wording** (Source Evidence Table shows `CONFIRMED 80`): integrity-
-  critical per CLAUDE.md → needs explicit sign-off. NOT changed unilaterally. Recommend a
-  follow-up that splits "confirmed artifact observed" from "confirmed identity ownership".
-- Mobile report table heavy horizontal scroll (scrolls within its own container — page does
-  not break); report section-card redesign; phase/skeleton states. Each is a larger,
-  separate, browser-verified change.
-
-## 2026-06-27 — Cherry-pick from QoL audit §5: `threat_intel` source class (`feat/threat-intel-source-class`)
-
-Continuation of the source-attribution-honesty theme. Resolves `TODO(integrity)` at
-`source-classification.ts:92` — ransomware-victim / threat-intel exposure is mislabeled `breach`
-(breach-level identity weight). Branch off `main`, independent of frontend PR #135.
-
-- [x] `source-classification.ts`: `SourceClass += "threat_intel"`; map `ransomwarelive_lookup`
-  + dead `deepfind_ransomware_exposure` → `threat_intel`; resolve TODO.
-- [x] `confidence.ts`: `CLASS_CAP.threat_intel = 50` (< breach 60); add to `NEVER_HIGH`; keep out
-  of `TRUSTED_NON_INFRA` + infra sets ⇒ threat-intel-only never reaches ≥90 or counts as identity.
-- [x] Backend Deno test `threat_intel_test.ts`.
-- [x] Frontend `evidence-status.ts`: `threat_intel` source_category ⇒ manual_review + "Threat intel" basis.
-- [x] `tool-display.ts` DISPLAY: add `ransomwarelive_lookup` readable name.
-- [x] Frontend `evidence-status.test.ts`: threat_intel row → manual review.
-- [x] Verify: deno test · vitest · typecheck · eslint · build.
-
-Deploy: backend ships via Lovable sync (sync `osint-agent/` → `seeker-spark-search-5362c57c`), not Vercel merge.
-
-### Results — implemented + verified (2026-06-27)
-- Backend: `threat_intel` class added; `ransomwarelive_lookup` + dead `deepfind_ransomware_exposure`
-  reclassified breach→threat_intel; `CLASS_CAP.threat_intel=50`, in `NEVER_HIGH` + `NON_CORROBORATING_CLASSES`.
-- Frontend: `evidence-status.ts` shows threat_intel as "Threat intel · not identity proof" manual-review
-  (never as breach/exposure); `ransomwarelive_lookup` added to tool-display.
-- Tests: `threat_intel_test.ts` (6, Deno) + `evidence-status.test.ts` (+1). `deno test` **287 pass / 0 fail**;
-  `deno check` on changed modules clean (no TS2304). `vitest` **700 pass**; typecheck/eslint/build clean.
-- Files: source-classification.ts, confidence.ts, threat_intel_test.ts, evidence-status.ts, evidence-status.test.ts, tool-display.ts.
-- Deploy: backend ships via Lovable sync (`osint-agent/`→`seeker-spark-search-5362c57c`), not the Vercel merge.
-
----
-
-## 2026-07-13 — DeepSeek first-pass persistence nudge (prompt + runtime nudge)
-
-**Branch:** `fix/deepseek-persistence-nudge` (off `origin/main` @ 8cbc34b). Scope: **prompt + nudge ONLY** — deterministic recovery extractor deliberately DEFERRED.
-
-**Why:** DeepSeek (live orchestrator) under-emits `record_artifacts` on the first pass — fans out through many discovery calls and defers persistence, often waiting for `minimax_correlate` (which chronically times out). Live thread `32d301d0`: 46 tool calls, 0 `record_artifacts`, `zero_artifacts_at_completion`; later turns recovered to 14 artifacts. Root problem is deferral behavior, NOT provider connectivity/model/key/request-shape (all proven good).
-
-**Changes (4 files + 1 test):**
-- `system-prompt.ts` — Recording section: record incrementally per step (at most one batched `record_artifacts` per orchestration step; don't wait for the final step or `minimax_correlate`); narration is not evidence; domain-minimum categories recorded ONLY when tool-backed (never fabricate a missing category).
-- `orchestrator-finalize.ts` — pure `shouldNudgePersistence(toolCalls, recordCalls, alreadyNudged)` + `buildPersistenceNudgeDirective()` + `PERSISTENCE_NUDGE_TOOL_CALL_THRESHOLD = 5`.
-- `guard.ts` — pure `countModelMessageToolCalls(messages)` → `{toolCalls, recordCalls}`; dedupes by `toolCallId` (no double-count), excludes `UNKNOWN_TOOL_SINK` (repaired/non-executed).
-- `index.ts` — request-scoped `persistenceNudged` latch in the `prepareStep` closure; nudge injected ONCE into the intermediate-step system prompt when `toolCalls>=5 && recordCalls==0`; subordinate to forced-finalize (finalize branch returns first); logs `persistence_nudge_fired`.
-- `persistence_nudge_test.ts` — 21 tests (threshold−1/threshold/latch/no-spam/MiniMax-unchanged/request-isolation/correlate-timeout-non-blocking/no-extraction/no-double-count/sink-excluded/finalize-precedence).
-
-**Change 3 (correlate timeout) — verified already-correct, locked by tests:** `runWithToolTimeout` RESOLVES a schema-safe stub on timeout (never throws) → loop continues, `record_artifacts` still fires; forced-finalize + post-loop C-1 clustering run regardless of correlate; `guard.lastCorrelateOutcome="failed"` preserves the memory downgrade. No cache.ts change (owned by PR #310).
-
-**Gate (local):** targeted nudge tests 21/21; full edge suite 634 pass / **2 pre-existing timer-leak fails** (`crash_resilience_test.ts`, `gemini_parallel_pairing_test.ts` — confirmed identical on clean `origin/main`, untouched by this PR) / 3 ignored; typecheck ✓; build ✓; frontend vitest 900/900 ✓; changed files eslint clean; `deno check` clean (index.ts 47 = 47 baseline, 0 new).
-
-**NOT in scope / gated:** no deterministic extractor; no frontend 0-tools counter fix (`useInsightsData.ts` / counters / realtime — separate FE PR, other owner); no migrations; not stamped/mirror-synced/deployed. Merge + Lovable deploy are JD-gated; live retest per handoff after deploy.
-
-
----
-
-## 2026-08-03 — Codex UI command-center pass
-
-**Branch:** `codex/ui-command-center-20260803` from `main` @ `a23fbc9`. Frontend-only. No backend, migrations, mirror sync, deployment promotion, or merge.
-
-### Plan
-
-- [x] Capture the current Lovable/auth surface and inspect the current GitHub `main` frontend.
-- [x] Audit production-visible mock/demo data and branding drift.
-- [x] Rebuild the signed-out gateway as a premium, responsive analyst operations surface.
-- [x] Add restrained instrument-panel utilities and reduced-motion/performance safeguards.
-- [x] Polish the public landing page, branded route loader, and authenticated hub language.
-- [x] Add focused rendering/source contracts for the changed surfaces.
-- [x] Run CI-equivalent typecheck, lint, unit tests, production build, migrations, and edge tests.
-- [x] Open a draft PR and verify the protected Vercel desktop preview.
-- [x] Record results, evidence, and remaining risks here.
-
-### Guardrails
-
-- Preserve evidence counts, confidence tiers, chain-of-custody semantics, source labels, review states, run-state logic, and all backend contracts.
-- No production mock metrics or fake case data.
-- Keep `ReportPreview` dev-only and excluded from the production bundle.
-- Do not merge, promote a deployment, sync Lovable mirrors, or edit Claude-owned backend paths.
-
-### Results
-
-- Baseline Lovable capture exposed the stale `Swarmbot` identity, generic centered auth card, and indefinite `checking…` state. Canonical GitHub `main` is ahead of the Lovable mirror, so the mirror was inspected only and left untouched.
-- Rebuilt `Auth.tsx` as a two-pane analyst access gateway while preserving sign-in, sign-up, password recovery, Google gating, legal links, labels, and autocomplete behavior.
-- Rebuilt `Landing.tsx` around an evidence-led OSINT workflow; removed `Investigator beta`, `Chat-driven`, and `swarm harvests` copy.
-- Replaced the primary `Chat` workspace label with `Investigate` across tabs, command palette, and the signed-in hub. No route or backend contract changed.
-- Added a branded accessible route loader, canonical public metadata, reusable operations-surface styling, reduced-motion handling, and mobile blur/animation safeguards.
-- Hoisted static workflow data and memoized the static auth briefing rail so input updates do not rebuild decorative content.
-- Added `ui-command-center-contract.test.ts` covering canonical branding, no fabricated metrics, auth-path preservation, accessibility, responsive performance safeguards, and entry-point language.
-- Draft PR: https://github.com/justindean785/insight-finder/pull/411
-- Vercel preview deployment for implementation head `679bff9`: `READY`; public root returns HTTP 200 with the new canonical title and description.
-- GitHub Actions CI run `#938`: **success** — lint, typecheck, unit tests + coverage, production build, migration validation, and Deno edge tests all passed.
-- Desktop visual QA confirmed the redesigned auth gateway renders correctly with all expected controls and no app-origin console errors. Vercel/extension sign-in telemetry produced unrelated browser warnings.
-- Remaining QA risk: the latest protected landing revision could not be re-opened for a second screenshot after cloud-browser access was denied by policy; responsive behavior is covered by source inspection and CSS contracts, but a final human mobile visual pass is still recommended before merge.
-
-## 2026-09-30 — Latency & agent-usability audit (READ-ONLY) (`claude/insight-finder-latency-audit-f3l04m`)
-
-**Status: APPROVED by JD 2026-09-30 ("Approve as written") — COMPLETE 2026-09-30T23:15Z. Stopped at recommendations; nothing implemented.**
-
-Scope rules for the whole audit: no code edits, merges, deploys, provider switches, settings
-changes, or paid scans/LLM calls. `REVEAL_BREACH_DATA` untouched. Secret NAMES and presence only,
-never values. No raw case PII in output — thread ids truncated, selectors redacted. Earlier audit
-and handoff findings are hypotheses to re-check, not facts.
-
-### 0. Preflight
-- [x] `git fetch --unshallow --filter=blob:none` in both clones; fetch `deploy/live`.
-- [x] Secrets scan of any shared/pasted file before using it — no shared files were supplied; no secret values were read or printed (names only).
-
-### 1. What is actually running
-- [x] Live `/health` (unauthenticated GET, no LLM spend): build marker, provider slot, model,
-      fallback chain, behavioural keys.
-- [x] Map marker → canonical commit → `deploy-log.jsonl` / `deploy/live` → mirror `main`;
-      `diff -rq` per function dir; mirror `git log` for unbackported Lovable commits.
-- [x] Vercel production deployment: `target: production`, commit SHA, alias.
-- [x] Code trace of provider selection: slot name vs `DEEPSEEK_BASE_URL` vendor vs model id;
-      which env var / default is authoritative for each setting.
-- [x] Effective settings: thinking/reasoning, streaming, tool calls, parallel tool calls,
-      `maxOutputTokens`, timeouts, retries, preflight, fallback routing; SDK + provider
-      compatibility (AI SDK version vs Z.AI OpenAI-compatible API).
-
-### 2. Measured latency timeline (production records, read-only SELECTs only)
-- [x] Inventory timing sources: `orchestrator_invocations`, `orchestrator_step_metrics`,
-      `tool_usage_log`, `threads`, `messages`, `evidence_log`; note what each does NOT capture.
-- [x] State date range, n, missing fields; p50/p95 only where n supports it.
-- [x] Split by request type: follow-up, new investigation, Continue, recovery, report.
-- [x] Per-phase decomposition: admission → auth/DB/memory/prompt build → provider TTFT →
-      steps → tools → finalize → persistence; mark overlapping spans.
-- [x] 2–3 representative slow + normal runs as sanitized timelines.
-- [x] Client path from source: composer guards, request body build, stream parsing, React
-      render/refresh; local harness profiling (no production calls).
-
-### 3. Bottleneck checks (each: Confirmed / Likely / Possible / Unverified / Excluded)
-- [x] Follow-ups routed through full loop? History size re-uploaded? Request/prompt/tool-schema sizes.
-- [x] DB read shape (bounded? serial vs parallel), memory recall cost, bypass.
-- [x] Preflight, cold starts, retries, fallback waits; reasoning + output-limit effects.
-- [x] Slow/low-yield tool selection (outcome-separated: ok / empty / skipped / failed).
-- [x] Cap scope (invocation vs isolate vs thread vs investigation); budget vs finalize.
-- [x] Finalize wait after collection; overlap/lock/heartbeat/completion races.
-- [x] Silent refusal on Send/Continue; stream flush through each layer; client render/invalidation lag.
-
-### 4. Quality-of-life audit
-- [x] Ack latency, stage + last-progress visibility, cancel, duplicate submit, stuck/recovery,
-      incremental findings, quick-question path, "collection done" vs "report generating",
-      mobile + long-session behaviour. Format: Trigger → behaviour → cause → impact → fix → verify.
-
-### 5. Options (official docs only, with access dates)
-- [x] A. Keep model, fix app — ranked by impact/effort/risk/confidence.
-- [x] B. Other Z.AI models — tool calling, streaming, reasoning, context, price, rate limits.
-- [x] C. Short cross-provider shortlist (OpenAI, Anthropic, Google, Z.AI, DeepSeek, other).
-- [x] D. Agent design split (quick chat / orchestration / report), smallest viable change.
-
-### 6. Benchmark plan
-- [x] Offline replay design (recorded tool responses) + gated live E2E design; metrics, fixtures,
-      cost ceiling. **Designed only — not executed** (needs separate approval).
-
-### 7. Deliverable
-- [x] Report `docs/AUDIT_2026-09-30_latency-and-agent-usability.md` (top-5 findings first; placed beside `docs/PROD_AUDIT_2026-07-17.md` rather than a new `docs/audits/` dir).
-- [x] Results section appended here; commit + push to this branch; draft PR (docs only).
-
-### Access I intend to use (approve or strike)
-- Live `/health` GET (**correction:** NOT free — each GET makes a 4-token paid Z.AI ping, plus MiniMax if idle >60 s; called exactly once).
-- Lovable MCP `query_database` for **SELECT-only**, aggregate-first queries on project
-  `4ce11bc3-…` — no writes, no DDL, no `send_message`, no deploy.
-- Vercel MCP read calls (deployments, runtime logs) for the frontend.
-- GitHub MCP read calls (PRs, commits, CI) for both repos.
-- Public web for official model/provider docs.
-
-### Results (2026-09-30T23:15Z)
-
-Full report: `docs/AUDIT_2026-09-30_latency-and-agent-usability.md`. Headline: **the model is not the
-main bottleneck — the request architecture is.**
-
-- **Running:** frontend `0cdae6c` (Vercel `dpl_4nNb…`, production, READY); edge `06ba9b9`
-  (`/health`, ledger clean, mirror function dirs byte-identical); slot `deepseek` pinned →
-  **Z.AI `glm-5.2`** (not 5.3; GLM-5.3 would force thinking on). No undeployed edge code.
-- **Measured** (231 GLM-5.2 runs, 2026-09-11 → 09-30): run p50 141.5 s / p95 215.5 s (excludes
-  admission). Follow-ups (median 68 chars, n=136): p50 135 s, 12 tool calls, **111 s before the
-  answer step starts**. Decode 13.1 ms/token (~76 tok/s) + ~5.2 s/text step, ~9.8 s/tool step;
-  ~65k input tokens re-sent per step, 406k per run.
-- **Top 5:** (1) every message runs the full tool loop, no Ask/Report path; (2) cost is step
-  architecture, not decode — a 2× faster model saves ~45 s of ~141 s; (3) **26% of runs overlap**
-  another on the same thread (53% week of 09-28) — Send ignores server-active runs; (4) salvage
-  generation adds unstreamed tail (Continue gap p50 17 s / p90 82 s) — Likely; (5) dead preflight
-  (4% of runs wait ≥24.5 s), blocking 5 s `/health` probe on first Send (6.7 s measured),
-  `tool_choice` "required"/"none" and `parallel_tool_calls:false` are ignored by Z.AI.
-- **Excluded:** memory recall (0.45 s p50), prompt-tail summarization (no LLM), provider fallback
-  hops (none occur), undeployed code.
-- **Recommendation:** keep GLM-5.2; fix the app; split into explicit Ask / Investigate / Report
-  modes; benchmark before any model change. Staged plan S0–S8 in §8 — nothing started.
-- **Gaps:** no TTFT, no client timings, salvage/preflight console-only, cache-hit rate unknown,
-  19-day window, 1 health sample, request type inferred from prompt text.
-- **No production changes made.** SELECT-only DB access; one paid 4-token health ping.
-
-### Implementation status (2026-10-01T04:35Z — JD approved the plan, then "Go")
-- **S1** (edge): PR #657 `claude/latency-s1-skip-dead-preflight`, CI green (edge 1972/0/6).
-  NOT merged/deployed — waits behind #653 in the one-edge-PR lane, then the full stamp → sync →
-  gate → Lovable deploy → `/health` cycle. Proof key: `checks.preflight_policy`.
-- **S2b** (frontend): PR #658 `claude/latency-s2b-probe-off-send-path`. First Send no longer awaits
-  `/health`; pre-stream HTTP failures carry status + server code (`withHttpStatusInErrorBody`).
-  vitest 2293/1/185 (main re-measured 2271/1/185), e2e 52/2. Ships on merge — JD's call.
-- **S3**: discarded at JD's instruction (client pre-stamps the heartbeat, so a failed POST would
-  lock Send for ~75 s). Belongs with a server-owned lease.
-- **S0a/S0b** (schema + telemetry), **S4** (salvage, needs sign-off), **S2a** (edge `?ping`),
-  **S5–S8**: not started; S0 and S4 await JD.
-- PR queue cleared the same session: #654, #655, #623, #610, #574 merged and verified live
-  (main CI incl. e2e green through `cf6b6f2`, Vercel production READY).
+- 2026-10-10: S1a incident. #730 live as `2e0d3ee` returned 409 on every send (client heartbeat stamp). Rolled back by kill switch, no redeploy. Fixed by
+  #733 (client) and #734 (server guard, live `811929c`, stamp #735, mirror #111, ledger #736). Lease remains OFF.
+- 2026-10-10: plan written and revalidated; no code changed. Memory-axis work (S7) was read-only
+  reconnaissance only.
+- 2026-10-10: S1a built, reviewed (3 confirmed findings fixed, 1 narrowed, 1 answered), merged as #730,
+  stamped #731, mirrored #110, deployed and verified live `2e0d3ee` with `checks.run_lease` ok, ledger #732.
+  Edge suite 2232/0/6. Stated limit: time lease, not fencing (S1b).
+
+## Blockers / decisions for JD
+- **Re-enable the S1a lease?** Explicit authorization required; the kill switch stays `true` until then.
+- Engine fixes (separate PRs, evidence-ranking, need sign-off): corroboration should filter through `NON_CORROBORATING_CLASSES`; add a `reputation` kind; negative lookups as coverage, not artifacts.
+- S1b (fencing) needs the schema change `threads.run_generation` / `run_owner` through Lovable: approve the schema PR when ready.
+- Historical `verified` rows on `7a2968e1` (F5): remediate through Lovable with an audit row, or leave and document.
+- #612: supersede (recommended) or extend.
+- Which providers to keep (OathNet, Opsis, FOFA, deepfind, reddit) — governs S6 wording.
