@@ -134,6 +134,7 @@ Deno.test("classifyAnthropicError maps the documented status classes", () => {
   assertEquals(classifyAnthropicError(mk(400, "tool_choice: type \"tool\" and \"any\" are not supported for this model.")).kind, "invalid_request");
   // Credit text wins over the generic-400 branch even though Anthropic sends it as a 400.
   assertEquals(classifyAnthropicError(mk(400, "Your credit balance is too low")).kind, "credit_exhausted");
+  assertEquals(classifyAnthropicError(mk(400, "This API key is not scoped to a workspace, so this request must include the anthropic-workspace-id header.")).kind, "workspace_required");
   assertEquals(classifyAnthropicError(new Error("boom")).kind, "unknown");
 });
 
