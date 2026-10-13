@@ -54,9 +54,7 @@ unapplied, 13 open PRs all draft. **Current (2026-10-11T06:43Z):** `main` `88f85
 
 Case: `coresint.xyz`, two runs on 2026-10-12 (first report generated 23:44:03Z; follow-up ~00:11Z 10-13). Plan below awaits JD approval; nothing here is implemented.
 
-- [ ] **R1 (first fix, edge, one PR + kill switch + new `/health` key):** at report finalize, when the Evidence Record has zero
-      authoritative rows (or retrieval/review is `unavailable`), rewrite model-authored tier tags (`[CONFIRMED]` etc.) to an
-      `[UNADJUDICATED]` marker before the message is stored. Fail-open, no new model step, never throws (CLAUDE.md termination invariants).
+- [x] **R1 WITHDRAWN (JD, 2026-10-13).** Rewriting `[CONFIRMED]` to `[UNADJUDICATED]` changes the label, not the assertion; "same operator", ownership language and invented confidence numbers would survive. At most a temporary display mitigation. Replaced by the plan in "Revised plan" below.
 - [ ] **R2 (separate edge PR):** gate `memory_save` of ownership/operator/identity conclusions that cite no evidence ids. The memory phase
       runs BEFORE the report phase (per the 2026-10-13 code read of `orchestrator-finalize.ts`; re-verify), so R1 alone cannot stop memory contamination.
 - [ ] **R3 (frontend PR):** `badgesFor` ("Multi-source corroborated") counts raw source strings; count independent source CLASSES instead.
@@ -75,14 +73,36 @@ How an unsupported run-N claim becomes a run-N+1 premise. None of these paths is
 - [ ] **P3 planner memory:** `tool-registry.ts:1288-1296` injects top-8 `agent_memory` rows as "PRIOR MEMORY (weight these ... confirmed links)".
 - [ ] **P4 memory_save:** a single-subject unsupported claim passes both gates and returns at its saved confidence (default 60, ratcheted by GREATEST).
 - [ ] **P5 investigation_cache:** replays the prior report prose to a later thread for the same seed (7 days).
-- [ ] **P6 tool_call_cache:** `minimax_correlate`, `minimax_extract`, `gemini_deep_dork` not found in `NO_CACHE_TOOLS`; TTLs unconfirmed, so a replayed inference is possible.
+- [ ] **P6 tool_call_cache (corrected):** `cache.ts` wraps every tool not in `NO_CACHE_TOOLS` (mutators only); TTL is `DEFAULT_TOOL_TTL_MS` = 24h unless listed in `TOOL_TTL_MS`; a result is written only when `ok && isCacheableToolResult`. So `minimax_correlate`/`minimax_extract`/`gemini_deep_dork` ARE eligible at 24h. Replay needs an identical input hash, so a carried inference is low-probability for correlate (artifact list changes) and higher for gemini_deep_dork (seed+kind+focus). UNVERIFIED as an actual carrier; the screenshots show Cached 3 of 33 and 3 of 64, i.e. no new replays between views (assuming one thread).
 - Evidence the memory path was live: the first report's rows for the operator email, `floeintel.com`, `l5e.io` and the sitemap routes carried source "case memory recall".
 - Proposed (not started): R5 reword P2 so recalled memory is labelled prior/unverified, never "corroborated"; R6 label replayed prose.
 
 ### Regression cases run against real functions (scratchpad, not committed)
 Pass: repetition adds no authority (stays 50); four providers = 1 independent class; sitemap-derived profile caps at 50; single vendor verdict caps at 65.
-Fail (defects): relationship-bearing rows score 60-80; "never archived" value persisted at 70 (negative rule reads labels only); `CONFIRMED` prose accepted with zero/unavailable adjudication.
+Fail: relationship-bearing rows scored 60-80 (a score alone does not show wrong relationship semantics; the violated invariant still has to be stated and tested at claim level); "never archived" value persisted at 70 (the #693 negative rule reads source labels, not value text). Case 8 is NOT an end-to-end reproduction: `hasReportShape` is the completion contract (`resolveTerminalState`/recovery decide complete vs Interrupted), not an authority check, so it proves only that it does not enforce adjudication.
 Spec only: no count reconciler exists in app code ("20 routes" vs 9 + 12).
+
+## Revised plan (2026-10-13, awaiting JD approval; no application edits made)
+
+### PR A (edge): stop prompt/history authority escalation. One behaviour change + kill switch + one new `/health` key.
+Demonstrated escalations: `system-prompt.ts:145-146` ("INCORPORATE ... CITE as \"[MEMORY] previously corroborated\""), `tool-registry.ts:5957` `memory_hint` ("incorporate confirmed connections ... Do NOT re-investigate values already covered"), `tool-registry.ts:1292` planner header ("weight these ... confirmed links"), `index.ts:272` history replayed unlabeled.
+- A1 wording: recalled memory is prior-run context whose positive claims are leads to re-verify; cite as "[MEMORY - prior run, unverified]". Keep "do not re-investigate" ONLY for analyst-rejected values and existing dead-target memory.
+- A2 read-time provenance on recall output (`memory_recall`, `memory_hits`, planner rows), computed from existing signals only, no stored data changed: `analyst_false_lesson` (`isAnalystFalseLesson`), `superseded` (existing), else `model_authored_unreviewed`. agent_memory has NO provenance column and the only analyst writer is the false-positive lesson; analyst CONFIRMATIONS live in per-thread review state (`analystDecisionsBlock`), not in agent_memory. Cross-investigation analyst-confirmed memory therefore has no representation today (decision for JD; would need a schema change through Lovable).
+- A3 label earlier assistant text as historical model output, not independent evidence. Open check: confirm the budget trims (`orchestrator-budget.ts`) keep the head of a text part so a prefix survives; otherwise use a system-prompt statement instead.
+- Files: `system-prompt.ts`, `tool-registry.ts` (3 sites), new `lib/memory-provenance.ts`, new `lib/history-label.ts`, `index.ts` (one call), `health-handler.ts` (`checks.memory_authority`), `env.ts` kill switch `MEMORY_AUTHORITY_WORDING_DISABLED`.
+- Tests (Deno, real functions): forbidden phrases absent from the assembled prompt and `memory_hint`; mixed rows through the real `memory_recall` with a stubbed client; analyst FALSE lessons keep confidence 95 and still supersede; superseded rows unchanged; `analystDecisionsBlock` text for confirmed/rejected rows byte-identical (snapshot); history labeling leaves tool parts and the in-progress turn untouched and survives the trims; existing `memory_supersession_test`, `memory_context_test`, `reviews_wiring_test`, `system_prompt_*_test` still pass.
+- Limits: no schema change, no change to scoring/caps/finalization/dispatch, no frontend, no historical-record edits. Acceptance: edge suite 2233+N / 0 failed; `/health` key present after the normal stamp/sync/deploy cycle; one controlled scan ONLY with JD approval to confirm the model cites the new wording.
+
+### PR B (separate; design first): report-authority boundary
+- Facts: the Evidence Record is MERGED into the last text part of the model message as plain markdown (`evidence-record-persist.ts:65-74`, kept there so the thread preview still reads the report), so narrative and record are one text part and only a regex (`narrativeIsUnadjudicated`) separates them. The Report tab re-shows the latest assistant summary as "Analyst narrative" (`CaseReport.tsx:1225`). `investigation_cache.assistant_parts` replays prose to later threads. `evidence-export` reads `threads` and `evidence_log`, not prose (confirm PDF content before relying on it).
+- Three states to distinguish structurally: adjudicated with findings; adjudicated with zero findings (explicit `finalize_no_findings`, `hasNoFindingsDecision`); adjudication unavailable/failed (`retrieval`/`reviews` unavailable). Today "no rows" conflates the second with "never called".
+- Direction (not claim detection): label the whole narrative by the absence/presence of a structural engine marker; a nonempty findings table covers only its rows. No keyword or tag rewriting, no silent edits to stored messages; legacy messages render as "no engine record". Streaming: any assistant message without the engine marker is labelled unadjudicated by structure, not by scanning prose. Invented confidence numbers in prose: displayed as AI narrative, never as scores. Separate edge and frontend PRs; must not gate or add work in the finalize window (CLAUDE.md termination invariants).
+- Open design question for JD: a structural marker needs a part-level field or a separate part, which touches the preview constraint above.
+
+### Not concluded / unresolved
+- Which stored memory rows were retrieved in either run, and which path fed the follow-up run: needs the rows.
+- The 85/65 persisted scores vs 80/60 from the policy function: unresolved until the exact stored rows and inputs are available.
+- No blanket relationship caps and no keyword negation rules; claim-level semantics (claim meaning, supporting evidence, authority) must be specified and tested per invariant before any relationship change.
 
 ### Reproduction status (run by me unless noted)
 - Edge baseline on `c4bd432`: 2233 passed / 0 failed / 6 ignored.
