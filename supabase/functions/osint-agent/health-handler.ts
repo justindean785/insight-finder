@@ -48,6 +48,7 @@ import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 import { memoryContextSelfTest } from "./lib/memory-context.ts";
 import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
 import { breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
+import { exactBooleanRepairSelfTest } from "./lib/exact-boolean-repair.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -499,6 +500,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.breach_origin_cap = breachOriginCapSelfTest();
   r.checks.memory_context = memoryContextSelfTest();
   r.checks.user_supplied_status = userSuppliedStatusSelfTest();
+
+  // Is a boolean parameter sent as the EXACT string "true"/"false" repaired instead of burning the step, while every other
+  // string and every consent flag stays rejected? Pure. PRESENCE proves the deployed bundle; ok:false = failed its own probe.
+  r.checks.exact_boolean_repair = exactBooleanRepairSelfTest();
 
   // Are the agent's own setup rows (triage_decision / cluster_decision / coverage_audit /
   // tool_audit) kept out of identity clusters? A row naming the seed handle used to join
