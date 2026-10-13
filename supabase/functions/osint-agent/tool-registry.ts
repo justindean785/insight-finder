@@ -1,4 +1,5 @@
 import { guardUserSuppliedStatus } from "./lib/user-supplied-status.ts";
+import { ANALYST_AUTHORITY_NOTE, stripAnalystAuthorityKeys } from "./lib/analyst-authority-keys.ts";
 import { applyMemoryContext } from "./lib/memory-context.ts";
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
@@ -5427,7 +5428,30 @@ export function buildTools(ctx: ToolContext) {
           .min(1)
           .max(200)),
       })),
-      execute: async ({ artifacts: rawArtifacts }) => {
+      execute: async ({ artifacts: rawArtifactsIn }) => {
+        // A1: a model cannot write the analyst's keys. `reviewed`, `linkage_confirmed` and
+        // `false_positive` are read downstream as analyst attestation / quarantine release /
+        // dismissal, and the metadata below is otherwise persisted as the model wrote it. Stripped
+        // BEFORE the batch collapse (which can merge metadata) and before anything else reads it.
+        // Disclosed by key NAME on the row, in the log and in this result — never the values.
+        const authorityStripped = new Set<string>();
+        const rawArtifacts = rawArtifactsIn.map((item) => {
+          const s = stripAnalystAuthorityKeys(item.metadata);
+          s.stripped.forEach((k) => authorityStripped.add(k));
+          return s.stripped.length > 0 ? { ...item, metadata: s.metadata } : item;
+        });
+        const authorityStrippedList = [...authorityStripped].sort();
+        if (authorityStrippedList.length > 0) {
+          console.warn(JSON.stringify({
+            event: "analyst_authority_stripped",
+            thread_id: threadId,
+            tool: "record_artifacts",
+            keys: authorityStrippedList,
+          }));
+        }
+        const authorityNotice = authorityStrippedList.length > 0
+          ? { analyst_authority_stripped: authorityStrippedList, analyst_authority_note: ANALYST_AUTHORITY_NOTE }
+          : {};
         const artifacts = collapseRecordArtifactsBatch(rawArtifacts);
         const accepted: Array<{ index: number; kind: string; value: string }> = [];
         const rejected: Array<{ index: number; reason: string; kind: string; value: string }> = [];
@@ -5738,6 +5762,7 @@ export function buildTools(ctx: ToolContext) {
               ? { confidence_deltas_suppressed: confidenceDeltasSuppressed }
               : {}),
             ...(threadDedupPartial ? { thread_dedup_partial: true } : {}),
+            ...authorityNotice,
           };
         }
         const safeRows = scrubArtifactRows(rows);
@@ -5940,6 +5965,8 @@ export function buildTools(ctx: ToolContext) {
           // A dedup gate that quietly stopped deduping would be worse than one
           // that says so: a partial scan means a duplicate may have been let in.
           ...(threadDedupPartial ? { thread_dedup_partial: true } : {}),
+          // A1: told, not hidden — reserved analyst keys in the call were ignored.
+          ...authorityNotice,
           // Told, not hidden: the model must not re-assert these as the subject's.
           ...(nameQuarantineStamped > 0
             ? {
@@ -5980,7 +6007,19 @@ export function buildTools(ctx: ToolContext) {
         source: z.string().optional(),
         metadata: z.record(z.unknown()).optional(),
       })),
-      execute: async ({ kind, value, confidence, source: sourceIn, metadata: metadataIn }) => {
+      execute: async ({ kind, value, confidence, source: sourceIn, metadata: metadataRaw }) => {
+        // A1: same boundary as record_artifacts — this shim is advertised in the catalog, so
+        // gating only the plural tool would leave the bypass one spelling away.
+        const authority = stripAnalystAuthorityKeys(metadataRaw);
+        const metadataIn = authority.metadata;
+        if (authority.stripped.length > 0) {
+          console.warn(JSON.stringify({
+            event: "analyst_authority_stripped",
+            thread_id: threadId,
+            tool: "record_artifact",
+            keys: authority.stripped,
+          }));
+        }
         // E3: recalled memory is context, never a source (lib/memory-context.ts).
         const memCtx = applyMemoryContext(sourceIn, metadataIn);
         const source = memCtx.source;
@@ -6166,6 +6205,9 @@ export function buildTools(ctx: ToolContext) {
           ok: true,
           kind: row.kind,
           value: row.value,
+          ...(authority.stripped.length > 0
+            ? { analyst_authority_stripped: authority.stripped, analyst_authority_note: ANALYST_AUTHORITY_NOTE }
+            : {}),
           ...(minor ? { minor_safety_flag: true } : {}),
           ...(singleNameQuarantined
             ? {

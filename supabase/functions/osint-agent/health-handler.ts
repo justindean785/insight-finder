@@ -47,6 +47,7 @@ import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 import { memoryContextSelfTest } from "./lib/memory-context.ts";
 import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
+import { analystAuthorityBoundarySelfTest } from "./lib/analyst-authority-keys.ts";
 import { breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 
 /**
@@ -499,6 +500,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.breach_origin_cap = breachOriginCapSelfTest();
   r.checks.memory_context = memoryContextSelfTest();
   r.checks.user_supplied_status = userSuppliedStatusSelfTest();
+  // A1: can a model-supplied artifact metadata blob carry the analyst's review / release /
+  // dismissal keys? Pure. PRESENCE proves the build that strips them is live; ok:false means
+  // the boundary failed its own probe.
+  r.checks.analyst_authority_boundary = analystAuthorityBoundarySelfTest();
 
   // Are the agent's own setup rows (triage_decision / cluster_decision / coverage_audit /
   // tool_audit) kept out of identity clusters? A row naming the seed handle used to join
