@@ -169,6 +169,39 @@ export function classifyDetailedOutcome(
 }
 
 /**
+ * LeakCheck's documented reading of an HTTP 403, or null when this is not a LeakCheck 403 the documentation covers.
+ *
+ * LeakCheck DOCUMENTS 403 as exactly two things — "Active plan required" and "Limit reached"
+ * (docs.leakcheck.io/errors) — so for THAT tool, on THAT status, the generic "bot protection" sentence points at
+ * the wrong fix. The status alone cannot say WHICH of the two, so one is named only when LeakCheck's own words
+ * did; with no provider words (the edge writes "upstream returned HTTP 403") it says "either" and that it was not
+ * told. The headline asserts nothing but the refusal. Deliberately keyed on the tool name and the 403 status,
+ * never on keywords: a 403 from a website, a CDN or a scraping tool saying "subscription" or "quota" is the
+ * TARGET's refusal, not a problem with the analyst's provider plan. A documented message is accepted only as the
+ * WHOLE text, so a WAF page, "Forbidden: Limit reached" or a longer sentence containing the phrase is not read as
+ * LeakCheck's message. Exported so the Health hook and the wording helper cannot drift apart.
+ */
+export function explainLeakCheckRefusal(
+  toolName: string,
+  errorMsg: string | null | undefined,
+  statusCode: number | null | undefined,
+): string | null {
+  if (toolName !== "leakcheck_lookup" || statusCode !== 403) return null;
+  const raw = String(errorMsg ?? "").trim();
+  const short = raw.length > 140 ? `${raw.slice(0, 139)}…` : raw;
+  if (LEAKCHECK_PLAN_RE.test(raw)) {
+    return `Refused (HTTP 403) — "${short}". LeakCheck reports this when the account has no active plan. Check the plan on the LeakCheck account.`;
+  }
+  if (LEAKCHECK_LIMIT_RE.test(raw)) {
+    return `Refused (HTTP 403) — "${short}". LeakCheck reports this when the plan's usage quota is used up. Check the quota on the LeakCheck account.`;
+  }
+  if (STATUS_ONLY_RE.test(raw)) {
+    return "Refused (HTTP 403). LeakCheck documents 403 as either an inactive plan or a reached usage quota, and the response did not say which. Check the plan and remaining quota on the LeakCheck account.";
+  }
+  return null;
+}
+
+/**
  * Turn a raw provider error into a meaningful analyst-facing message (Issue #2).
  * Never dump a bare HTTP code. The category drives the wording; the tool name
  * and code add specificity.
@@ -191,25 +224,10 @@ export function normalizeProviderError(
     case "rate_limited":
       return `Rate-limited by the provider${code ? ` (HTTP ${code})` : ""} — the platform backed off automatically. Retry later.`;
     case "http_denied":
-      // A 403 is not always bot protection. LeakCheck DOCUMENTS 403 as exactly two things — "Active plan required"
-      // and "Limit reached" (docs.leakcheck.io/errors) — so for THAT tool, on THAT status, the usual "bot
-      // protection" sentence points at the wrong fix. The status alone cannot say WHICH of the two, so one is
-      // named only when LeakCheck's own words did; with no provider words the sentence says "either" and that it
-      // was not told. The headline asserts nothing but the refusal. This is deliberately keyed on the tool name,
-      // never on keywords in the text: a 403 from a website, a CDN or a scraping tool saying "subscription" or
-      // "quota" is the TARGET's refusal, not a problem with the analyst's provider plan. A documented message is
-      // accepted only as the WHOLE text: anything else (a WAF page, "Forbidden: Limit reached", a longer sentence
-      // that happens to contain the phrase) is not LeakCheck's documented message and keeps the generic wording.
-      if (toolName === "leakcheck_lookup" && code === 403) {
-        if (LEAKCHECK_PLAN_RE.test(raw)) {
-          return `Refused (HTTP 403) — "${short}". LeakCheck reports this when the account has no active plan. Check the plan on the LeakCheck account.`;
-        }
-        if (LEAKCHECK_LIMIT_RE.test(raw)) {
-          return `Refused (HTTP 403) — "${short}". LeakCheck reports this when the plan's usage quota is used up. Check the quota on the LeakCheck account.`;
-        }
-        if (STATUS_ONLY_RE.test(raw)) {
-          return "Refused (HTTP 403). LeakCheck documents 403 as either an inactive plan or a reached usage quota, and the response did not say which. Check the plan and remaining quota on the LeakCheck account.";
-        }
+      // A 403 is not always bot protection — see explainLeakCheckRefusal for the one tool whose 403 is documented.
+      {
+        const leakcheck = explainLeakCheckRefusal(toolName, errorMsg, statusCode);
+        if (leakcheck) return leakcheck;
       }
       return `Access denied (HTTP ${code ?? 403}) — the provider blocked this request, usually bot protection or IP reputation, not a bad key.`;
     case "blocked":

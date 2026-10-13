@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   classifyDetailedOutcome,
+  explainLeakCheckRefusal,
   normalizeProviderError,
   CANONICAL_OUTCOME_META,
   type CanonicalOutcome,
@@ -85,9 +86,12 @@ export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "load
 
   // created_at ascending so the last needs-attention row we see is the most recent.
   const sorted = [...raw].sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
-  // http_denied is the calm bucket (never needs attention on its own), so its normalized message is not built for
-  // the row. Keep the MOST RECENT one per tool so the repetition path below can say WHY a tool keeps being refused.
-  const lastDenied = new Map<string, ToolIssue>();
+
+  // LeakCheck's documented 403 reading, per tool, for tools whose MOST RECENT attempt was such a refusal. http_denied is
+  // the calm bucket — it never needs attention on its own — so no message was ever built for it and the Health tab
+  // showed only a "Denied" chip. Only a documented LeakCheck 403 gets an explanation; every other tool and status
+  // is untouched.
+  const lastRefusal = new Map<string, string>();
 
   for (const r of sorted) {
     const name = r.tool_name?.trim() || "unknown";
@@ -105,9 +109,9 @@ export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "load
     totals[category] += 1;
     totals.total += 1;
 
-    if (category === "http_denied") {
-      lastDenied.set(name, { category, message: normalizeProviderError(name, r.error_msg, r.status_code, category), statusCode: r.status_code ?? null });
-    }
+    const refusal = category === "http_denied" ? explainLeakCheckRefusal(name, r.error_msg, r.status_code) : null;
+    if (refusal) lastRefusal.set(name, refusal);
+    else lastRefusal.delete(name); // a later attempt that was not such a refusal makes the explanation stale
 
     if (CANONICAL_OUTCOME_META[category].needsAttention) {
       row.needsAttention = true;
@@ -128,18 +132,20 @@ export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "load
     // whatever each attempt was labelled. Production 2026-09-20: seven
     // socialfetch_web_read aborts on one YouTube channel read as "Cancelled ×3 ·
     // Needs attention 0" while the model retried it across three runs.
+    const refusal = lastRefusal.get(row.toolName) ?? null; // LeakCheck 403 only; null for every other tool
     if (!row.needsAttention && row.total >= REPEAT_FAILURE_FLOOR && row.counts.success === 0 && row.counts.empty === 0) {
       row.needsAttention = true;
       if (!row.lastIssue) {
-        // A tool whose worst outcome here is a denial carries the reason too (e.g. LeakCheck's documented 403
-        // meanings), not just the count. Every other category keeps the original sentence exactly.
-        const denied = row.worst === "http_denied" ? lastDenied.get(row.toolName) : undefined;
         row.lastIssue = {
           category: row.worst,
-          message: `${row.total} attempts on this case, none returned data — stop calling it here.${denied ? ` Last denial: ${denied.message}` : ""}`,
-          statusCode: denied?.statusCode ?? null,
+          message: `${row.total} attempts on this case, none returned data — stop calling it here.${refusal ? ` ${refusal}` : ""}`,
+          statusCode: null,
         };
       }
+    } else if (refusal && !row.lastIssue) {
+      // One or two attempts: the category stays http_denied and the row stays calm (no attention), but the analyst
+      // is told what the refusal means. Never replaces a real needs-attention issue already on the row.
+      row.lastIssue = { category: "http_denied", message: refusal, statusCode: null };
     }
   }
 
