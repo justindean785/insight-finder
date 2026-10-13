@@ -47,6 +47,14 @@ export const TOOL_CACHE_VERSION: Readonly<Record<string, number>> = {
   // and bypass the provenance controls the PR exists to add. The bump is the whole fix: v1 rows stop
   // matching on both hashes and age out. (#738 independent review, 2026-10-13.)
   memory_recall: 2,
+  // v2 — lib/memory-provenance.ts. minimax_plan_pivots reads the PRIOR MEMORY block (renderPlannerMemoryHint) and
+  // appends it to the planner prompt, but the cache key is {seed, already_queried, artifacts, budget_remaining}: the
+  // memory block is a second input the key never sees. #738 changes that block from "weight these — … confirmed
+  // links" to "CONTEXT TO RE-VERIFY, NOT EVIDENCE", so a plan written under the old wording (its `goal` /
+  // `current_findings` may restate a recalled claim as confirmed) would replay for up to 24h after deploy and hand the
+  // orchestrator pre-change authority wording. Shape-keyed like memory_recall (see SHAPE_KEYED). (#738 follow-up,
+  // owner-authorised 2026-10-13.)
+  minimax_plan_pivots: 2,
 };
 
 /**
@@ -59,19 +67,26 @@ export function toolCacheVersioningEnabled(): boolean {
 }
 
 /**
- * Tools whose cached OUTPUT SHAPE is chosen by a RUNTIME switch, not by the build. For these the key must follow
- * the shape, or a row written in one state is served in the other (see memory_recall_cache_test.ts).
+ * Tools whose cached RESULT is chosen by a RUNTIME switch, not by the build. For these the key must follow the
+ * switch state, or a row written in one state is served in the other (see memory_recall_cache_test.ts and
+ * minimax_plan_pivots_cache_test.ts).
  *
  * memory_recall: while the provenance wording is ON the result is tagged (v2); while MEMORY_AUTHORITY_WORDING_DISABLED
  * is thrown it is the pre-change legacy shape, so it takes the legacy (unversioned, byte-identical to before) key.
  * Without this, rows written during a rollback were stored under v2 and replayed UNTAGGED for 24h after the switch was
  * flipped back, and tagged rows kept replaying after a rollback (#738 independent review, 2026-10-13).
  *
+ * minimax_plan_pivots: the plan is written under whichever PRIOR MEMORY wording was live, so it follows the same
+ * switch for the same reason.
+ *
  * These tools deliberately ignore TOOL_CACHE_VERSION_DISABLED: that switch means "undo versioning", but for these
- * tools the key is the only thing keeping an untagged row from being served while the controls are on.
+ * tools the key is the only thing keeping a pre-change row from being served while the controls are on.
  */
+const WORDING_KEYED = (tool: string): (() => number | null) => () =>
+  memoryAuthorityWordingDisabled() ? null : (TOOL_CACHE_VERSION[tool] ?? null);
 const SHAPE_KEYED: Readonly<Record<string, () => number | null>> = {
-  memory_recall: () => (memoryAuthorityWordingDisabled() ? null : (TOOL_CACHE_VERSION.memory_recall ?? null)),
+  memory_recall: WORDING_KEYED("memory_recall"),
+  minimax_plan_pivots: WORDING_KEYED("minimax_plan_pivots"),
 };
 
 /** The version to fold into this tool's cache keys, or null for the legacy key. */
@@ -86,10 +101,12 @@ export function cacheVersionFor(tool: string): number | null {
 
 /** `/health` → `checks.tool_cache_version`. Presence of the key proves this build is deployed. */
 export function describeToolCacheVersions(): { ok: true; detail: string } {
-  const shape = memoryAuthorityWordingDisabled() ? "memory_recall=legacy-key (wording switch thrown)" : `memory_recall=v${TOOL_CACHE_VERSION.memory_recall}`;
+  const wordingOff = memoryAuthorityWordingDisabled();
+  const shaped = (tool: string): string => (wordingOff ? `${tool}=legacy-key (wording switch thrown)` : `${tool}=v${TOOL_CACHE_VERSION[tool]}`);
+  const shapeKeyed = Object.keys(SHAPE_KEYED);
   if (!toolCacheVersioningEnabled()) {
-    return { ok: true, detail: `disabled — TOOL_CACHE_VERSION_DISABLED=true, legacy keys; ${shape} (keyed by output shape, unaffected)` };
+    return { ok: true, detail: `disabled — TOOL_CACHE_VERSION_DISABLED=true, legacy keys; ${shapeKeyed.map((t) => `${shaped(t)} (keyed by output shape, unaffected)`).join(", ")}` };
   }
-  const entries = Object.entries(TOOL_CACHE_VERSION).map(([tool, v]) => (tool === "memory_recall" ? shape : `${tool}=v${v}`));
+  const entries = Object.entries(TOOL_CACHE_VERSION).map(([tool, v]) => (tool in SHAPE_KEYED ? shaped(tool) : `${tool}=v${v}`));
   return { ok: true, detail: entries.length ? entries.join(", ") : "no versioned tools" };
 }
