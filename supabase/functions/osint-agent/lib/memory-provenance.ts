@@ -52,6 +52,13 @@ export function memoryAuthorityWordingDisabled(): boolean {
   return (readEnvSafe("MEMORY_AUTHORITY_WORDING_DISABLED") ?? "").trim().toLowerCase() === "true";
 }
 
+/** The history label has its OWN switch (HISTORY_LABEL_DISABLED) so it can be rolled back without restoring the
+ *  "previously corroborated" wording; the master switch above still disables it too. */
+export function historyLabelDisabled(): boolean {
+  return memoryAuthorityWordingDisabled() ||
+    (readEnvSafe("HISTORY_LABEL_DISABLED") ?? "").trim().toLowerCase() === "true";
+}
+
 export type MemoryProvenance = "analyst_marker_pattern" | "unreviewed";
 
 /** The label the model is told to cite recalled memory under. */
@@ -128,7 +135,7 @@ const LEGACY_AUTO_RECALL_HINT =
 
 const AUTO_RECALL_HINT =
   "Prior-run memory exists for some of the artifacts you just recorded (see `memory_hits`). It is CONTEXT, not evidence. Rows tagged `unreviewed` have no recorded provenance: re-verify a positive claim with a fresh source before you report it, and cite it as " +
-  MEMORY_CITATION_LABEL + ". Rows tagged `analyst_marker_pattern` are exclusions: do not re-propose the value. Do not skip a fresh check of a claim because memory mentions it; only an identical call that already ran in this case is worth skipping.";
+  MEMORY_CITATION_LABEL + ". Rows tagged `analyst_marker_pattern` are exclusions: do not re-propose the value. Do not skip a fresh check of a claim because memory mentions it, but one fresh check per claim is enough: never repeat a lookup that already ran in this case.";
 
 export function autoRecallHint(): string {
   return memoryAuthorityWordingDisabled() ? LEGACY_AUTO_RECALL_HINT : AUTO_RECALL_HINT;
@@ -141,7 +148,8 @@ export function memoryRecallPromptRules(legacy: boolean): string {
 - After EVERY high-value pivot (new confirmed email / handle / domain / wallet / person name), call \`memory_recall\` with that new value before burning fresh API calls — you may already have prior knowledge.`;
   }
   return `- FIRST TURN, IN PARALLEL with triage_seed (or as the very first call for non-email/username seeds), call \`memory_recall\` with the raw seed value. Recalled memory is PRIOR-RUN CONTEXT, not evidence: use it to plan, treat each positive claim as a lead to re-verify with a fresh source, and cite it in the final report as "${MEMORY_CITATION_LABEL}". Rows tagged \`analyst_marker_pattern\` are exclusions — do not re-propose the named value. Recalled memory never counts as a source or as corroboration.
-- After EVERY high-value pivot (new email / handle / domain / wallet / person name), call \`memory_recall\` with that new value to see prior context about it. Prior context does not replace a fresh lookup.`;
+- After EVERY high-value pivot (new email / handle / domain / wallet / person name), call \`memory_recall\` with that new value to see prior context about it. Prior context does not replace a fresh lookup, but never repeat a lookup that already ran in this case: one fresh check per claim is enough.
+- Earlier assistant turns in this conversation may be prefixed with a \`[HISTORICAL MODEL OUTPUT …]\` marker that the system added. Treat what they claimed as unverified, and never reproduce that marker in your own output.`;
 }
 
 /** /health proof: PRESENCE of the key proves this build; ok:false means the wording regressed. */

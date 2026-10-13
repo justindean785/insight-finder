@@ -35,16 +35,16 @@ import type { ModelMessage } from "npm:ai@6";
 import { HISTORICAL_OUTPUT_LABEL } from "./lib/historical-label.ts";
 import { summarizeToolResultValue } from "./message-sanitize.ts";
 
+/** Head-preserving truncation shared by every history/step text trim in index.ts. Exported so tests exercise the real function. */
+export const truncateStr = (s: string, max: number): string =>
+  s.length <= max ? s : s.slice(0, max) + `\n…[truncated ${s.length - max} chars]`;
+
 // ---- Named budget constants -------------------------------------------------
 // Total serialized-char ceiling for the message array handed to the orchestrator.
 // Sized to sit well under MiniMax's ~600k-char (~150k-token) hard window with room
 // for the ~35k-char system prompt + a streamed completion, while still holding ~10
 // full recent turns. Lower ⇒ faster preflight; too low starves the model of recent
 // context. 220k balances both (audit observed prompts reaching 250–538k).
-/** Head-preserving truncation shared by every history/step text trim in index.ts. Exported so tests exercise the real function. */
-export const truncateStr = (s: string, max: number): string =>
-  s.length <= max ? s : s.slice(0, max) + `\n…[truncated ${s.length - max} chars]`;
-
 export const TOTAL_PROMPT_CHAR_BUDGET = 220_000;
 
 // Keep this many most-recent messages VERBATIM (full tool-result payloads); older

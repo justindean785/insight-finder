@@ -16,10 +16,10 @@
 // (`truncateStr` = slice(0, max)), at 16000/4000 for the initial trim and 12000/1500 per
 // step, and the label is ~230 chars, so it survives all of them.
 //
-// Never mutates its input. Idempotent. KILL SWITCH (call time):
-// MEMORY_AUTHORITY_WORDING_DISABLED=true returns the input untouched.
+// Never mutates its input. Idempotent. KILL SWITCH (call time): HISTORY_LABEL_DISABLED=true — or the
+// master MEMORY_AUTHORITY_WORDING_DISABLED=true — returns the input untouched.
 
-import { memoryAuthorityWordingDisabled } from "./memory-provenance.ts";
+import { historyLabelDisabled, memoryAuthorityWordingDisabled } from "./memory-provenance.ts";
 
 import { HISTORICAL_OUTPUT_LABEL } from "./historical-label.ts";
 export { HISTORICAL_OUTPUT_LABEL };
@@ -54,7 +54,7 @@ function labelContent(content: unknown): { content: unknown; changed: boolean } 
 
 export function labelHistoricalAssistantText<T extends MsgLike>(messages: ReadonlyArray<T>): T[] {
   const list = Array.isArray(messages) ? [...messages] : [];
-  if (memoryAuthorityWordingDisabled()) return list;
+  if (historyLabelDisabled()) return list;
   let lastUser = -1;
   for (let i = list.length - 1; i >= 0; i--) {
     if (list[i]?.role === "user") { lastUser = i; break; }
@@ -66,4 +66,24 @@ export function labelHistoricalAssistantText<T extends MsgLike>(messages: Readon
     const r = labelContent(m.content);
     return r.changed ? ({ ...m, content: r.content } as T) : m;
   });
+}
+
+/** /health proof: PRESENCE of the key proves this build; ok:false means the labelling regressed. Runs the real function on a synthetic history. */
+export function historyLabelSelfTest(): { ok: boolean; detail: string } {
+  if (memoryAuthorityWordingDisabled()) return { ok: true, detail: "LEGACY via MEMORY_AUTHORITY_WORDING_DISABLED" };
+  if (historyLabelDisabled()) return { ok: true, detail: "LEGACY via HISTORY_LABEL_DISABLED" };
+  const history = [
+    { role: "user", content: [{ type: "text", text: "synthetic seed" }] },
+    { role: "assistant", content: [{ type: "text", text: "synthetic earlier report" }, { type: "tool-call", toolCallId: "c1", toolName: "t", input: {} }] },
+    { role: "user", content: [{ type: "text", text: "synthetic current question" }] },
+  ];
+  const once = labelHistoricalAssistantText(history);
+  const twice = labelHistoricalAssistantText(once);
+  const priorText = (once[1].content as Array<{ type: string; text?: string }>)[0].text ?? "";
+  const labelled = priorText === HISTORICAL_OUTPUT_LABEL + "synthetic earlier report";
+  const currentTurnUntouched = once[2] === history[2] && once[0] === history[0];
+  const toolPartUntouched = (once[1].content as unknown[])[1] === (history[1].content as unknown[])[1];
+  const idempotent = JSON.stringify(twice) === JSON.stringify(once);
+  const ok = labelled && currentTurnUntouched && toolPartUntouched && idempotent;
+  return { ok, detail: ok ? "prior assistant text labelled; current turn and tool parts untouched; idempotent" : `labelled=${labelled} current=${currentTurnUntouched} tool=${toolPartUntouched} idem=${idempotent}` };
 }

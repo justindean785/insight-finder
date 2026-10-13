@@ -7,7 +7,7 @@
 // `capTotalToBudget`, and the real `sanitizeModelMessages`. Synthetic values only.
 import { assert, assertEquals, assertFalse, assertStringIncludes } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { convertToModelMessages, type ModelMessage } from "npm:ai@6";
-import { HISTORICAL_OUTPUT_LABEL, labelHistoricalAssistantText } from "./lib/history-label.ts";
+import { HISTORICAL_OUTPUT_LABEL, historyLabelSelfTest, labelHistoricalAssistantText } from "./lib/history-label.ts";
 import { RECENT_WINDOW, TOTAL_PROMPT_CHAR_BUDGET, capTotalToBudget, elideAssistantText, truncateStr } from "./orchestrator-budget.ts";
 import { sanitizeModelMessages } from "./message-sanitize.ts";
 
@@ -123,7 +123,8 @@ Deno.test("SURVIVES real budget trimming + sanitizing; pairing and the current t
     // 14 completed turns, each with a big tool result, so capTotalToBudget really has to elide.
     const history: ModelMessage[] = [];
     for (let i = 0; i < 14; i++) {
-      history.push(user(`seed ${i}`), assistant(`narrative ${i}`, `c${i}`), toolResult(`c${i}`, 30_000));
+      // 600-char narratives: longer than the 200-char elision cut, so the text-cut path really runs here.
+      history.push(user(`seed ${i}`), assistant(`narrative ${i} ` + "n".repeat(600), `c${i}`), toolResult(`c${i}`, 30_000));
     }
     const last = user("current question");
     history.push(last);
@@ -139,6 +140,7 @@ Deno.test("SURVIVES real budget trimming + sanitizing; pairing and the current t
       const assistants = out.filter((m) => m.role === "assistant");
       assertEquals(assistants.length, 14);
       for (const m of assistants) assert(textsOf(m)[0].startsWith(HISTORICAL_OUTPUT_LABEL), "label lost after real trimming");
+      assert(assistants.some((m) => textsOf(m)[0].endsWith(" …[elided]")), "fixture must actually exercise the text-cut path");
       const p = pairing(out);
       assertEquals(p.calls, p.results, "tool-call / tool-result pairing must be intact");
       assertEquals(JSON.stringify(out[out.length - 1]), JSON.stringify(last), "the current turn must be unchanged");
@@ -218,4 +220,34 @@ Deno.test("WIRING (source assertion): the label is applied right after conversio
   assertStringIncludes(src, "truncateStr(part.text, isRecent ? STEP_RECENT_CHARS : STEP_OLDER_CHARS)");
   // The helper keeps the HEAD (this is what lets a head label survive).
   assertEquals(truncateStr("abcdef", 3).startsWith("abc"), true);
+});
+
+Deno.test("the history label has its OWN switch: HISTORY_LABEL_DISABLED turns it off without the master switch", async () => {
+  const input = [user("a"), assistant("earlier report"), user("b")];
+  const prev = Deno.env.get("HISTORY_LABEL_DISABLED");
+  try {
+    await withSwitch(undefined, () => {
+      Deno.env.set("HISTORY_LABEL_DISABLED", "true");
+      const out = labelHistoricalAssistantText(input);
+      assertFalse(JSON.stringify(out).includes("HISTORICAL MODEL OUTPUT"), "label must be off");
+      assertEquals(JSON.stringify(out), JSON.stringify(input));
+      assertEquals(historyLabelSelfTest().detail, "LEGACY via HISTORY_LABEL_DISABLED");
+    });
+  } finally {
+    if (prev === undefined) Deno.env.delete("HISTORY_LABEL_DISABLED"); else Deno.env.set("HISTORY_LABEL_DISABLED", prev);
+  }
+  // The master switch still disables it too.
+  await withSwitch("true", () => {
+    assertFalse(JSON.stringify(labelHistoricalAssistantText(input)).includes("HISTORICAL MODEL OUTPUT"));
+    assertEquals(historyLabelSelfTest().detail, "LEGACY via MEMORY_AUTHORITY_WORDING_DISABLED");
+  });
+});
+
+Deno.test("checks.history_label: self-test passes on the real function and is wired into /health", async () => {
+  await withSwitch(undefined, () => {
+    const t = historyLabelSelfTest();
+    assert(t.ok, t.detail);
+  });
+  const health = await Deno.readTextFile(new URL("./health-handler.ts", import.meta.url));
+  assertStringIncludes(health, "r.checks.history_label = historyLabelSelfTest();");
 });

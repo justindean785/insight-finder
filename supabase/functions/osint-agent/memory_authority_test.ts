@@ -146,7 +146,11 @@ Deno.test("kill switch restores the exact legacy wording, and ONLY those two lin
   );
 });
 
-Deno.test("no non-test source outside lib/memory-provenance.ts carries the escalating wording", async () => {
+// tools/recording.ts is deliberately NOT in this list: it is an unimported, auto-extracted mirror of the
+// record_artifacts auto-recall (CLAUDE.md: "any older tools/*.ts files are stale mirrors, not the runtime
+// source") and still carries the legacy hint. It does not run; re-syncing it from the live tool is a separate
+// change.
+Deno.test("no LIVE runtime source outside lib/memory-provenance.ts carries the escalating wording", async () => {
   const files = ["system-prompt.ts", "workflow_prompt.ts", "catalog.ts", "index.ts", "tool-registry.ts", "lib/base-prompt.ts", "lib/history-label.ts"];
   for (const f of files) {
     const src = await Deno.readTextFile(new URL(`./${f}`, import.meta.url));
@@ -258,12 +262,13 @@ Deno.test("planner hint: no corroboration wording; rows carry provenance; analys
   });
 });
 
-Deno.test("auto-recall hint: context not evidence; only an IDENTICAL already-run call is skippable", async () => {
+Deno.test("auto-recall hint: context not evidence; one fresh check per claim, never a repeat of a lookup that already ran", async () => {
   await withSwitch(undefined, () => {
     const h = autoRecallHint();
     for (const re of FORBIDDEN) assertFalse(re.test(h), `auto-recall hint still contains ${re}`);
     assertStringIncludes(h, MEMORY_CITATION_LABEL);
-    assertStringIncludes(h, "identical call that already ran in this case");
+    assertStringIncludes(h, "one fresh check per claim is enough");
+    assertStringIncludes(h, "never repeat a lookup that already ran in this case");
     assertStringIncludes(h, "analyst_marker_pattern");
   });
   await withSwitch("true", () => assertStringIncludes(autoRecallHint(), "Do NOT re-investigate values already covered"));
@@ -292,4 +297,21 @@ Deno.test("checks.memory_authority: self-test passes, flags a regression, report
   await withSwitch("true", () => assertEquals(memoryAuthoritySelfTest().detail, "LEGACY via MEMORY_AUTHORITY_WORDING_DISABLED"));
   const health = await Deno.readTextFile(new URL("./health-handler.ts", import.meta.url));
   assertStringIncludes(health, "r.checks.memory_authority = memoryAuthoritySelfTest();");
+});
+
+Deno.test("prompt rules: one fresh check per claim (spend brake kept) and the history marker is explained, only outside the legacy variant", async () => {
+  await withSwitch(undefined, () => {
+    const rules = memoryRecallPromptRules(false);
+    assertStringIncludes(rules, "never repeat a lookup that already ran in this case");
+    assertStringIncludes(rules, "[HISTORICAL MODEL OUTPUT");
+    assertStringIncludes(rules, "never reproduce that marker in your own output");
+    assertStringIncludes(autoRecallHint(), "never repeat a lookup that already ran in this case");
+    // The assembled runtime prompt carries them.
+    assertStringIncludes(staticSystemPrompt(), "never reproduce that marker in your own output");
+    // The legacy variant is untouched by this addition.
+    assertFalse(memoryRecallPromptRules(true).includes("HISTORICAL MODEL OUTPUT"));
+  });
+  await withSwitch("true", () => {
+    assertFalse(staticSystemPrompt().includes("HISTORICAL MODEL OUTPUT"));
+  });
 });
