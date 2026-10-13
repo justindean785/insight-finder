@@ -28,6 +28,7 @@ import { HISTORICAL_MEMORY_NOTE, historicalMemorySelfTest, markHistoricalMemoryR
 import { LEGACY_AUTO_RECALL_HINT, MEMORY_CITATION_LABEL, autoRecallHint } from "./lib/memory-provenance.ts";
 import { RECENT_WINDOW, TOTAL_PROMPT_CHAR_BUDGET, capTotalToBudget, truncateStr } from "./orchestrator-budget.ts";
 import { sanitizeModelMessages, summarizeToolResultValue } from "./message-sanitize.ts";
+import { capToolPartPayloads } from "./safety.ts";
 
 type Row = Record<string, unknown>;
 
@@ -436,4 +437,106 @@ Deno.test("WIRING (source assertion): index.ts marks replayed memory results rig
   assert(src.indexOf(call) < src.indexOf("const trimmedMessages") || src.indexOf(call) < src.indexOf("let trimmedMessages"), "the mark must run before the trim");
   // one call site only: the history is converted once per request
   assertEquals(src.split("markHistoricalMemoryResults(").length - 1, 1);
+});
+
+// ---- review follow-ups (independent review of d652fbd) ----------------------------------------------------------
+
+/** A pre-change memory_recall result big enough that capToolPartPayloads stores it as the `_truncated` preview shape. */
+async function oversizedPreChangeRecall(): Promise<Row> {
+  const rows: Row[] = Array.from({ length: 60 }, (_, i) => ({
+    id: `big-${i}`, kind: "identity", subject: `synthetic.big${i}@example.com`, subject_kind: "email", related_values: [],
+    content: `Model-written claim ${i}: analyst reviewed and CONFIRMED. ` + "x".repeat(2000), confidence: 90, hit_count: 3,
+  }));
+  return await withEnv(PRE_CHANGE, async () => {
+    routingGuard.memoryRecallTimestamps = [];
+    routingGuard.memoryRecallSubjectsThisStep.clear();
+    clearRuntime("hist-memory-thread");
+    const out = await exec(makeRuntime(rows), "memory_recall")({ subject: "synthetic.big0@example.com", kind: "any", limit: 60 }, {});
+    clearRuntime("hist-memory-thread");
+    return out;
+  });
+}
+
+Deno.test("REGRESSION: an OVERSIZED pre-change memory_recall result (stored as the _truncated preview) is marked too — the claim text cannot replay untagged", async () => {
+  await withEnv(ON, async () => {
+    const big = await oversizedPreChangeRecall();
+    const ui = uiHistory("memory_recall", big);
+    // the REAL storage cap, exactly as safety.ts applies it before the thread is saved
+    const capped = capToolPartPayloads((ui[1] as { parts: unknown[] }).parts);
+    const stored = (capped[1] as { output: Row }).output;
+    assertEquals(stored._truncated, true, "fixture: the result really is stored in the preview shape");
+    assertStringIncludes(String(stored.preview), "CONFIRMED");
+    assertFalse(String(stored.preview).includes('"provenance"'));
+
+    const out = await replay([ui[0], { ...(ui[1] as object), parts: capped }, ui[2]]);
+    const v = valueOf(out, "memory_recall");
+    assertEquals(Object.keys(v)[0], "historical_memory_note");
+    assertEquals(v.historical_memory_note, HISTORICAL_MEMORY_NOTE);
+    // nothing else is altered: the stored preview string is carried byte-for-byte
+    assertEquals(v.preview, stored.preview);
+    assertEquals(v._original_bytes, stored._original_bytes);
+  });
+});
+
+Deno.test("an OVERSIZED record_artifacts preview: the note is added and the EXACT legacy hint string is swapped; nothing else in the preview changes", async () => {
+  await withEnv(ON, async () => {
+    const preview = `{"ok":true,"memory_hits":[{"subject":"synthetic.person@example.com","count":1,"memories":[{"content":"claim"}]}],"memory_hint":${JSON.stringify(LEGACY_AUTO_RECALL_HINT)}}…[truncated]`;
+    const value = { _truncated: true, _original_bytes: 99999, preview };
+    const [m] = markHistoricalMemoryResults([{
+      role: "tool",
+      content: [{ type: "tool-result", toolCallId: "c", toolName: "record_artifacts", output: { type: "json", value } }],
+    }]);
+    const v = (m.content as ToolResultPart[])[0].output!.value as Row;
+    assertEquals(Object.keys(v)[0], "historical_memory_note");
+    assertEquals(v.preview, preview.replace(JSON.stringify(LEGACY_AUTO_RECALL_HINT), JSON.stringify(autoRecallHint())));
+    assertFalse(/Do NOT re-investigate/.test(String(v.preview)));
+  });
+});
+
+Deno.test("an oversized preview that is NOT recalled memory, or that is already tagged (written after the change), is returned as the SAME object", async () => {
+  await withEnv(ON, async () => {
+    const part = (value: Row) => ({ role: "tool", content: [{ type: "tool-result", toolCallId: "c", toolName: "record_artifacts", output: { type: "json", value } }] });
+    const unrelated = part({ _truncated: true, _original_bytes: 70000, preview: '{"ok":true,"saved":[{"kind":"email","value":"a@example.com"}]}…[truncated]' });
+    const tagged = part({ _truncated: true, _original_bytes: 70000, preview: '{"ok":true,"count":1,"memories":[{"content":"x","provenance":"unreviewed"}]}…[truncated]' });
+    const already = part({ historical_memory_note: HISTORICAL_MEMORY_NOTE, _truncated: true, preview: '{"memories":[{"content":"x"}]}' });
+    const out = markHistoricalMemoryResults([unrelated, tagged, already]);
+    assert(out[0] === unrelated && out[1] === tagged && out[2] === already);
+  });
+});
+
+Deno.test("every memory_hits entry is tagged, not just the first (a multi-subject record_artifacts result)", async () => {
+  await withEnv(ON, async () => {
+    const hit = (subject: string) => ({ subject, count: 1, memories: [{ kind: "identity", content: `claim about ${subject}`, confidence: 80 }] });
+    const stored = { ok: true, memory_hits: [hit("a@example.com"), hit("b@example.com"), hit("c@example.com")], memory_hint: LEGACY_AUTO_RECALL_HINT };
+    const [m] = markHistoricalMemoryResults([{
+      role: "tool",
+      content: [{ type: "tool-result", toolCallId: "c", toolName: "record_artifacts", output: { type: "json", value: stored } }],
+    }]);
+    const v = (m.content as ToolResultPart[])[0].output!.value as { memory_hits: Array<{ memories: Row[] }> };
+    assertEquals(v.memory_hits.length, 3);
+    for (const h of v.memory_hits) for (const r of h.memories) assertEquals(r.provenance, "unreviewed");
+  });
+});
+
+Deno.test("the legacy hint is replaced only on an EXACT match; a different or edited string is left alone, and a row with no content is still tagged", async () => {
+  await withEnv(ON, async () => {
+    const mk = (hint: string) => ({
+      role: "tool",
+      content: [{
+        type: "tool-result", toolCallId: "c", toolName: "record_artifacts",
+        output: { type: "json", value: { ok: true, memory_hits: [{ subject: "s", count: 1, memories: [{ kind: "lesson", content: "", confidence: 50 }] }], memory_hint: hint } },
+      }],
+    });
+    const valueOfMsg = (m: unknown) => ((m as { content: ToolResultPart[] }).content[0].output!.value) as { memory_hint: string; memory_hits: Array<{ memories: Row[] }> };
+    const edited = markHistoricalMemoryResults([mk(LEGACY_AUTO_RECALL_HINT + " (edited)"), mk("some other hint")]);
+    assertEquals(valueOfMsg(edited[0]).memory_hint, LEGACY_AUTO_RECALL_HINT + " (edited)");
+    assertEquals(valueOfMsg(edited[1]).memory_hint, "some other hint");
+    // the empty-content row is still an unverified prior-run row
+    assertEquals(valueOfMsg(edited[0]).memory_hits[0].memories[0].provenance, "unreviewed");
+  });
+});
+
+Deno.test("the note says the rows are UNVERIFIED and forbids treating them as confirmed, attested or analyst-reviewed", () => {
+  assertStringIncludes(HISTORICAL_MEMORY_NOTE, "unverified");
+  assertStringIncludes(HISTORICAL_MEMORY_NOTE, "Do not treat any of them as confirmed, attested or analyst-reviewed");
 });

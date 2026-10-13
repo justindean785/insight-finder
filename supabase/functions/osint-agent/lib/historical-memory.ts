@@ -20,6 +20,9 @@
 // score, status or review field, and every recalled string (including breach values and minor-safety wording) is
 // carried byte-for-byte.
 //
+//   • an OVERSIZED stored result (safety.ts replaces a >60 KB output with `{_truncated, preview}`, the first 8000 chars of
+//     the raw JSON) has no rows to tag, so it is headed by the same note and its exact legacy hint string is swapped.
+//
 // Results written AFTER the change are already tagged and are returned as the SAME objects, so a mark is never applied
 // twice. Idempotent. KILL SWITCH (call time): HISTORICAL_MEMORY_MARK_DISABLED=true — or the master
 // MEMORY_AUTHORITY_WORDING_DISABLED=true — returns the messages untouched. /health proof: checks.historical_memory.
@@ -62,9 +65,30 @@ function tagRows(rows: unknown[]): { rows: unknown[]; changed: boolean } {
   return changed ? { rows: out, changed } : { rows, changed };
 }
 
+/**
+ * The OVERSIZED shape. safety.ts `capToolPartPayloads` replaces a stored tool output over ~60 KB with
+ * `{ _truncated, _original_bytes, preview }`, where `preview` is the first 8000 chars of the raw JSON — so a big pre-change
+ * memory_recall / record_artifacts result keeps its recalled claim text, untagged, inside one string. There are no rows to
+ * tag, so the result is headed by the same note, and the legacy escalating hint is swapped when it appears in the preview
+ * as the EXACT JSON string. A preview with no recalled-memory marker (cut before any memory) or one that already carries
+ * provenance tags (written after the change) is left alone.
+ */
+function markTruncated(value: RecordLike): unknown {
+  const preview = value.preview;
+  if (value._truncated !== true || typeof preview !== "string") return value;
+  if ("historical_memory_note" in value) return value;
+  const mentionsMemory = preview.includes('"memories":[') || preview.includes('"memory_hits":[');
+  const legacyHint = JSON.stringify(LEGACY_AUTO_RECALL_HINT);
+  const hasLegacyHint = preview.includes(legacyHint);
+  if (!(mentionsMemory || hasLegacyHint) || preview.includes('"provenance":"')) return value;
+  const nextPreview = hasLegacyHint ? preview.split(legacyHint).join(JSON.stringify(autoRecallHint())) : preview;
+  return { historical_memory_note: HISTORICAL_MEMORY_NOTE, ...value, preview: nextPreview };
+}
+
 /** Mark one tool-result VALUE. Returns the SAME object when there is nothing to mark. */
 function markValue(value: unknown): unknown {
   if (!isRecord(value)) return value;
+  if (value._truncated === true) return markTruncated(value);
   let changed = false;
   const next: RecordLike = { ...value };
 
