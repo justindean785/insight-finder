@@ -15,6 +15,11 @@ import { isNullishLiteral } from "./lib/nullish-literal.ts";
 // Must match src/lib/seed.ts so cache keys line up.
 export type DetectedSeed = { kind: string; raw: string; normalized: string };
 
+/** Kill switch, read at call time so it can be thrown on the running build. */
+export function seedAccountIdDisabled(): boolean {
+  return Deno.env.get("SEED_ACCOUNT_ID_DISABLED") === "true";
+}
+
 export function detectSeedServer(input: string): DetectedSeed | null {
   const raw = (input ?? "").trim();
   if (!raw) return null;
@@ -40,7 +45,16 @@ export function detectSeedServer(input: string): DetectedSeed | null {
   }
   if (IP.test(raw)) return { kind: "ip", raw, normalized: raw };
   if (ETH.test(raw) || BTC.test(raw)) return { kind: "crypto", raw, normalized: raw.toLowerCase() };
-  if (PHONE.test(raw)) return { kind: "phone", raw, normalized: raw.replace(/[^\d+]/g, "") };
+  // E.164 caps a phone at 15 digits; a longer bare digit run is a platform account
+  // ID (Discord snowflake, Steam64). MUST match E164_MAX_DIGITS in src/lib/seed.ts.
+  // KILL SWITCH (call time): SEED_ACCOUNT_ID_DISABLED=true restores the old classification.
+  const E164_MAX_DIGITS = 15;
+  if (!seedAccountIdDisabled()) {
+    if (/^\d+$/.test(raw) && raw.length > E164_MAX_DIGITS) return { kind: "other", raw, normalized: raw };
+    if (PHONE.test(raw) && raw.replace(/\D/g, "").length <= E164_MAX_DIGITS) return { kind: "phone", raw, normalized: raw.replace(/[^\d+]/g, "") };
+  } else if (PHONE.test(raw)) {
+    return { kind: "phone", raw, normalized: raw.replace(/[^\d+]/g, "") };
+  }
   if (DOMAIN.test(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
   if (USER.test(raw)) return { kind: "username", raw, normalized: raw.toLowerCase() };
   // "@handle" is a username seed. It classified as `other` (USER has no `@`),
@@ -474,4 +488,26 @@ export function validateArtifact(kind: string, rawValue: string): ValidateResult
       return { ok: true, kind: "other", value: v, metaPatch: { original_kind: kind } };
     }
   }
+}
+
+/**
+ * /health self-test: a platform account ID is not a phone seed. A bare 17-20 digit run
+ * (Discord/Twitter snowflake, Steam64) must classify as `other`; real phones, including
+ * the 15-digit E.164 ceiling, must still classify as `phone`. Pure. Its PRESENCE proves
+ * the deployed bundle carries the fix (the build marker alone never can); ok:false means
+ * the classifier failed its own probe.
+ */
+export function seedAccountIdSelfTest(): { ok: boolean; detail: string } {
+  if (seedAccountIdDisabled()) return { ok: true, detail: "LEGACY via SEED_ACCOUNT_ID_DISABLED" };
+  const cases: Array<[string, (kind: string | undefined) => boolean]> = [
+    ["1234567890123456789", (k) => k === "other"], // 19-digit snowflake (synthetic)
+    ["76561197960287930", (k) => k === "other"], // Steam64-shaped
+    ["+1 234 567 890 123 456 78", (k) => k !== "phone"], // punctuated, >15 digits
+    ["+15550100199", (k) => k === "phone"], // real E.164
+    ["123456789012345", (k) => k === "phone"], // exactly 15 digits: the ceiling
+  ];
+  const wrong = cases.filter(([input, ok]) => !ok(detectSeedServer(input)?.kind)).map(([input]) => input);
+  return wrong.length
+    ? { ok: false, detail: `misclassified: ${wrong.join(" | ")}` }
+    : { ok: true, detail: "bare digit runs >15 are account ids (kind=other), not phones; E.164 (<=15 digits) still phone" };
 }
