@@ -9,15 +9,17 @@ import {
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
   URLSCANNER_API_KEY, GEMINI_FALLBACK_MODEL_ID,
   XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
+  ANTHROPIC_API_KEY, ANTHROPIC_MODEL_ID, ANTHROPIC_MODEL_SOURCE, ANTHROPIC_THINKING, ANTHROPIC_EFFORT, ANTHROPIC_RUN_LIMITS,
   OSINT_AGENT_PROBE_SECRET,
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL,
-  ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY, OPENADAPTER_API_KEY, OPENADAPTER_BASE_URL,
+  ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY,
   lovableGateway, geminiDirectGateway, ALLOW_LOVABLE_FALLBACK,
   promptBudgetHardCeilingEnabled,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
+import { anthropicOrchestratorHealth } from "./anthropic-orchestrator.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { opsisHealthDetail, opsisKillSwitchOn } from "./lib/opsis.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
@@ -197,19 +199,20 @@ export function resolveSelectedOrchestrator(env?: {
   deepseek?: boolean;
   minimax?: boolean;
   grok?: boolean;
-  openadapter?: boolean;
+  anthropic?: boolean;
 }): { provider: OrchestratorProvider; reason: string; model: string } {
   const choice = selectOrchestratorProvider({
     pin: env?.pin ?? ORCHESTRATOR_PROVIDER,
     deepseek: env?.deepseek ?? !!DEEPSEEK_API_KEY,
     minimax: env?.minimax ?? !!MINIMAX_API_KEY,
     grok: env?.grok ?? !!XAI_API_KEY,
-    openadapter: env?.openadapter ?? !!(OPENADAPTER_API_KEY && OPENADAPTER_BASE_URL),
+    anthropic: env?.anthropic ?? !!ANTHROPIC_API_KEY,
   });
   const model =
     choice.provider === "deepseek" ? DEEPSEEK_ORCHESTRATOR_MODEL_ID :
     choice.provider === "grok" ? GROK_ORCHESTRATOR_MODEL_ID :
     choice.provider === "minimax" ? PRIMARY_ORCHESTRATOR_MODEL_ID :
+    choice.provider === "anthropic" ? ANTHROPIC_MODEL_ID :
     "";
   return { provider: choice.provider, reason: choice.reason, model };
 }
@@ -371,6 +374,20 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // diagnostic. So MiniMax is never labeled active when DeepSeek is selected.
   r.checks.deepseek = { ...deepseekCheck, role: providerRole(selected.provider, "deepseek") };
   r.checks.minimax = { ...minimaxCheck, role: providerRole(selected.provider, "minimax") };
+  // Anthropic orchestrator (pin-only). Config + cost-control posture only; deliberately NO
+  // network probe — a ping would spend prepaid credits on every /health. Reports presence
+  // of the key as a boolean, never the key. Its PRESENCE proves a build with the Anthropic
+  // orchestrator is the one running.
+  r.checks.orchestrator_anthropic = anthropicOrchestratorHealth({
+    keyPresent: !!ANTHROPIC_API_KEY,
+    pin: ORCHESTRATOR_PROVIDER,
+    selectedProvider: selected.provider,
+    modelId: ANTHROPIC_MODEL_ID,
+    modelSource: ANTHROPIC_MODEL_SOURCE,
+    thinking: ANTHROPIC_THINKING,
+    effort: ANTHROPIC_EFFORT,
+    limits: ANTHROPIC_RUN_LIMITS,
+  });
   // Which tools' cache keys carry a result-interpretation version. Pure, no DB, so it is
   // reported on every probe — and its PRESENCE is the behavioural proof that the build
   // with versioned cache keys is the one running (see lib/tool-cache-version.ts).
@@ -527,7 +544,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     selected.provider === "deepseek" ? !!DEEPSEEK_API_KEY :
     selected.provider === "minimax" ? !!MINIMAX_API_KEY :
     selected.provider === "grok" ? !!XAI_API_KEY :
-    selected.provider === "openadapter" ? !!(OPENADAPTER_API_KEY && OPENADAPTER_BASE_URL) :
+    selected.provider === "anthropic" ? !!ANTHROPIC_API_KEY :
     (!!MINIMAX_API_KEY || !!LOVABLE_API_KEY);
   const gate = orchestratorGate(selected.provider, selectedKeyPresent, r.checks.core?.ok === true);
   r.checks.orchestrator = gate.check;
