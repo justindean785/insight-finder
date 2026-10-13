@@ -79,6 +79,16 @@ Deno.test("keys that are server-derived or protective are NOT reserved (the mode
   assertEquals(out.metadata, meta);
 });
 
+Deno.test("falsy non-reserved values survive a strip: false, 0, empty string and null are data, not absence", () => {
+  const out = stripAnalystAuthorityKeys({ reviewed: true, a: false, b: 0, c: "", d: null });
+  assertEquals(out.stripped, ["reviewed"]);
+  const m = out.metadata as Record<string, unknown>;
+  assertEquals(
+    Object.fromEntries(Object.entries(m).filter(([k]) => k !== ANALYST_AUTHORITY_DISCLOSURE_KEY)),
+    { a: false, b: 0, c: "", d: null },
+  );
+});
+
 Deno.test("only the TOP-LEVEL key is read by every reader, so nested look-alikes are left alone", () => {
   const meta = { extra: { reviewed: true, linkage_confirmed: true }, list: [{ false_positive: true }] };
   const out = stripAnalystAuthorityKeys(meta);

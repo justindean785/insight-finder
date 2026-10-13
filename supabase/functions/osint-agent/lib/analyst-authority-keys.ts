@@ -23,8 +23,13 @@
 // chain of custody keeps an audit of the attempt.
 //
 // WHAT THIS DELIBERATELY DOES NOT DO.
-//   • It only ever LOWERS authority and never touches a value, so breach-data reveal
-//     (REVEAL_BREACH_DATA) and every stored value are unaffected.
+//   • It never RAISES a row's authority and never touches a value, so breach-data reveal
+//     (REVEAL_BREACH_DATA) and every stored value are unaffected. One honest caveat
+//     (independent review, 2026-10-13): stripping `false_positive` means a model can no
+//     longer SELF-dismiss a row, so a row it tried to hide now stays visible at the
+//     authority the server derived. That is intended — a dismissal is the analyst's — and
+//     the model keeps every legitimate way to lower a row (`conflict`, `collision`,
+//     `excluded_collision`, `subject_unlinked`, `possible_minor`, `contradictions`).
 //   • It does not touch server-derived fields (status, source_category, confidence caps) or the
 //     protective flags a model may still set to LOWER authority (subject_unlinked,
 //     possible_minor, conflict, collision, excluded_collision).

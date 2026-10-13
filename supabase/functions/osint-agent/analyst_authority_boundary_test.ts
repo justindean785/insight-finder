@@ -180,6 +180,71 @@ Deno.test("a mixed batch strips per row, discloses per row, and tells the model 
   assert(typeof result.analyst_authority_note === "string" && result.analyst_authority_note.length > 0);
 });
 
+Deno.test("a reserved key on a LATER batch item is stripped too (not just the first)", async () => {
+  const rt = makeRuntime();
+  const result = await exec(rt.tools, "record_artifacts")({
+    artifacts: [
+      { ...breachEmail({ note: "a" }), value: "synthetic.a@example.com" },
+      { ...breachEmail({ note: "b" }), value: "synthetic.b@example.com" },
+      { ...breachEmail({ reviewed: true, note: "c" }), value: "synthetic.c@example.com" },
+      { ...breachEmail({ false_positive: true, linkage_confirmed: true }), value: "synthetic.d@example.com" },
+    ],
+  }, {}) as Row;
+  assertEquals(rt.inserted.length, 4);
+  const byValue = Object.fromEntries(rt.inserted.map((r) => [String(r.value), r.metadata as Row]));
+  assert(!(ANALYST_AUTHORITY_DISCLOSURE_KEY in byValue["synthetic.a@example.com"]));
+  assert(!(ANALYST_AUTHORITY_DISCLOSURE_KEY in byValue["synthetic.b@example.com"]));
+  assertEquals(byValue["synthetic.c@example.com"][ANALYST_AUTHORITY_DISCLOSURE_KEY], ["reviewed"]);
+  assertEquals(byValue["synthetic.d@example.com"][ANALYST_AUTHORITY_DISCLOSURE_KEY], ["false_positive", "linkage_confirmed"]);
+  for (const m of Object.values(byValue)) {
+    for (const k of RESERVED_ANALYST_AUTHORITY_KEYS) assert(!(k in m), `${k} must not be persisted on any item`);
+  }
+  assertEquals(result.analyst_authority_stripped, ["false_positive", "linkage_confirmed", "reviewed"]);
+});
+
+Deno.test("a reserved key on the NON-BEST item of a collapsed breach batch is still stripped and still disclosed", async () => {
+  // Two duplicate breach prose rows for one selector collapse into the higher-confidence one
+  // (G6). The reserved key rides on the LOWER-confidence row, which the collapse would drop
+  // silently if the strip ran after it — the result would then never mention the attempt.
+  const rt = makeRuntime();
+  const selector = "synthetic.person@example.com";
+  const result = await exec(rt.tools, "record_artifacts")({
+    artifacts: [
+      {
+        kind: "breach_exposure",
+        value: `${selector} — Serus darkweb scan: 10 breaches, 0 pastes. Breaches: Alpha, Beta`,
+        source: "dark-web scan",
+        confidence: 60,
+      },
+      {
+        kind: "breach_exposure",
+        value: `${selector} — Serus 10 breaches: Alpha (2023-09-20), Beta (2024-05-28)`,
+        source: "dark-web scan",
+        confidence: 50,
+        metadata: { reviewed: true },
+      },
+    ],
+  }, {}) as Row;
+  assertEquals(rt.inserted.length, 1, "the pair collapses to one row");
+  const meta = rt.inserted[0].metadata as Row;
+  assertEquals(meta.breach_exposure_collapsed, true);
+  assert(!("reviewed" in meta));
+  assertEquals(result.analyst_authority_stripped, ["reviewed"]);
+});
+
+Deno.test("a model cannot self-dismiss, but keeps every legitimate way to LOWER a row", async () => {
+  const rt = makeRuntime();
+  await exec(rt.tools, "record_artifacts")({
+    artifacts: [breachEmail({ false_positive: true, conflict: true, collision: true, subject_unlinked: true, contradictions: ["c"] })],
+  }, {});
+  const meta = rt.inserted[0].metadata as Row;
+  assert(!("false_positive" in meta), "a dismissal is the analyst's, not the model's");
+  assertEquals(meta.conflict, true);
+  assertEquals(meta.collision, true);
+  assertEquals(meta.subject_unlinked, true);
+  assertEquals(meta.contradictions, ["c"]);
+});
+
 Deno.test("a call with nothing reserved carries no strip notice in its result", async () => {
   const rt = makeRuntime();
   const result = await exec(rt.tools, "record_artifacts")({ artifacts: [breachEmail({ note: "clean" })] }, {}) as Row;
@@ -248,7 +313,9 @@ Deno.test("wiring (source-level): both model entry points strip BEFORE the metad
   assert(stripAt > 0, "the batch tool must strip");
   assert(stripAt < batchBody.indexOf("collapseRecordArtifactsBatch("), "strip before the batch collapse can merge metadata");
   assert(stripAt < batchBody.indexOf("applyMemoryContext("), "strip before any other use of the metadata");
-  const shimBody = src.slice(shimStart, shimStart + 4000);
+  const shimEnd = src.indexOf("record_evidence: tool({", shimStart);
+  assert(shimEnd > shimStart, "the shim body ends where the next tool begins");
+  const shimBody = src.slice(shimStart, shimEnd);
   const shimStrip = shimBody.indexOf("stripAnalystAuthorityKeys(");
   assert(shimStrip > 0, "the shim must strip");
   assert(shimStrip < shimBody.indexOf("applyMemoryContext("), "shim strips before any other use");
