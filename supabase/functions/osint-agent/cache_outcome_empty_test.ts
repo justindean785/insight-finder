@@ -140,6 +140,15 @@ const FIXTURES: Record<string, Fx> = {
     negative: { ok: true, status: 200, domain: "d", count: 0, subdomains: [], source: "oathnet_stealer_subdomain", quota_left: 5 },
     positive: { ok: true, status: 200, domain: "d", count: 2, subdomains: ["a.d", "b.d"], source: "oathnet_stealer_subdomain", quota_left: 5 },
   },
+  // lib/negative-lookup.ts — InternetDB's HTTP 404 and Jina's wrapped origin 404/410.
+  shodan_internetdb: {
+    negative: { ok: true, found: false, upstream_status: 404, data: { detail: "No information available" }, note: "n" },
+    positive: { ok: true, status: 200, data: { ip: "192.0.2.1", ports: [80], hostnames: [] } },
+  },
+  jina_reader_scrape: {
+    negative: { ok: true, found: false, url: "https://example.test/x", target_status: 404, note: "n" },
+    positive: { ok: true, url: "https://example.test/x", markdown: "Title: A", truncated: false },
+  },
   oathnet_lookup: {
     negative: { ok: true, status: 200, quota_left: 5, data: { success: true, message: "V2-Breach-Search completed successfully", data: { items: [], meta: {} }, _meta: {} } },
     positive: { ok: true, status: 200, quota_left: 5, data: { success: true, message: "V2-Breach-Search completed successfully", data: { items: [{ a: 1 }], meta: { total: 1 } }, _meta: {} } },
@@ -359,11 +368,12 @@ Deno.test("D1 pin: a TOOL-EMITTED skip keeps its current classification (defect 
 // ===========================================================================
 // 8. Exhaustive scope proof: no unlisted tool can shift
 // ===========================================================================
-Deno.test("scope: the predicate table is exactly the 12 approved tools", () => {
+Deno.test("scope: the predicate table is exactly the 14 approved tools", () => {
   assertEquals(Object.keys(PROVEN_EMPTY_PREDICATES).sort(), [
     "census_geocode",
     "gleif_lei_search",
     "gravatar_profile",
+    "jina_reader_scrape",
     "leakcheck_lookup",
     "nominatim_geocode",
     "oathnet_lookup",
@@ -371,6 +381,7 @@ Deno.test("scope: the predicate table is exactly the 12 approved tools", () => {
     "oathnet_subdomains",
     "oathnet_victims_search",
     "ransomwarelive_lookup",
+    "shodan_internetdb",
     "socialfetch_lookup",
     "wayback_cdx_search",
   ]);

@@ -737,10 +737,20 @@ const INFRA_DOMAINS = new Set([
   "numbuster.ru", "yandex.ru", "vk.com",
 ]);
 
+// Shared DNS / parking / registrar-nameserver providers. A name server such as
+// helios.dns-parking.com tells you who HOSTS the zone, never who OWNS the domain: thousands of unrelated
+// domains share it. Suffix-matched (the first label is per-customer or per-pool), so they are never
+// offered as a subject pivot. Disclosure of the nameserver itself is unaffected — it stays in the evidence.
+const SHARED_INFRA_SUFFIXES = [
+  "dns-parking.com", "registrar-servers.com", "domaincontrol.com", "googledomains.com",
+  "hostinger.com", "hostinger.net", "ns.cloudflare.com",
+];
+
 /** True when a domain/URL value is OSINT source infrastructure, not a subject identifier. */
 export function isInfraDomain(value: string): boolean {
   try {
     const host = value.toLowerCase().replace(/^https?:\/\//, "").split("/")[0].replace(/^www\./, "");
+    if (SHARED_INFRA_SUFFIXES.some((suffix) => host === suffix || host.endsWith(`.${suffix}`))) return true;
     return INFRA_DOMAINS.has(host);
   } catch {
     return false;

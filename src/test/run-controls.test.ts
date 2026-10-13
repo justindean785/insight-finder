@@ -22,6 +22,21 @@ describe("decideAutoContinue", () => {
     expect(decideAutoContinue(base)).toEqual({ action: "continue", cyclesRun: 2 });
   });
 
+  it("waits instead of sending while the server still reports a live run", () => {
+    expect(decideAutoContinue({ ...base, serverRunActive: true })).toEqual({ action: "wait" });
+    expect(decideAutoContinue({ ...base, serverRunActive: false })).toEqual({ action: "continue", cyclesRun: 2 });
+  });
+
+  it("a failed, stopped or capped run still stops even if the server looks live", () => {
+    expect(decideAutoContinue({ ...base, serverRunActive: true, runFailed: true })).toEqual({ action: "stop", reason: "run_failed" });
+    expect(decideAutoContinue({ ...base, serverRunActive: true, threadFinished: false })).toEqual({ action: "stop", reason: "run_not_finished" });
+    expect(decideAutoContinue({ ...base, serverRunActive: true, cyclesRun: AUTO_RUN_MAX_CYCLES })).toEqual({ action: "stop", reason: "max_cycles" });
+  });
+
+  it("has a stop message for the overlap give-up", () => {
+    expect(autoRunStopMessage("run_overlap")).toMatch(/still active on the server/);
+  });
+
   it("stops on saturation: no new artifacts since the cycle was sent", () => {
     expect(decideAutoContinue({ ...base, artifactsNow: 10 })).toEqual({ action: "stop", reason: "no_new_evidence" });
     expect(decideAutoContinue({ ...base, artifactsNow: 9 })).toEqual({ action: "stop", reason: "no_new_evidence" });

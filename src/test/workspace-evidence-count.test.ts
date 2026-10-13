@@ -44,10 +44,11 @@ describe("describeEvidence — header evidence summary", () => {
     );
   });
 
-  it("says nothing extra when the two agree — no discrepancy exists to explain", () => {
+  it("states its scope even when the two agree: custody entries, all runs, not the artifact count", () => {
     const d = describeEvidence({ total: 12 }, 12);
     expect(d.text).toBe("12 evidence");
-    expect(d.hint).toBeUndefined();
+    expect(d.hint).toMatch(/evidence-log entries across all runs/);
+    expect(d.hint).toMatch(/not the artifacts/);
   });
 
   it("falls back to the artifact count while integrity is still loading, with no tooltip", () => {
