@@ -18,23 +18,25 @@
 // The CITATION LABEL (lib/memory-provenance.ts MEMORY_CITATION_LABEL, "[MEMORY - prior run, unverified]") is the
 // string the system prompt tells the model to cite recalled memory under, so it is the shape this rule MOST needs
 // to recognise (#738 independent review, finding 5). Three things make that work:
-//   - a bracketed token may start with "[": ONLY the shapes the prompt teaches ("[MEMORY]", "[MEMORY - …",
-//     "[MEMORY: …", "[memory_recall…") — a bracketed NAME that merely starts with the word ("[Memory Alpha] wiki")
-//     is a source, not a citation;
+//   - a bracketed token may start with "[" — ONLY the shapes a model writes a citation in ("[MEMORY]", "[MEMORY - …",
+//     "[MEMORY: …", "[MEMORY prior run …", "[memory_recall …"). A bracketed NAME that merely starts with the word
+//     ("[Memory Alpha] wiki", "[memory lane blog]") is a source, not a citation;
 //   - a CLOSED bracket group is ONE token, so the comma inside the label cannot split it. An UNMATCHED "[" is an
 //     ordinary character, exactly as before bracket support (otherwise it swallows every later separator);
-//   - the comma in "<memory token>, unverified" never separates: "unverified" is not a source, it is the tail of the
-//     citation, bracketed or not.
+//   - the comma in "<memory token>, unverified" never separates when "unverified" ENDS the token: "unverified" is not
+//     a source, it is the tail of the citation, bracketed or not. Anything after it ("unverified & X") is left alone,
+//     so a real source is never swallowed into the memory token.
 
 // Unbracketed: E3's rule, plus "," as a boundary — a token only ever contains a top-level comma when the citation tail
-// ("memory_recall, unverified") was folded into it. Bracketed: "[", `memory`, then "]", a spaced dash, a colon or "(" — so "[MEMORY]",
-// "[ MEMORY - prior run, unverified ]", "[memory_recall (x)]" match; "[Memory Alpha]", "[memory lane blog]" and
-// "[memory-lane.example.com]" do not.
+// ("memory_recall, unverified") was folded into it. Bracketed: "[", `memory`, then either a tool slug
+// (memory_recall/_save/_search) or one of "]", a spaced dash, a colon, "(", or a citation word (prior, earlier, …) —
+// so "[MEMORY]", "[ MEMORY - prior run, unverified ]", "[MEMORY prior run]", "[memory_recall + X]" match, while
+// "[Memory Alpha]", "[memory lane blog]" and "[memory-lane.example.com]" do not.
 const MEMORY_TOKEN_RE =
-  /^(?:\[\s*memory(?:_(?:recall|save|search))?(?:\s*\]|\s+[-\u2013\u2014]\s|\s*:|\s*\()|memory(?:_(?:recall|save|search))?(?:\s*\(|$|\s|,))/i;
+  /^(?:\[\s*memory(?:_(?:recall|save|search)\b|\s*\]|\s+[-\u2013\u2014]|\s*:|\s*\(|\s+(?:prior|earlier|previous|recalled|unverified)\b)|memory(?:_(?:recall|save|search))?(?:\s*\(|$|\s|,))/i;
 
-/** "unverified" right after a memory token's comma is the tail of the citation, never a source of its own. */
-const CITATION_TAIL_RE = /^\s*unverified(?![\w-])/i;
+/** "unverified" ENDING the token right after a memory token's comma is the tail of the citation, never a source. Sticky: tested at an index, no slicing. */
+const CITATION_TAIL_RE = /\s*unverified\s*(?=$|[\])+|;,])/iy;
 
 function readEnvSafe(k: string): string | undefined {
   try {
@@ -70,9 +72,12 @@ function splitTopLevel(label: string): string[] {
     else if (ch === ")" || ch === "]") depth = Math.max(0, depth - 1);
     if (depth === 0 && (ch === "+" || ch === "|" || ch === ";" || ch === ",")) {
       // "<memory token>, unverified": the comma is part of the citation, not a boundary between two sources.
-      if (ch === "," && CITATION_TAIL_RE.test(label.slice(i + 1)) && MEMORY_TOKEN_RE.test(cur.slice(-64).trim())) {
-        cur += ch;
-        continue;
+      if (ch === ",") {
+        CITATION_TAIL_RE.lastIndex = i + 1;
+        if (CITATION_TAIL_RE.test(label) && MEMORY_TOKEN_RE.test(cur.trim())) {
+          cur += ch;
+          continue;
+        }
       }
       parts.push(cur);
       cur = "";

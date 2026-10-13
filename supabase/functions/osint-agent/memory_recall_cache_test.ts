@@ -266,3 +266,24 @@ Deno.test("the served interpretation is recorded in runtime meta, and /health na
   const detail = await withEnv({ [VERSION_SWITCH]: undefined }, async () => describeToolCacheVersions().detail);
   assert(detail.includes("memory_recall=v2"), detail);
 });
+
+Deno.test("prototype property names are not tools: cacheVersionFor never throws and never returns a non-version (review finding 6)", async () => {
+  for (const name of ["hasOwnProperty", "toString", "constructor", "__proto__", "valueOf"]) {
+    const v = await withEnv({ [VERSION_SWITCH]: undefined, [WORDING_SWITCH]: undefined }, async () => cacheVersionFor(name));
+    assertEquals(v, null, name);
+  }
+});
+
+Deno.test("/health detail names the ACTIVE memory_recall key in every switch state (review mutant S7)", async () => {
+  const { describeToolCacheVersions } = await import("./lib/tool-cache-version.ts");
+  const detail = (env: Record<string, string | undefined>) =>
+    withEnv({ [VERSION_SWITCH]: undefined, [WORDING_SWITCH]: undefined, ...env }, async () => describeToolCacheVersions().detail);
+  const on = await detail({});
+  assert(on.includes("memory_recall=v2") && !on.includes("legacy-key"), on);
+  const wordingOff = await detail({ [WORDING_SWITCH]: "true" });
+  assert(wordingOff.includes("memory_recall=legacy-key (wording switch thrown)") && !wordingOff.includes("memory_recall=v2"), wordingOff);
+  const versionOff = await detail({ [VERSION_SWITCH]: "true" });
+  assert(versionOff.startsWith("disabled") && versionOff.includes("memory_recall=v2 (keyed by output shape, unaffected)"), versionOff);
+  const bothOff = await detail({ [VERSION_SWITCH]: "true", [WORDING_SWITCH]: "true" });
+  assert(bothOff.startsWith("disabled") && bothOff.includes("memory_recall=legacy-key"), bothOff);
+});

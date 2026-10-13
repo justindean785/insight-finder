@@ -76,10 +76,12 @@ const SHAPE_KEYED: Readonly<Record<string, () => number | null>> = {
 
 /** The version to fold into this tool's cache keys, or null for the legacy key. */
 export function cacheVersionFor(tool: string): number | null {
-  const byShape = SHAPE_KEYED[tool];
-  if (byShape) return byShape();
+  // Own properties only: a tool called "hasOwnProperty" / "toString" / "__proto__" must not resolve to an
+  // inherited Object.prototype member (calling it threw; reading it returned a function as the "version").
+  const own = (o: object) => Object.prototype.hasOwnProperty.call(o, tool);
+  if (own(SHAPE_KEYED)) return SHAPE_KEYED[tool]();
   if (!toolCacheVersioningEnabled()) return null;
-  return TOOL_CACHE_VERSION[tool] ?? null;
+  return own(TOOL_CACHE_VERSION) ? (TOOL_CACHE_VERSION[tool] ?? null) : null;
 }
 
 /** `/health` → `checks.tool_cache_version`. Presence of the key proves this build is deployed. */

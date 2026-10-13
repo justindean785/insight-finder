@@ -204,6 +204,56 @@ Deno.test("a stray \"unverified\" never survives as a source after a memory toke
   assertEquals(real.source, "FastPeopleSearch + unverified");
 });
 
+Deno.test("the citation tail folds ONLY when it is the whole tail: a real source after 'unverified' is never swallowed into the memory token", () => {
+  // Third review round: the tail rule guarded only word characters, so "memory_recall, unverified & X" folded and
+  // X vanished into the memory token (the whole row became memory-only). Folding now needs "unverified" to END the
+  // token (end of string, a closing bracket/paren, or a separator).
+  for (const [input, real] of [
+    ["memory_recall, unverified & oathnet_lookup", "oathnet_lookup"],
+    ["MEMORY - prior run, unverified and oathnet_lookup", "oathnet_lookup"],
+    ["memory_recall, unverified/oathnet_lookup", "oathnet_lookup"],
+    ["memory_recall, unverified: oathnet_lookup", "oathnet_lookup"],
+    ["memory_recall, unverified (oathnet_lookup)", "oathnet_lookup"],
+    ["memory_recall, unverified oathnet_lookup", "oathnet_lookup"],
+  ] as const) {
+    const r = applyMemoryContext(input, {});
+    assertEquals(r.memory, true, input);
+    assertEquals(r.memoryOnly, false, `${input}: the real source must survive`);
+    assert(String(r.source).includes(real), `${input} -> ${JSON.stringify(r.source)}`);
+  }
+  // …and the genuine tails still fold, whatever follows them.
+  for (const input of ["memory_recall, unverified + oathnet_lookup", "memory_recall, unverified ; oathnet_lookup", "MEMORY - prior run, unverified | oathnet_lookup"]) {
+    const r = applyMemoryContext(input, {});
+    assertEquals([r.memoryOnly, r.source], [false, "oathnet_lookup"], input);
+  }
+});
+
+Deno.test("the memory token is judged on the WHOLE token, not its last 64 characters", () => {
+  const long = `memory_recall (${"x".repeat(200)}), unverified`;
+  const r = applyMemoryContext(long, {});
+  assertEquals(r.memoryOnly, true, "a long memory token followed by its tail is still memory-only — no stray 'unverified' source");
+  assertEquals(r.source, long);
+  // A NON-memory token that merely ends in text resembling a memory token is not treated as one.
+  const plain = applyMemoryContext(`FastPeopleSearch ${"y".repeat(100)} memory, unverified + memory_recall`, {});
+  assertEquals(plain.memory, true);
+  assertEquals(plain.metadata?.memory_context_label, "memory_recall", "only the real memory token is disclosed");
+});
+
+Deno.test("bracketed citation variants the model actually writes are still recognised; look-alike NAMES are not", () => {
+  for (const s of [
+    "[MEMORY -- prior run, unverified]",
+    "[MEMORY -prior run]",
+    "[MEMORY prior run, unverified]",
+    "[memory earlier run]",
+    "[memory_recall prior]",
+    "[memory_recall + oathnet_lookup]",
+    "[memory_save (batch)]",
+  ]) assertEquals(applyMemoryContext(s, {}).memory, true, s);
+  for (const s of ["[Memory Alpha] wiki", "[Memory Care Facility Directory]", "[memory lane blog]", "[memory-lane.example.com]", "[Memorial Hospital]"]) {
+    assertEquals(applyMemoryContext(s, {}).memory, false, s);
+  }
+});
+
 Deno.test("the label cannot count as independent corroboration — before or after the rule, alone or beside a real source", () => {
   const real = "breach_check";
   const cls = (s: string | undefined) => classifySourceLabel(s);
