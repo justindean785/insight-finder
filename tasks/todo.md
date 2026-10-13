@@ -68,6 +68,22 @@ Case: `coresint.xyz`, two runs on 2026-10-12 (first report generated 23:44:03Z; 
 - [ ] **U1 (Lovable frontend, not canonical):** mirror `ThreadSidebar.tsx` discards the `get_thread_sidebar_metrics` RPC error (silent zero); mirror has `/timing` with no nav link. Neither exists in canonical.
 - Not changed, by design: reddit_user stays enabled (settled operator decision); direct-Gemini-first fallback is intended (`resolveFallbackProvider`).
 
+### Cross-run propagation (static trace 2026-10-13; prompt lines verified by me, the rest from a subagent read of the code)
+How an unsupported run-N claim becomes a run-N+1 premise. None of these paths is the DB trace; which one fed the follow-up run is NOT yet established.
+- [ ] **P1 history replay:** `index.ts:272` `convertToModelMessages(messages)` resends prior assistant prose (tags, "same operator") verbatim; trims are by size only. No "prior/unverified" label.
+- [ ] **P2 prompt grants authority:** `system-prompt.ts:145` tells the model to cite recalled memory as "[MEMORY] previously corroborated"; `tool-registry.ts:5957` `memory_hint` says "incorporate confirmed connections ... Do NOT re-investigate". Both raise model-authored memory to corroborated status.
+- [ ] **P3 planner memory:** `tool-registry.ts:1288-1296` injects top-8 `agent_memory` rows as "PRIOR MEMORY (weight these ... confirmed links)".
+- [ ] **P4 memory_save:** a single-subject unsupported claim passes both gates and returns at its saved confidence (default 60, ratcheted by GREATEST).
+- [ ] **P5 investigation_cache:** replays the prior report prose to a later thread for the same seed (7 days).
+- [ ] **P6 tool_call_cache:** `minimax_correlate`, `minimax_extract`, `gemini_deep_dork` not found in `NO_CACHE_TOOLS`; TTLs unconfirmed, so a replayed inference is possible.
+- Evidence the memory path was live: the first report's rows for the operator email, `floeintel.com`, `l5e.io` and the sitemap routes carried source "case memory recall".
+- Proposed (not started): R5 reword P2 so recalled memory is labelled prior/unverified, never "corroborated"; R6 label replayed prose.
+
+### Regression cases run against real functions (scratchpad, not committed)
+Pass: repetition adds no authority (stays 50); four providers = 1 independent class; sitemap-derived profile caps at 50; single vendor verdict caps at 65.
+Fail (defects): relationship-bearing rows score 60-80; "never archived" value persisted at 70 (negative rule reads labels only); `CONFIRMED` prose accepted with zero/unavailable adjudication.
+Spec only: no count reconciler exists in app code ("20 routes" vs 9 + 12).
+
 ### Reproduction status (run by me unless noted)
 - Edge baseline on `c4bd432`: 2233 passed / 0 failed / 6 ignored.
 - Synthetic repro against REAL functions (scratchpad, not committed): memory-restatement and zero-row-CONFIRMED-prose cases FAIL as expected;
