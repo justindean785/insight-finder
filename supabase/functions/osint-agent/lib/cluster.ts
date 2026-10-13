@@ -201,6 +201,63 @@ export function isExcluded(a: Artifact): boolean {
     // ruled-out namesake — but for CLUSTERING both must be inert.
     metaBoolTrue(a.metaRaw, "subject_unlinked");
 }
+// ---- Bookkeeping rows are not evidence about the subject ----------------------
+// The agent writes rows about ITS OWN process: the Stage-1 `triage_decision`
+// ("Stage 2 OPEN for <handle>"), `cluster_decision`, coverage/tool audits. Their text
+// carries the seed handle, so they were joining the subject's cluster on it — and,
+// being written FIRST, they became the `owners[0]` "anchor" every later row was
+// recorded as merging with (13 of 15 logged merges on a live case paired a real
+// finding with the setup row). Measured 2026-10-06: a `triage_decision` row sat in a
+// cluster with real findings in 68 of 107 threads that have one. They are inert for
+// clustering: no selector tokens, no union, no cluster membership. NOT `excluded` —
+// the row keeps its tier and stays on the board; it simply is not a cluster member.
+// Kill switch, read at CALL TIME: CLUSTER_BOOKKEEPING_INERT_DISABLED=true.
+const BOOKKEEPING_KINDS = new Set(["triage_decision", "cluster_decision", "coverage_audit", "tool_audit"]);
+
+export function clusterBookkeepingInertDisabled(
+  env: (k: string) => string | undefined = (k) => Deno.env.get(k),
+): boolean {
+  return (env("CLUSTER_BOOKKEEPING_INERT_DISABLED") ?? "").trim().toLowerCase() === "true";
+}
+
+/** STRUCTURAL: matched on `kind` (or the `label` the recorder stamps), never by
+ *  sniffing the value for a title string — a real finding that merely mentions
+ *  "triage_decision" stays a finding. */
+export function isBookkeepingArtifact(a: Artifact): boolean {
+  if (BOOKKEEPING_KINDS.has(String(a.kind ?? "").trim().toLowerCase())) return true;
+  return /"label"\s*:\s*"(?:triage_decision|cluster_decision)"/i.test(a.metaRaw ?? "");
+}
+
+/** Inert for clustering: excluded/quarantined rows, and (unless switched off)
+ *  bookkeeping rows. Distinct from `isExcluded`, which also drives the "Excluded" tier. */
+export function isClusterInert(a: Artifact): boolean {
+  return isExcluded(a) || (!clusterBookkeepingInertDisabled() && isBookkeepingArtifact(a));
+}
+
+/** /health self-test: a setup row naming the seed handle is NOT a cluster member and
+ *  is not the anchor, while the real selectors still join. Pure. */
+export function clusterBookkeepingSelfTest(): { ok: boolean; detail: string } {
+  if (clusterBookkeepingInertDisabled()) {
+    return { ok: true, detail: "LEGACY via CLUSTER_BOOKKEEPING_INERT_DISABLED" };
+  }
+  const mk = (kind: string, value: string, source: string): Artifact => ({ kind, value, source, confidence: 50, metaRaw: "{}" });
+  const { members, decisions } = clusterArtifacts([
+    mk("triage_decision", "triage_decision: Stage 2 OPEN for selftesthandle", "triage_seed"),
+    mk("username", "selftesthandle", "username_sweep"),
+    mk("social_profile", "https://example.test/selftesthandle", "username_sweep"),
+  ]);
+  const triageClustered = members[0].cluster_id !== null;
+  const realJoined = members[1].cluster_id !== null && members[1].cluster_id === members[2].cluster_id;
+  const anchoredOnTriage = decisions.some((d) => d.a.startsWith("triage_decision") || d.b.startsWith("triage_decision"));
+  const ok = !triageClustered && realJoined && !anchoredOnTriage;
+  return {
+    ok,
+    detail: ok
+      ? "triage/cluster_decision/coverage_audit/tool_audit rows are inert for clustering: never a member, never the anchor"
+      : `bookkeeping row clustered=${triageClustered} realJoined=${realJoined} anchored=${anchoredOnTriage}`,
+  };
+}
+
 export function selfAdmissionQuote(a: Artifact): string | null {
   return metaStr(a.metaRaw, "source_quote") ?? metaFirstOfArray(a.metaRaw, "source_quotes");
 }
@@ -258,7 +315,7 @@ function contradictedSelector(a: Artifact): string | null {
 export function collectKnownHandles(arts: Artifact[]): Set<string> {
   const known = new Set<string>();
   for (const a of arts) {
-    if (isExcluded(a)) continue;
+    if (isClusterInert(a)) continue;
     if (a.kind === "username") known.add(foldHandle(a.value));
     if (a.kind === "name" && metaStr(a.metaRaw, "reclassified_from") === "username") known.add(foldHandle(a.value));
     if (a.kind === "domain") { const r = domainRoot(a.value); if (r) known.add(r); }
@@ -274,7 +331,7 @@ export function collectKnownHandles(arts: Artifact[]): Set<string> {
 /** The set of STRONG selector tokens an artifact asserts for its subject. Names are
  * deliberately excluded (collision axis). Returns [] for excluded artifacts. */
 export function strongTokens(a: Artifact, knownHandles: Set<string>): string[] {
-  if (isExcluded(a)) return [];
+  if (isClusterInert(a)) return [];
   const t = new Set<string>();
 
   // Primary selector by KIND — read through the alias table (lib/kind-alias.ts),
@@ -418,7 +475,7 @@ export function clusterArtifacts(arts: Artifact[]): ClusterResult {
   const tokenOwners = new Map<string, number[]>();
   const decisions: JoinDecision[] = [];
   for (let i = 0; i < arts.length; i++) {
-    if (isExcluded(arts[i]) || memberContradicted[i]) continue;
+    if (isClusterInert(arts[i]) || memberContradicted[i]) continue;
     for (const tok of tokensPer[i]) {
       const owners = tokenOwners.get(tok) ?? [];
       if (owners.length) {
@@ -448,7 +505,7 @@ export function clusterArtifacts(arts: Artifact[]): ClusterResult {
   // Assemble clusters.
   const byRoot = new Map<number, number[]>();
   for (let i = 0; i < arts.length; i++) {
-    if (isExcluded(arts[i])) continue;
+    if (isClusterInert(arts[i])) continue;
     const r = uf.find(i);
     (byRoot.get(r) ?? byRoot.set(r, []).get(r)!).push(i);
   }

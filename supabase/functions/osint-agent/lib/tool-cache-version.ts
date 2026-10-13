@@ -30,6 +30,14 @@ export const TOOL_CACHE_VERSION: Readonly<Record<string, number>> = {
   // deploy looks like it failed. This is the #599 lesson applied in the same PR
   // that changes the interpretation, which is the only time it is cheap.
   socialfetch_web_read: 2,
+  // v2 — lib/negative-lookup.ts. Two reinterpretations of the SAME (ip) / (url) key that a
+  // v1 row contradicts: an InternetDB 404 is a proven negative (`ok:true, found:false`), not
+  // `{ok:false, status:404}`; and a Jina 200 that wraps an origin error is a negative / a
+  // failed read, not `{ok:true, markdown}` page evidence. A v1 jina row would keep replaying
+  // an error page as ok for the full 6h TTL, so the verification scan would look like the
+  // deploy failed (the #599 lesson, applied in the PR that changes the interpretation).
+  shodan_internetdb: 2,
+  jina_reader_scrape: 2,
 };
 
 /**

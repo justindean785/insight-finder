@@ -13,7 +13,7 @@
 
 import { tierOf, TIER_SOURCE_RELIABILITY, TIER_C_ONLY_CONFIDENCE_CAP } from "./tiers.ts";
 import { contradictionClaimFilterDisabled, type ContradictionFinding } from "./contradictions.ts";
-import { canonicalSourceToolIdentity, classifySource, splitSourceLabels, countIndependentClasses, type IndependentSourceEntry, type SourceClass } from "./source-classification.ts";
+import { canonicalSourceToolIdentity, classifySource, sanitizeSourceLabelsForEvidence, splitSourceLabels, countIndependentClasses, type IndependentSourceEntry, type SourceClass } from "./source-classification.ts";
 
 // Back-compat re-export: historically these lived in confidence.ts / artifact_types.ts.
 export { classifySource, type SourceClass };
@@ -351,7 +351,11 @@ function computeEvidenceCaps(
   // Include breach source-NAME labels recorded in metadata, so a breach-derived
   // artifact whose surface `source` is a generic aggregator label is still
   // classified from its real provenance (breach-metadata laundering guard).
-  const sourceLabels = [...(input.sources ?? []), ...metadataSourceLabels(input.metadata)];
+  // A token that records a lookup which found NOTHING ("shodan_internetdb (404)",
+  // "oathnet_stealer_search (0 hits)") is a coverage fact, not a source: it must
+  // not supply a class, least of all the SECOND class that lifts a cap. See
+  // sanitizeSourceLabelsForEvidence (kill switch NEGATIVE_QUALIFIER_CLASS_DISABLED).
+  const sourceLabels = sanitizeSourceLabelsForEvidence([...(input.sources ?? []), ...metadataSourceLabels(input.metadata)]);
   const classes = sourceLabels.flatMap((s) => {
     const whole = classifySource(s);
     // #497 — a joined label containing a breach slug ANYWHERE (BREACH_SLUG_RE

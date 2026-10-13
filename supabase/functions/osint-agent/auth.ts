@@ -11,6 +11,7 @@ import { corsHeaders, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY } from "./env
 import { checkRateLimit as checkRateLimitDistributed, MAX_REQS_PER_MIN, MAX_REQS_PER_HOUR } from "./ratelimit.ts";
 import { detectSeedServer, formatThreadTitle } from "./validation.ts";
 import { recoverStaleThreadById } from "./recovery.ts";
+import { acquireRunLease, runLeaseRefusalResponse, withLeaseCleanup, type LeaseDb, type RunLeaseHeld } from "./lib/run-lease.ts";
 
 // Hard cap on the parsed request body so an authenticated caller can't inflate
 // DB storage (the `messages` insert below persists `lastUser.parts` verbatim)
@@ -50,6 +51,9 @@ export interface SetupContext {
   archiveEnabled: boolean;
   detectedSeedType: string;
   messages: UIMessage[];
+  /** The admission lease this request holds (S1a, lib/run-lease.ts). An early exit that
+   *  will not start a run must hand it to `releaseRunLease`. */
+  lease: RunLeaseHeld;
 }
 
 /**
@@ -237,6 +241,20 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
   } catch (e) {
     console.warn("[stale-recovery] current-thread recovery threw:", e);
   }
+  // ---- Atomic admission (S1a) ------------------------------------------------
+  // ONE versioned conditional UPDATE is the run marker: it succeeds only when no run is
+  // live on the thread (status not active, or heartbeat absent/older than the 75 s stale
+  // bar recovery also uses). A live run ⇒ 409 RUN_IN_PROGRESS; an unprovable claim (db
+  // fault, racing row) ⇒ 503 RUN_LEASE_UNAVAILABLE. Both are thrown HERE — after the
+  // stale recovery above has closed a dead run, and BEFORE the user message insert
+  // below, so a refused send leaves nothing behind. Everything after this line that can
+  // throw runs under `withLeaseCleanup`, so a failed setup gives the lease back instead
+  // of stranding a heartbeat-less marker for the stale sweep to reap as a ghost run.
+  // See lib/run-lease.ts for the race argument and the stated limits (time lease, not
+  // fencing — that is S1b).
+  const leaseDb = supabaseAdmin as unknown as LeaseDb;
+  const lease = await acquireRunLease(leaseDb, threadId, userId);
+  if (!lease.admitted) throw runLeaseRefusalResponse(lease, corsHeaders);
   const archiveEnabled: boolean = !!(thread as { archive_attachments?: boolean }).archive_attachments;
   let detectedSeedType: string = String(
     (thread as { seed_type?: string | null }).seed_type ?? "unknown",
@@ -244,6 +262,7 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
 
   // ---- Save user message (last one) ------------------------------------------
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  await withLeaseCleanup(leaseDb, threadId, lease, "setup_failed", async () => {
   if (lastUser) {
     await supabase.from("messages").insert({
       thread_id: threadId,
@@ -277,6 +296,7 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
         .eq("title", "New investigation");
     }
   }
+  });
 
   return {
     supabase,
@@ -287,5 +307,6 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
     archiveEnabled,
     detectedSeedType,
     messages,
+    lease,
   };
 }

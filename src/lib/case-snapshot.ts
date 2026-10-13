@@ -147,9 +147,11 @@ export function describeEvidence(
   if (!integrity) return { text: `${artifactCount} evidence`, unledgered: 0, hint: undefined };
   const unledgered = Math.max(0, artifactCount - integrity.total);
   if (unledgered === 0) {
+    // Always explain the scope: "evidence" here is chain-of-custody entries across every run of the
+    // case, not the artifact count the Evidence tab (deduped) or a report ("N artifacts", raw) shows.
     const hint = integrity.total > artifactCount
       ? `${integrity.total} chain-verified evidence rows across ${artifactCount} deduped artifact${artifactCount === 1 ? "" : "s"} — one artifact can carry more than one evidence-log entry.`
-      : undefined;
+      : `${integrity.total} chain-verified evidence-log entries across all runs of this case. This counts custody entries, not the artifacts listed in the Evidence tab.`;
     return { text: `${integrity.total} evidence`, unledgered: 0, hint };
   }
   return {

@@ -24,12 +24,13 @@ import { KIND_TO_PIVOT } from "@/lib/intel";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked, submitRefusal, submitRefusalMessage } from "@/lib/submit-guard";
+import { messageIntegrity, narrativeIsUnadjudicated } from "@/lib/message-integrity";
 import { RunChips, RunMenu } from "@/components/pivots/RunControls";
 import { composerPrimary } from "@/lib/composer-primary";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import {
-  AUTO_RUN_MAX_CYCLES, AUTO_RUN_SETTLE_MS, CONTINUE_PROMPT, REPORT_PROMPT,
+  AUTO_RUN_MAX_CYCLES, AUTO_RUN_OVERLAP_MAX_WAIT_MS, AUTO_RUN_OVERLAP_POLL_MS, AUTO_RUN_SETTLE_MS, CONTINUE_PROMPT, REPORT_PROMPT,
   autoRunStopMessage, canShowRunControls, decideAutoContinue,
 } from "@/lib/run-controls";
 import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
@@ -1184,12 +1185,22 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
         .map((p) => stripThinkTags(p.text ?? "")),
     ),
   );
+  const integrity = messageIntegrity(parts as Array<{ type?: string; text?: string; state?: string }>, Boolean(live));
+  const unadjudicated = narrativeIsUnadjudicated(prose);
   const timeLabel = createdAt
     ? new Date(createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : null;
 
   return (
     <div className="flex w-full flex-col gap-3">
+      {integrity.interrupted && (
+        <div role="status" data-message-integrity="interrupted" className="rounded-lg border border-dashed border-white/[0.14] bg-surface-1/60 px-3 py-2 text-[13px] leading-snug text-muted-foreground">
+          <span className="font-medium text-foreground/85">Interrupted response.</span>{" "}
+          {integrity.appendedAfterInterruption
+            ? "This reply stopped mid-sentence. The report below was generated automatically from everything recorded for the whole case, not from this step alone."
+            : "This reply stopped before it finished, so the text may be incomplete."}
+        </div>
+      )}
       {cacheMeta && onRerun && (
         <CacheBanner cachedAt={cacheMeta.cachedAt} onRerun={onRerun} busy={!!rerunBusy} />
       )}
@@ -1246,9 +1257,11 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             >
               <CopyIcon className="w-3 h-3" /> Copy
             </button>
-            {hasStatedLabel(prose) && (
+            {(hasStatedLabel(prose) || unadjudicated) && (
               <span className="ml-auto min-w-0 text-balance text-right text-[11px] leading-snug text-faint-foreground">
-                Labels are the agent&rsquo;s wording. Computed confidence is in Evidence.
+                {unadjudicated
+                  ? "No finding rows were adjudicated for this run: labels and confidence figures in this text are the agent\u2019s wording, not computed results."
+                  : "Labels are the agent\u2019s wording. Computed confidence is in Evidence."}
               </span>
             )}
           </div>
@@ -1452,6 +1465,10 @@ function ChatWindowInner({
   // controls off a thread whose run is live in another tab (overlap guard).
   const caseSnapshot = useOptionalCaseSnapshot();
   const serverRunActive = caseSnapshot?.snapshot?.run.state === "running";
+  // Read at CALL time (delayed auto-continue, send guards) so a callback built
+  // while a run was live does not keep refusing after it ends.
+  const serverRunActiveRef = useRef(serverRunActive);
+  serverRunActiveRef.current = serverRunActive;
   // Targets tools have already been run against — the "already investigated"
   // signal that stops the rail re-suggesting a pivot that's already been run.
   const queriedTargets = useThreadQueriedTargets(threadId);
@@ -1864,26 +1881,18 @@ function ChatWindowInner({
   useEffect(() => { inputRef.current?.focus(); }, [threadId]);
 
   const beginInvestigation = useCallback(async () => {
-    // Stamp last_heartbeat_at alongside status:"active" so a run that starts on a
-    // thread with a stale heartbeat (e.g. a 2nd message after a prior run finished
-    // long ago) does not look heartbeat-stale to the server-side stale-run recovery
-    // (recoverStaleActiveThreads, >75s). Without this, the auto-sweep below fires on
-    // isLoading→true, health hits recovery, the just-started run is reaped to
-    // "finished", and the watchdog aborts its stream — the "starts, then stops" bug.
-    // The server takes over pulsing the heartbeat (~15s) once the run is under way.
-    const { error: statusError } = await supabase
-      .from("threads")
-      .update({
-        status: "active",
-        updated_at: new Date().toISOString(),
-        last_heartbeat_at: new Date().toISOString(),
-      })
-      .eq("id", threadId);
-    if (statusError) throw statusError;
+    // The client writes NOTHING to `threads` here. It used to stamp status:"active" and
+    // a fresh last_heartbeat_at before each send so the stale-run sweep would not reap a
+    // just-started run (the "starts, then stops" bug). Since #730 the server's admission
+    // lease stamps status, run_started_at and last_heartbeat_at itself, atomically, before
+    // the user message is stored — and it reads a heartbeat younger than 75 s as a LIVE
+    // run. The client stamp therefore made every send refuse itself with 409
+    // RUN_IN_PROGRESS (production, 2026-10-10 09:36Z, threads cfe70631 and 6d55b8da).
+    // Liveness is the server's signal; the client must never write it.
     lastUserScrollUpRef.current = 0; // a new run is an implicit "follow the latest"
     followLatestRef.current = true;
     setShowJumpToLatest(false);
-  }, [threadId]);
+  }, []);
 
   const stopInvestigation = useCallback(async () => {
     if (stopping) return;
@@ -1933,7 +1942,7 @@ function ChatWindowInner({
     // An empty box stays silent — the button is disabled and nothing was asked
     // for. A refused submission does not: the analyst pressed a live control.
     if (!text && !hasFiles) return;
-    const sendRefusal = submitRefusal(status, submitLockRef.current);
+    const sendRefusal = submitRefusal(status, submitLockRef.current, serverRunActiveRef.current);
     if (sendRefusal) {
       toast.info(submitRefusalMessage(sendRefusal));
       return;
@@ -2103,7 +2112,7 @@ function ChatWindowInner({
   // Send arbitrary text without going through the input (used by pivots + suggestions).
   const sendText = useCallback(async (text: string) => {
     const t = text.trim();
-    if (!t || isSubmitBlocked(status, submitLockRef.current)) return;
+    if (!t || isSubmitBlocked(status, submitLockRef.current, serverRunActiveRef.current)) return;
     submitLockRef.current = true;
     try {
       await beginInvestigation();
@@ -2126,7 +2135,7 @@ function ChatWindowInner({
     // Continue / Write report / arming Auto-run all land here, and all three are
     // buttons the analyst just pressed. A bare `return` is what made Continue
     // look broken — see submit-guard.ts for the operator report this comes from.
-    const refusal = submitRefusal(status, submitLockRef.current);
+    const refusal = submitRefusal(status, submitLockRef.current, serverRunActiveRef.current);
     if (refusal) {
       toast.info(submitRefusalMessage(refusal));
       return;
@@ -2472,7 +2481,9 @@ function ChatWindowInner({
     const ended = wasLoadingRef.current && !isLoading;
     wasLoadingRef.current = isLoading;
     if (!ended || !autoRunRef.current.enabled) return;
-    const timer = window.setTimeout(() => {
+    let timer = 0;
+    let waitedMs = 0;
+    const attempt = () => {
       if (unmountedRef.current || isLoadingRef.current) return;
       const state = autoRunRef.current;
       if (!state.enabled) return;
@@ -2484,14 +2495,28 @@ function ChatWindowInner({
         artifactsNow: artifactsCountRef.current,
         runFailed: Boolean(errorRef.current),
         threadFinished: !stoppedByAnalystRef.current,
+        serverRunActive: serverRunActiveRef.current,
       });
       if (decision.action === "continue") {
         void sendCycle(CONTINUE_PROMPT, true);
         return;
       }
+      if (decision.action === "wait") {
+        // The stream ended but the server run did not. Poll its own state
+        // instead of overlapping it, and give up (visibly) after a bound.
+        if (waitedMs >= AUTO_RUN_OVERLAP_MAX_WAIT_MS) {
+          setAutoRun((prev) => ({ ...prev, enabled: false }));
+          toast.info(autoRunStopMessage("run_overlap", AUTO_RUN_MAX_CYCLES));
+          return;
+        }
+        waitedMs += AUTO_RUN_OVERLAP_POLL_MS;
+        timer = window.setTimeout(attempt, AUTO_RUN_OVERLAP_POLL_MS);
+        return;
+      }
       setAutoRun((prev) => ({ ...prev, enabled: false }));
       if (decision.reason !== "disabled") toast.info(autoRunStopMessage(decision.reason, AUTO_RUN_MAX_CYCLES));
-    }, AUTO_RUN_SETTLE_MS);
+    };
+    timer = window.setTimeout(attempt, AUTO_RUN_SETTLE_MS);
     return () => window.clearTimeout(timer);
   }, [isLoading, sendCycle]);
 

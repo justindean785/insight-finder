@@ -121,7 +121,7 @@ export function CaseFigures({
   }
   const { evidence, tools, authority, spend } = snapshot;
   const toolHint = tools.available
-    ? `${tools.total} tool calls recorded for this case — ${tools.failed} failed, ${tools.degraded} degraded, ${tools.skipped + tools.gated} skipped.`
+    ? `${tools.total} tool calls across all runs of this case (cached, skipped and failed included) — ${tools.failed} failed, ${tools.degraded} degraded, ${tools.skipped + tools.gated} skipped. A run group shows one message\u2019s calls only.`
     : "The tool-call ledger could not be read. Refresh to try again.";
   return (
     <span className={cn("inline-flex min-w-0 items-center gap-x-2 gap-y-0.5 text-data", dense ? "flex-nowrap overflow-hidden whitespace-nowrap" : "flex-wrap")}>

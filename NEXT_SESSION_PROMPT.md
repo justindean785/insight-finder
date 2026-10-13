@@ -1,175 +1,94 @@
 # Next-session prompt — Insight Finder
 
-> Paste this whole file as the opening message of a fresh session. It is self-contained.
-> **Written 2026-09-20T12:00Z.** Every number is a dated measurement, not a state — re-verify.
+> **⚠ SUPERSEDED IN PART — read first.** This prompt was written 2026-10-06, before S1a (the run admission lease, #730/#733/#734) and the 2026-10-10 HTTP 409 incident. Its build numbers, PR queue and "Current Problem" list are historical. Start from `SESSION_HANDOFF_2026-10-10_s1a-admission-lease-and-the-heartbeat-incident.md`, then re-verify `/health`, `git log origin/main`, the ledger and the open-PR list yourself.
+> **Standing rule:** the run lease is deployed but DISABLED (`RUN_LEASE_DISABLED=true`). Do not change lease enforcement or that secret without JD's explicit authorization.
+
+> **Target agent:** Claude Code (fresh context, remote/web sandbox). Paste this whole file as the opening message.
+> **Prerequisites:** GitHub MCP access to `justindean785/insight-finder` and `justindean785/seeker-spark-search-5362c57c`; the Lovable MCP (project `4ce11bc3-039d-4439-b293-acacca9e1e3a`, SELECT-only DB queries) for deploys.
+> **Written 2026-10-06T21:30Z.** Every number is a dated measurement, not a state — re-verify. This file replaces the 2026-09-20 prompt, whose queue has drained.
+> Address the user as **JD**. Engineering only — never investigate any person who appears in a scan.
+> **Where the hand-off files live:** merged to `main` via PR #708 — read `SESSION_HANDOFF_2026-10-06_release-train-and-audit-queue.md` and `scripts/ops/` straight from `main`. If `origin/main` does not contain them, the merge did not land: check PR #708 (branch `docs/handoff-2026-10-06`) and ask JD.
 
 ---
 
-## Start here — five minutes, before anything else
+# Objective
+
+Take over a clean hand-off point and **move the audit queue forward one JD-approved release at a time**, starting by *observing* the two edge builds that are live but have never run in production (`9233ebd`, `3ad2d2f`). Do not build or ship anything JD has not named.
+
+# Context
+
+Insight Finder (a.k.a. Swarmbot) is JD's OSINT investigator: Vite + React + TS + Tailwind/shadcn on Vercel; Supabase (Postgres/Auth/Storage + Deno edge functions, chiefly `osint-agent`) behind Lovable. **Frontend ships on merge to `main`; the edge function does NOT** — it needs stamp → surgical mirror sync → `verify:deploy` gate → Lovable deploy message → `/health` proof → ledger (recipe and its traps: `SESSION_HANDOFF_2026-10-06_release-train-and-audit-queue.md` §5).
+
+Verified at hand-off (2026-10-06T21:25Z): canonical `main` = `2ba2842`; live `osint-agent` build = **`3ad2d2f`**; `deploy/live` → `3ad2d2f`; mirror `main` = `c9b1ba3`; `verify:deploy` VERIFIED with `mirror tree -> equal` (bytes unverified, as always); `reveal_breach_data=true`. Edge baseline **2163 / 0 / 6**; frontend last measured **2367 / 1 / 187** and e2e **52 / 2** on `8039235` (re-measure on clean `main` before crediting any delta).
+
+# Current Problem
+
+1. **Two shipped fixes are unobserved.** #697 (SDK-rejected tool inputs now get a `tool_usage_log` row) and #696 (a Shodan 404 for a real IP is a negative result, not a dead endpoint; a Jina "Target URL returned error" page is not evidence) are proved only by `/health` keys and tests. No tool call has run since they deployed.
+2. **Eleven finished PRs sit in DRAFT** (#693 #694 #698 #703 #667 #701 edge; #702 #699 #700 #695 #666 frontend; plus #593 #612 #613 #516). A draft never merges, and an unmerged PR cannot ship — the merge queue is this project's documented bottleneck. Do not merge any of them on your own initiative.
+3. **`CLAUDE.md`'s dated-state block is stale** (it still says live `325daad`); a small docs PR to refresh it, the readiness formula and the baselines is queued.
+
+# Files to Inspect
+
+Search the repo if paths differ.
+
+- `SESSION_HANDOFF_2026-10-06_release-train-and-audit-queue.md` — **read first**: §1 state, §3 JD's rules, §4 queue, §5 recipe traps, §7 JD's pending decisions, §9 plan.
+- `CLAUDE.md` — authoritative on deploy topology and the SETTLED decisions (ignore its dated-state blocks; they are stale).
+- `deploy-log.jsonl` (the ledger; last row `3ad2d2f`), `scripts/stamp-build.mjs`, `scripts/record-deploy.mjs`, `supabase/functions/osint-agent/build-info.ts`, `health-handler.ts`.
+- `supabase/functions/osint-agent/lib/negative-lookup.ts`, `circuit.ts`, `tool-outcome.ts`, `lib/tool-cache-version.ts`, `lib/tool-input-failure.ts` (what Releases 1–2 changed).
+- `scripts/ops/leakcheck-probe-verify.ts`, `scripts/ops/opsis-live-contract.ts` — JD-run, key-from-env-only checks (never ask for or echo a key).
+
+# Implementation Requirements
+
+Work in this order and **stop to ask JD** at every outward step.
+
+1. **Orient (read-only, ~5 min):**
+   ```bash
+   git fetch origin main && git log --oneline -5 origin/main
+   git fetch origin refs/heads/deploy/live:refs/heads/deploy/live   # a fresh clone lacks this ref
+   git fetch --unshallow --filter=blob:none                          # the clone is shallow at depth 50
+   curl -s "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1"
+   ```
+   Expect `main` ≥ `2ba2842`, build `3ad2d2f`, keys `checks.tool_input_failure_log` and `checks.negative_lookup_semantics` present. If either moved, another session worked here — read the newest handoff and the ledger first. Then `list_pull_requests` and read `draft`.
+2. **Observe Releases 1–2 (read-only):** `mcp__Lovable__query_database` (SELECT only) on `tool_usage_log` since `2026-10-06 21:15Z`. Look for: Shodan rows for valid IPs that are `empty`, not `failed`/`disabled for thread`; any SDK-rejected-input rows (`outcome='failed'`, field-path-only message, no values). Report what you see — including "no scan has run yet". Do not claim either fix works without rows.
+3. **Ask JD which single PR is next** (name it; recommended order and caveats are in handoff §4: #693 first — note it changes the report layer on Vercel immediately — then #694 → #667 → #666 → #698 → #703 → #701 last and OFF). Then run the recipe for exactly that PR, one release per go-ahead, stopping on any anomaly. "Go"/"Continue" from earlier sessions are **not** standing approvals.
+4. After that, the small docs PR for `CLAUDE.md`, then (only if JD asks) the queued small edge PRs — LeakCheck error-text pass-through, `checks.credentials` excluding capability-disabled/keyless tools, the "0 hits is a real finding" prompt line (`system-prompt.ts:88`). Each **test-first** (watch it fail for the right reason, then minimal code, then the full suite), one edge PR in flight.
+
+# OSINT / Analyst Requirements
+
+- Evidence-ranking, confidence caps, chain-of-custody, credential masking and minor-safety detection are integrity-critical: **no change without JD's sign-off.** The only approved rule is the interim write-time negative-qualifier rule (#693).
+- Keep confirmed evidence separate from AI inference; never state a source supports more than it does. A zero-hit lookup is a coverage observation, not corroboration and not proof of absence.
+- Open and unfixed: recall-circular corroboration (`oathnet_lookup (recalled from memory)` classifies `breach`), the missing call-to-artifact lineage, `evidence_log.artifact_id` NULL on all 13,329 rows. These need JD's sign-off before any code.
+- Scans contain real people. Do not research them, do not put their names/handles/IDs in commits, PRs or docs, and use synthetic fixtures in tests.
+
+# Do Not
+
+- **Do NOT change `REVEAL_BREACH_DATA`** (stays ON: "leave it on, do not change"), `MAX_PAID_CALLS`, or infer intent from prose. Everything in `CLAUDE.md` → SETTLED stands.
+- **Do NOT use Opus or any top-tier model for subagents** (JD: "don't use … super high credit models"). Prefer direct tool calls; if you delegate, use a small model.
+- **Do NOT merge, stamp, push to the mirror, send a Lovable deploy message, apply schema, change secrets, or touch billing without JD's explicit go-ahead for that step.** Never answer a Lovable tool-approval pause yourself.
+- Do NOT delete the ten blank "New investigation" threads (invariant I-1: not a defect), disable any provider, change any subscription, rotate the Opsis key, or opt in to the LeakCheck probe (`#701`) until `scripts/ops/leakcheck-probe-verify.ts --spend-2` PASSES with the key in JD's own shell (it spends 2 lookups plus at most 1 more if the probe costs quota, and exits 0 only on PASS).
+- Do NOT blanket-overwrite the mirror (surgical sync of changed files only, tests included), click Lovable's "Try to fix", merge the mirror's own PRs, or type a SHA by hand (copy it from `git rev-parse` / the PR payload).
+- Do NOT mix frontend, edge and schema in one PR; do NOT run more than one edge PR at a time; do NOT report a green check board as "reviewed" (Devin Review is skipped, Cursor is neutral).
+- Do NOT echo JD's billing/card/address details or any credential.
+
+# Acceptance Criteria
+
+- [ ] Orientation numbers re-measured and compared with this file; any drift reported before acting.
+- [ ] Releases 1–2 either **observed** (with the specific `tool_usage_log` rows) or reported as "not yet observable — no scan since deploy".
+- [ ] No outward step taken without a named, explicit go-ahead from JD.
+- [ ] If a release was approved: `/health` `build` moved to the new marker, the new proof key is present, `verify:deploy` VERIFIED with `mirror tree -> equal`, ledger PR merged, `deploy/live` pushed.
+- [ ] Every new test was shown failing first (and, for edge PRs, fails with the source change reverted); full suites green; `reveal_breach_data` still `true`.
+
+# Verification
 
 ```bash
-git fetch origin main && git log --oneline -5 origin/main
-git fetch origin refs/heads/deploy/live:refs/heads/deploy/live   # a fresh clone lacks this ref
-git fetch --unshallow --filter=blob:none                          # the clone is shallow at depth 50
-curl -s "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1"
+npm run typecheck && npm run lint && npx vitest run            # never bare `tsc`
+npm run test:edge                                              # deno; add --no-lock; Deno is not preinstalled
+PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium-1194/chrome-linux/chrome npm run test:e2e > e2e.log 2>&1; echo "playwright exit: $?"   # read the real status
+npm run verify:deploy -- --mirror <path-to-mirror-clone>       # read-only; "mirror tree -> equal" is the hard gate
 ```
 
-**Expect `main` = `ad4937b` or later and live edge build = `4bb19d9`.**
+Run each PR in its own worktree with its own `node_modules` (a missing one makes `npx vitest` try to download vitest). `npx eslint` every new edge file — CI's Frontend job lints and typechecks `supabase/functions/` too, and edge files the frontend imports must not use the `Deno` global.
 
-If either moved, another session has worked this repo — read the newest `SESSION_HANDOFF_*.md`
-before anything else. That has now happened **six** times, and once produced two conflicting PRs
-for one task (#548 / #551).
+# Return
 
-**Then run `list_pull_requests` and look at `draft`.** The merge queue — not the deploy — is this
-project's documented bottleneck, and right now it holds three finished PRs.
-
-Read, in order:
-
-1. **`SESSION_HANDOFF_2026-09-20_prompt-ceiling-payload-store-and-the-overlap-wedge.md`** — newest.
-   §2 is the stale-baseline correction, §4 the production wedge that is the highest-value unfixed
-   defect, §5 the `unknown` stop reason, §6 the payload-store decision, §7 the trap list,
-   §9 the ordered plan.
-2. **`CLAUDE.md`** — authoritative on deploy topology and on decisions that must not be
-   re-litigated.
-3. `SCOPE_same-thread-concurrency.md` if you are touching the overlap work;
-   `DESIGN_payload-store.md` if you are touching persistence.
-
----
-
-## Verified state — 2026-09-20T12:00Z
-
-| Axis | Value |
-|---|---|
-| canonical `main` | `ad4937b` |
-| live edge build | `4bb19d9` (`ok: true`) |
-| `deploy/live` | `4bb19d9` |
-| edge baseline | **1885 passed / 0 failed / 6 ignored** on clean `main` |
-| frontend baseline | **2106 passed / 1 skipped / 173 files** |
-| e2e baseline | **51 passed / 2 skipped** |
-
-⚠️ **CLAUDE.md's baselines are stale** (1879 / 2104 / 172 / 52). They were measured at `4bb19d9`
-and `main` has moved. Before crediting or blaming any diff for a suite-total change, **stash it and
-re-measure on clean `main`.** This is the third consecutive session where a total moved for a
-reason other than the code.
-
-### The queue — nothing proceeds until this drains
-
-| PR | head | channel | state |
-|---|---|---|---|
-| **#602** | `2bdbfe1` | frontend | green draft, `clean` — streaming throttle |
-| **#603** | `174bc70` | frontend | green draft, `clean` — readiness denominator |
-| **#604** | `9bd5587` | **edge** | green draft, `clean` — prompt budget hard ceiling |
-
-#602 and #603 ship to production on merge via Vercel. **#604 does not ship on merge** — see the
-edge recipe in CLAUDE.md, and note its proof-of-deploy key is **`checks.prompt_budget_ceiling`**.
-Only one edge PR may be in flight at a time, so #604 blocks the rest of the edge plan.
-
----
-
-## The job, in one line
-
-Get the queue merged and #604 deployed, then fix the overlap wedge — the one defect measured
-killing real runs in production.
-
----
-
-## Ordered plan
-
-| # | PR | channel | why this order |
-|---|---|---|---|
-| 0 | **merge #602, #603; merge + deploy #604** | both | nothing proceeds until the queue drains |
-| 1 | **`sanitizeModelMessages` positional pairing** | edge | stops the production wedge; small, pure, independent of the concurrency model |
-| 2 | **`budgetExhausted` at the `deriveStopReason` call site** | edge | one line; makes `stop_reason='unknown'` mean something |
-| 3 | **request-body size meter** | frontend | the before/after number the payload work needs |
-| 4 | **schema: `call_id` on `tool_usage_log` + `tool_call_payloads`** | migration | schema first, verified against the live DB, before any code reads it |
-| 5 | **payload write path + aggregate inline budget** | edge | kill switch + `/health` key + the E2E gate |
-| 6 | **drawer fetch-on-demand + `retained:false`** | frontend | — |
-
-### #1 in detail, because it is the one worth doing first
-
-`sanitizeModelMessages` pass 3 skips synthesising a placeholder when `resolved.has(toolCallId)`,
-and `resolved` is a **global** id set. The AI SDK validates **positionally**. So when an
-overlapping run delivers its result late, the array holds the same id twice — once unpaired, once
-resolved — and the real result suppresses the placeholder the earlier dangling call needs. The run
-dies with `MissingToolResultsError` before any provider call.
-
-Confirmed in production on thread `bfa55610` (2026-09-12): two invocations died in 85 ms with
-*"Tool results are missing for tool calls `01a09765…`"* — **the same tool call id both times**,
-because the client kept re-uploading the poisoned history. It heals on reload, which is why it has
-never shown up as bad DB rows.
-
-Fix: resolve ids **per position**, not globally. Tests belong in `message_sanitize_test.ts` and
-must drive `streamText` with a mock model on the reproduced array, not re-describe the function.
-
----
-
-## Decisions JD has already made — do not re-open
-
-- **Option A (a payload store), not summary-only.** Reason given: Insight Finder uses raw results
-  to investigate and correct evidence, and absent drawer telemetry is not evidence that
-  recoverability has no value.
-- **The store is a TABLE (`tool_call_payloads`), not the `evidence-archive` bucket.** Driven by the
-  distribution: 4,549 displaced objects / 14.0 MB at a 120k aggregate inline budget, p50 **812
-  chars**, only 2 objects over 256 KB. Also removes an unproven dependency — that bucket holds
-  **0 objects** and `archiver.ts` has never successfully written one.
-- **PR-A (the prompt ceiling) goes first and is independent.** Shipped as #604.
-- **#602 / #603 stay untouched and unmerged until JD says otherwise.**
-- Everything in CLAUDE.md's **SETTLED** section: `REVEAL_BREACH_DATA` stays ON, `MAX_PAID_CALLS`
-  stays bounded, intent is not inferred from prose.
-
-## Open decisions — ask, don't assume
-
-1. **The inline payload budget value.** 120,000 is modelled, not derived. 60k halves cost and
-   displaces 73% of payloads; 200k displaces 27%. It trades how much recent raw detail stays in the
-   transcript without a fetch — an analyst-workflow question.
-2. **Whether to change the concurrency mechanism at all**, or only fix the wedge. Overlap runs at
-   **12.2% of invocations**; the recommended model is accept-and-queue on
-   `threads.last_heartbeat_at`, but the wedge fix stands on its own either way.
-
----
-
-## Traps — verified this session, all of them cost time
-
-1. **`orchestrator_invocations.created_at` is the telemetry insert at finish, not run start.** Use
-   `started_at` / `finished_at`.
-2. **`initial_context_chars` cannot tell you what a run saw.** It is computed *after* trimming.
-   Two runs 16 chars apart proves nothing about their histories.
-3. **The prompt is already protected.** `index.ts:244-323` truncates inbound history four ways on
-   every request, so a 605,427-char persisted payload reaches the model as ≤16,000. Persistence is
-   a **wire-and-storage** problem, not a prompt problem. Do not conflate them.
-4. **`tool_call_cache` looks like a durable payload store.** 47 MB, 12,701 rows, only 129
-   unexpired — it retains outputs only because `CACHE_SWEEP_ENABLED` is off. No `call_id`, no
-   `thread_id`. ⚠️ **Turning that sweep on deletes the only accidental copy of historical tool
-   outputs** — sequence it after the payload store, never before.
-5. **`client_errors` shows 0 `MissingToolResult`** because the error is thrown server-side.
-   Absence there is not absence.
-6. **A per-item cap never bounds a thread.** 218 tool parts × any constant is still linear. Only an
-   aggregate budget is O(1) in call count.
-
----
-
-## How to work here
-
-- **Small PRs.** One behaviour change + its tests + its kill switch. Never mix frontend and edge —
-  they ship on different channels and a mixed PR can be neither cleanly deployed nor reverted.
-  Every behaviour-changing edge PR adds one new `/health` key or durable log event.
-- **Grep before you build.** CLAUDE.md's *BUILT AND UNWIRED* table exists because five separate
-  times in one session the thing a plan said to build was already built and merely disconnected.
-- **A behavioural test must DRIVE the shipped control flow, never re-describe it.** Prove it with a
-  negative control: revert the source change and show the test fails.
-- **Measure before you claim.** Every defect caught in review here was a timeline or identity
-  error that passed the full suite, typecheck, lint and build.
-- `npm run test:e2e` by hand for anything touching `src/` — PR CI does not run it.
-- Deno is not preinstalled in the web sandbox; `--no-lock` is required.
-
----
-
-## What the analyst actually feels, so the work stays anchored
-
-Two complaints drove this whole arc, and both now have measured causes:
-
-- **"It lags so bad, it stops mid-word."** Two independent causes: client-side markdown re-parse
-  per token (#602, fixed), and ~431 KB of history re-uploaded from a phone on every turn (step 3–5
-  above, not yet fixed).
-- **"We do all these upgrades and it never changes the app."** The merge queue. Three finished,
-  green, reviewed PRs are sitting in draft right now. That is step 0.
+Per step: the state you measured, what you changed (files, PR numbers, SHAs copied from tool output), tests run with the real counts, `/health` proof (key + value), what you did **not** do and why, remaining risks, and the exact question for JD. If a solution fails, stop and re-plan instead of patching forward; for 3+ step or architectural work, write a short plan and confirm it with JD before implementing.

@@ -596,6 +596,13 @@ export function classifyResult(result: unknown, threw: unknown): FailureKind {
   // Real provider responses never set `skipped` themselves (see jina_reader_scrape:
   // only its local preflight checks do) so this cannot mask a genuine failure.
   if (r.skipped === true) return "ok";
+  // An ORIGIN error relayed by a multi-origin reader (jina: "Target URL returned error
+  // 403") is a failed READ of one page, not an observed outcome of the provider — the
+  // provider answered correctly. It is logged `failed` (the page was not read) but must
+  // not feed the breaker: three blocked pages in a row would otherwise trip the global
+  // "disabled after 3 consecutive failures" guard and take the reader offline for every
+  // remaining host. See lib/negative-lookup.ts.
+  if (r.origin_error === true) return "ok";
   if (r.ok === false || typeof r.error === "string") {
     const status = typeof r.status === "number" ? r.status
       : typeof r.status_code === "number" ? r.status_code

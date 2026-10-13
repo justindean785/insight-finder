@@ -4,6 +4,7 @@
  */
 
 import { convertToModelMessages, streamText, generateText, stepCountIs, type UIMessage, type ModelMessage } from "npm:ai@6";
+import { classifyRunEnd, runEndLogDisabled, runEndNote } from "./lib/run-end.ts";
 
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import * as circuit from "./circuit.ts";
@@ -83,6 +84,7 @@ import {
 } from "./minimax-preflight.ts";
 import { evaluateCreditGate, evaluateDailyCapGate, reasonToAbortForCredits } from "./credits.ts";
 import { recoverStaleActiveThreads, startRunHeartbeat } from "./recovery.ts";
+import { releaseRunLease, type LeaseDb, type RunLeaseHeld } from "./lib/run-lease.ts";
 import {
   deepseekPreflightAlways,
   geminiPreflightPivotEnabled,
@@ -92,6 +94,7 @@ import {
 } from "./lib/preflight-pivot.ts";
 import { redactErrorMessage } from "./lib/redact-error.ts";
 import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
+import { inputFailureRowsForStep } from "./lib/tool-input-failure.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
 // Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
@@ -132,6 +135,12 @@ function extractManualOverrideSelector(messages: UIMessage[]): string | null {
 Deno.serve(async (req) => {
   let heartbeat: ReturnType<typeof startRunHeartbeat> | null = null;
   let releaseRunState = () => {};
+  // The admission lease (S1a) is held from setupRequest until startRunHeartbeat takes the
+  // row over. Any exit in that window that does not start a run must give it back, so the
+  // outer catch can release it without a ctx reference (a thrown setup error never
+  // returns one). Cleared at the handoff: once a run is live, an interruption marker is
+  // genuine and must NOT be erased by cleanup.
+  let startupLease: { db: LeaseDb; threadId: string; lease: RunLeaseHeld } | null = null;
   if (isHealthProbe(req)) return handleHealthProbe(req);
 
   degradedTools.clear();
@@ -161,6 +170,7 @@ Deno.serve(async (req) => {
     // ---- setupRequest handles CORS, auth, thread verification, message persistence ----
     const ctx = await setupRequest(req);
     const { supabase, supabaseAdmin, user, userId, threadId, archiveEnabled, detectedSeedType, messages } = ctx;
+    startupLease = { db: supabaseAdmin as unknown as LeaseDb, threadId, lease: ctx.lease };
     recoverStaleActiveThreads(supabaseAdmin, { limit: 10, reason: "stale heartbeat recovered at run startup" })
       .then((r) => {
         if (r.recovered || r.errors) console.log(JSON.stringify({ event: "stale_thread_sweeper", ...r }));
@@ -204,6 +214,9 @@ Deno.serve(async (req) => {
         const gate = evaluateCreditGate(creditRow, isAdmin, CREDIT_RUN_RESERVE_MICRO_USD);
         creditsExempt = gate.exempt;
         if (!gate.allow) {
+          // This request will not start a run: give the admission lease back (S1a).
+          await releaseRunLease(supabaseAdmin as unknown as LeaseDb, threadId, ctx.lease, "credit_gate_402");
+          startupLease = null;
           return new Response(JSON.stringify({
             error: "Out of credits",
             code: gate.code,
@@ -233,6 +246,8 @@ Deno.serve(async (req) => {
               | null;
             const dailyGate = evaluateDailyCapGate(dailyRow);
             if (!dailyGate.allow) {
+              await releaseRunLease(supabaseAdmin as unknown as LeaseDb, threadId, ctx.lease, "daily_cap_402");
+              startupLease = null;
               return new Response(JSON.stringify({
                 error: "Daily credit cap reached",
                 code: dailyGate.code,
@@ -937,7 +952,12 @@ Deno.serve(async (req) => {
     // Wall-clock start for BOTH the finalize-reserve check (prepareStep) and the hard
     // deadline StopCondition below. Declared here so prepareStep's closure reads it.
     const runStartedAt = Date.now();
-    heartbeat = startRunHeartbeat(supabaseAdmin, threadId, { startedAt: new Date(runStartedAt) });
+    // Handoff: the run is live from here, so the lease is no longer "startup" state and
+    // the heartbeat keeps the lease's own run_started_at (markRunStarted re-stamps it
+    // unconditionally; passing the same value keeps the admission timestamp stable).
+    const leaseStartedAt = ctx.lease.mode === "leased" ? new Date(ctx.lease.startedAt) : new Date(runStartedAt);
+    startupLease = null;
+    heartbeat = startRunHeartbeat(supabaseAdmin, threadId, { startedAt: leaseStartedAt });
     // Invocation-level performance telemetry (2026-09-08 audit PR 1). Non-blocking,
     // best-effort — see telemetry.ts. One recorder per streamText call below.
     const invocationTelemetry = createInvocationTelemetry({
@@ -1215,6 +1235,10 @@ Deno.serve(async (req) => {
     const stepLimitReached: typeof rawStepLimitReached = (options) =>
       !finalizeStarted && rawStepLimitReached(options);
 
+    // Run-end observability (lib/run-end.ts): did the streamText LOOP itself finish before the
+    // UI-stream persistence handler ran? Plain flags; they steer nothing.
+    let loopDone = false;
+    let loopAborted = false;
     const result = streamText({
       // Top-level orchestrator runs on the smart tier — it's the multi-source
       // synthesis step that produces the final report. Per-tool sub-calls use
@@ -1289,6 +1313,8 @@ Deno.serve(async (req) => {
       // Third condition (P0 fix A): once the forced finalize phase has run its
       // budgeted step(s), stop — the model has written its report, so don't spin
       // the remaining reserve window re-synthesizing (and re-recording) artifacts.
+      onFinish: () => { loopDone = true; },
+      onAbort: () => { loopAborted = true; },
       stopWhen: [
         stepLimitReached,
         () => !finalizeStarted && orchestratorDeadlineReached(),
@@ -1318,6 +1344,26 @@ Deno.serve(async (req) => {
       // metered at the Flash rate.
       onStepFinish: ({ stepNumber, usage, finishReason, toolCalls, toolResults }) => {
         invocationTelemetry.recordStepFinish({ stepNumber, usage, finishReason, toolCalls });
+        // A tool call the SDK rejected on its INPUT SCHEMA never reaches `execute`, so the
+        // cache wrapper's logUsage never runs and the Activity tab undercounts the step
+        // ("Failed 0 of 23" beside 26 model calls). Log it here — detached and best-effort,
+        // so it can never block or fail the step or the finalize window. Field paths and
+        // sent key NAMES only; no values. See lib/tool-input-failure.ts.
+        try {
+          const rejectedRows = inputFailureRowsForStep(toolCalls, { userId, threadId, stepNumber });
+          if (rejectedRows.length > 0) {
+            const rejectedTask = Promise.resolve(supabaseAdmin.from("tool_usage_log").insert(rejectedRows))
+              .then((res: { error?: { message?: string } | null } | undefined) => {
+                if (res?.error) console.warn(`[tool_usage_log] input-failure insert failed: ${res.error.message}`);
+              })
+              .catch((e: unknown) => console.warn("[tool_usage_log] input-failure insert threw:", String(e)));
+            const ertRejected = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+            if (ertRejected && typeof ertRejected.waitUntil === "function") ertRejected.waitUntil(rejectedTask);
+            else void rejectedTask;
+          }
+        } catch (e) {
+          console.warn("[tool_usage_log] input-failure logging skipped (non-fatal):", String(e));
+        }
         if (finalizeStarted) {
           const names = (toolCalls ?? []).map((call: { toolName: string }) => call.toolName);
           const stepProgress = countFinalizeProgress([{ content: toolResults }]);
@@ -1623,9 +1669,28 @@ Deno.serve(async (req) => {
     });
 
     let finalPersisted = false;
-    const persistFinalMessages = async ({ messages: finalMessages }: { messages: UIMessage[] }) => {
+    const persistFinalMessages = async (
+      { messages: finalMessages, isAborted: uiAborted }: { messages: UIMessage[]; isAborted?: boolean },
+    ) => {
       if (finalPersisted) return;
       finalPersisted = true;
+      // WHY is this handler running? It fires from BOTH the stream's flush (normal end) and its
+      // cancel (the browser went away), and the first caller wins — so a browser cancel persists a
+      // PARTIAL transcript while the loop is still going. Observability only: see lib/run-end.ts.
+      const runEnd = classifyRunEnd({
+        loopDone,
+        isAborted: Boolean(uiAborted) || loopAborted,
+        clientSignalAborted: req.signal.aborted,
+      });
+      if (!runEndLogDisabled()) {
+        console.log(JSON.stringify({
+          event: "run_end", thread_id: threadId, cause: runEnd.cause, premature: runEnd.premature,
+          loop_done: loopDone, client_signal_aborted: req.signal.aborted,
+          step_count: invocationTelemetry.getStepCount(),
+          last_finish_reason: invocationTelemetry.getLastFinishReason(),
+          finalize_started: finalizeStarted, elapsed_ms: Date.now() - runStartedAt,
+        }));
+      }
       // Capture the detected seed kind so it can be persisted onto the thread
       // row at completion — historically seed_type was only stored in the
       // triage decision JSON and the threads.seed_type column stayed null.
@@ -2091,7 +2156,7 @@ Deno.serve(async (req) => {
           finalizeStarted,
           hadStreamError: false,
           creditsMicroUsd: runCostMicroUsd,
-          errorMessage: null,
+          errorMessage: runEndNote(runEnd),
           budgetExhausted: budgetCeiling.fired,
         });
         heartbeat?.stop();
@@ -2151,6 +2216,12 @@ Deno.serve(async (req) => {
   } catch (e) {
     heartbeat?.stop();
     releaseRunState();
+    // A lease still held here belongs to a request that never started its run.
+    if (startupLease) {
+      const held = startupLease;
+      startupLease = null;
+      await releaseRunLease(held.db, held.threadId, held.lease, "startup_failed");
+    }
     // setupRequest throws Response objects for 401/403/400 — return them directly
     if (e instanceof Response) return e;
     // Redacted before it is logged or returned (lib/orchestrator-fault.ts).
