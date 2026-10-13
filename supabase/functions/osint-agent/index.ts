@@ -44,7 +44,8 @@ import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider } from "./orchestrator_select.ts";
 import { FINDING_LABELS } from "./catalog.ts";
-import { SYSTEM_PROMPT_FULL } from "./system-prompt.ts";
+import { assembleBaseSystemPrompt, staticSystemPrompt } from "./lib/base-prompt.ts";
+import { labelHistoricalAssistantText } from "./lib/history-label.ts";
 import { wrapToolsWithCache } from "./cache.ts";
 import { paidBudgetTier } from "./cache.ts";
 import { costForTool } from "./costs.ts";
@@ -53,7 +54,7 @@ import { beginCycle, clearRuntime, runtimeLimits } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
   MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN,
-  capTotalToBudget, reportBudgetCeiling, deadlineReached, isToolBudgetExhausted, buildIntermediateStepPlan,
+  capTotalToBudget, reportBudgetCeiling, deadlineReached, isToolBudgetExhausted, buildIntermediateStepPlan, truncateStr,
 } from "./orchestrator-budget.ts";
 import {
   shouldForceFinalize, buildFinalizeStepPlan, buildPerCycleCompactDirective, shouldDeferFinalizeForCorrelate,
@@ -269,7 +270,10 @@ Deno.serve(async (req) => {
       getSubjectSeedName: () => subjectSeedName,
     });
 
-    const modelMessages = await convertToModelMessages(messages);
+    // Earlier assistant turns are HISTORICAL MODEL OUTPUT, not evidence (lib/history-label.ts).
+    // Labels text parts of completed prior assistant turns only; tool parts, the current
+    // turn and tool-call/result pairing are untouched. Kill switch: MEMORY_AUTHORITY_WORDING_DISABLED.
+    const modelMessages = labelHistoricalAssistantText(await convertToModelMessages(messages));
 
     // #238: older-result cap tightened 4000→1500. Safe only BECAUSE older results
     // now go through selector-preserving summarization (summarizeToolResultValue) —
@@ -279,8 +283,6 @@ Deno.serve(async (req) => {
     const MAX_TOOL_RESULT_CHARS_RECENT = 16000;
     // RECENT_WINDOW, TOTAL_PROMPT_CHAR_BUDGET, approxMsgChars + capTotalToBudget are
     // imported from ./orchestrator-budget.ts (pure + unit-tested).
-    const truncateStr = (s: string, max: number) =>
-      s.length <= max ? s : s.slice(0, max) + `\n…[truncated ${s.length - max} chars]`;
     const truncateValue = (val: unknown, max: number): unknown => {
       if (typeof val === "string") return truncateStr(val, max);
       if (Array.isArray(val)) {
@@ -564,7 +566,7 @@ Deno.serve(async (req) => {
     // key is missing or the initial prompt is so large it would overflow
     // MiniMax's ~200k context window on the first step.
     const approxPromptChars =
-      (SYSTEM_PROMPT_FULL.length + FINDING_LABELS.length) +
+      (staticSystemPrompt().length + FINDING_LABELS.length) +
       JSON.stringify(trimmedMessages).length;
     // Pre-pivot only when we'd genuinely overflow MiniMax's ~200k-token window.
     // ~600k chars ≈ 150k tokens, leaving headroom for streamed completions.
@@ -878,9 +880,7 @@ Deno.serve(async (req) => {
         recheck: turnReviews.reviewedRows.filter((r) => r.state === "recheck").length,
       }));
     }
-    const baseSystemPrompt =
-      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary
-      + analystDecisionsBlock;
+    const baseSystemPrompt = assembleBaseSystemPrompt({ detectedSeedType, visionIntakeSummary, analystDecisionsBlock });
     // ---- Prompt-size instrument (A1) -----------------------------------------
     // `approxPromptChars` above stays exactly as it is: it is an INPUT TO PROVIDER
     // ROUTING (the MiniMax pre-pivot and the DeepSeek safety budget), so inflating
@@ -891,7 +891,7 @@ Deno.serve(async (req) => {
     // in `unmeasured` rather than guessed: zod@3 exposes no JSON-Schema export, so
     // any number here would be invented. Read the total as "everything countable".
     const promptTermBaseline = {
-      systemStatic: SYSTEM_PROMPT_FULL.length,
+      systemStatic: staticSystemPrompt().length,
       findingLabels: FINDING_LABELS.length,
       workflowAddendum: buildWorkflowAddendum(detectedSeedType).length,
       visionIntake: visionIntakeSummary.length,
@@ -1265,7 +1265,7 @@ Deno.serve(async (req) => {
         : deepseekIsPrimary
         ? { deepseek: { parallel_tool_calls: false, thinking: { type: "disabled" } } }
         : undefined,
-      system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary,
+      system: assembleBaseSystemPrompt({ detectedSeedType, visionIntakeSummary }),
       messages: trimmedMessages,
       tools: wrapToolsWithCache(tools, {
         investigationId: threadId,

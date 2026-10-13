@@ -45,6 +45,7 @@ import { selectPivots, proposedCallToCandidate, type PivotCandidate, type Propos
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
 import { loadReviewsForThread, dropRejectedAndDerived, dropRejectedArtifacts, normalizeArtifactKey, type ReviewDb } from "./reviews.ts";
 import { applyMemorySupersession, refuseConflictingMemoryWrites, rejectedSelectorsFromRows, type MemoryRow } from "./lib/memory-supersession.ts";
+import { autoRecallHint, recallAuthorityFields, renderPlannerMemoryHint, tagMemoryProvenance } from "./lib/memory-provenance.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
 
 /**
@@ -1286,12 +1287,7 @@ export function buildTools(ctx: ToolContext) {
                   by_analyst_lesson: superseded.filter((x) => x.source === "analyst_lesson").length,
                 }));
               }
-              const rows = active.slice(0, 8);
-              if (rows.length) {
-                memoryHint =
-                  `\n\nPRIOR MEMORY for this subject (weight these — lessons / known false-positives / confirmed links from earlier investigations):\n` +
-                  rows.map((m) => `- [${m.kind ?? "note"}${m.confidence != null ? ` ${m.confidence}` : ""}] ${String(m.content ?? "").slice(0, 240)}`).join("\n");
-              }
+              memoryHint = renderPlannerMemoryHint(active.slice(0, 8));
             }
           } catch (e) {
             console.warn("[planner] memory hint lookup failed (non-fatal):", e);
@@ -5842,7 +5838,7 @@ export function buildTools(ctx: ToolContext) {
                   .order("confidence", { ascending: false })
                   .limit(5);
                 const { active } = applyMemorySupersession((data ?? []) as MemoryRow[], autoRecallRejected);
-                return { subject: subj, count: active.length, memories: active };
+                return { subject: subj, count: active.length, memories: tagMemoryProvenance(active) };
               }),
             );
             memory_hits = recalled.filter((r) => r.count > 0);
@@ -5953,8 +5949,7 @@ export function buildTools(ctx: ToolContext) {
           ...(memory_hits.length > 0
             ? {
                 memory_hits,
-                memory_hint:
-                  "Prior memory found for some of the artifacts you just recorded. Read `memory_hits` — incorporate confirmed connections/lessons and cite them as [MEMORY] in the final report. Do NOT re-investigate values already covered.",
+                memory_hint: autoRecallHint(),
               }
             : {}),
           // Audit F1: once enough new artifacts have accrued since the last correlate,
@@ -6333,7 +6328,8 @@ export function buildTools(ctx: ToolContext) {
       return {
         ok: true,
         count: active.length,
-        memories: active,
+        memories: tagMemoryProvenance(active),
+        ...recallAuthorityFields(),
         ...(superseded.length
           ? {
             superseded_count: superseded.length,

@@ -1,0 +1,29 @@
+// lib/base-prompt.ts — the orchestrator's base system prompt, assembled in ONE place.
+//
+// index.ts used to concatenate this inline at two sites (the `baseSystemPrompt` shared by
+// streamText's step overrides and the finalize phase, and the default `system` on the
+// streamText call). Extracting it keeps those two byte-identical and makes the ASSEMBLED
+// runtime prompt testable instead of only its pieces. Behaviour-preserving: with the
+// kill switch on (or off) the result is exactly what the inline expression produced.
+//
+// The Memory wording variant is chosen at CALL TIME (MEMORY_AUTHORITY_WORDING_DISABLED),
+// so a switch flip needs no deploy.
+
+import { SYSTEM_PROMPT_FULL, SYSTEM_PROMPT_FULL_LEGACY_MEMORY } from "../system-prompt.ts";
+import { FINDING_LABELS } from "../catalog.ts";
+import { buildWorkflowAddendum } from "../workflow_prompt.ts";
+import { memoryAuthorityWordingDisabled } from "./memory-provenance.ts";
+
+export function staticSystemPrompt(): string {
+  return memoryAuthorityWordingDisabled() ? SYSTEM_PROMPT_FULL_LEGACY_MEMORY : SYSTEM_PROMPT_FULL;
+}
+
+export function assembleBaseSystemPrompt(input: {
+  detectedSeedType: Parameters<typeof buildWorkflowAddendum>[0];
+  visionIntakeSummary: string;
+  /** "" at the streamText default site, which never carried the analyst-decisions block. */
+  analystDecisionsBlock?: string;
+}): string {
+  return staticSystemPrompt() + FINDING_LABELS + buildWorkflowAddendum(input.detectedSeedType) +
+    input.visionIntakeSummary + (input.analystDecisionsBlock ?? "");
+}

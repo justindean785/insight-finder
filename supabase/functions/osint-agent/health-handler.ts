@@ -46,6 +46,7 @@ import { clusterBookkeepingSelfTest, legacyNeedsReviewContradiction } from "./li
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 import { memoryContextSelfTest } from "./lib/memory-context.ts";
+import { memoryAuthoritySelfTest } from "./lib/memory-provenance.ts";
 import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
 import { breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 
@@ -498,6 +499,8 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.source_origin_rules = sourceOriginRulesSelfTest();
   r.checks.breach_origin_cap = breachOriginCapSelfTest();
   r.checks.memory_context = memoryContextSelfTest();
+  // Recall surfaces carry no corroboration wording and tag rows unreviewed / analyst_marker_pattern. Pure.
+  r.checks.memory_authority = memoryAuthoritySelfTest();
   r.checks.user_supplied_status = userSuppliedStatusSelfTest();
 
   // Are the agent's own setup rows (triage_decision / cluster_decision / coverage_audit /
