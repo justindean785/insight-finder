@@ -8,7 +8,7 @@ import { createAnthropic } from "npm:@ai-sdk/anthropic@3";
 import { z } from "npm:zod@3";
 import {
   anthropicOrchestratorHealth, anthropicProviderOptions, classifyAnthropicError, extractAnthropicUsage,
-  runBudgetExhausted, salvageWithinBudget, splitCachedSystem, stepCostMicroUsd,
+  runBudgetExhausted, salvageReserve, salvageWithinBudget, splitCachedSystem, stepCostMicroUsd,
 } from "./anthropic-orchestrator.ts";
 
 const OK_BODY = {
@@ -167,20 +167,31 @@ Deno.test("wiring: the Anthropic path can never fail over, and the budget feeds 
   assertStringIncludes(src, "anthropicBudgetStatus().exhausted");
 });
 
-Deno.test("salvage: allowed within 1.5x of either ceiling, refused beyond it", () => {
+Deno.test("salvage: admission reserves the request's own worst case, not just what is spent", () => {
   const limits = { maxInputTokens: 1000, maxCostMicroUsd: 500 };
-  assertEquals(salvageWithinBudget({ inputTokens: 1000, costMicroUsd: 500 }, limits), true, "just past the ceiling still gets its report");
-  assertEquals(salvageWithinBudget({ inputTokens: 1499, costMicroUsd: 749 }, limits), true);
-  assertEquals(salvageWithinBudget({ inputTokens: 1500, costMicroUsd: 0 }, limits), false);
-  assertEquals(salvageWithinBudget({ inputTokens: 0, costMicroUsd: 750 }, limits), false);
+  const none = { inputTokens: 0, costMicroUsd: 0 };
+  assertEquals(salvageWithinBudget({ inputTokens: 1000, costMicroUsd: 500 }, limits, none), true, "a run just past the ceiling still gets its report");
+  assertEquals(salvageWithinBudget({ inputTokens: 1500, costMicroUsd: 0 }, limits, none), true, "exactly at 1.5x is allowed");
+  assertEquals(salvageWithinBudget({ inputTokens: 1501, costMicroUsd: 0 }, limits, none), false);
+  // Spent is just under the line, but the request itself would push it over: refused.
+  assertEquals(salvageWithinBudget({ inputTokens: 0, costMicroUsd: 740 }, limits, { inputTokens: 0, costMicroUsd: 11 }), false);
+  assertEquals(salvageWithinBudget({ inputTokens: 0, costMicroUsd: 740 }, limits, { inputTokens: 0, costMicroUsd: 10 }), true);
+  assertEquals(salvageWithinBudget({ inputTokens: 1400, costMicroUsd: 0 }, limits, { inputTokens: 101, costMicroUsd: 0 }), false);
+});
+
+Deno.test("salvageReserve prices the prompt as uncached input plus the full output cap", () => {
+  // 30,000 chars -> 10,000 est. tokens; Sonnet 5: 10k*2 + 8192*10 = 20,000 + 81,920
+  assertEquals(salvageReserve("claude-sonnet-5", 30_000, 8192), { inputTokens: 10_000, costMicroUsd: 101_920 });
+  assertEquals(salvageReserve("claude-sonnet-5", -5, 0), { inputTokens: 0, costMicroUsd: 0 });
 });
 
 Deno.test("wiring: the report-salvage Anthropic request is metered and budget-gated (Codex P1 on #748)", async () => {
   const src = await Deno.readTextFile(new URL("./index.ts", import.meta.url));
   const gen = src.indexOf("const salvage = await generateText({");
   assert(gen > 0);
-  const before = src.slice(Math.max(0, gen - 900), gen);
-  assertStringIncludes(before, "salvageWithinBudget(", );
+  const before = src.slice(Math.max(0, gen - 2000), gen);
+  assertStringIncludes(before, "salvageWithinBudget(");
+  assertStringIncludes(before, "salvageReserve(", "admission must reserve the request's own worst case");
   assertStringIncludes(before, "anthropic_salvage_skipped_budget");
   const after = src.slice(gen, gen + 600);
   assertStringIncludes(after, 'meterAnthropicUsage(salvage?.usage, "salvage", null)');

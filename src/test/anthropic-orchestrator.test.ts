@@ -159,12 +159,19 @@ describe("checks.orchestrator_anthropic", () => {
   });
 });
 
-import { salvageWithinBudget } from "../../supabase/functions/osint-agent/anthropic-orchestrator.ts";
-describe("salvageWithinBudget", () => {
+import { salvageReserve, salvageWithinBudget } from "../../supabase/functions/osint-agent/anthropic-orchestrator.ts";
+describe("salvage admission", () => {
   const limits = { maxInputTokens: 1000, maxCostMicroUsd: 500 };
-  it("allows a bounded overrun (the backstop exists to guarantee a report) but not an unbounded one", () => {
-    expect(salvageWithinBudget({ inputTokens: 1000, costMicroUsd: 500 }, limits)).toBe(true);
-    expect(salvageWithinBudget({ inputTokens: 1500, costMicroUsd: 0 }, limits)).toBe(false);
-    expect(salvageWithinBudget({ inputTokens: 0, costMicroUsd: 750 }, limits)).toBe(false);
+  const none = { inputTokens: 0, costMicroUsd: 0 };
+  it("allows a bounded overrun but not an unbounded one", () => {
+    expect(salvageWithinBudget({ inputTokens: 1000, costMicroUsd: 500 }, limits, none)).toBe(true);
+    expect(salvageWithinBudget({ inputTokens: 1501, costMicroUsd: 0 }, limits, none)).toBe(false);
+  });
+  it("reserves the request's own worst case: spent-just-under + a large request is refused", () => {
+    expect(salvageWithinBudget({ inputTokens: 0, costMicroUsd: 740 }, limits, { inputTokens: 0, costMicroUsd: 11 })).toBe(false);
+    expect(salvageWithinBudget({ inputTokens: 0, costMicroUsd: 740 }, limits, { inputTokens: 0, costMicroUsd: 10 })).toBe(true);
+  });
+  it("prices the reserve as uncached input plus the full output cap", () => {
+    expect(salvageReserve("claude-sonnet-5", 30_000, 8192)).toEqual({ inputTokens: 10_000, costMicroUsd: 101_920 });
   });
 });

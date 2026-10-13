@@ -81,7 +81,7 @@ import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-i
 import { isMessageSchemaError, classifyStreamProviderError, describeStreamError } from "./stream-error-classify.ts";
 import {
   anthropicModelRejectsForcedToolChoice, anthropicProviderOptions, classifyAnthropicError,
-  extractAnthropicUsage, runBudgetExhausted, salvageWithinBudget, splitCachedSystem, stepCostMicroUsd,
+  extractAnthropicUsage, runBudgetExhausted, salvageReserve, salvageWithinBudget, splitCachedSystem, stepCostMicroUsd,
 } from "./anthropic-orchestrator.ts";
 import {
   shouldFallbackAfterMinimaxPreflight,
@@ -1886,13 +1886,21 @@ Deno.serve(async (req) => {
             // per-step meter. On Anthropic it is metered below and gated here: it may use a
             // bounded overrun of the ceiling (it exists to guarantee a report), but not an
             // unbounded one. Skipped -> the run ends visibly Interrupted, never off-ledger.
+            const salvagePrompt = buildSalvageSynthesisPrompt(seedValueRaw, cleanSalvageArts);
+            // Admission RESERVES this request's own worst case (estimated prompt + the full output
+            // cap), not just what is already spent (Codex P2 on #748).
+            const salvageCost = salvageReserve(
+              ANTHROPIC_MODEL_ID, baseSystemPrompt.length + salvagePrompt.length, ORCHESTRATOR_MAX_OUTPUT_TOKENS,
+            );
             if (anthropicActive && !salvageWithinBudget(
               { inputTokens: anthropicRun.inputTokens, costMicroUsd: anthropicRun.costMicroUsd },
               ANTHROPIC_RUN_LIMITS,
+              salvageCost,
             )) {
               console.warn(JSON.stringify({
                 event: "anthropic_salvage_skipped_budget", thread_id: threadId,
                 run_input_tokens: anthropicRun.inputTokens, run_cost_micro_usd: anthropicRun.costMicroUsd,
+                reserve_input_tokens: salvageCost.inputTokens, reserve_cost_micro_usd: salvageCost.costMicroUsd,
               }));
               throw new Error("salvage synthesis skipped: anthropic run budget exhausted");
             }
@@ -1900,7 +1908,7 @@ Deno.serve(async (req) => {
               model: orchestratorModel,
               maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
               system: baseSystemPrompt,
-              prompt: buildSalvageSynthesisPrompt(seedValueRaw, cleanSalvageArts),
+              prompt: salvagePrompt,
             });
             if (anthropicActive) meterAnthropicUsage(salvage?.usage, "salvage", null);
             const salvageText = (salvage?.text ?? "").trim();

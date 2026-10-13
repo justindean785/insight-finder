@@ -200,14 +200,37 @@ export function runBudgetExhausted(
 
 /**
  * The report-salvage backstop is a separate model request made after the loop. It is allowed a
- * BOUNDED overrun of the ceilings (it exists to guarantee the analyst gets a report), but not an
- * unbounded one: past 1.5x either ceiling it is skipped and the run ends visibly Interrupted.
+ * BOUNDED overrun of the ceilings (it exists to guarantee the analyst gets a report): the run's
+ * spend PLUS the request's own worst case must stay under 1.5x either ceiling, otherwise it is
+ * skipped and the run ends visibly Interrupted.
+ *
+ * Admission RESERVES the request's worst case rather than comparing only what is already spent
+ * (Codex P2 on #748): a run just under the line would otherwise start a request that finishes
+ * well over it, and with small operator-set limits one salvage could exceed the ceiling many
+ * times over. The reserve is the estimated prompt (conservatively chars/3) priced as uncached
+ * input, plus the request's full output cap priced as output.
  */
 export const ANTHROPIC_SALVAGE_HEADROOM = 1.5;
 
-export function salvageWithinBudget(totals: RunBudgetTotals, limits: RunBudgetLimits): boolean {
-  return totals.inputTokens < limits.maxInputTokens * ANTHROPIC_SALVAGE_HEADROOM &&
-    totals.costMicroUsd < limits.maxCostMicroUsd * ANTHROPIC_SALVAGE_HEADROOM;
+export interface SalvageReserve {
+  /** Estimated input tokens of the salvage prompt (system + prompt). */
+  inputTokens: number;
+  /** Worst-case micro-USD of the request: estimated input at the uncached rate + max output tokens. */
+  costMicroUsd: number;
+}
+
+/** Conservative reserve for a salvage request: ~3 chars/token (the newer tokenizer runs ~30% denser). */
+export function salvageReserve(modelId: string, promptChars: number, maxOutputTokens: number): SalvageReserve {
+  const inputTokens = Math.ceil(Math.max(0, promptChars) / 3);
+  return {
+    inputTokens,
+    costMicroUsd: anthropicCostMicroUsd(modelId, { input: inputTokens, output: maxOutputTokens, cacheRead: 0, cacheWrite: 0 }),
+  };
+}
+
+export function salvageWithinBudget(totals: RunBudgetTotals, limits: RunBudgetLimits, reserve: SalvageReserve): boolean {
+  return totals.inputTokens + reserve.inputTokens <= limits.maxInputTokens * ANTHROPIC_SALVAGE_HEADROOM &&
+    totals.costMicroUsd + reserve.costMicroUsd <= limits.maxCostMicroUsd * ANTHROPIC_SALVAGE_HEADROOM;
 }
 
 // ---- Error classification ------------------------------------------------------------
