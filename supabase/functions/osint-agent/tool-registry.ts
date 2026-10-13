@@ -1,3 +1,5 @@
+import { guardUserSuppliedStatus } from "./lib/user-supplied-status.ts";
+import { applyMemoryContext } from "./lib/memory-context.ts";
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -137,6 +139,7 @@ import { trimExaResults, archiveAttachment } from "./archiver.ts";
 // model after the runtime has removed it.
 import { PROVIDER_REQUIREMENTS } from "./capabilities.ts";
 import { agentMemoryOrFilter } from "./pgrest.ts";
+import { shapeShodanResponse, shapeJinaBody } from "./lib/negative-lookup.ts";
 
 /**
  * The REAL tool vocabulary, for G1's queued-placeholder gate.
@@ -4668,7 +4671,9 @@ export function buildTools(ctx: ToolContext) {
         try {
           const r = await fetchT(`https://internetdb.shodan.io/${encodeURIComponent(ip)}`, {}, 12_000);
           const data = await r.json().catch(() => ({}));
-          return { ok: r.ok, status: r.status, data };
+          // 404 = "no InternetDB record for this IP": a proven negative, not a dead
+          // endpoint (see lib/negative-lookup.ts). Every other status is unchanged.
+          return shapeShodanResponse(r.status, r.ok, data, ip);
         } catch (e) { return { error: String(e) }; }
       },
     }),
@@ -4749,7 +4754,9 @@ export function buildTools(ctx: ToolContext) {
             return { error: `jina ${r.status}`, status: r.status, url: clean, hint };
           }
           const text = await r.text();
-          return { ok: true, url: clean, markdown: text.slice(0, maxChars), truncated: text.length > maxChars };
+          // A 200 can wrap an ORIGIN error ("Warning: Target URL returned error 404").
+          // shapeJinaBody keeps that out of the evidence stream — see lib/negative-lookup.ts.
+          return shapeJinaBody(clean, text, maxChars);
         } catch (e) {
           // Include the URL on the timeout/abort path too — without it, a
           // failed scrape in the tool trace shows only "AbortError" with no
@@ -5460,7 +5467,10 @@ export function buildTools(ctx: ToolContext) {
           recorded_confidence: number;
           attempted_confidence: number;
         }> = [];
-        artifacts.forEach((a, i) => {
+        artifacts.forEach((aRaw, i) => {
+          // E3: recalled memory is context, never a source (lib/memory-context.ts).
+          const memCtx = applyMemoryContext(aRaw.source, aRaw.metadata as Record<string, unknown> | undefined);
+          const a = memCtx.memory ? { ...aRaw, source: memCtx.source, metadata: memCtx.metadata } : aRaw;
           // A QUEUED tool call is not an observation. Ten rows like
           // "hawkcapo - socialfetch_lookup (pending Instagram)" were persisted
           // on a measured run BEFORE their tool returned, each carrying
@@ -5544,7 +5554,12 @@ export function buildTools(ctx: ToolContext) {
               : cap.confidence;
           // Resolve the confirmation gap, then DERIVE a coherent status from it
           // (status can never contradict reason_not_confirmed).
-          const ordinaryStatus = resolveRecordingStatus(cap, a.metadata ?? null);
+          // E2: pasted is not checked — analyst-supplied-only rows never reach verified/confirmed.
+          const ordinaryStatus = guardUserSuppliedStatus(
+            resolveRecordingStatus(cap, a.metadata ?? null),
+            a.source,
+            a.metadata as Record<string, unknown> | null | undefined,
+          );
           const resolvedReasonNotConfirmed = bioName
             ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
             : ordinaryStatus.reasonNotConfirmed;
@@ -5575,6 +5590,7 @@ export function buildTools(ctx: ToolContext) {
             source_category: cap.source_classes,
             query_types: queryTypesOf({ value: v.value, kind: v.kind, metadata: a.metadata ?? null }),
             status: derivedStatus,
+            ...(ordinaryStatus.userSuppliedUnreviewed ? { user_supplied_unreviewed: true } : {}),
             cluster_id: a.metadata?.cluster_id ?? null,
             reason_for_confidence: collisionExcluded
               ? (surnameOnly
@@ -5964,7 +5980,11 @@ export function buildTools(ctx: ToolContext) {
         source: z.string().optional(),
         metadata: z.record(z.unknown()).optional(),
       })),
-      execute: async ({ kind, value, confidence, source, metadata }) => {
+      execute: async ({ kind, value, confidence, source: sourceIn, metadata: metadataIn }) => {
+        // E3: recalled memory is context, never a source (lib/memory-context.ts).
+        const memCtx = applyMemoryContext(sourceIn, metadataIn);
+        const source = memCtx.source;
+        const metadata = memCtx.metadata;
         // G1/G2 apply HERE TOO. This shim is advertised in catalog.ts, so the
         // model may call it, and it wrote artifacts with none of the write-path
         // gates the plural tool enforces — an open bypass of the entire #466
@@ -6011,7 +6031,12 @@ export function buildTools(ctx: ToolContext) {
           : bioName
             ? Math.min(cap.confidence, BIO_CROSS_LINK_NAME_CAP)
             : cap.confidence;
-        const ordinaryStatus = resolveRecordingStatus(cap, metadata ?? null);
+        // E2: pasted is not checked — analyst-supplied-only rows never reach verified/confirmed.
+        const ordinaryStatus = guardUserSuppliedStatus(
+          resolveRecordingStatus(cap, metadata ?? null),
+          source,
+          metadata as Record<string, unknown> | null | undefined,
+        );
         const resolvedReasonNotConfirmed = bioName
           ? "name appears only in a bio/linked-accounts block — confirm it is the subject, not a mentioned third party"
           : ordinaryStatus.reasonNotConfirmed;
@@ -6031,6 +6056,7 @@ export function buildTools(ctx: ToolContext) {
           source_category: cap.source_classes,
           query_types: queryTypesOf({ value: v.value, kind: v.kind, metadata: metadata ?? null }),
           status: derivedStatus,
+          ...(ordinaryStatus.userSuppliedUnreviewed ? { user_supplied_unreviewed: true } : {}),
           cluster_id: metadata?.cluster_id ?? null,
           reason_for_confidence: collisionExcluded
             ? (surnameOnly
