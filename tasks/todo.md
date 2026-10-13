@@ -82,6 +82,23 @@ Pass: repetition adds no authority (stays 50); four providers = 1 independent cl
 Fail: relationship-bearing rows scored 60-80 (a score alone does not show wrong relationship semantics; the violated invariant still has to be stated and tested at claim level); "never archived" value persisted at 70 (the #693 negative rule reads source labels, not value text). Case 8 is NOT an end-to-end reproduction: `hasReportShape` is the completion contract (`resolveTerminalState`/recovery decide complete vs Interrupted), not an authority check, so it proves only that it does not enforce adjudication.
 Spec only: no count reconciler exists in app code ("20 routes" vs 9 + 12).
 
+## Queue status — six stages, tracked separately (verified 2026-10-13T00:54:41Z)
+
+documented → implemented → tested → merged → deployed → production-verified. A documented, green-but-open or draft change is NOT shipped. Every open PR below is a DRAFT; none is reviewed (no formal reviews or threads on #700-703). CI badges are from Oct 6 heads against the OLD base `8039235` (37 commits behind `main` `c4bd432`); the "tested" column for them is MY run on the PR merged onto current `main`, local only. Frontend PRs reach production on merge (Vercel); edge PRs need the separate stamp -> mirror sync -> `verify:deploy` -> Lovable deploy -> moved `/health` build cycle, one at a time.
+
+| Item | Kind | documented | implemented | tested (on current main, local) | merged | deployed | prod-verified | Blockers / notes |
+|---|---|---|---|---|---|---|---|---|
+| #737 docs | docs | yes | n/a | n/a | no | n/a | n/a | records the investigation; fixes no behaviour |
+| #738 PR A memory authority | edge | yes | yes | yes: edge 2257/0/6, vitest, typecheck, 24 new tests | no | no | no | not a complete integrity fix |
+| PR B report boundary | edge + frontend | design only | no | no | no | no | no | needs approval of the design |
+| #700 area-code warning | frontend | yes | yes | yes: 15 files/241 targeted, full vitest 190/2397+1 skip, typecheck, e2e 52+2 skip | no | no | no | clean vs main; no review |
+| #702 LeakCheck 403 wording | frontend | yes | yes | yes: 32 targeted, full vitest 189/2395+1 skip, typecheck, e2e 52+2 skip | no | no | no | clean vs main; no review |
+| #593 dedupe authority | frontend | yes | yes | yes: full vitest 189/2400+1 skip, typecheck, e2e 52+2 skip | no | no | no | clean vs main; covers the dedupe half of R3 only |
+| #703 Opsis 402 hint | edge | yes | yes | yes: edge 2244/0/6 | no | no | no | live Opsis contract NOT run (needs JD's key); Opsis unused in coresint |
+| #701 LeakCheck key probe | edge | yes | yes | scratch-resolved only: edge 2255/0/6 | no | no | no | CONFLICTS with main (health-handler imports); OFF by default; valid-key/no-quota assumption UNVERIFIED |
+
+Overlap with current work: #593 vs R3 (dedupe done there; the `badgesFor` raw-source-string count is NOT touched); #666 touches the report builder for zero-hit lookups (report layer only; the write-side value-text claim is separate); #698 changes catalog names for 5 other tools, not jina/gemini_deep_dork/minimax_correlate. Pairwise merge-tree: no conflicts among #593, #666, #698, #699, #695, #700, #702, #703 and #738. #701, #667, #613, #516 already conflict with `main`.
+
 ## Revised plan (2026-10-13, awaiting JD approval; no application edits made)
 
 ### PR A (edge): stop prompt/history authority escalation. One behaviour change + kill switch + one new `/health` key.
