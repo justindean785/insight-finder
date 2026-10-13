@@ -29,6 +29,14 @@ const SEVERITY: CanonicalOutcome[] = [
   "cancelled", "skipped", "empty", "success",
 ];
 
+/** Attempts that carry no answer from the provider: they never reached it (governance / circuit-breaker skips, outer
+ *  budget cancellations), got no reply (timeouts) or say nothing (opaque errors). They do not make an earlier
+ *  refusal stale. */
+const NOT_A_PROVIDER_ANSWER = new Set<CanonicalOutcome>(["skipped", "cancelled", "timeout", "unknown"]);
+
+/** Says the explanation that follows describes the latest refusal, not every attempt counted before it. */
+const LAST_REFUSAL_LEAD = "Most recent LeakCheck refusal:";
+
 function emptyCounts(): Record<CanonicalOutcome, number> {
   return {
     success: 0, empty: 0, skipped: 0, cancelled: 0, timeout: 0,
@@ -40,6 +48,9 @@ export interface ToolIssue {
   category: CanonicalOutcome;
   message: string;
   statusCode: number | null;
+  /** True for an explanation on a row that does NOT need attention (a LeakCheck 403 on the calm http_denied
+   *  category): shown as information, not styled as a fault. Absent on every needs-attention issue. */
+  informational?: boolean;
 }
 
 export interface ToolHealthRow {
@@ -50,7 +61,8 @@ export interface ToolHealthRow {
   worst: CanonicalOutcome;
   /** True only for genuine problems (config/failed/unknown). */
   needsAttention: boolean;
-  /** Most recent needs-attention issue, with a normalized human message. */
+  /** Most recent needs-attention issue, with a normalized human message — or, for a LeakCheck 403 on a calm row,
+   *  an `informational` explanation. Null when there is nothing to say. */
   lastIssue: ToolIssue | null;
 }
 
@@ -87,11 +99,14 @@ export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "load
   // created_at ascending so the last needs-attention row we see is the most recent.
   const sorted = [...raw].sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
 
-  // LeakCheck's documented 403 reading, per tool, for tools whose MOST RECENT attempt was such a refusal. http_denied is
-  // the calm bucket — it never needs attention on its own — so no message was ever built for it and the Health tab
-  // showed only a "Denied" chip. Only a documented LeakCheck 403 gets an explanation; every other tool and status
-  // is untouched.
+  // LeakCheck's documented 403 reading, per tool, while the tool's last ANSWER FROM THE PROVIDER was such a refusal.
+  // http_denied is the calm bucket — it never needs attention on its own — so no message was ever built for it and the
+  // Health tab showed only a "Denied" chip. Only a documented LeakCheck 403 gets an explanation; every other tool and
+  // status is untouched. After a 401/403 the circuit breaker suppresses the provider for the run, so what follows is
+  // SKIPPED rows that never reached it: skips, cancellations, timeouts and opaque errors are not answers and leave
+  // the explanation standing; a success, an empty result or any different provider answer makes it stale.
   const lastRefusal = new Map<string, string>();
+  const refusalRows = new Map<string, number>();
 
   for (const r of sorted) {
     const name = r.tool_name?.trim() || "unknown";
@@ -110,8 +125,12 @@ export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "load
     totals.total += 1;
 
     const refusal = category === "http_denied" ? explainLeakCheckRefusal(name, r.error_msg, r.status_code) : null;
-    if (refusal) lastRefusal.set(name, refusal);
-    else lastRefusal.delete(name); // a later attempt that was not such a refusal makes the explanation stale
+    if (refusal) {
+      lastRefusal.set(name, refusal);
+      refusalRows.set(name, (refusalRows.get(name) ?? 0) + 1);
+    } else if (!NOT_A_PROVIDER_ANSWER.has(category)) {
+      lastRefusal.delete(name);
+    }
 
     if (CANONICAL_OUTCOME_META[category].needsAttention) {
       row.needsAttention = true;
@@ -136,16 +155,23 @@ export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "load
     if (!row.needsAttention && row.total >= REPEAT_FAILURE_FLOOR && row.counts.success === 0 && row.counts.empty === 0) {
       row.needsAttention = true;
       if (!row.lastIssue) {
+        // The count sentence is about ALL attempts (skips included); the explanation is about the most recent REFUSAL.
         row.lastIssue = {
           category: row.worst,
-          message: `${row.total} attempts on this case, none returned data — stop calling it here.${refusal ? ` ${refusal}` : ""}`,
+          message: `${row.total} attempts on this case, none returned data — stop calling it here.${refusal ? ` ${LAST_REFUSAL_LEAD} ${refusal}` : ""}`,
           statusCode: null,
         };
       }
     } else if (refusal && !row.lastIssue) {
-      // One or two attempts: the category stays http_denied and the row stays calm (no attention), but the analyst
-      // is told what the refusal means. Never replaces a real needs-attention issue already on the row.
-      row.lastIssue = { category: "http_denied", message: refusal, statusCode: null };
+      // One or two attempts: the category stays http_denied and the row stays calm (no attention), but the analyst is
+      // told what the refusal means. Never replaces a real needs-attention issue already on the row.
+      const onlyRefusals = row.total === (refusalRows.get(row.toolName) ?? 0);
+      row.lastIssue = {
+        category: "http_denied",
+        message: onlyRefusals ? refusal : `${LAST_REFUSAL_LEAD} ${refusal}`,
+        statusCode: null,
+        informational: true,
+      };
     }
   }
 

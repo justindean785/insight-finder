@@ -28,7 +28,8 @@
  *  cancelled          aborted by the investigation's overall time budget (not the tool's fault)
  *  timeout            the tool's own per-call time budget was exceeded
  *  rate_limited       provider returned 429 / asked us to back off
- *  http_denied        provider returned 403 — access blocked (bot protection / IP reputation)
+ *  http_denied        provider returned 403 — access blocked (bot protection / IP reputation). Exception:
+ *                     LeakCheck documents its 403 as an inactive plan or a reached quota — see explainLeakCheckRefusal
  *  blocked            provider returned 451 — legally unavailable
  *  config_error       401/402, or an invalid / missing API key — operator-actionable
  *  failed             genuine provider error: 5xx, or a 400/422 bad request
@@ -96,7 +97,8 @@ const DENIED_RE = /\bforbidden\b|access denied/i;
 /** The two messages LeakCheck documents for HTTP 403 (docs.leakcheck.io/errors, checked 2026-10-13). Matched as the WHOLE text. */
 const LEAKCHECK_PLAN_RE = /^["']?active plan required["']?\.?$/i;
 const LEAKCHECK_LIMIT_RE = /^["']?limit reached["']?\.?$/i;
-/** What the edge writes when a refused 403 carried no provider words at all (cache.ts extractToolError), or nothing. */
+/** What the edge stores when the refused call's result has no top-level error string (cache.ts extractToolError), or nothing.
+ *  It says nothing about what LeakCheck itself returned — only that the stored row carries no message. */
 const STATUS_ONLY_RE = /^(?:upstream returned HTTP 403)?$/i;
 
 // A 5xx does NOT always mean "the provider is down". Providers routinely answer
@@ -173,12 +175,14 @@ export function classifyDetailedOutcome(
  *
  * LeakCheck DOCUMENTS 403 as exactly two things — "Active plan required" and "Limit reached"
  * (docs.leakcheck.io/errors) — so for THAT tool, on THAT status, the generic "bot protection" sentence points at
- * the wrong fix. The status alone cannot say WHICH of the two, so one is named only when LeakCheck's own words
- * did; with no provider words (the edge writes "upstream returned HTTP 403") it says "either" and that it was not
- * told. The headline asserts nothing but the refusal. Deliberately keyed on the tool name and the 403 status,
- * never on keywords: a 403 from a website, a CDN or a scraping tool saying "subscription" or "quota" is the
- * TARGET's refusal, not a problem with the analyst's provider plan. A documented message is accepted only as the
- * WHOLE text, so a WAF page, "Forbidden: Limit reached" or a longer sentence containing the phrase is not read as
+ * the wrong fix. The status alone cannot say WHICH of the two, so one is named only when the STORED text is
+ * LeakCheck's documented message; otherwise the sentence says "either" and that the stored record does not say
+ * which. It deliberately does not claim LeakCheck omitted anything: the tool keeps the provider's body in its result,
+ * the log row simply does not preserve it. The headline asserts nothing but the refusal. Keyed on the tool name and
+ * the 403 status, never on keywords: a 403 from a website, a CDN or a scraping tool saying "subscription" or "quota"
+ * is the TARGET's refusal, not a problem with the analyst's provider plan. A documented message is accepted only as
+ * the WHOLE stored text and is then quoted CANONICALLY, so a stored value that already carries quotes cannot double
+ * them, and a WAF page, "Forbidden: Limit reached" or a longer sentence containing the phrase is not read as
  * LeakCheck's message. Exported so the Health hook and the wording helper cannot drift apart.
  */
 export function explainLeakCheckRefusal(
@@ -188,15 +192,14 @@ export function explainLeakCheckRefusal(
 ): string | null {
   if (toolName !== "leakcheck_lookup" || statusCode !== 403) return null;
   const raw = String(errorMsg ?? "").trim();
-  const short = raw.length > 140 ? `${raw.slice(0, 139)}…` : raw;
   if (LEAKCHECK_PLAN_RE.test(raw)) {
-    return `Refused (HTTP 403) — "${short}". LeakCheck reports this when the account has no active plan. Check the plan on the LeakCheck account.`;
+    return 'Refused (HTTP 403) — "Active plan required". LeakCheck reports this when the account has no active plan. Check the plan on the LeakCheck account.';
   }
   if (LEAKCHECK_LIMIT_RE.test(raw)) {
-    return `Refused (HTTP 403) — "${short}". LeakCheck reports this when the plan's usage quota is used up. Check the quota on the LeakCheck account.`;
+    return 'Refused (HTTP 403) — "Limit reached". LeakCheck reports this when the plan\'s usage quota is used up. Check the quota on the LeakCheck account.';
   }
   if (STATUS_ONLY_RE.test(raw)) {
-    return "Refused (HTTP 403). LeakCheck documents 403 as either an inactive plan or a reached usage quota, and the response did not say which. Check the plan and remaining quota on the LeakCheck account.";
+    return "Refused (HTTP 403). LeakCheck documents 403 as either an inactive plan or a reached usage quota, and the stored record does not say which. Check the plan and remaining quota on the LeakCheck account.";
   }
   return null;
 }
