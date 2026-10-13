@@ -284,6 +284,52 @@ Deno.test("repeated folds stay LINEAR: a long run of ', unverified' tails costs 
   assertEquals(spaced.memory, true);
 });
 
+// Final review of 8d20536 (finding 1): the linear-time head buffer was NOT equivalent to judging the whole token. It
+// (a) did not append a folded comma, so with no space a second tail read "memory_recallunverified" (no boundary), and
+// (b) buffered leading whitespace, so 244+ leading spaces (or 248 after an unclosed "[") used up the 256-char head
+// before "memory" ever arrived. Both left a stray "unverified" SOURCE beside a row that is really memory-only. Never
+// a confidence raise (the row is still downgraded) — but the disclosure is weaker than c95a2ac's, and a stray source
+// named "unverified" is exactly what the tail rule exists to remove.
+Deno.test("head buffer parity: comma-no-space tails and very long leading whitespace fold exactly like the spaced, short forms", () => {
+  const memoryOnly = (label: string) => {
+    const r = applyMemoryContext(label, {});
+    assertEquals(r.memory, true, JSON.stringify(label.slice(0, 40)));
+    assertEquals(r.memoryOnly, true, `${JSON.stringify(label.slice(0, 40))} → source ${JSON.stringify(r.source)}`);
+    assertEquals((r.metadata as Record<string, unknown>).status, "needs_review");
+  };
+  // (a) a doubled tail with no space after the comma
+  memoryOnly("memory_recall,unverified,unverified");
+  memoryOnly("memory,unverified,unverified");
+  memoryOnly("memory_recall, unverified, unverified");
+  // (b) leading whitespace longer than the head buffer, bare and after an unclosed "["
+  for (const n of [243, 244, 255, 256, 300, 5000]) {
+    memoryOnly(" ".repeat(n) + "memory_recall, unverified");
+    memoryOnly("[" + " ".repeat(n) + "memory_recall, unverified");
+  }
+  // …and a real source beside it survives ALONE (no stray "unverified" source in either position).
+  for (const n of [244, 300]) {
+    const r = applyMemoryContext("oathnet_lookup + " + " ".repeat(n) + "memory_recall, unverified", {});
+    assertEquals(r.source, "oathnet_lookup");
+  }
+  const r2 = applyMemoryContext("memory_recall,unverified,unverified + oathnet_lookup", {});
+  assertEquals(r2.source, "oathnet_lookup");
+});
+
+Deno.test("head buffer parity: whitespace runs inside the head do not change the verdict, and none of this costs time", () => {
+  // "[" + whitespace + "memory…" matches the rule for ANY amount of whitespace; so must the buffered head.
+  const bracketed = applyMemoryContext("[" + "\t \n".repeat(400) + "memory_recall prior]", {});
+  assertEquals(bracketed.memory, true);
+  // A look-alike NAME with long leading whitespace is still a source (no word boundary after "memory").
+  const lookalike = applyMemoryContext(" ".repeat(400) + "Memoryhole archive", {});
+  assertEquals(lookalike.memory, false);
+  assertEquals(lookalike.source, " ".repeat(400) + "Memoryhole archive");
+  const t0 = performance.now();
+  const big = applyMemoryContext(" ".repeat(300_000) + "memory_recall" + ",unverified".repeat(30_000), {});
+  const ms = performance.now() - t0;
+  assertEquals(big.memoryOnly, true);
+  assert(ms < 1000, `took ${ms.toFixed(0)} ms — the head buffer must stay linear`);
+});
+
 Deno.test("the label cannot count as independent corroboration — before or after the rule, alone or beside a real source", () => {
   const real = "breach_check";
   const cls = (s: string | undefined) => classifySourceLabel(s);

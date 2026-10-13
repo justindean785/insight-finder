@@ -68,9 +68,18 @@ function splitTopLevel(label: string): string[] {
   const unmatched = unmatchedOpenBrackets(label);
   let depth = 0;
   let cur = "";
-  // First HEAD_CHARS of the current token. MEMORY_TOKEN_RE is anchored at the start, so the verdict needs only the
-  // head; re-reading the whole accumulated token at every folded comma was quadratic (600 KB took ~9 s).
+  // First HEAD_CHARS of the current token, with every whitespace run collapsed to ONE space and leading whitespace
+  // skipped. MEMORY_TOKEN_RE is anchored at the start and uses only quantified whitespace (\s*, \s+), so the verdict
+  // on the collapsed head equals the verdict on the whole token; re-reading the whole accumulated token at every
+  // folded comma was quadratic (600 KB took ~9 s). Collapsing matters: 244+ leading spaces used to fill the buffer
+  // before "memory" arrived, and a folded comma that was not buffered left "memory_recallunverified" (no boundary).
   let head = "";
+  const buffer = (c: string) => {
+    if (head.length >= HEAD_CHARS) return;
+    if (/\s/.test(c)) {
+      if (head.length > 0 && !head.endsWith(" ")) head += " ";
+    } else head += c;
+  };
   for (let i = 0; i < label.length; i++) {
     const ch = label[i];
     if (ch === "(" || (ch === "[" && !unmatched.has(i))) depth++;
@@ -79,8 +88,9 @@ function splitTopLevel(label: string): string[] {
       // "<memory token>, unverified": the comma is part of the citation, not a boundary between two sources.
       if (ch === ",") {
         CITATION_TAIL_RE.lastIndex = i + 1;
-        if (CITATION_TAIL_RE.test(label) && MEMORY_TOKEN_RE.test(head.trimStart())) {
+        if (CITATION_TAIL_RE.test(label) && MEMORY_TOKEN_RE.test(head)) {
           cur += ch;
+          buffer(ch);
           continue;
         }
       }
@@ -90,7 +100,7 @@ function splitTopLevel(label: string): string[] {
       continue;
     }
     cur += ch;
-    if (head.length < HEAD_CHARS) head += ch;
+    buffer(ch);
   }
   parts.push(cur);
   return parts.map((p) => p.trim()).filter(Boolean);
