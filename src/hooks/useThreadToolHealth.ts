@@ -31,7 +31,8 @@ const SEVERITY: CanonicalOutcome[] = [
 
 /** Attempts that carry no answer from the provider: they never reached it (governance / circuit-breaker skips, outer
  *  budget cancellations), got no reply (timeouts) or say nothing (opaque errors). They do not make an earlier
- *  refusal stale. */
+ *  refusal stale. A cache REPLAY is the same kind of non-answer whatever outcome it was logged with: see `cached`
+ *  on `RawRow`. */
 const NOT_A_PROVIDER_ANSWER = new Set<CanonicalOutcome>(["skipped", "cancelled", "timeout", "unknown"]);
 
 /** Says the explanation that follows describes the latest refusal, not every attempt counted before it. */
@@ -82,6 +83,10 @@ interface RawRow {
   error_msg: string | null;
   status_code: number | null;
   created_at: string | null;
+  /** True when the edge answered from its cache (cache.ts logs every replay with cached = true, ok = true). The
+   *  provider was not contacted, so the row says nothing about whether an earlier refusal still stands. The column is
+   *  NOT NULL DEFAULT false, so live rows read false; absent/null is treated as live. */
+  cached?: boolean | null;
 }
 
 /** Attempts on one case with zero data back before a tool is flagged regardless of category. */
@@ -104,7 +109,8 @@ export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "load
   // Health tab showed only a "Denied" chip. Only a documented LeakCheck 403 gets an explanation; every other tool and
   // status is untouched. After a 401/403 the circuit breaker suppresses the provider for the run, so what follows is
   // SKIPPED rows that never reached it: skips, cancellations, timeouts and opaque errors are not answers and leave
-  // the explanation standing; a success, an empty result or any different provider answer makes it stale.
+  // the explanation standing, and so does a cache replay (it is logged as an ordinary success, but the provider was
+  // never asked); a LIVE success, an empty result or any different provider answer makes it stale.
   const lastRefusal = new Map<string, string>();
   const refusalRows = new Map<string, number>();
 
@@ -128,7 +134,7 @@ export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "load
     if (refusal) {
       lastRefusal.set(name, refusal);
       refusalRows.set(name, (refusalRows.get(name) ?? 0) + 1);
-    } else if (!NOT_A_PROVIDER_ANSWER.has(category)) {
+    } else if (r.cached !== true && !NOT_A_PROVIDER_ANSWER.has(category)) {
       lastRefusal.delete(name);
     }
 
@@ -199,7 +205,7 @@ export function useThreadToolHealth(threadId: string): ThreadToolHealth {
     const load = async () => {
       const { data, error } = await supabase
         .from("tool_usage_log")
-        .select("tool_name,outcome,ok,error_msg,status_code,created_at")
+        .select("tool_name,outcome,ok,error_msg,status_code,created_at,cached")
         .eq("thread_id", threadId)
         .order("created_at", { ascending: true });
       if (!alive) return;

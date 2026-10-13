@@ -644,3 +644,159 @@ describe("aggregateToolHealth — a LeakCheck 403 is explained, and ONLY a LeakC
     expect(by("hibp_lookup").lastIssue).toBeNull();
   });
 });
+
+describe("aggregateToolHealth — a cache replay is not a provider answer (2026-10-13)", () => {
+  // cache.ts answers from the thread/user cache BEFORE the circuit breaker ("Cache lookup happens before live-call
+  // policy"), and logs the replay with logUsage(cached=true, ok=true, …): outcome "ok" (or "empty" when the replayed
+  // payload is a proven no-record), cached = true, error_msg and status_code nulled for "ok". The provider was never
+  // contacted, so the replay cannot say whether the 403 still stands: only a LIVE provider response may clear it.
+  // Live rows are written with cached = false (the column is NOT NULL DEFAULT false).
+  const T = (n: number) => `2026-10-13T01:${String(n).padStart(2, "0")}:00Z`;
+  const STORED = "upstream returned HTTP 403";
+  const LK_EITHER =
+    "Refused (HTTP 403). LeakCheck documents 403 as either an inactive plan or a reached usage quota, and the stored record does not say which. Check the plan and remaining quota on the LeakCheck account.";
+  const LEAD = "Most recent LeakCheck refusal:";
+  const repeat = (n: number) => `${n} attempts on this case, none returned data — stop calling it here.`;
+  const calm = (message: string) => ({ category: "http_denied", message, statusCode: null, informational: true });
+  const BREAKER = "401/403 unauthorized — provider 'leakcheck' suppressed for investigation";
+
+  const LK = "leakcheck_lookup";
+  const live = (tool: string, n: number, over: Record<string, unknown> = {}) =>
+    ({ tool_name: tool, outcome: "failed", error_msg: STORED, status_code: 403, ok: false, cached: false, created_at: T(n), ...over });
+  const refusal = (n: number) => live(LK, n);
+  const replay = (n: number, outcome: "ok" | "empty" = "ok", tool = LK) =>
+    ({ tool_name: tool, outcome, error_msg: null, status_code: null, ok: true, cached: true, created_at: T(n) });
+  const skip = (n: number) =>
+    ({ tool_name: LK, outcome: "skipped", error_msg: BREAKER, status_code: null, ok: false, cached: false, created_at: T(n) });
+  const cancelled = (n: number) =>
+    ({ tool_name: LK, outcome: "failed", error_msg: "AbortError: The signal has been aborted", status_code: null, ok: false, cached: false, created_at: T(n) });
+  const liveOk = (n: number) => ({ tool_name: LK, outcome: "ok", error_msg: null, status_code: null, ok: true, cached: false, created_at: T(n) });
+  const liveEmpty = (n: number) => ({ tool_name: LK, outcome: "empty", error_msg: null, status_code: null, ok: true, cached: false, created_at: T(n) });
+
+  it("[403, replay]: the replay does not clear the explanation — and it is counted as the success the log says it is", () => {
+    const { rows, attention, totals } = aggregateToolHealth([refusal(0), replay(1)]);
+    expect(rows[0].counts).toMatchObject({ http_denied: 1, success: 1 });
+    expect(totals).toMatchObject({ http_denied: 1, success: 1, total: 2 });
+    expect(rows[0].needsAttention).toBe(false);
+    expect(attention).toEqual([]);
+    expect(rows[0].lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+  });
+
+  it("[403, replay of a no-record result]: same — an empty replay is not a live answer either", () => {
+    const { rows } = aggregateToolHealth([refusal(0), replay(1, "empty")]);
+    expect(rows[0].counts).toMatchObject({ http_denied: 1, empty: 1 });
+    expect(rows[0].lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+  });
+
+  it("[403, replay, skip] and the other orders of replay, skip and cancellation keep the explanation", () => {
+    for (const seq of [
+      [refusal(0), replay(1), skip(2)],
+      [refusal(0), skip(1), replay(2)],
+      [refusal(0), cancelled(1), replay(2)],
+      [refusal(0), replay(1), replay(2), skip(3), skip(4)],
+      [refusal(0), skip(1), skip(2), replay(3)],
+    ]) {
+      const { rows, attention } = aggregateToolHealth(seq);
+      expect(rows[0].counts.http_denied).toBe(1);                      // skips and replays are never extra refusals
+      expect(rows[0].needsAttention).toBe(false);                      // a replayed success is data, so the floor is not met
+      expect(attention).toEqual([]);
+      expect(rows[0].lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+    }
+  });
+
+  it("a replay of a result that is not a success does not clear it either: 429, 451, another 403 text", () => {
+    // cache.ts only replays genuine successes, so these cannot be written today; the rule is about `cached`, not about
+    // what the replayed row happens to contain, so it must hold whatever the row says.
+    for (const stale of [
+      live(LK, 1, { cached: true, error_msg: "rate limited", status_code: 429 }),
+      live(LK, 1, { cached: true, error_msg: "unavailable for legal reasons", status_code: 451 }),
+      live(LK, 1, { cached: true, error_msg: "Attention Required! | Cloudflare" }),
+    ]) {
+      const { rows } = aggregateToolHealth([refusal(0), stale]);
+      expect(rows[0].lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+    }
+  });
+
+  it("a replay never overwrites a real needs-attention issue, and the explanation never does either", () => {
+    const { rows } = aggregateToolHealth([refusal(0), live(LK, 1, { cached: true, error_msg: "leakcheck 502 bad gateway", status_code: 502 })]);
+    expect(rows[0].needsAttention).toBe(true);
+    expect(rows[0].lastIssue!.category).toBe("failed");
+    expect(rows[0].lastIssue!.message).not.toMatch(/LeakCheck documents|LeakCheck refusal/);
+  });
+
+  it("a LATER LIVE provider response still clears it, replays in between or not", () => {
+    for (const later of [
+      liveOk(3), liveEmpty(3),
+      live(LK, 3, { error_msg: "rate limited", status_code: 429 }),
+      live(LK, 3, { error_msg: "unavailable for legal reasons", status_code: 451 }),
+      live(LK, 3, { error_msg: "Attention Required! | Cloudflare" }),
+    ]) {
+      expect(aggregateToolHealth([refusal(0), replay(1), later]).rows[0].lastIssue).toBeNull();
+      expect(aggregateToolHealth([refusal(0), replay(1), skip(2), later]).rows[0].lastIssue).toBeNull();
+      expect(aggregateToolHealth([refusal(0), later]).rows[0].lastIssue).toBeNull();
+    }
+  });
+
+  it("a replay does not bring a cleared explanation back: [403, live success, replay]", () => {
+    expect(aggregateToolHealth([refusal(0), liveOk(1), replay(2)]).rows[0].lastIssue).toBeNull();
+  });
+
+  it("a new LIVE 403 after a replay is explained again (it is the most recent refusal)", () => {
+    const { rows } = aggregateToolHealth([refusal(0), replay(1), refusal(2)]);
+    expect(rows[0].counts).toMatchObject({ http_denied: 2, success: 1 });
+    expect(rows[0].lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+  });
+
+  it("a row with cached false, null or absent is a live row, exactly as before", () => {
+    for (const cached of [false, null, undefined]) {
+      const answer = { ...liveOk(1), cached };
+      if (cached === undefined) delete (answer as Record<string, unknown>).cached;
+      expect(aggregateToolHealth([refusal(0), answer]).rows[0].lastIssue).toBeNull();
+    }
+  });
+
+  it("only LeakCheck is affected: every other tool, with any cached flag, reads exactly as before", () => {
+    for (const tool of ["jina_reader_scrape", "reddit_user", "shodan_host"]) {
+      const same = (rows: Array<Record<string, unknown>>) => {
+        const withFlag = aggregateToolHealth(rows as never);
+        const without = aggregateToolHealth(rows.map(({ cached: _c, ...rest }) => rest) as never);
+        expect(withFlag).toEqual(without);
+        return withFlag;
+      };
+      expect(same([live(tool, 0), replay(1, "ok", tool)]).rows[0].lastIssue).toBeNull();
+      expect(same([live(tool, 0), replay(1, "ok", tool), replay(2, "ok", tool)]).rows[0].lastIssue).toBeNull();
+      expect(same([live(tool, 0), live(tool, 1), live(tool, 2)]).rows[0].lastIssue).toEqual({ category: "http_denied", message: repeat(3), statusCode: null });
+    }
+  });
+
+  it("the cached flag changes NOTHING but the LeakCheck explanation: counts, totals, attention flags and sort order are identical", () => {
+    const mixed = (cached: boolean | undefined) => {
+      const flag = (r: Record<string, unknown>) => (cached === undefined ? (({ cached: _c, ...rest }) => rest)(r) : { ...r, cached });
+      return [
+        refusal(0), replay(1), skip(2), replay(3, "empty"),
+        live("jina_reader_scrape", 4), live("jina_reader_scrape", 5), live("jina_reader_scrape", 6),
+        live("exa_search", 7, { error_msg: "boom", status_code: 500 }),
+        replay(8, "ok", "hibp_lookup"), replay(9, "ok", "hibp_lookup"),
+      ].map((r) => flag(r as Record<string, unknown>));
+    };
+    const strip = (o: ReturnType<typeof aggregateToolHealth>) => ({
+      totals: o.totals,
+      attention: o.attention.map((r) => r.toolName),
+      rows: o.rows.map(({ lastIssue: _i, ...rest }) => rest),
+    });
+    const a = aggregateToolHealth(mixed(true) as never);
+    const b = aggregateToolHealth(mixed(false) as never);
+    const c = aggregateToolHealth(mixed(undefined) as never);
+    // Marking rows cached must not move a count, a flag or the order — including the rows that are NOT LeakCheck.
+    expect(strip(a)).toEqual(strip(b));
+    expect(strip(a)).toEqual(strip(c));
+    // and the only difference in the issues is the LeakCheck line itself.
+    const issue = (o: ReturnType<typeof aggregateToolHealth>, t: string) => o.rows.find((r) => r.toolName === t)!.lastIssue;
+    for (const t of ["jina_reader_scrape", "exa_search", "hibp_lookup"]) {
+      expect(issue(a, t)).toEqual(issue(b, t));
+      expect(issue(a, t)).toEqual(issue(c, t));
+    }
+    expect(issue(a, LK)).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+    expect(issue(b, LK)).toBeNull();                                    // the old rule: a success-class row clears it
+  });
+});
