@@ -167,7 +167,15 @@ Deno.test("unparsable JSON input is logged as unparsable/invalid with no values"
 
 Deno.test("the error message classifies as a FAILURE (no skip/empty words) so a reclassification can't hide it", () => {
   for (const reason of ["invalid_input", "unknown_tool", "unparsable_input"] as const) {
-    const msg = inputFailureMessage({ toolName: "t", reason, invalidFields: ["handle (invalid_type)"], sentKeys: [] });
+    const msg = inputFailureMessage({ toolName: "t", reason, invalidFields: ["handle (invalid_type)"], sentKeys: [], errorChain: [], sentTypes: {}, inputKind: "object", inputChars: null });
+    assertEquals(classifyToolOutcome(msg, null), "failed", msg);
+  }
+  // the two new wordings must also classify as failures
+  for (const f of [
+    { toolName: "t", reason: "invalid_json" as const, invalidFields: [], sentKeys: [], errorChain: ["AI_InvalidToolInputError", "AI_JSONParseError"], sentTypes: {}, inputKind: "text" as const, inputChars: 21 },
+    { toolName: "t", reason: "invalid_input" as const, invalidFields: [], sentKeys: [], errorChain: ["AI_InvalidToolInputError"], sentTypes: {}, inputKind: "object" as const, inputChars: null },
+  ]) {
+    const msg = inputFailureMessage(f);
     assertEquals(classifyToolOutcome(msg, null), "failed", msg);
   }
 });
@@ -200,7 +208,10 @@ Deno.test("garbage in never throws: non-array, null parts, parts without an erro
 });
 
 Deno.test("a free, instant row: zero cost, zero charge, zero duration, not cached", () => {
-  const row = buildInputFailureRow({ toolName: "t", reason: "invalid_input", invalidFields: [], sentKeys: [] }, { userId: "u", threadId: "th", stepNumber: 3 });
+  const row = buildInputFailureRow(
+    { toolName: "t", reason: "invalid_input", invalidFields: [], sentKeys: [], errorChain: [], sentTypes: {}, inputKind: "object", inputChars: null },
+    { userId: "u", threadId: "th", stepNumber: 3 },
+  );
   assertEquals([row.cost_micro_usd, row.charged_micro_usd, row.duration_ms, row.cached, row.status_code], [0, 0, 0, false, null]);
   assertEquals((row.input_json as { runtime: { step: number } }).runtime.step, 3);
 });
@@ -236,4 +247,109 @@ Deno.test("wiring: onStepFinish logs SDK-rejected calls, detached and best-effor
   assert(body.includes("waitUntil"), "it must be detached (EdgeRuntime.waitUntil), never awaited in the step");
   assert(/catch \(e\)/.test(body), "it must be wrapped so a logging fault can never fail the step");
   assert(!/\bawait\b/.test(body), "no await: it must not be able to stall the step or the finalize window");
+});
+
+// ── value-free diagnostics (E1): invalid JSON vs schema, type names, error classes ──────────────
+
+Deno.test("E1: model output that is not valid JSON is its own reason — NOT 'rejected by schema: (unspecified)' — and the raw text is never stored", async () => {
+  const { steps } = await runStep("tif-e1a", "socialfetch_lookup", "{not json SECRET-RAW");
+  const [f] = collectToolInputFailures(steps[0].toolCalls);
+  assertEquals(f.reason, "invalid_json");
+  assertEquals(f.invalidFields, []);
+  assert(f.errorChain.includes("AI_JSONParseError"), f.errorChain.join(">"));
+  assertEquals(f.inputKind, "text");
+  assertEquals(f.inputChars, "{not json SECRET-RAW".length);
+  const msg = inputFailureMessage(f);
+  assert(!msg.includes("(unspecified)") && !msg.includes("by schema"), msg);
+  assert(msg.includes("not valid JSON"), msg);
+  assert(!JSON.stringify(buildInputFailureRow(f, { userId: "u", threadId: "t" })).includes("SECRET"));
+});
+
+Deno.test("E1: a wrong-TYPE field reports expected/received as type names, and sent_types names the type of each sent key", async () => {
+  const { steps } = await runStep("tif-e1b", "socialfetch_lookup", { handle: 5, platform: "tiktok" });
+  const [f] = collectToolInputFailures(steps[0].toolCalls);
+  assertEquals(f.reason, "invalid_input");
+  assertEquals(f.invalidFields, ["handle (invalid_type) [expected string, received number]"]);
+  assertEquals(f.sentTypes, { handle: "number", platform: "string" });
+  assertEquals(f.inputKind, "object");
+  assertEquals(f.inputChars, null);
+  const row = buildInputFailureRow(f, { userId: "u", threadId: "t" }) as { input_json: { runtime: Record<string, unknown> } };
+  assertEquals(row.input_json.runtime.sent_types, { handle: "number", platform: "string" });
+  assertEquals(row.input_json.runtime.input_kind, "object");
+  assert(!("input_chars" in row.input_json.runtime), "input_chars only exists for text input");
+});
+
+Deno.test("E1: invalid_enum_value / invalid_literal carry VALUES in expected/received — they are reported by code only", () => {
+  const [f] = collectToolInputFailures([{
+    toolName: "t", invalid: true, input: { mode: "SECRET-ENUM" },
+    error: { name: "AI_InvalidToolInputError", cause: { cause: { name: "ZodError", issues: [
+      { code: "invalid_enum_value", path: ["mode"], received: "SECRET-ENUM", options: ["a", "b"] },
+      { code: "invalid_literal", path: ["kind"], expected: "SECRET-LIT", received: "SECRET-REC" },
+    ] } } },
+  }]);
+  assertEquals(f.invalidFields, ["mode (invalid_enum_value)", "kind (invalid_literal)"]);
+  assert(!JSON.stringify(f).includes("SECRET"));
+});
+
+Deno.test("E1: an invalid_type token is reported only when it is a zod type NAME — an arbitrary string is dropped", () => {
+  const [f] = collectToolInputFailures([{
+    toolName: "t", invalid: true, input: {},
+    error: { name: "AI_InvalidToolInputError", cause: { cause: { issues: [
+      { code: "invalid_type", path: ["a"], expected: "string", received: "SECRET-NOT-A-TYPE" },
+      { code: "invalid_type", path: ["b"], expected: "SECRET-NOT-A-TYPE", received: "number" },
+      { code: "invalid_type", path: ["c"], expected: "boolean", received: "string" },
+    ] } } },
+  }]);
+  assertEquals(f.invalidFields, ["a (invalid_type) [expected string]", "b (invalid_type)", "c (invalid_type) [expected boolean, received string]"]);
+  assert(!JSON.stringify(f).includes("SECRET"));
+});
+
+Deno.test("E1: non-object inputs are classified by shape only (text / array / empty), with a size for text", () => {
+  const mk = (input: unknown) => collectToolInputFailures([{
+    toolName: "t", invalid: true, input,
+    error: { name: "AI_InvalidToolInputError", cause: { cause: { issues: [{ code: "invalid_type", path: [], expected: "object", received: "string" }] } } },
+  }])[0];
+  assertEquals([mk("abc").inputKind, mk("abc").inputChars], ["text", 3]);
+  assertEquals([mk("").inputKind, mk("").inputChars], ["empty", 0]);
+  assertEquals([mk([1, 2]).inputKind, mk([1, 2]).inputChars], ["array", null]);
+  assertEquals([mk(undefined).inputKind, mk(null).inputKind], ["empty", "empty"]);
+  assertEquals(mk(42).inputKind, "other");
+});
+
+Deno.test("E1: a rejection with no issue and no JSON error names the error CLASSES instead of '(unspecified)'", () => {
+  const [f] = collectToolInputFailures([{
+    toolName: "t", invalid: true, input: {},
+    error: { name: "AI_InvalidToolInputError", message: "SECRET-MESSAGE", cause: { name: "SomethingElse<script>", message: "SECRET-INNER" } },
+  }]);
+  assertEquals(f.reason, "invalid_input");
+  const msg = inputFailureMessage(f);
+  assert(!msg.includes("(unspecified)"), msg);
+  assert(msg.includes("AI_InvalidToolInputError > SomethingElse?script?"), msg);
+  assert(!JSON.stringify(f).includes("SECRET"), "error MESSAGES never enter the record");
+});
+
+Deno.test("E1: the self-test would catch an enum-value leak and a JSON parse failure blamed on the schema", () => {
+  const st = toolInputFailureSelfTest();
+  assertEquals(st.ok, true, st.detail);
+  assert(st.detail.includes("invalid JSON is told apart"), st.detail);
+});
+
+Deno.test("E1: a VALUE that happens to spell a type name is still not reported — only invalid_type issues are annotated", () => {
+  const [f] = collectToolInputFailures([{
+    toolName: "t", invalid: true, input: { mode: "string" },
+    error: { name: "AI_InvalidToolInputError", cause: { cause: { issues: [
+      { code: "invalid_enum_value", path: ["mode"], received: "string", options: ["a", "b"] },
+      { code: "invalid_literal", path: ["kind"], expected: "number", received: "boolean" },
+    ] } } },
+  }]);
+  assertEquals(f.invalidFields, ["mode (invalid_enum_value)", "kind (invalid_literal)"]);
+});
+
+Deno.test("E1: when a JSON-parse error AND field issues are both present, the field issues win (reason stays invalid_input)", () => {
+  const [f] = collectToolInputFailures([{
+    toolName: "t", invalid: true, input: {},
+    error: { name: "AI_InvalidToolInputError", cause: { name: "AI_JSONParseError", cause: { issues: [{ code: "invalid_type", path: ["a"], expected: "string", received: "number" }] } } },
+  }]);
+  assertEquals(f.reason, "invalid_input");
+  assertEquals(f.invalidFields, ["a (invalid_type) [expected string, received number]"]);
 });
