@@ -31,6 +31,7 @@ import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
 import { negativeLookupSelfTest } from "./lib/negative-lookup.ts";
 import { toolInputFailureSelfTest } from "./lib/tool-input-failure.ts";
 import { runEndSelfTest } from "./lib/run-end.ts";
+import { PERSIST_ON_CLIENT_CANCEL_ENV, clientCancelIsolationCheck } from "./lib/client-cancel.ts";
 import { runLeaseSelfTest } from "./lib/run-lease.ts";
 import { recordNameQuarantineEnabled } from "./lib/record-name-quarantine.ts";
 import {
@@ -399,6 +400,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.tool_input_failure_log = toolInputFailureSelfTest();
   // Why a run's persistence/finish handler fired (lib/run-end.ts). Pure, no DB; presence proves the build.
   r.checks.run_end_log = runEndSelfTest();
+  // Does a dropped browser connection end the run? It must not: the server-owned branch is the
+  // only writer of the final transcript (lib/client-cancel.ts). PRESENCE proves the deployed
+  // bundle; `mode` says whether the PERSIST_ON_CLIENT_CANCEL legacy switch is on.
+  r.checks.client_cancel_isolation = clientCancelIsolationCheck(Deno.env.get(PERSIST_ON_CLIENT_CANCEL_ENV));
   // S1a — is admission atomic (one conditional UPDATE, 409 on a live heartbeat)? Pure.
   // Its PRESENCE proves the build with the lease is live; ok:false means the filter
   // drifted from the recovery stale bar. Kill switch: RUN_LEASE_DISABLED.

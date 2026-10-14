@@ -5,6 +5,7 @@
 
 import { convertToModelMessages, streamText, generateText, stepCountIs, type UIMessage, type ModelMessage } from "npm:ai@6";
 import { classifyRunEnd, runEndLogDisabled, runEndNote } from "./lib/run-end.ts";
+import { PERSIST_ON_CLIENT_CANCEL_ENV, persistOnClientCancelEnabled } from "./lib/client-cancel.ts";
 
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import * as circuit from "./circuit.ts";
@@ -1769,9 +1770,11 @@ Deno.serve(async (req) => {
     ) => {
       if (finalPersisted) return;
       finalPersisted = true;
-      // WHY is this handler running? It fires from BOTH the stream's flush (normal end) and its
-      // cancel (the browser went away), and the first caller wins — so a browser cancel persists a
-      // PARTIAL transcript while the loop is still going. Observability only: see lib/run-end.ts.
+      // WHY is this handler running? Normally from the server-owned persistence branch's flush,
+      // when the loop has finished. Only with PERSIST_ON_CLIENT_CANCEL=true is it also wired to
+      // the browser-facing response stream, whose onFinish the SDK fires on CANCEL too — the
+      // legacy path that let a dropped connection persist a PARTIAL transcript mid-run
+      // (lib/client-cancel.ts). lib/run-end.ts records which it was.
       const runEnd = classifyRunEnd({
         loopDone,
         isAborted: Boolean(uiAborted) || loopAborted,
@@ -2283,8 +2286,9 @@ Deno.serve(async (req) => {
 
     // Create a server-owned UI stream branch. Unlike consumeStream(), this
     // runs the UI-message onFinish callback even if the browser refreshes and
-    // cancels its response branch. The guard above prevents a connected client
-    // and the background branch from saving the same assistant message twice.
+    // cancels its response branch. It is the ONLY stream that persists the run
+    // (lib/client-cancel.ts); the first-caller-wins guard above now only matters
+    // under the PERSIST_ON_CLIENT_CANCEL legacy switch.
     const persistenceStream = result.toUIMessageStream({
       originalMessages: messages,
       onFinish: persistFinalMessages,
@@ -2333,7 +2337,14 @@ Deno.serve(async (req) => {
         if (friendly) return friendly;
         return redactErrorMessage(m).slice(0, 300) || "Provider stream error";
       },
-      onFinish: persistFinalMessages,
+      // NO persistence here (lib/client-cancel.ts). The SDK calls this stream's onFinish from its
+      // CANCEL path too, so wiring persistFinalMessages here let a dropped browser connection
+      // persist a partial transcript, mark the run finished and orphan the loop's real end. The
+      // server-owned branch above is the single writer. PERSIST_ON_CLIENT_CANCEL=true (read at
+      // call time) restores the legacy both-streams wiring without a deploy.
+      onFinish: persistOnClientCancelEnabled(Deno.env.get(PERSIST_ON_CLIENT_CANCEL_ENV))
+        ? persistFinalMessages
+        : undefined,
     });
   } catch (e) {
     heartbeat?.stop();
