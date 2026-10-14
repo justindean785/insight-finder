@@ -16,11 +16,15 @@
  */
 
 import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@1";
+import { createAnthropic } from "npm:@ai-sdk/anthropic@3";
+import {
+  ANTHROPIC_DEFAULT_RUN_COST_CEILING_MICRO_USD, ANTHROPIC_DEFAULT_RUN_INPUT_TOKEN_BUDGET,
+  parseAnthropicEffort, parseAnthropicThinking, parsePositiveInt, resolveAnthropicModelId,
+} from "./anthropic-orchestrator.ts";
 import { MODELS } from "./models.ts";
 import { createIdleTimeoutFetch } from "./fetch_retry.ts";
 
-// Every orchestrator LLM provider (minimax, lovable-ai-gateway, xai-grok,
-// openadapter) is built via createOpenAICompatible with this as its `fetch`.
+// Every orchestrator LLM provider (minimax, lovable-ai-gateway, xai-grok) is built via createOpenAICompatible with this as its `fetch`.
 // Without it, a stalled stream (upstream opens the connection then goes silent
 // mid-generation) hangs streamText() forever: stopWhen's wall-clock deadline is
 // only evaluated BETWEEN completed steps, so a step whose model call never
@@ -169,8 +173,6 @@ export const FALLBACK_MODEL_ID = MODELS.fallback;
 // default selection (see orchestrator_select.ts) stays MiniMax and behavior is
 // unchanged. Activate via Supabase secrets — never the repo.
 export const XAI_API_KEY = Deno.env.get("XAI_API_KEY") ?? "";
-export const OPENADAPTER_API_KEY = Deno.env.get("OPENADAPTER_API_KEY") ?? "";
-export const OPENADAPTER_BASE_URL = Deno.env.get("OPENADAPTER_BASE_URL") ?? "";
 // Lead-orchestrator credential. The slot is vendor-agnostic (see
 // DEEPSEEK_BASE_URL below): GLM_API_KEY wins when set to a NON-EMPTY value, so
 // pointing the slot at Z.AI GLM is a secret-only change; DEEPSEEK_API_KEY stays
@@ -185,7 +187,6 @@ export const ORCHESTRATOR_PROVIDER = (Deno.env.get("ORCHESTRATOR_PROVIDER") ?? "
  * agentic tool calling — the right properties for OSINT synthesis). Override
  * with GROK_ORCHESTRATOR_MODEL_ID if xAI's lineup changes. */
 export const GROK_ORCHESTRATOR_MODEL_ID = Deno.env.get("GROK_ORCHESTRATOR_MODEL_ID") ?? "grok-4.3";
-export const OPENADAPTER_ORCHESTRATOR_MODEL_ID = Deno.env.get("OPENADAPTER_ORCHESTRATOR_MODEL_ID") ?? "";
 // deepseek-v4-pro is DeepSeek's flagship (1M-token context, native tool calls).
 // Kept as Pro (not the cheaper Flash variant) for the initial quality canary —
 // the migration off MiniMax is about correctness/reliability, not just cost, so
@@ -232,14 +233,24 @@ export const grokGateway = XAI_API_KEY
     })
   : null;
 
-// OpenAdapter — operator-supplied OpenAI-compatible gateway (base URL required).
-export const openAdapterGateway = (OPENADAPTER_API_KEY && OPENADAPTER_BASE_URL)
-  ? createOpenAICompatible({
-      name: "openadapter",
-      baseURL: OPENADAPTER_BASE_URL,
-      headers: { Authorization: `Bearer ${OPENADAPTER_API_KEY}` },
-      fetch: ORCHESTRATOR_FETCH,
-    })
+// Anthropic (Claude API) — lead orchestrator, PIN-ONLY (ORCHESTRATOR_PROVIDER=anthropic|claude).
+// The operator's credit balance is finite, so this is never a default or a fallback
+// (orchestrator_select.ts). With ANTHROPIC_API_KEY unset the gateway is null and nothing
+// in the run path changes. Activate via Supabase secrets — never the repo. The key is read
+// once here and only ever handed to createAnthropic; health reports presence as a boolean.
+export const ANTHROPIC_API_KEY = (Deno.env.get("ANTHROPIC_API_KEY") ?? "").trim();
+const _anthropicModel = resolveAnthropicModelId(Deno.env.get("ANTHROPIC_MODEL_ID"));
+export const ANTHROPIC_MODEL_ID = _anthropicModel.id;
+export const ANTHROPIC_MODEL_SOURCE = _anthropicModel.source;
+export const ANTHROPIC_THINKING = parseAnthropicThinking(Deno.env.get("ANTHROPIC_THINKING"));
+export const ANTHROPIC_EFFORT = parseAnthropicEffort(Deno.env.get("ANTHROPIC_EFFORT"));
+/** Hard per-invocation ceilings that force-finalize the run (see anthropic-orchestrator.ts). */
+export const ANTHROPIC_RUN_LIMITS = {
+  maxInputTokens: parsePositiveInt(Deno.env.get("ANTHROPIC_RUN_INPUT_TOKEN_BUDGET"), ANTHROPIC_DEFAULT_RUN_INPUT_TOKEN_BUDGET),
+  maxCostMicroUsd: parsePositiveInt(Deno.env.get("ANTHROPIC_RUN_COST_CEILING_MICRO_USD"), ANTHROPIC_DEFAULT_RUN_COST_CEILING_MICRO_USD),
+};
+export const anthropicGateway = ANTHROPIC_API_KEY
+  ? createAnthropic({ apiKey: ANTHROPIC_API_KEY, fetch: ORCHESTRATOR_FETCH })
   : null;
 
 // DeepSeek — OpenAI-compatible chat completions at api.deepseek.com. When set,

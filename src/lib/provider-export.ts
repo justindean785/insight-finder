@@ -74,7 +74,17 @@ const FOUND_VIA = /\bfound\s+via\s+((?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?
 /** …but it MAKES text an export only as its own line, so prose ("… found via example.com") is untouched. */
 const FOUND_VIA_LINE = /^[ \t]*found\s+via\s+(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}/im;
 /** Fields that name where a record came from, never who it is about. */
-const ATTRIBUTION_KEYS = new Set(["dbname", "db name", "database", "database name", "db", "source", "data source"]);
+const ATTRIBUTION_KEYS = new Set([
+  "dbname", "db name", "database", "database name", "db", "source", "data source",
+  // A PDF/document conversion prints the file it came from. The name is a `word.pdf` that the
+  // free-text scan would read as a domain, and it says nothing about who the record is about.
+  "source file", "file", "file name", "filename", "document", "attachment",
+]);
+/** Characters a PDF/clipboard conversion leaves in front of a field: U+FFFC (the object-replacement glyph a
+ *  stripped icon becomes) and every invisible format char (zero-width space/joiners, bidi marks, BOM,
+ *  word joiner, soft hyphen). None is part of a selector, and KV_LINE's leading `\s*` does not skip them,
+ *  so a line that starts with one never parsed as a field. */
+const INVISIBLE = /[\uFFFC\p{Cf}]/gu;
 /** The same fields inside an export flattened onto one line: drop the key and its first token. */
 const INLINE_ATTRIBUTION = /\b(?:dbname|db name|database|source)\s*:\s*\S+/gi;
 /** Export timestamps ("Date: 2026-10-01T19:30:55.511Z") — digit-and-dash runs a phone scan misreads. */
@@ -190,7 +200,8 @@ function scrubAttribution(text: string): string {
  * fall through to their ordinary handling unchanged.
  */
 export function readProviderExport(text: string | null | undefined): ProviderExport | null {
-  const raw = (text ?? "").trim();
+  // Parse a local copy with invisible prefixes removed; the caller's original is never modified.
+  const raw = (text ?? "").replace(INVISIBLE, "").trim();
   if (!raw) return null;
   const fields: Array<{ key: string; value: string }> = [];
   let kvLines = 0;

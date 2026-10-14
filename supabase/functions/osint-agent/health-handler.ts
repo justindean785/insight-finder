@@ -9,17 +9,19 @@ import {
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
   URLSCANNER_API_KEY, GEMINI_FALLBACK_MODEL_ID,
   XAI_API_KEY, GROK_ORCHESTRATOR_MODEL_ID,
+  ANTHROPIC_API_KEY, ANTHROPIC_MODEL_ID, ANTHROPIC_MODEL_SOURCE, ANTHROPIC_THINKING, ANTHROPIC_EFFORT, ANTHROPIC_RUN_LIMITS,
   OSINT_AGENT_PROBE_SECRET,
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL,
-  ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY, OPENADAPTER_API_KEY, OPENADAPTER_BASE_URL,
+  ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY,
   lovableGateway, geminiDirectGateway, ALLOW_LOVABLE_FALLBACK,
   promptBudgetHardCeilingEnabled,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
+import { anthropicOrchestratorHealth } from "./anthropic-orchestrator.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
-import { opsisHealthDetail, opsisKillSwitchOn } from "./lib/opsis.ts";
+import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn } from "./lib/opsis.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
@@ -49,6 +51,7 @@ import { memoryContextSelfTest } from "./lib/memory-context.ts";
 import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
 import { breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 import { memoryInputNormalizationSelfTest } from "./lib/memory-input-normalization.ts";
+import { seedAccountIdSelfTest } from "./validation.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -198,19 +201,20 @@ export function resolveSelectedOrchestrator(env?: {
   deepseek?: boolean;
   minimax?: boolean;
   grok?: boolean;
-  openadapter?: boolean;
+  anthropic?: boolean;
 }): { provider: OrchestratorProvider; reason: string; model: string } {
   const choice = selectOrchestratorProvider({
     pin: env?.pin ?? ORCHESTRATOR_PROVIDER,
     deepseek: env?.deepseek ?? !!DEEPSEEK_API_KEY,
     minimax: env?.minimax ?? !!MINIMAX_API_KEY,
     grok: env?.grok ?? !!XAI_API_KEY,
-    openadapter: env?.openadapter ?? !!(OPENADAPTER_API_KEY && OPENADAPTER_BASE_URL),
+    anthropic: env?.anthropic ?? !!ANTHROPIC_API_KEY,
   });
   const model =
     choice.provider === "deepseek" ? DEEPSEEK_ORCHESTRATOR_MODEL_ID :
     choice.provider === "grok" ? GROK_ORCHESTRATOR_MODEL_ID :
     choice.provider === "minimax" ? PRIMARY_ORCHESTRATOR_MODEL_ID :
+    choice.provider === "anthropic" ? ANTHROPIC_MODEL_ID :
     "";
   return { provider: choice.provider, reason: choice.reason, model };
 }
@@ -372,6 +376,20 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // diagnostic. So MiniMax is never labeled active when DeepSeek is selected.
   r.checks.deepseek = { ...deepseekCheck, role: providerRole(selected.provider, "deepseek") };
   r.checks.minimax = { ...minimaxCheck, role: providerRole(selected.provider, "minimax") };
+  // Anthropic orchestrator (pin-only). Config + cost-control posture only; deliberately NO
+  // network probe — a ping would spend prepaid credits on every /health. Reports presence
+  // of the key as a boolean, never the key. Its PRESENCE proves a build with the Anthropic
+  // orchestrator is the one running.
+  r.checks.orchestrator_anthropic = anthropicOrchestratorHealth({
+    keyPresent: !!ANTHROPIC_API_KEY,
+    pin: ORCHESTRATOR_PROVIDER,
+    selectedProvider: selected.provider,
+    modelId: ANTHROPIC_MODEL_ID,
+    modelSource: ANTHROPIC_MODEL_SOURCE,
+    thinking: ANTHROPIC_THINKING,
+    effort: ANTHROPIC_EFFORT,
+    limits: ANTHROPIC_RUN_LIMITS,
+  });
   // Which tools' cache keys carry a result-interpretation version. Pure, no DB, so it is
   // reported on every probe — and its PRESENCE is the behavioural proof that the build
   // with versioned cache keys is the one running (see lib/tool-cache-version.ts).
@@ -447,7 +465,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Is Opsis configured, switched off, or absent (lib/opsis.ts)? Presence only, no
   // network call. Its PRESENCE is the behavioural proof that the build carrying
   // the opsis_* tools is live; the detail says whether they can run.
-  r.checks.opsis = opsisHealthDetail(!!OPSIS_API_KEY, opsisKillSwitchOn());
+  r.checks.opsis = opsisHealthDetail(!!OPSIS_API_KEY, opsisKillSwitchOn(), !opsisCreditHintDisabled());
 
   // Does the DEPLOYED sanitizer pair tool-calls by POSITION (message-sanitize.ts)?
   // A self-test, not a label: it runs the live sanitizer on a fixed synthetic
@@ -505,6 +523,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // unambiguous), while values (kind, scope, confidence) are never rewritten? Pure. PRESENCE proves the deployed bundle.
   r.checks.memory_input_normalization = memoryInputNormalizationSelfTest();
 
+  // Is a bare 17-20 digit platform account ID (Discord/Twitter snowflake, Steam64) kept out of
+  // the phone playbook? It classified as `phone` and routed a Discord-ID case into phone
+  // tooling. Pure. PRESENCE proves the deployed bundle; ok:false = the classifier failed its
+  // own probe. (Client mirror: src/lib/seed.ts, same 15-digit E.164 ceiling.)
+  r.checks.seed_account_id = seedAccountIdSelfTest();
+
   // Are the agent's own setup rows (triage_decision / cluster_decision / coverage_audit /
   // tool_audit) kept out of identity clusters? A row naming the seed handle used to join
   // the subject's cluster and become the anchor every later merge was logged against.
@@ -532,7 +556,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     selected.provider === "deepseek" ? !!DEEPSEEK_API_KEY :
     selected.provider === "minimax" ? !!MINIMAX_API_KEY :
     selected.provider === "grok" ? !!XAI_API_KEY :
-    selected.provider === "openadapter" ? !!(OPENADAPTER_API_KEY && OPENADAPTER_BASE_URL) :
+    selected.provider === "anthropic" ? !!ANTHROPIC_API_KEY :
     (!!MINIMAX_API_KEY || !!LOVABLE_API_KEY);
   const gate = orchestratorGate(selected.provider, selectedKeyPresent, r.checks.core?.ok === true);
   r.checks.orchestrator = gate.check;
