@@ -50,6 +50,7 @@ import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 import { memoryContextSelfTest } from "./lib/memory-context.ts";
 import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
 import { breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
+import { seedAccountIdSelfTest } from "./validation.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -516,6 +517,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.breach_origin_cap = breachOriginCapSelfTest();
   r.checks.memory_context = memoryContextSelfTest();
   r.checks.user_supplied_status = userSuppliedStatusSelfTest();
+
+  // Is a bare 17-20 digit platform account ID (Discord/Twitter snowflake, Steam64) kept out of
+  // the phone playbook? It classified as `phone` and routed a Discord-ID case into phone
+  // tooling. Pure. PRESENCE proves the deployed bundle; ok:false = the classifier failed its
+  // own probe. (Client mirror: src/lib/seed.ts, same 15-digit E.164 ceiling.)
+  r.checks.seed_account_id = seedAccountIdSelfTest();
 
   // Are the agent's own setup rows (triage_decision / cluster_decision / coverage_audit /
   // tool_audit) kept out of identity clusters? A row naming the seed handle used to join
