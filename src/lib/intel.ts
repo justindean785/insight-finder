@@ -1243,15 +1243,21 @@ const TIMELINE_MAX_EVENTS = 40;
 export function buildInvestigationSummary(input: ReportInput): string {
   const { seedValue, seedType, artifacts } = input;
   const audit = buildToolAudit(artifacts);
-  const confirmed = artifacts.filter((a) => { const l = labelForArtifact(a); return l === "CONFIRMED" || l === "ATTESTED"; }).length;
-  const verify = artifacts.filter((a) => labelForArtifact(a) === "VERIFY").length;
-  const low = artifacts.filter((a) => labelForArtifact(a) === "LOW").length;
-  const failed = artifacts.filter((a) => labelForArtifact(a) === "FAILED").length;
+  // Same label the report and the Evidence view use: the analyst's review decides ATTESTED. CONFIRMED is
+  // evidence-derived (2+ independent source classes); ATTESTED is a decision, not a second source, so the
+  // two are counted APART (the Tool Coverage split from #743, and the report's own corroborated / analyst-
+  // confirmed lines) instead of one inflated "Confirmed" figure.
+  const lbl = (a: Artifact): ConfLabel => labelForArtifact(a, input.reviews?.[a.id]);
+  const confirmed = artifacts.filter((a) => lbl(a) === "CONFIRMED").length;
+  const attested = artifacts.filter((a) => lbl(a) === "ATTESTED").length;
+  const verify = artifacts.filter((a) => lbl(a) === "VERIFY").length;
+  const low = artifacts.filter((a) => lbl(a) === "LOW").length;
+  const failed = artifacts.filter((a) => lbl(a) === "FAILED").length;
   return [
     `Investigation summary`,
     `  Seed: ${seedValue ?? "—"} (${seedType ?? "unknown"})`,
     `  Artifacts: ${artifacts.length} across ${audit.tools.length} tool(s)`,
-    `  Confirmed: ${confirmed}  Verify: ${verify}  Low: ${low}  Failed: ${failed}`,
+    `  Confirmed: ${confirmed}  Analyst-confirmed: ${attested}  Verify: ${verify}  Low: ${low}  Failed: ${failed}`,
     `  Cached results: ${audit.cachedCount}`,
   ].join("\n");
 }
