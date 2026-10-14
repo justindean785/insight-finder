@@ -73,6 +73,7 @@ import {
   renderAnalystDecisionsBlock, REVIEW_STATE_UNAVAILABLE_NOTE,
 } from "./reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
+import { repairExactBooleanInput } from "./lib/exact-boolean-repair.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
@@ -1368,9 +1369,17 @@ Deno.serve(async (req) => {
       // (unknown_tool_ignored) so it drops silently — never executes the invented
       // tool, never surfaces the invented name — and the model gets a terse nudge.
       // A KNOWN tool with bad input returns null here (SDK handles it normally).
-      experimental_repairToolCall: async ({ toolCall, tools: liveTools }) => {
+      experimental_repairToolCall: async ({ toolCall, tools: liveTools, error }) => {
         const decision = repairUnknownTool(toolCall.toolName, Object.keys(liveTools ?? {}), TOOL_NAME_ALIASES);
-        if (!decision.redirect) return null;
+        if (!decision.redirect) {
+          // A KNOWN tool whose input failed its schema. The only repair attempted is the EXACT strings "true" / "false"
+          // sent for a boolean field (lib/exact-boolean-repair.ts); the SDK re-validates the result against the
+          // unchanged schema. Anything else returns null and is reported as a failed call, as before.
+          const fixed = repairExactBooleanInput(toolCall.input, error);
+          if (!fixed) return null;
+          console.warn(`[exact-boolean-repair] ${toolCall.toolName}: ${fixed.fields.join(", ")}`);
+          return { ...toolCall, input: fixed.input };
+        }
         if (decision.aliased) {
           // Known alias drift (e.g. "web_search" -> "minimax_web_search"): redirect
           // to the REAL tool and keep the model's original input untouched — the
