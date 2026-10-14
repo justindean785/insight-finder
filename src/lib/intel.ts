@@ -950,6 +950,8 @@ export type ToolAuditEntry = {
   variants: string[];
   totalResults: number;
   highConf: number;
+  /** Analyst-confirmed (ATTESTED): a decision, not evidence strength — counted apart from highConf. */
+  attested: number;
   lowConf: number;
   cached: number;
   failed: number;
@@ -991,11 +993,12 @@ export function buildToolAudit(
     if (failed) failedCount++;
 
     const entry = map.get(tool) ?? {
-      tool, variants: [], totalResults: 0, highConf: 0, lowConf: 0, cached: 0, failed: 0, kinds: [],
+      tool, variants: [], totalResults: 0, highConf: 0, attested: 0, lowConf: 0, cached: 0, failed: 0, kinds: [],
     };
     if (!entry.variants.includes(rawSource)) entry.variants.push(rawSource);
     entry.totalResults++;
-    if (label === "CONFIRMED" || label === "ATTESTED" || label === "INFERRED") entry.highConf++;
+    if (label === "CONFIRMED" || label === "INFERRED") entry.highConf++;
+    if (label === "ATTESTED") entry.attested++;
     if (label === "LOW" || label === "VERIFY") entry.lowConf++;
     if (cached) entry.cached++;
     if (failed) entry.failed++;
@@ -1702,7 +1705,7 @@ export function buildReportMarkdown(input: ReportInput): string {
   const toolCoverage = audit.tools.length === 0
     ? "_No tools produced artifacts._"
     : audit.tools.map((t) =>
-        `- ${toolActionLabel(auditEntryToolName(t))} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
+        `- ${toolActionLabel(auditEntryToolName(t))} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.attested ? `${t.attested} analyst-confirmed, ` : ""}${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
       ).join("\n");
 
   const weakAreas = (() => {
