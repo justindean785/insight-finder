@@ -372,6 +372,8 @@ Evidence ranking, confidence caps, chain-of-custody, credential masking, minor-s
 
 ## Reading the handoff series
 
+> **Archived 2026-10-14:** every dated handoff, audit and state note older than `SESSION_HANDOFF_2026-09-14` (the series named below, plus `AUDIT_REPORT_*`, `HANDOFF_*`, `PROJECT_STATE_*`, the June beta sign-off and checklists) was moved with `git mv` to `docs/archive/handoffs/`, so history is intact. A filename cited below that is not at the repo root is there. Handoffs from 2026-09-14 onward, the incident write-up, the `SCOPE_*` / `DESIGN_*` / `PRICING_*` / `PLAN_*` design notes and `NEXT_SESSION_PROMPT.md` stayed at the root.
+
 `SESSION_HANDOFF_2026-08-09` → `…_2026-08-10_…-II` → `…_2026-08-10_…-III` →
 `…_2026-08-14_deploy-transport-and-promote-boundary` →
 `…_2026-08-23_report-authority-and-ci-recovery` (re-measured the baselines and carries the
