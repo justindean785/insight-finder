@@ -117,6 +117,11 @@ describe("classifyAnthropicError", () => {
     expect(classifyAnthropicError(mk(500, "internal"))).toMatchObject({ kind: "server_error", retryable: true });
   });
 
+  it("a key not scoped to a workspace is a terminal operator fault", () => {
+    expect(classifyAnthropicError(mk(400, "This API key is not scoped to a workspace, so this request must include the anthropic-workspace-id header.")))
+      .toMatchObject({ kind: "workspace_required", retryable: false, operatorActionRequired: true });
+  });
+
   it("a plain 400 is an invalid-request config fault, never retryable", () => {
     expect(classifyAnthropicError(mk(400, "tool_choice: type \"any\" is not supported for this model")))
       .toMatchObject({ kind: "invalid_request", retryable: false });

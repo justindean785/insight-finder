@@ -244,6 +244,7 @@ export type AnthropicFailureKind =
   | "credit_exhausted"
   | "auth_failed"
   | "permission_denied"
+  | "workspace_required"
   | "rate_limited"
   | "overloaded"
   | "server_error"
@@ -283,6 +284,12 @@ export function classifyAnthropicError(error: unknown): AnthropicFailure {
     return {
       kind: "credit_exhausted", retryable: false, operatorActionRequired: true,
       message: `The Anthropic API credit balance is exhausted. The run was stopped and was not retried or moved to another provider. ${SAVED} Add credits at platform.claude.com (Billing), or unset ORCHESTRATOR_PROVIDER to return to the default orchestrator.`,
+    };
+  }
+  if (/anthropic-workspace-id|not scoped to a workspace/.test(msg)) {
+    return {
+      kind: "workspace_required", retryable: false, operatorActionRequired: true,
+      message: `Anthropic rejected the API key because it is not scoped to a workspace. ${SAVED} An operator needs to create the key inside a workspace at platform.claude.com (Settings, Workspaces) and replace ANTHROPIC_API_KEY, or unset ORCHESTRATOR_PROVIDER to return to the default orchestrator.`,
     };
   }
   if (status === 401 || /invalid x-api-key|authentication_error|invalid api key/.test(msg)) {
