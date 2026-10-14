@@ -249,6 +249,7 @@ export type AnthropicFailureKind =
   | "overloaded"
   | "server_error"
   | "context_overflow"
+  | "history_invalid"
   | "invalid_request"
   | "unknown";
 
@@ -326,6 +327,16 @@ export function classifyAnthropicError(error: unknown): AnthropicFailure {
     return {
       kind: "context_overflow", retryable: false, operatorActionRequired: false,
       message: `This investigation exceeded the model's context limit. ${SAVED} Try a narrower follow-up.`,
+    };
+  }
+  // A tool_use.input that is not an object: the SDK carries an unparseable tool-call
+  // input as a STRING in history (message-sanitize.ts, "Tool-call INPUT shape"). This
+  // build's sanitizer repairs or drops it before every call; if the message still
+  // arrives, it is the sanitizer that drifted, not the operator's configuration.
+  if (/tool_use\.input: input should be an object/.test(msg)) {
+    return {
+      kind: "history_invalid", retryable: false, operatorActionRequired: false,
+      message: `A tool call in this case's history carried arguments that were not an object, which Anthropic rejects (HTTP 400). ${SAVED} This build repairs that before each call; if you see this message, send one follow-up message, and report it if it repeats.`,
     };
   }
   if (status === 400 || /invalid_request_error/.test(msg)) {

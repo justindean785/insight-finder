@@ -37,6 +37,67 @@ type AnyMsg = { role?: string; content?: unknown; [k: string]: unknown };
 
 const DROPPED_RESULT_PLACEHOLDER = "[result dropped to fit context]";
 
+// ---- Tool-call INPUT shape (2026-10-14) --------------------------------------
+// A third wedge, specific to Anthropic. When the model emits a tool call whose
+// arguments are not valid JSON, the AI SDK records the UI tool part in state
+// `output-error` with `rawInput` = the unparsed text, and convertToModelMessages
+// (ai@6.0.304 index.mjs:9770) then emits an assistant `tool-call` whose `input`
+// is that STRING. The SDK's ModelMessage schema types `input` as unknown, so
+// nothing client-side objects; the OpenAI-compatible providers (GLM, MiniMax,
+// DeepSeek) accept it; Anthropic rejects the whole request:
+//   "messages.N.content.M.tool_use.input: Input should be an object [HTTP 400]"
+// Measured 2026-10-14, thread 7b6123f3: ONE unparseable record_artifacts call in
+// run 2, then ELEVEN consecutive continuation attempts that all died at step 0
+// with that message — every "Retry" re-sent the same poisoned history.
+//
+// Repair, in this order, per assistant tool-call part:
+//   1. `input` is a plain object → untouched.
+//   2. `input` is a string that JSON.parses to a plain object → use the parsed
+//      object (the model's text was valid JSON that the SDK could not parse in
+//      its streamed form, or was wrapped). Counted as `repaired`.
+//   3. anything else (unparseable text, array, number, null) → the call is
+//      DROPPED and replaced by a short text part; its paired tool-result (which
+//      only ever says the call failed) becomes an orphan and is dropped by the
+//      existing rule. Never substituted with `{}`: that would misrepresent what
+//      the tool was called with. Counted as `dropped`.
+// Evidence is untouched: a dropped call was already logged as `failed` in
+// tool_usage_log and persisted nothing (auto-persist never ran for it).
+// Kill switch, read at CALL TIME by the caller: TOOL_CALL_INPUT_SHAPE_DISABLED=true
+// restores the pass-through. /health proof key: checks.tool_call_input_shape.
+
+export const TOOL_CALL_INPUT_SHAPE_DISABLED_ENV = "TOOL_CALL_INPUT_SHAPE_DISABLED";
+const DROPPED_CALL_NOTE = "[a tool call whose arguments were not valid JSON was dropped from history]";
+
+export function toolCallInputShapeDisabled(env: (k: string) => string | undefined = (k) => Deno.env.get(k)): boolean {
+  return (env(TOOL_CALL_INPUT_SHAPE_DISABLED_ENV) ?? "").trim().toLowerCase() === "true";
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+export type ToolCallInputShape =
+  | { action: "keep"; input: Record<string, unknown> }
+  | { action: "repair"; input: Record<string, unknown> }
+  | { action: "drop" };
+
+/** Decide what to do with one tool-call `input`. Pure. */
+export function normalizeToolCallInput(input: unknown): ToolCallInputShape {
+  if (isPlainObject(input)) return { action: "keep", input };
+  if (typeof input === "string") {
+    const t = input.trim();
+    if (t.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(t);
+        if (isPlainObject(parsed)) return { action: "repair", input: parsed };
+      } catch {
+        // fall through: unparseable
+      }
+    }
+  }
+  return { action: "drop" };
+}
+
 // ---- Selector-preserving tool-result summarization (issue #238) ----------------
 // The orchestrator pivots off identifiers it reads in raw tool-result text — the
 // system prompt explicitly tells it to extract emails/usernames/phones/domains/
@@ -174,8 +235,16 @@ export function normalizeToolOutput(output: unknown): { type: string; value: unk
  *
  * Pure: returns a new array; does not mutate the input.
  */
-export function sanitizeModelMessages(input: ModelMessage[]): ModelMessage[] {
-  const { out, overlapRepairs, messages } = sanitizeCore(input);
+export function sanitizeModelMessages(
+  input: ModelMessage[],
+  opts: { inputShape?: boolean } = {},
+): ModelMessage[] {
+  const inputShape = opts.inputShape ?? !toolCallInputShapeDisabled();
+  const { out, overlapRepairs, messages, inputRepaired, inputDropped } = sanitizeCore(input, inputShape);
+  if (inputRepaired > 0 || inputDropped > 0) {
+    // Counts only — never the input text (it can carry case values).
+    console.warn(JSON.stringify({ event: "sanitize_tool_call_input_shape", repaired: inputRepaired, dropped: inputDropped }));
+  }
   // Durable signal: counts the overlap repairs this build makes in production.
   // Only emitted when a repair actually happened — a quiet log means no
   // overlap. (Proof of deploy is /health checks.message_sanitize, not this.)
@@ -190,8 +259,32 @@ export function sanitizeModelMessages(input: ModelMessage[]): ModelMessage[] {
 }
 
 /** The repair itself, with no logging. Shared by sanitizeModelMessages and the /health self-test. */
-function sanitizeCore(input: ModelMessage[]): { out: ModelMessage[]; overlapRepairs: number; messages: number } {
-  if (!Array.isArray(input)) return { out: [], overlapRepairs: 0, messages: 0 };
+function sanitizeCore(
+  input: ModelMessage[],
+  inputShape = true,
+): { out: ModelMessage[]; overlapRepairs: number; messages: number; inputRepaired: number; inputDropped: number } {
+  if (!Array.isArray(input)) return { out: [], overlapRepairs: 0, messages: 0, inputRepaired: 0, inputDropped: 0 };
+
+  // Pass 0 — tool-call INPUT shape (see the header block above). Decides, per
+  // assistant tool-call, whether it is kept, repaired or dropped, BEFORE pass 1
+  // collects ids: a dropped call must not count as a real call, so that its
+  // paired result is treated as the orphan it now is.
+  let inputRepaired = 0;
+  let inputDropped = 0;
+  const droppedCalls = new Set<AnyPart>();
+  const repairedInputs = new Map<AnyPart, Record<string, unknown>>();
+  if (inputShape) {
+    for (const raw of input) {
+      const m = raw as AnyMsg;
+      if (m?.role !== "assistant" || !Array.isArray(m.content)) continue;
+      for (const p of m.content as AnyPart[]) {
+        if (p?.type !== "tool-call") continue;
+        const shape = normalizeToolCallInput(p.input);
+        if (shape.action === "repair") { repairedInputs.set(p, shape.input); inputRepaired++; }
+        else if (shape.action === "drop") { droppedCalls.add(p); inputDropped++; }
+      }
+    }
+  }
 
   // Pass 1 — collect every toolCallId that has a real assistant tool-call.
   const callIds = new Set<string>();
@@ -199,7 +292,7 @@ function sanitizeCore(input: ModelMessage[]): { out: ModelMessage[]; overlapRepa
     const m = raw as AnyMsg;
     if (m?.role === "assistant" && Array.isArray(m.content)) {
       for (const p of m.content as AnyPart[]) {
-        if (p?.type === "tool-call" && typeof p.toolCallId === "string") callIds.add(p.toolCallId);
+        if (p?.type === "tool-call" && typeof p.toolCallId === "string" && !droppedCalls.has(p)) callIds.add(p.toolCallId);
       }
     }
   }
@@ -240,7 +333,19 @@ function sanitizeCore(input: ModelMessage[]): { out: ModelMessage[]; overlapRepa
         continue;
       }
 
-      // tool-call / reasoning / file / image / etc. → keep as-is.
+      if (p.type === "tool-call") {
+        if (droppedCalls.has(p)) {
+          // Dropped for an unrepairable input: leave a note so the transcript
+          // still says a call was made, and so the message is never empty.
+          parts.push({ type: "text", text: DROPPED_CALL_NOTE });
+          continue;
+        }
+        const fixed = repairedInputs.get(p);
+        parts.push(fixed ? { ...p, input: fixed } : p);
+        continue;
+      }
+
+      // reasoning / file / image / etc. → keep as-is.
       parts.push(p);
     }
 
@@ -316,7 +421,7 @@ function sanitizeCore(input: ModelMessage[]): { out: ModelMessage[]; overlapRepa
     }
   }
 
-  return { out, overlapRepairs, messages: cleaned.length };
+  return { out, overlapRepairs, messages: cleaned.length, inputRepaired, inputDropped };
 }
 
 const PAIRING_PROBE_ID = "health-probe-overlap";
@@ -457,4 +562,47 @@ export function capToolResultOutputs(input: ModelMessage[], maxChars: number): M
     });
     return any ? ({ ...m, content } as ModelMessage) : raw;
   });
+}
+
+/**
+ * /health → checks.tool_call_input_shape. Pure, no I/O, no SDK: a JSON-string
+ * input is repaired into an object, an unparseable one is dropped together
+ * with its result, and a plain object is untouched. Its PRESENCE proves the
+ * build; ok:false means the repair drifted.
+ */
+export function toolCallInputShapeSelfTest(disabled = false): { ok: boolean; detail: string } {
+  if (disabled) return { ok: true, detail: `LEGACY via ${TOOL_CALL_INPUT_SHAPE_DISABLED_ENV} — a string tool_use.input is sent as-is (Anthropic 400s on it)` };
+  const fixture = [
+    { role: "user", content: "seed" },
+    { role: "assistant", content: [
+      { type: "tool-call", toolCallId: "ok", toolName: "a", input: { x: 1 } },
+      { type: "tool-call", toolCallId: "str", toolName: "b", input: "{\"y\": 2}" },
+      { type: "tool-call", toolCallId: "bad", toolName: "c", input: "{not json" },
+    ] },
+    { role: "tool", content: [
+      { type: "tool-result", toolCallId: "ok", toolName: "a", output: { type: "text", value: "r" } },
+      { type: "tool-result", toolCallId: "str", toolName: "b", output: { type: "text", value: "r" } },
+      { type: "tool-result", toolCallId: "bad", toolName: "c", output: { type: "text", value: "input was not valid JSON" } },
+    ] },
+  ] as unknown as ModelMessage[];
+  const { out, inputRepaired, inputDropped } = sanitizeCore(fixture, true);
+  const calls: AnyPart[] = [];
+  const results: AnyPart[] = [];
+  for (const m of out as AnyMsg[]) {
+    if (!Array.isArray(m.content)) continue;
+    for (const p of m.content as AnyPart[]) {
+      if (p.type === "tool-call") calls.push(p);
+      if (p.type === "tool-result") results.push(p);
+    }
+  }
+  const everyInputIsObject = calls.every((c) => isPlainObject(c.input));
+  const strRepaired = calls.some((c) => c.toolCallId === "str" && isPlainObject(c.input) && (c.input as Record<string, unknown>).y === 2);
+  const badGone = !calls.some((c) => c.toolCallId === "bad") && !results.some((r) => r.toolCallId === "bad");
+  const ok = everyInputIsObject && strRepaired && badGone && inputRepaired === 1 && inputDropped === 1 && results.length === 2;
+  return {
+    ok,
+    detail: ok
+      ? "a JSON-string tool_use.input is repaired to an object; an unparseable one is dropped with its result; no string input reaches the provider"
+      : `drift: everyObject=${everyInputIsObject} strRepaired=${strRepaired} badGone=${badGone} repaired=${inputRepaired} dropped=${inputDropped} results=${results.length}`,
+  };
 }

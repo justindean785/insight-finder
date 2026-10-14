@@ -41,7 +41,7 @@ import {
   preflightPolicyHealthDetail,
   resolveFallbackProvider,
 } from "./lib/preflight-pivot.ts";
-import { positionalPairingSelfTest } from "./message-sanitize.ts";
+import { positionalPairingSelfTest, toolCallInputShapeDisabled, toolCallInputShapeSelfTest } from "./message-sanitize.ts";
 import { streamErrorDetailSelfTest } from "./stream-error-classify.ts";
 import { contradictionClaimSelfTest } from "./contradictions.ts";
 import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
@@ -479,6 +479,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // silent, so health probes never emit sanitize_positional_pair_repair. Its
   // PRESENCE proves this build is live; ok:false means the pairing rule regressed.
   r.checks.message_sanitize = positionalPairingSelfTest();
+  // Does a tool call whose arguments were not valid JSON reach Anthropic as a STRING
+  // tool_use.input (HTTP 400, "Input should be an object")? It must not: the sanitizer
+  // repairs a JSON string or drops the call with its result (message-sanitize.ts,
+  // "Tool-call INPUT shape"). Pure. PRESENCE proves the build; kill switch
+  // TOOL_CALL_INPUT_SHAPE_DISABLED=true reads as LEGACY.
+  r.checks.tool_call_input_shape = toolCallInputShapeSelfTest(toolCallInputShapeDisabled());
 
   // Do stream errors record the provider's status and code WITHOUT the response
   // body (stream-error-classify.ts)? A self-test on a synthetic error, pure.
