@@ -48,7 +48,7 @@ import { scrollBehavior } from "@/lib/motion";
 import { fetchWithRetry } from "@/lib/fetch-retry";
 import {
   deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone, describeTransportError,
-  isNetworkDropError, parseHttpStatusFromError, withHttpStatusInErrorBody,
+  isNetworkDropError, isTransportAuthFailure, withHttpStatusInErrorBody,
 } from "@/lib/tool-run";
 import { isRunHeartbeatAlive } from "@/lib/stale-thread";
 import { shouldFollowChatScroll, shouldAdoptInitialMessages, CHAT_REENGAGE_THRESHOLD_PX } from "@/lib/chat-scroll";
@@ -1602,8 +1602,10 @@ function ChatWindowInner({
       failSavedRef.current = true;
       const reason = (e?.message ?? "stream failed").slice(0, 500);
       const friendly = describeTransportError(e);
-      // 401 → session expired — route to auth immediately
-      if (parseHttpStatusFromError(e) === 401) {
+      // The backend's OWN 401 (pre-stream, `HTTP 401 …`) → session expired → route to auth.
+      // A provider's 401 surfaced mid-stream ("…rejected the API key (401)…") is NOT the
+      // analyst's session and must never sign them out (lib/tool-run.ts isTransportAuthFailure).
+      if (isTransportAuthFailure(e)) {
         toast.error(friendly);
         navigate("/auth");
         return;
