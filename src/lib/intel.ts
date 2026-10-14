@@ -444,6 +444,37 @@ const NON_CORROBORATING_CLASSES = new Set<string>([
   "threat_intel",
 ]);
 
+/** Metadata counters a lookup writes for "how many records matched". */
+const NEGATIVE_COUNT_KEYS = [
+  "total_breaches", "breaches_found", "breach_hits", "found", "total", "total_pastes",
+  "stealer_rows", "victim_logs", "results_count",
+] as const;
+const NEGATIVE_LOOKUP_STATUSES = new Set(["not_found", "restricted", "blocked", "denied", "error"]);
+
+/**
+ * A row that records a lookup finding NOTHING: zero breach hits, a 404 profile,
+ * `lookupStatus: not_found`. It is a coverage fact ("we checked X"), not an
+ * observation about the subject — so it must never link a selector to a cluster
+ * or count as a corroborating source class. Live case 2026-09-25: zero-hit
+ * breach checks on GUESSED `<handle>@outlook/yahoo` emails merged into the
+ * subject's cluster on the local-part and supplied its `breach` class, and the
+ * report printed "3 independent source classes" for one profile lookup.
+ *
+ * Structured metadata only: every present match counter is 0 (and none is
+ * positive), a not-found/blocked lookup status, or a 4xx HTTP status.
+ */
+export function isNegativeResultArtifact(a: Artifact): boolean {
+  const meta = (a.metadata ?? {}) as Record<string, unknown>;
+  const status = typeof meta.lookup_status === "string" ? meta.lookup_status.trim().toLowerCase() : "";
+  if (NEGATIVE_LOOKUP_STATUSES.has(status)) return true;
+  const http = Number(meta.http_status);
+  if (Number.isFinite(http) && http >= 400 && http < 500) return true;
+  const counts = NEGATIVE_COUNT_KEYS
+    .map((k) => meta[k])
+    .filter((v) => typeof v === "number" && Number.isFinite(v)) as number[];
+  return counts.length > 0 && counts.every((v) => v === 0);
+}
+
 /**
  * Distinct source CLASSES backing an artifact. Prefers the backend's
  * authoritative `metadata.source_category` (written by the source-classification
@@ -501,6 +532,8 @@ function independentSourceClassCount(a: Artifact): number {
 function clusterIndependentSourceClasses(c: IdentityCluster): string[] {
   const out = new Set<string>();
   for (const a of c.artifacts) {
+    // A zero-hit row observed nothing, so it corroborates nothing.
+    if (isNegativeResultArtifact(a)) continue;
     for (const cls of artifactSourceClasses(a)) {
       if (!NON_CORROBORATING_CLASSES.has(cls)) out.add(cls);
     }
@@ -2365,6 +2398,9 @@ export function buildIdentityClusters(
   type SignalHit = { key: string; signal: MergeSignal; raw: string; platform: string | null; derived?: true };
   const signalsFor = (a: Artifact): SignalHit[] => {
     const hits: SignalHit[] = [];
+    // A lookup that found nothing links nothing: the selector it names (often a
+    // guessed email permutation) was probed, not observed. See isNegativeResultArtifact.
+    if (isNegativeResultArtifact(a)) return hits;
     const kind = a.kind.toLowerCase();
     const v = a.value.trim();
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
