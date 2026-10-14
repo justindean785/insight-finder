@@ -2,6 +2,7 @@
 
 > **Read this first.** Every number below is a dated measurement (2026-10-14T02:46Z), not a state. Re-measure with the commands in §7 before trusting any of it.
 > Address the operator as **JD**. Engineering only: never investigate any person who appears in scan data.
+> This file lands on `main` via docs PR **#760** (branch `docs/handoff-2026-10-14`). If `origin/main` does not contain it, that PR is unmerged — read it from the branch and ask JD.
 
 ## 0. JD's standing rules (restated from this session, verbatim where it matters)
 
@@ -9,7 +10,6 @@
 - Squash merges only. Don't delete branches. Merge `main` into branches, never force-push (the one exception this session: `--force-with-lease` on my own session branch that held only already-merged history; JD was told).
 - One edge PR in the release lane at a time. `RUN_LEASE_DISABLED` stays `true`; S1b fencing lands before it is re-enabled.
 - Stop at every "needs approval / sign-off" note in a PR body. **#666 was merged without reading its sign-off note** (my error, 01:41Z); JD then approved keeping it with #754 on top. Do not repeat the pattern: read the body, not just the file list.
-- Don't bring up the API key that was exposed in chat again (JD's instruction).
 - Report outcomes faithfully; nothing is "done" until `/health` proves it.
 
 ## 1. State at handoff (measured 02:46Z)
@@ -21,7 +21,7 @@
 | Mirror `seeker-spark-search-5362c57c` `main` | `120c76e` (sync PR #113); `diff -rq` empty for all four function dirs |
 | Canonical `main` | `5faa6ce` (#754 was the last merge) |
 | Orchestrator | **Anthropic, pinned**, `claude-sonnet-5`, `checks.orchestrator_anthropic.ok=true`, caching "system+tools prefix", run budget 1.5M tokens / $2 |
-| **BLOCKER** | **`ANTHROPIC_API_KEY` in Lovable is INVALID**: every run since 02:36Z fails at step 0 with `invalid x-api-key [HTTP 401]`, $0 spent. JD was on the console keys page at that time; the stored key was revoked or replaced with a bad value. Fix: a key scoped to the **Insight Finder** workspace, saved via the Lovable secure form. Nobody but JD can do this. |
+| **BLOCKER** | **`ANTHROPIC_API_KEY` in Lovable is INVALID**: every run since 02:36Z fails at step 0 with `invalid x-api-key [HTTP 401]`, $0 spent. Fix: a key scoped to the **Insight Finder** workspace, saved via the Lovable secure form. Nobody but JD can do this. |
 | Anthropic billing | Org monthly spend limit raised **$5 → $100** by JD (it had tripped at $6.26). Promo credit **$93.73 of $100** left, **expires 2026-10-23**. Auto-reload **off**; a Mastercard is on file as default — never enable auto-reload or buy credits on JD's behalf. |
 | Prompt caching | **Working.** Console rate-limits page: 221K input tokens *excl. cache reads* vs 3.38M input tokens the model received (step metrics) ≈ 93% served from cache. The dashboard "Prompt caching: Not enabled" card is wrong. |
 | Metering gap | Anthropic billed $6.26; `orchestrator_invocations` metered $3.78. The gap is spend after a dropped connection closed the record (see §2.3) — **not** caching. #758 closes it. |
@@ -44,7 +44,7 @@
 
 | PR | Kind | CI at handoff | What it needs |
 |---|---|---|---|
-| **#759** provider 401 ≠ session expiry | frontend | running (migrations ✓) | JD: "merge". Ships via Vercel. Stops the sign-out loop. |
+| **#759** provider 401 ≠ session expiry | frontend | green (all 5 checks, 02:49Z) | JD: "merge". Ships via Vercel. Stops the sign-out loop. |
 | **#758** dropped connection no longer ends the run | edge | green | JD: "merge", then the full deploy cycle (§6). Also a cost control. |
 | **#756** LeakCheck fixed pool + guard | edge | green | JD confirms defaults (3 per run, reserve 20), then merge + deploy (can ride the same deploy as #758). |
 | **#757** summary CONFIRMED/ATTESTED split | frontend | green | JD: "merge". |

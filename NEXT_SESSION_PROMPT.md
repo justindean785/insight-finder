@@ -14,7 +14,7 @@ Take over at a clean point: **the Anthropic orchestrator is live but its API key
 
 # Context
 
-Insight Finder (a.k.a. Swarmbot) is JD's OSINT investigator: Vite + React + TS + Tailwind/shadcn on Vercel; Supabase (Postgres/Auth/Storage + Deno edge functions, chiefly `osint-agent`) behind Lovable. **Frontend ships on merge to `main`; the edge function does NOT** — it needs stamp → surgical mirror sync → `verify:deploy` gate → Lovable deploy message → `/health` proof → ledger. The recipe, its traps and this session's measurements are in **`SESSION_HANDOFF_2026-10-14_anthropic-orchestrator-and-the-dropped-connection.md`** — read it first (§0 rules, §1 state, §3 PR queue, §5 traps, §6 ordered plan, §7 verify commands).
+Insight Finder (a.k.a. Swarmbot) is JD's OSINT investigator: Vite + React + TS + Tailwind/shadcn on Vercel; Supabase (Postgres/Auth/Storage + Deno edge functions, chiefly `osint-agent`) behind Lovable. **Frontend ships on merge to `main`; the edge function does NOT** — it needs stamp → surgical mirror sync → `verify:deploy` gate → Lovable deploy message → `/health` proof → ledger. The recipe, its traps and this session's measurements are in **`SESSION_HANDOFF_2026-10-14_anthropic-orchestrator-and-the-dropped-connection.md`** — read it first (§0 rules, §1 state, §3 PR queue, §5 traps, §6 ordered plan, §7 verify commands). **If `origin/main` does not contain that file, docs PR #760 (branch `docs/handoff-2026-10-14`) is unmerged: read it from that branch and tell JD.**
 
 Verified at hand-off (2026-10-14T02:46Z): canonical `main` = `5faa6ce`; live `osint-agent` build = **`66cf1c3`**; `deploy/live` → `66cf1c3`; mirror `main` = `120c76e`; `diff -rq` empty for all four function dirs; orchestrator **Anthropic pinned, `claude-sonnet-5`**, prompt caching working (~93% cache reads); `reveal_breach_data=true`; run lease `LEGACY`. Baselines: edge **2316 / 0 / 6**, frontend **2560 / 1 / 198 files**, e2e **52 / 2** (measured on the PR branches; re-measure on clean `main`).
 
@@ -65,7 +65,7 @@ Work in this order and **stop to ask JD** at every outward step.
 - Do NOT blanket-overwrite the mirror, click Lovable's "Try to fix", merge the mirror's own PRs, or type a SHA by hand (copy it from `git rev-parse` / the PR payload).
 - Do NOT mix frontend, edge and schema in one PR; do NOT run more than one edge PR at a time.
 - Do NOT trust the Lovable project agent's analyses without checking `/health`, the DB and the console (it reported a wrong limit and "caching off" this session).
-- Do NOT echo JD's billing/card details or any credential, and do not bring up the key that was pasted in chat earlier.
+- Do NOT echo JD's billing/card details or any credential. Never ask for, accept or echo an API key in chat.
 
 # Acceptance Criteria
 
