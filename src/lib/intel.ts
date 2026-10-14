@@ -16,6 +16,7 @@ import { isSubjectUnlinked, isQuarantined } from "@/lib/quarantine";
 // frontend consumer shares — analyst verdict OR the legacy `false_positive` flag.
 import { isRejectedArtifact as isRejectedArtifactRow, buildRejectedDerivationIds } from "@/lib/analyst-decisions";
 import { normalizeTarget } from "@/lib/next-step-cards";
+import { detectNameConflict, formatNameConflict } from "@/lib/name-conflict";
 // Derived models built here (timeline entries, pivot candidates) carry a
 // per-artifact confidence that is later RENDERED, so they must carry the
 // effective value — otherwise a surface displays a raw number without ever
@@ -443,6 +444,37 @@ const NON_CORROBORATING_CLASSES = new Set<string>([
   "threat_intel",
 ]);
 
+/** Metadata counters a lookup writes for "how many records matched". */
+const NEGATIVE_COUNT_KEYS = [
+  "total_breaches", "breaches_found", "breach_hits", "found", "total", "total_pastes",
+  "stealer_rows", "victim_logs", "results_count",
+] as const;
+const NEGATIVE_LOOKUP_STATUSES = new Set(["not_found", "restricted", "blocked", "denied", "error"]);
+
+/**
+ * A row that records a lookup finding NOTHING: zero breach hits, a 404 profile,
+ * `lookupStatus: not_found`. It is a coverage fact ("we checked X"), not an
+ * observation about the subject — so it must never link a selector to a cluster
+ * or count as a corroborating source class. Live case 2026-09-25: zero-hit
+ * breach checks on GUESSED `<handle>@outlook/yahoo` emails merged into the
+ * subject's cluster on the local-part and supplied its `breach` class, and the
+ * report printed "3 independent source classes" for one profile lookup.
+ *
+ * Structured metadata only: every present match counter is 0 (and none is
+ * positive), a not-found/blocked lookup status, or a 4xx HTTP status.
+ */
+export function isNegativeResultArtifact(a: Artifact): boolean {
+  const meta = (a.metadata ?? {}) as Record<string, unknown>;
+  const status = typeof meta.lookup_status === "string" ? meta.lookup_status.trim().toLowerCase() : "";
+  if (NEGATIVE_LOOKUP_STATUSES.has(status)) return true;
+  const http = Number(meta.http_status);
+  if (Number.isFinite(http) && http >= 400 && http < 500) return true;
+  const counts = NEGATIVE_COUNT_KEYS
+    .map((k) => meta[k])
+    .filter((v) => typeof v === "number" && Number.isFinite(v)) as number[];
+  return counts.length > 0 && counts.every((v) => v === 0);
+}
+
 /**
  * Distinct source CLASSES backing an artifact. Prefers the backend's
  * authoritative `metadata.source_category` (written by the source-classification
@@ -500,6 +532,8 @@ function independentSourceClassCount(a: Artifact): number {
 function clusterIndependentSourceClasses(c: IdentityCluster): string[] {
   const out = new Set<string>();
   for (const a of c.artifacts) {
+    // A zero-hit row observed nothing, so it corroborates nothing.
+    if (isNegativeResultArtifact(a)) continue;
     for (const cls of artifactSourceClasses(a)) {
       if (!NON_CORROBORATING_CLASSES.has(cls)) out.add(cls);
     }
@@ -950,6 +984,8 @@ export type ToolAuditEntry = {
   variants: string[];
   totalResults: number;
   highConf: number;
+  /** Analyst-confirmed (ATTESTED): a decision, not evidence strength — counted apart from highConf. */
+  attested: number;
   lowConf: number;
   cached: number;
   failed: number;
@@ -991,11 +1027,12 @@ export function buildToolAudit(
     if (failed) failedCount++;
 
     const entry = map.get(tool) ?? {
-      tool, variants: [], totalResults: 0, highConf: 0, lowConf: 0, cached: 0, failed: 0, kinds: [],
+      tool, variants: [], totalResults: 0, highConf: 0, attested: 0, lowConf: 0, cached: 0, failed: 0, kinds: [],
     };
     if (!entry.variants.includes(rawSource)) entry.variants.push(rawSource);
     entry.totalResults++;
-    if (label === "CONFIRMED" || label === "ATTESTED" || label === "INFERRED") entry.highConf++;
+    if (label === "CONFIRMED" || label === "INFERRED") entry.highConf++;
+    if (label === "ATTESTED") entry.attested++;
     if (label === "LOW" || label === "VERIFY") entry.lowConf++;
     if (cached) entry.cached++;
     if (failed) entry.failed++;
@@ -1702,7 +1739,7 @@ export function buildReportMarkdown(input: ReportInput): string {
   const toolCoverage = audit.tools.length === 0
     ? "_No tools produced artifacts._"
     : audit.tools.map((t) =>
-        `- ${toolActionLabel(auditEntryToolName(t))} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
+        `- ${toolActionLabel(auditEntryToolName(t))} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.attested ? `${t.attested} analyst-confirmed, ` : ""}${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
       ).join("\n");
 
   const weakAreas = (() => {
@@ -1927,6 +1964,12 @@ const US_STATE_TOKENS: Record<string, string> = {
   wy: "WY", dc: "DC",
 };
 
+/** Words that make an adjacent "id" mean "identifier" rather than Idaho. */
+const ACCOUNT_ID_CONTEXT_TOKENS = new Set([
+  "discord", "steam", "roblox", "telegram", "twitter", "tiktok", "instagram", "snapchat",
+  "twitch", "reddit", "github", "facebook", "xbox", "psn", "epic", "user", "account", "player", "uid",
+]);
+
 function tokenize(s: string): string[] {
   return s.toLowerCase().replace(/[^a-z0-9\s-]/g, " ").split(/\s+/).filter(Boolean);
 }
@@ -1951,6 +1994,25 @@ function extractStateFromText(s: string | null | undefined): string | null {
     if (st) return st;
   }
   return null;
+}
+
+/**
+ * Do two CLUSTERS carry area codes that share none?
+ *
+ * The check used to union the codes of every cluster and warn "likely different people" whenever the
+ * union held more than one — so a SINGLE cluster holding two phones from different area codes (one
+ * person who moved, or who carries a number from their old city) tripped it, and the warning also
+ * raised the same-name-collision banner. A conflict needs two clusters that each have a code and
+ * have no code in common; one cluster's own mix of codes is not a disagreement with anyone.
+ */
+export function areaCodesDisagreeAcrossClusters(codesPerCluster: ReadonlyArray<ReadonlyArray<string>>): boolean {
+  const withCodes = codesPerCluster.filter((codes) => codes.length > 0);
+  for (let i = 0; i < withCodes.length; i++) {
+    for (let j = i + 1; j < withCodes.length; j++) {
+      if (!withCodes[i].some((c) => withCodes[j].includes(c))) return true;
+    }
+  }
+  return false;
 }
 
 function extractAreaCode(phone: string): string | null {
@@ -1995,7 +2057,15 @@ export function detectNameLocationSeed(seedValue: string | null): { name: string
   // object) keeps `isNameSearch` false for URL/link seeds, so no phantom subject
   // is emitted and clusters fall back to their own names, not a URL fragment.
   if (toks.length < 2) return null;
-  const state = extractStateFromText(cleaned);
+  // A long digit run is an account identifier (Discord snowflake, Steam64, user
+  // ID), never part of a person's name — ZIPs are 5 digits. Live case 2026-09-25:
+  // "<19-digit id> discord ID" became subject "<id> discord", location "ID"
+  // (Idaho), and a fabricated Seed-Location section.
+  if (toks.some((t) => /^\d{6,}$/.test(t))) return null;
+  // Beside a platform/account word, "id" is the word ID, not Idaho.
+  const state = toks.includes("id") && toks.some((t) => ACCOUNT_ID_CONTEXT_TOKENS.has(t))
+    ? extractStateFromText(toks.filter((t) => t !== "id").join(" "))
+    : extractStateFromText(cleaned);
   const nameToks = toks.filter((t) => !US_STATE_TOKENS[t]);
   const name = nameToks.length ? nameToks.slice(0, 3).join(" ") : null;
   return { name, state };
@@ -2328,6 +2398,9 @@ export function buildIdentityClusters(
   type SignalHit = { key: string; signal: MergeSignal; raw: string; platform: string | null; derived?: true };
   const signalsFor = (a: Artifact): SignalHit[] => {
     const hits: SignalHit[] = [];
+    // A lookup that found nothing links nothing: the selector it names (often a
+    // guessed email permutation) was probed, not observed. See isNegativeResultArtifact.
+    if (isNegativeResultArtifact(a)) return hits;
     const kind = a.kind.toLowerCase();
     const v = a.value.trim();
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
@@ -2778,7 +2851,7 @@ export function buildIdentityClusters(
     const states = new Set(withEmail.map((c) => c.states[0]));
     return withEmail.length > 1 && states.size > 1;
   })();
-  const conflictingAreaCodes = new Set(out.flatMap((c) => c.areaCodes)).size > 1;
+  const conflictingAreaCodes = areaCodesDisagreeAcrossClusters(out.map((c) => c.areaCodes));
   const collision = dupeName || conflictingStates || conflictingEmailRegions || conflictingAreaCodes;
 
   const warnings: string[] = [];
@@ -2799,12 +2872,20 @@ export function buildIdentityClusters(
       "Potential same-name collision detected. The following artifacts may belong to different people and should not be merged without additional corroboration.",
     );
   }
+  // An analyst-supplied name that record-derived names contradict is an OPEN QUESTION,
+  // not something the model's prose gets to resolve. See name-conflict.ts.
+  const nameConflict = detectNameConflict(artifacts);
+  if (nameConflict) warnings.push(formatNameConflict(nameConflict));
   if (seedState && !out.some((c) => c.matchesSeedLocation)) {
     warnings.push(
       `No direct ${seedState} corroboration found in this run. Out-of-area same-name candidates are shown separately — do not conclude the subject is "not from ${seedState}".`,
     );
   }
-  if (conflictingAreaCodes) warnings.push("Phone area codes across clusters disagree — likely different people.");
+  if (conflictingAreaCodes) {
+    warnings.push(
+      "Phone area codes differ between clusters. An area code shows where a number was issued, not where its holder lives — treat the difference as a lead for separating identities, not as proof of it.",
+    );
+  }
 
   // Minor-safety: surface a hard warning if any artifact carries a minor flag.
   const minorArtifacts = artifacts.filter((a) => {

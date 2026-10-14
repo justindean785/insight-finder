@@ -176,6 +176,11 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
                       {t.highConf} high
                     </span>
                   )}
+                  {t.attested > 0 && (
+                    <span className="px-1.5 py-0.5 rounded border border-border bg-secondary/40 text-muted-foreground" title="Analyst-confirmed: a decision, not a second source">
+                      {t.attested} analyst-confirmed
+                    </span>
+                  )}
                   {t.lowConf > 0 && (
                     <span className="px-1.5 py-0.5 rounded border border-[hsl(var(--confidence-mid))]/40 bg-[hsl(var(--confidence-mid))]/10 text-[hsl(var(--confidence-mid))]">
                       {t.lowConf} verify
@@ -241,7 +246,9 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
           for (const t of audit.tools) {
             for (const k of t.kinds) {
               const cur = kindStats.get(k) ?? { high: 0, low: 0, total: 0 };
-              cur.high += t.highConf;
+              // An analyst-confirmed hit is still a hit for COVERAGE (it is just not "high confidence"), so a kind
+              // whose only result was confirmed by the analyst is not reported as missing.
+              cur.high += t.highConf + t.attested;
               cur.low += t.lowConf;
               cur.total += t.totalResults;
               kindStats.set(k, cur);

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  explainLeakCheckRefusal,
   classifyDetailedOutcome,
   normalizeProviderError,
   needsAttention,
@@ -285,5 +286,517 @@ describe("the Faulted tile and the Needs attention list count different things",
     const degraded = totals.timeout + totals.rate_limited + totals.http_denied + totals.blocked;
     expect(succeeded + empty + skipped + degraded + faultedCalls(totals)).toBe(totals.total);
     expect(totals.total).toBe(7);
+  });
+});
+
+describe("normalizeProviderError — LeakCheck's documented 403 meanings (and only LeakCheck's)", () => {
+  // LeakCheck's docs (docs.leakcheck.io/errors) give 403 exactly two meanings: "Active plan required" and
+  // "Limit reached". The row the edge writes for a refused lookup usually carries only the status — cache.ts
+  // extractToolError synthesises "upstream returned HTTP 403" — so the tool name identifies it, and the status
+  // alone cannot say WHICH of the two. The account-limit reading is keyed on the tool name AND the 403 status,
+  // never on keywords: a 403 from a website, a CDN or a scraping tool is the target's, not a provider plan problem.
+  const GENERIC = "Access denied (HTTP 403) — the provider blocked this request, usually bot protection or IP reputation, not a bad key.";
+
+  it("leakcheck_lookup 403 with only transport text says 'either', says it was not told which, and drops 'bot protection'", () => {
+    for (const raw of ["upstream returned HTTP 403", null, ""]) {
+      const m = normalizeProviderError("leakcheck_lookup", raw, 403);
+      expect(m.startsWith("Refused (HTTP 403).")).toBe(true);
+      expect(m).toMatch(/documents 403 as either an inactive plan or a reached usage quota, and the stored record does not say which/i);
+      expect(m).toMatch(/Check the plan and remaining quota on the LeakCheck account/);
+      expect(m).not.toMatch(/IP reputation|bot protection|account grounds/i);
+      expect(m).not.toMatch(/upstream returned HTTP 403/); // bare transport text is not quoted back
+    }
+  });
+
+  it("names WHICH only when LeakCheck's own documented words did, and quotes them", () => {
+    const plan = normalizeProviderError("leakcheck_lookup", "Active plan required", 403);
+    expect(plan.startsWith('Refused (HTTP 403) — "Active plan required".')).toBe(true);
+    expect(plan).toMatch(/no active plan/i);
+    expect(plan).not.toMatch(/usage quota/i);
+    const lim = normalizeProviderError("leakcheck_lookup", "Limit reached", 403);
+    expect(lim.startsWith('Refused (HTTP 403) — "Limit reached".')).toBe(true);
+    expect(lim).toMatch(/usage quota is used up/i);
+    expect(lim).not.toMatch(/no active plan/i);
+    expect(normalizeProviderError("leakcheck_lookup", "active plan required", 403)).toMatch(/no active plan/i);
+  });
+
+  it("the headline is exactly the refusal; the cause sentence is separate and only ever hedged or quoted", () => {
+    expect(normalizeProviderError("leakcheck_lookup", null, 403).split(". ")[0]).toBe("Refused (HTTP 403)");
+    expect(normalizeProviderError("leakcheck_lookup", "upstream returned HTTP 403", 403).split(". ")[0]).toBe("Refused (HTTP 403)");
+    expect(normalizeProviderError("leakcheck_lookup", "Active plan required", 403).split(". ")[0]).toBe('Refused (HTTP 403) — "Active plan required"');
+  });
+
+  it("a stored value that already carries quotes or a final period is never echoed: the documented message is quoted once, canonically", () => {
+    for (const raw of ['"Active plan required"', "'Active plan required'", "Active plan required.", "ACTIVE plan Required"]) {
+      const m = normalizeProviderError("leakcheck_lookup", raw, 403);
+      expect(m.startsWith('Refused (HTTP 403) — "Active plan required".')).toBe(true);
+      expect(m).not.toMatch(/""|''|"{2,}/);
+    }
+    for (const raw of ['"Limit reached"', "limit REACHED.", " Limit reached "]) {
+      const m = normalizeProviderError("leakcheck_lookup", raw, 403);
+      expect(m.startsWith('Refused (HTTP 403) — "Limit reached".')).toBe(true);
+      expect(m).not.toMatch(/""|''/);
+    }
+  });
+
+  it("stored-text variants (case, padding, tabs/newlines) get the 'either' wording; anything else does not", () => {
+    for (const raw of ["UPSTREAM RETURNED HTTP 403", "  upstream returned http 403  ", "\tupstream returned HTTP 403\n"]) {
+      expect(normalizeProviderError("leakcheck_lookup", raw, 403)).toMatch(/^Refused \(HTTP 403\)\. LeakCheck documents/);
+    }
+    for (const raw of ["upstream returned HTTP 403.", "upstream  returned HTTP 403", "upstream returned HTTP 4030", "upstream returned HTTP 403 (x)"]) {
+      expect(normalizeProviderError("leakcheck_lookup", raw, 403)).toBe(GENERIC);
+    }
+  });
+
+  it("the documented message is accepted only as the WHOLE text (quotes / final period tolerated)", () => {
+    for (const raw of ['"Active plan required"', "Active plan required.", "ACTIVE PLAN REQUIRED"]) {
+      expect(normalizeProviderError("leakcheck_lookup", raw, 403)).toMatch(/no active plan/i);
+    }
+    expect(normalizeProviderError("leakcheck_lookup", "Limit reached.", 403)).toMatch(/usage quota is used up/i);
+  });
+
+  it("text that merely CONTAINS a documented phrase is not read as LeakCheck's message", () => {
+    for (const raw of [
+      "Forbidden: Limit reached",
+      "HTTP 403 — Cloudflare: Limit reached for your IP",
+      "Daily limit reached",
+      "Error: Active plan required for this endpoint",
+      "Active plan required / Limit reached",
+      "x".repeat(200) + " Limit reached",
+    ]) {
+      expect(normalizeProviderError("leakcheck_lookup", raw, 403)).toBe(GENERIC);
+    }
+  });
+
+  it("transport text for a DIFFERENT status than the one being read is not 'status only'", () => {
+    expect(normalizeProviderError("leakcheck_lookup", "upstream returned HTTP 404", 403, "http_denied")).toBe(GENERIC);
+  });
+
+  it("provider text that is NOT one of the two documented messages keeps the generic wording", () => {
+    expect(normalizeProviderError("leakcheck_lookup", "Attention Required! | Cloudflare", 403)).toBe(GENERIC);
+  });
+
+  it("a LeakCheck refusal with no 403 status is not read through the 403 documentation", () => {
+    // Category is http_denied only because the text said "forbidden"; the docs' claim is about the 403 status.
+    expect(classifyDetailedOutcome("failed", "forbidden", null)).toBe("http_denied");
+    expect(normalizeProviderError("leakcheck_lookup", "forbidden", null)).toBe(GENERIC);
+    // Defence in depth: even handed the category directly, the 403 documentation needs a 403.
+    expect(normalizeProviderError("leakcheck_lookup", "Active plan required", null, "http_denied")).toBe(GENERIC);
+    expect(normalizeProviderError("leakcheck_lookup", "Limit reached", 200, "http_denied")).toBe("Access denied (HTTP 200) — the provider blocked this request, usually bot protection or IP reputation, not a bad key.");
+  });
+
+  it("explainLeakCheckRefusal is the single source: null unless leakcheck_lookup + 403 + a documented/transport-only text", () => {
+    expect(explainLeakCheckRefusal("leakcheck_lookup", "upstream returned HTTP 403", 403)).toMatch(/^Refused \(HTTP 403\)\. LeakCheck documents/);
+    expect(explainLeakCheckRefusal("leakcheck_lookup", "Limit reached", 403)).toMatch(/usage quota is used up/);
+    for (const [tool, raw, code] of [
+      ["jina_reader_scrape", "Active plan required", 403],
+      ["leakcheck_lookup", "Active plan required", 200],
+      ["leakcheck_lookup", "Active plan required", null],
+      ["leakcheck_lookup", "Attention Required! | Cloudflare", 403],
+      ["leakcheck_lookup", "upstream returned HTTP 404", 403],
+      ["LEAKCHECK_LOOKUP", null, 403],
+    ] as Array<[string, string | null, number | null]>) {
+      expect(explainLeakCheckRefusal(tool, raw, code)).toBeNull();
+    }
+  });
+
+  // The regression the review found: a keyword rule would send an analyst to "check your plan" for a paywalled
+  // page, a CDN quota page or a shodan-style 403. Every one of these must be byte-identical to the generic wording.
+  const UNRELATED: Array<[string, string]> = [
+    ["jina_reader_scrape", "403 Forbidden: Subscription required to read this article"],
+    ["jina_reader_scrape", "Target returned 403: please log in to your subscription"],
+    ["jina_reader_scrape", "Active plan required"],
+    ["firecrawl_scrape", "HTTP 403 — daily limit reached for anonymous readers"],
+    ["http_fingerprint", "HTTP 403 — Cloudflare: request quota for your IP"],
+    ["reddit_user", "Whoa there, pardner! Reddit's awfully busy; your IP quota"],
+    ["shodan_host", "403 Forbidden: subscription required"],
+    ["some_paid_api", "403 Active plan required"],
+    ["nominatim_geocode", "nominatim 403 account limit exceeded"],
+    ["leakcheck_lookup_lookalike", "Limit reached"],
+  ];
+  it.each(UNRELATED)("NEGATIVE CONTROL — %s 403 saying %j keeps the generic wording", (tool, raw) => {
+    expect(normalizeProviderError(tool, raw, 403)).toBe(GENERIC);
+  });
+
+  it("ordinary 403s with no account words keep the generic wording", () => {
+    expect(normalizeProviderError("jina_reader_scrape", "jina 403", 403)).toBe(GENERIC);
+    expect(normalizeProviderError("reddit_user", "reddit 403 Blocked", 403)).toBe(GENERIC);
+    expect(normalizeProviderError("nominatim_geocode", "nominatim 403", 403)).toBe(GENERIC);
+  });
+
+  it("does not change the category: still http_denied (the calm bucket) for every case above", () => {
+    expect(classifyDetailedOutcome("failed", "Active plan required", 403)).toBe("http_denied");
+    expect(classifyDetailedOutcome("failed", "upstream returned HTTP 403", 403)).toBe("http_denied");
+    for (const [, raw] of UNRELATED) expect(classifyDetailedOutcome("failed", raw, 403)).toBe("http_denied");
+  });
+});
+
+describe("aggregateToolHealth — a LeakCheck 403 is explained, and ONLY a LeakCheck 403 (2026-10-13)", () => {
+  // The wording in normalizeProviderError was never reachable from the Health tab: it is only built for
+  // needs-attention categories and http_denied is deliberately the calm bucket. This drives the real aggregation with
+  // REAL-SHAPED stored rows — what the edge writes for a refused LeakCheck call: outcome "failed", ok false,
+  // status_code 403, and error_msg "upstream returned HTTP 403" (cache.ts extractToolError; LeakCheck's own message is
+  // not kept on the row). The category stays http_denied and nothing is promoted to attention by this change.
+  const at = (tool: string, error_msg: string | null, created_at: string, over: Record<string, unknown> = {}) =>
+    ({ tool_name: tool, outcome: "failed", error_msg, status_code: 403, ok: false, created_at, ...over });
+  const T = (n: number) => `2026-10-13T00:${String(n).padStart(2, "0")}:00Z`;
+  const STORED = "upstream returned HTTP 403";
+  const LK_EITHER =
+    "Refused (HTTP 403). LeakCheck documents 403 as either an inactive plan or a reached usage quota, and the stored record does not say which. Check the plan and remaining quota on the LeakCheck account.";
+  const LEAD = "Most recent LeakCheck refusal:";
+  // What the circuit breaker writes after a 401/403 (circuit.ts): later calls in the run are refused BEFORE they reach
+  // the provider and are logged as SKIPPED with no status code — they are not additional provider refusals.
+  const BREAKER = "401/403 unauthorized — provider 'leakcheck' suppressed for investigation";
+  const skip = (n: number) =>
+    ({ tool_name: "leakcheck_lookup", outcome: "skipped", error_msg: BREAKER, status_code: null, ok: false, created_at: T(n) });
+  const cancelled = (n: number) =>
+    ({ tool_name: "leakcheck_lookup", outcome: "failed", error_msg: "AbortError: The signal has been aborted", status_code: null, ok: false, created_at: T(n) });
+  const okRow = (n: number) => ({ tool_name: "leakcheck_lookup", outcome: "ok", error_msg: null, status_code: 200, ok: true, created_at: T(n) });
+  const emptyRow = (n: number) => ({ tool_name: "leakcheck_lookup", outcome: "empty", error_msg: null, status_code: 200, ok: true, created_at: T(n) });
+  const repeat = (n: number) => `${n} attempts on this case, none returned data — stop calling it here.`;
+  const many = (tool: string, n: number, msg: string | null = STORED, over: Record<string, unknown> = {}) =>
+    Array.from({ length: n }, (_, i) => at(tool, msg, T(i), over));
+  const calm = (message: string) => ({ category: "http_denied", message, statusCode: null, informational: true });
+
+  it("ONE real-shaped LeakCheck 403 is explained, informational, calm (still http_denied, no attention)", () => {
+    const { rows, attention, totals } = aggregateToolHealth(many("leakcheck_lookup", 1));
+    expect(rows[0].worst).toBe("http_denied");
+    expect(rows[0].counts.http_denied).toBe(1);
+    expect(rows[0].needsAttention).toBe(false);
+    expect(attention).toEqual([]);
+    expect(rows[0].lastIssue).toEqual(calm(LK_EITHER));
+    expect(totals.http_denied).toBe(1);
+  });
+
+  it("TWO behave the same as one", () => {
+    const { rows, attention } = aggregateToolHealth(many("leakcheck_lookup", 2));
+    expect(rows[0].needsAttention).toBe(false);
+    expect(attention).toEqual([]);
+    expect(rows[0].lastIssue).toEqual(calm(LK_EITHER));
+  });
+
+  it("THREE OR MORE trip the existing repetition floor: the original sentence is kept, the explanation follows, and it is not informational", () => {
+    for (const n of [3, 5]) {
+      const { rows, attention } = aggregateToolHealth(many("leakcheck_lookup", n));
+      expect(attention.map((r) => r.toolName)).toEqual(["leakcheck_lookup"]);
+      expect(rows[0].counts.http_denied).toBe(n);
+      expect(rows[0].lastIssue).toEqual({ category: "http_denied", message: `${repeat(n)} ${LEAD} ${LK_EITHER}`, statusCode: null });
+    }
+  });
+
+  // ── circuit breaker: a 403 suppresses the provider for the run, so what follows is SKIPPED rows ─────────────────────
+  it("[403, skip]: the explanation survives the breaker's skip, which is counted as a skip — never as a second refusal", () => {
+    const { rows, attention, totals } = aggregateToolHealth([at("leakcheck_lookup", STORED, T(0)), skip(1)]);
+    expect(rows[0].counts.http_denied).toBe(1);
+    expect(rows[0].counts.skipped).toBe(1);
+    expect(totals.http_denied).toBe(1);
+    expect(totals.skipped).toBe(1);
+    expect(rows[0].needsAttention).toBe(false);
+    expect(attention).toEqual([]);
+    expect(rows[0].lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+  });
+
+  it("[403, skip, skip]: the repetition sentence is kept and the explanation names the most recent REFUSAL, not every attempt", () => {
+    const { rows, attention } = aggregateToolHealth([at("leakcheck_lookup", STORED, T(0)), skip(1), skip(2)]);
+    expect(rows[0].counts).toMatchObject({ http_denied: 1, skipped: 2 });
+    expect(attention.map((r) => r.toolName)).toEqual(["leakcheck_lookup"]);
+    expect(rows[0].lastIssue).toEqual({ category: "http_denied", message: `${repeat(3)} ${LEAD} ${LK_EITHER}`, statusCode: null });
+  });
+
+  it("[403, cancelled]: a cancelled attempt never reached the provider, so it does not clear the explanation", () => {
+    const { rows } = aggregateToolHealth([at("leakcheck_lookup", STORED, T(0)), cancelled(1)]);
+    expect(rows[0].counts).toMatchObject({ http_denied: 1, cancelled: 1 });
+    expect(rows[0].lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+  });
+
+  it("[403, timeout]: no provider answer either, so the last refusal still stands", () => {
+    const { rows } = aggregateToolHealth([
+      at("leakcheck_lookup", STORED, T(0)),
+      at("leakcheck_lookup", "request timed out after 30000ms", T(1), { status_code: null }),
+    ]);
+    expect(rows[0].lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+  });
+
+  it("[403, successful provider response] and [403, no-record response]: a real answer makes the explanation stale — nothing is shown", () => {
+    for (const answer of [okRow(1), emptyRow(1)]) {
+      const { rows } = aggregateToolHealth([at("leakcheck_lookup", STORED, T(0)), answer]);
+      expect(rows[0].lastIssue).toBeNull();
+      expect(rows[0].needsAttention).toBe(false);
+    }
+  });
+
+  it("[403, skip, success] is cleared; [success, 403, skip] is explained; [403, success, 403] is explained again", () => {
+    expect(aggregateToolHealth([at("leakcheck_lookup", STORED, T(0)), skip(1), okRow(2)]).rows[0].lastIssue).toBeNull();
+    expect(aggregateToolHealth([okRow(0), at("leakcheck_lookup", STORED, T(1)), skip(2)]).rows[0].lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+    expect(aggregateToolHealth([at("leakcheck_lookup", STORED, T(0)), okRow(1), at("leakcheck_lookup", STORED, T(2))]).rows[0].lastIssue)
+      .toEqual(calm(`${LEAD} ${LK_EITHER}`));
+  });
+
+  it("a later provider answer of a DIFFERENT kind replaces it: another 403 text, a 429, a 451", () => {
+    for (const later of [
+      at("leakcheck_lookup", "Attention Required! | Cloudflare", T(1)),
+      at("leakcheck_lookup", "rate limited", T(1), { status_code: 429 }),
+      at("leakcheck_lookup", "unavailable for legal reasons", T(1), { status_code: 451 }),
+    ]) {
+      const { rows } = aggregateToolHealth([at("leakcheck_lookup", STORED, T(0)), later]);
+      expect(rows[0].lastIssue).toBeNull();
+    }
+  });
+
+  it("the most recent REFUSAL supplies the reason, whatever the input order, and skips in between do not hide it", () => {
+    const { rows } = aggregateToolHealth([
+      skip(3),
+      at("leakcheck_lookup", "Active plan required", T(4)),
+      at("leakcheck_lookup", STORED, T(1)),
+      skip(5),
+    ]);
+    expect(rows[0].lastIssue!.message).toBe(
+      `${repeat(4)} ${LEAD} Refused (HTTP 403) — "Active plan required". LeakCheck reports this when the account has no active plan. Check the plan on the LeakCheck account.`,
+    );
+  });
+
+  it("a documented LeakCheck message that DID reach the row names its cause, quoted once", () => {
+    for (const [stored, cause] of [["Active plan required", /no active plan/], ['"Limit reached"', /usage quota is used up/]] as Array<[string, RegExp]>) {
+      const m = aggregateToolHealth(many("leakcheck_lookup", 1, stored)).rows[0].lastIssue!.message;
+      expect(m).toMatch(cause);
+      expect(m).not.toMatch(/""/);
+      expect(m).not.toMatch(/stored record does not say which/);
+    }
+  });
+
+  it("stored-text variants (case, padding) are explained like the exact text", () => {
+    for (const msg of ["UPSTREAM RETURNED HTTP 403", "  upstream returned http 403  "]) {
+      expect(aggregateToolHealth(many("leakcheck_lookup", 1, msg)).rows[0].lastIssue).toEqual(calm(LK_EITHER));
+    }
+  });
+
+  it("the http_denied gate: a 403 stored with a SUCCESS outcome is not an explained refusal", () => {
+    const stored = { tool_name: "leakcheck_lookup", outcome: "ok", error_msg: STORED, status_code: 403, ok: true, created_at: T(0) };
+    const { rows } = aggregateToolHealth([stored]);
+    expect(rows[0].counts.success).toBe(1);
+    expect(rows[0].counts.http_denied).toBe(0);
+    expect(rows[0].lastIssue).toBeNull();
+  });
+
+  // ── nothing else changes ───────────────────────────────────────────────────────────────────────────────────────────
+  it("an EQUIVALENT 403 from any other tool, with the same breaker pattern, keeps its previous behaviour exactly", () => {
+    for (const tool of ["jina_reader_scrape", "reddit_user", "firecrawl_scrape", "http_fingerprint", "shodan_host", "some_paid_api"]) {
+      for (const msg of [STORED, "403 Forbidden: Subscription required to read this article", "Active plan required", "Limit reached"]) {
+        for (const n of [1, 2]) {
+          const { rows, attention } = aggregateToolHealth(many(tool, n, msg));
+          expect(rows[0].lastIssue).toBeNull();
+          expect(rows[0].needsAttention).toBe(false);
+          expect(attention).toEqual([]);
+        }
+        expect(aggregateToolHealth(many(tool, 3, msg)).rows[0].lastIssue).toEqual({ category: "http_denied", message: repeat(3), statusCode: null });
+        const withSkips = aggregateToolHealth([
+          at(tool, msg, T(0)),
+          { tool_name: tool, outcome: "skipped", error_msg: BREAKER.replace("leakcheck", tool), status_code: null, ok: false, created_at: T(1) },
+          { tool_name: tool, outcome: "skipped", error_msg: BREAKER.replace("leakcheck", tool), status_code: null, ok: false, created_at: T(2) },
+        ]);
+        expect(withSkips.rows[0].lastIssue).toEqual({ category: "http_denied", message: repeat(3), statusCode: null });
+      }
+    }
+  });
+
+  it("LeakCheck on any OTHER status keeps its previous behaviour", () => {
+    for (const status of [400, 401, 402, 404, 429, 451, 500, null]) {
+      const out = aggregateToolHealth(many("leakcheck_lookup", 1, STORED, { status_code: status }));
+      expect(out.rows[0].lastIssue?.message ?? "").not.toMatch(/LeakCheck documents|Refused \(HTTP 403\)|LeakCheck refusal/);
+    }
+    const three429 = aggregateToolHealth(many("leakcheck_lookup", 3, "rate limited", { status_code: 429 }));
+    expect(three429.rows[0].lastIssue).toEqual({ category: "rate_limited", message: repeat(3), statusCode: null });
+  });
+
+  it("a LeakCheck 403 carrying text that is NOT the stored text or a documented message is not explained", () => {
+    for (const msg of ["Attention Required! | Cloudflare", "Forbidden: Limit reached", "upstream returned HTTP 404"]) {
+      expect(aggregateToolHealth(many("leakcheck_lookup", 1, msg)).rows[0].lastIssue).toBeNull();
+      expect(aggregateToolHealth(many("leakcheck_lookup", 3, msg)).rows[0].lastIssue).toEqual({ category: "http_denied", message: repeat(3), statusCode: null });
+    }
+  });
+
+  it("a real needs-attention issue is never overwritten by the explanation", () => {
+    const { rows } = aggregateToolHealth([
+      at("leakcheck_lookup", STORED, T(1)),
+      at("leakcheck_lookup", "leakcheck 502 bad gateway", T(2), { status_code: 502 }),
+      at("leakcheck_lookup", STORED, T(3)),
+    ]);
+    expect(rows[0].needsAttention).toBe(true);
+    expect(rows[0].lastIssue!.category).toBe("failed");
+    expect(rows[0].lastIssue!.message).not.toMatch(/LeakCheck documents|LeakCheck refusal/);
+    expect(rows[0].lastIssue!.informational).toBeUndefined();
+  });
+
+  it("mixed-provider history: only LeakCheck is explained; counts, totals, attention and sort order are unchanged", () => {
+    const rowsIn = [
+      at("leakcheck_lookup", STORED, T(0)), skip(1),
+      ...many("jina_reader_scrape", 3, "403 Forbidden: Subscription required"),
+      at("exa_search", "boom", T(5), { status_code: 500 }),
+      { tool_name: "hibp_lookup", outcome: "ok", error_msg: null, status_code: 200, ok: true, created_at: T(6) },
+    ];
+    const out = aggregateToolHealth(rowsIn);
+    expect(out.attention.map((r) => r.toolName).sort()).toEqual(["exa_search", "jina_reader_scrape"]);
+    expect(out.totals).toMatchObject({ http_denied: 4, skipped: 1, failed: 1, success: 1, total: 7 });
+    const by = (n: string) => out.rows.find((r) => r.toolName === n)!;
+    expect(by("leakcheck_lookup").lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+    expect(by("leakcheck_lookup").needsAttention).toBe(false);
+    expect(by("jina_reader_scrape").lastIssue).toEqual({ category: "http_denied", message: repeat(3), statusCode: null });
+    expect(by("hibp_lookup").lastIssue).toBeNull();
+  });
+});
+
+describe("aggregateToolHealth — a cache replay is not a provider answer (2026-10-13)", () => {
+  // cache.ts answers from the thread/user cache BEFORE the circuit breaker ("Cache lookup happens before live-call
+  // policy"), and logs the replay with logUsage(cached=true, ok=true, …): outcome "ok" (or "empty" when the replayed
+  // payload is a proven no-record), cached = true, error_msg and status_code nulled for "ok". The provider was never
+  // contacted, so the replay cannot say whether the 403 still stands: only a LIVE provider response may clear it.
+  // Live rows are written with cached = false (the column is NOT NULL DEFAULT false).
+  const T = (n: number) => `2026-10-13T01:${String(n).padStart(2, "0")}:00Z`;
+  const STORED = "upstream returned HTTP 403";
+  const LK_EITHER =
+    "Refused (HTTP 403). LeakCheck documents 403 as either an inactive plan or a reached usage quota, and the stored record does not say which. Check the plan and remaining quota on the LeakCheck account.";
+  const LEAD = "Most recent LeakCheck refusal:";
+  const repeat = (n: number) => `${n} attempts on this case, none returned data — stop calling it here.`;
+  const calm = (message: string) => ({ category: "http_denied", message, statusCode: null, informational: true });
+  const BREAKER = "401/403 unauthorized — provider 'leakcheck' suppressed for investigation";
+
+  const LK = "leakcheck_lookup";
+  const live = (tool: string, n: number, over: Record<string, unknown> = {}) =>
+    ({ tool_name: tool, outcome: "failed", error_msg: STORED, status_code: 403, ok: false, cached: false, created_at: T(n), ...over });
+  const refusal = (n: number) => live(LK, n);
+  const replay = (n: number, outcome: "ok" | "empty" = "ok", tool = LK) =>
+    ({ tool_name: tool, outcome, error_msg: null, status_code: null, ok: true, cached: true, created_at: T(n) });
+  const skip = (n: number) =>
+    ({ tool_name: LK, outcome: "skipped", error_msg: BREAKER, status_code: null, ok: false, cached: false, created_at: T(n) });
+  const cancelled = (n: number) =>
+    ({ tool_name: LK, outcome: "failed", error_msg: "AbortError: The signal has been aborted", status_code: null, ok: false, cached: false, created_at: T(n) });
+  const liveOk = (n: number) => ({ tool_name: LK, outcome: "ok", error_msg: null, status_code: null, ok: true, cached: false, created_at: T(n) });
+  const liveEmpty = (n: number) => ({ tool_name: LK, outcome: "empty", error_msg: null, status_code: null, ok: true, cached: false, created_at: T(n) });
+
+  it("[403, replay]: the replay does not clear the explanation — and it is counted as the success the log says it is", () => {
+    const { rows, attention, totals } = aggregateToolHealth([refusal(0), replay(1)]);
+    expect(rows[0].counts).toMatchObject({ http_denied: 1, success: 1 });
+    expect(totals).toMatchObject({ http_denied: 1, success: 1, total: 2 });
+    expect(rows[0].needsAttention).toBe(false);
+    expect(attention).toEqual([]);
+    expect(rows[0].lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+  });
+
+  it("[403, replay of a no-record result]: same — an empty replay is not a live answer either", () => {
+    const { rows } = aggregateToolHealth([refusal(0), replay(1, "empty")]);
+    expect(rows[0].counts).toMatchObject({ http_denied: 1, empty: 1 });
+    expect(rows[0].lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+  });
+
+  it("[403, replay, skip] and the other orders of replay, skip and cancellation keep the explanation", () => {
+    for (const seq of [
+      [refusal(0), replay(1), skip(2)],
+      [refusal(0), skip(1), replay(2)],
+      [refusal(0), cancelled(1), replay(2)],
+      [refusal(0), replay(1), replay(2), skip(3), skip(4)],
+      [refusal(0), skip(1), skip(2), replay(3)],
+    ]) {
+      const { rows, attention } = aggregateToolHealth(seq);
+      expect(rows[0].counts.http_denied).toBe(1);                      // skips and replays are never extra refusals
+      expect(rows[0].needsAttention).toBe(false);                      // a replayed success is data, so the floor is not met
+      expect(attention).toEqual([]);
+      expect(rows[0].lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+    }
+  });
+
+  it("a replay of a result that is not a success does not clear it either: 429, 451, another 403 text", () => {
+    // cache.ts only replays genuine successes, so these cannot be written today; the rule is about `cached`, not about
+    // what the replayed row happens to contain, so it must hold whatever the row says.
+    for (const stale of [
+      live(LK, 1, { cached: true, error_msg: "rate limited", status_code: 429 }),
+      live(LK, 1, { cached: true, error_msg: "unavailable for legal reasons", status_code: 451 }),
+      live(LK, 1, { cached: true, error_msg: "Attention Required! | Cloudflare" }),
+    ]) {
+      const { rows } = aggregateToolHealth([refusal(0), stale]);
+      expect(rows[0].lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+    }
+  });
+
+  it("a replay never overwrites a real needs-attention issue, and the explanation never does either", () => {
+    const { rows } = aggregateToolHealth([refusal(0), live(LK, 1, { cached: true, error_msg: "leakcheck 502 bad gateway", status_code: 502 })]);
+    expect(rows[0].needsAttention).toBe(true);
+    expect(rows[0].lastIssue!.category).toBe("failed");
+    expect(rows[0].lastIssue!.message).not.toMatch(/LeakCheck documents|LeakCheck refusal/);
+  });
+
+  it("a LATER LIVE provider response still clears it, replays in between or not", () => {
+    for (const later of [
+      liveOk(3), liveEmpty(3),
+      live(LK, 3, { error_msg: "rate limited", status_code: 429 }),
+      live(LK, 3, { error_msg: "unavailable for legal reasons", status_code: 451 }),
+      live(LK, 3, { error_msg: "Attention Required! | Cloudflare" }),
+    ]) {
+      expect(aggregateToolHealth([refusal(0), replay(1), later]).rows[0].lastIssue).toBeNull();
+      expect(aggregateToolHealth([refusal(0), replay(1), skip(2), later]).rows[0].lastIssue).toBeNull();
+      expect(aggregateToolHealth([refusal(0), later]).rows[0].lastIssue).toBeNull();
+    }
+  });
+
+  it("a replay does not bring a cleared explanation back: [403, live success, replay]", () => {
+    expect(aggregateToolHealth([refusal(0), liveOk(1), replay(2)]).rows[0].lastIssue).toBeNull();
+  });
+
+  it("a new LIVE 403 after a replay is explained again (it is the most recent refusal)", () => {
+    const { rows } = aggregateToolHealth([refusal(0), replay(1), refusal(2)]);
+    expect(rows[0].counts).toMatchObject({ http_denied: 2, success: 1 });
+    expect(rows[0].lastIssue).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+  });
+
+  it("a row with cached false, null or absent is a live row, exactly as before", () => {
+    for (const cached of [false, null, undefined]) {
+      const answer = { ...liveOk(1), cached };
+      if (cached === undefined) delete (answer as Record<string, unknown>).cached;
+      expect(aggregateToolHealth([refusal(0), answer]).rows[0].lastIssue).toBeNull();
+    }
+  });
+
+  it("only LeakCheck is affected: every other tool, with any cached flag, reads exactly as before", () => {
+    for (const tool of ["jina_reader_scrape", "reddit_user", "shodan_host"]) {
+      const same = (rows: Array<Record<string, unknown>>) => {
+        const withFlag = aggregateToolHealth(rows as never);
+        const without = aggregateToolHealth(rows.map(({ cached: _c, ...rest }) => rest) as never);
+        expect(withFlag).toEqual(without);
+        return withFlag;
+      };
+      expect(same([live(tool, 0), replay(1, "ok", tool)]).rows[0].lastIssue).toBeNull();
+      expect(same([live(tool, 0), replay(1, "ok", tool), replay(2, "ok", tool)]).rows[0].lastIssue).toBeNull();
+      expect(same([live(tool, 0), live(tool, 1), live(tool, 2)]).rows[0].lastIssue).toEqual({ category: "http_denied", message: repeat(3), statusCode: null });
+    }
+  });
+
+  it("the cached flag changes NOTHING but the LeakCheck explanation: counts, totals, attention flags and sort order are identical", () => {
+    const mixed = (cached: boolean | undefined) => {
+      const flag = (r: Record<string, unknown>) => (cached === undefined ? (({ cached: _c, ...rest }) => rest)(r) : { ...r, cached });
+      return [
+        refusal(0), replay(1), skip(2), replay(3, "empty"),
+        live("jina_reader_scrape", 4), live("jina_reader_scrape", 5), live("jina_reader_scrape", 6),
+        live("exa_search", 7, { error_msg: "boom", status_code: 500 }),
+        replay(8, "ok", "hibp_lookup"), replay(9, "ok", "hibp_lookup"),
+      ].map((r) => flag(r as Record<string, unknown>));
+    };
+    const strip = (o: ReturnType<typeof aggregateToolHealth>) => ({
+      totals: o.totals,
+      attention: o.attention.map((r) => r.toolName),
+      rows: o.rows.map(({ lastIssue: _i, ...rest }) => rest),
+    });
+    const a = aggregateToolHealth(mixed(true) as never);
+    const b = aggregateToolHealth(mixed(false) as never);
+    const c = aggregateToolHealth(mixed(undefined) as never);
+    // Marking rows cached must not move a count, a flag or the order — including the rows that are NOT LeakCheck.
+    expect(strip(a)).toEqual(strip(b));
+    expect(strip(a)).toEqual(strip(c));
+    // and the only difference in the issues is the LeakCheck line itself.
+    const issue = (o: ReturnType<typeof aggregateToolHealth>, t: string) => o.rows.find((r) => r.toolName === t)!.lastIssue;
+    for (const t of ["jina_reader_scrape", "exa_search", "hibp_lookup"]) {
+      expect(issue(a, t)).toEqual(issue(b, t));
+      expect(issue(a, t)).toEqual(issue(c, t));
+    }
+    expect(issue(a, LK)).toEqual(calm(`${LEAD} ${LK_EITHER}`));
+    expect(issue(b, LK)).toBeNull();                                    // the old rule: a success-class row clears it
   });
 });

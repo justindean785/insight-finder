@@ -78,7 +78,13 @@ function HealthRow({ row }: { row: ToolHealthRow }) {
         </span>
       </div>
       {row.lastIssue && (
-        <div className="mt-1.5 rounded-md border border-destructive/20 bg-black/30 px-2 py-1 font-mono text-micro leading-snug text-destructive/90 break-words [overflow-wrap:anywhere]">
+        <div
+          className={cn(
+            "mt-1.5 rounded-md border bg-black/30 px-2 py-1 font-mono text-micro leading-snug break-words [overflow-wrap:anywhere]",
+            // An explanation on a row that does not need attention (LeakCheck 403) is information, not a fault.
+            row.lastIssue.informational ? "border-amber-400/20 text-amber-400/90" : "border-destructive/20 text-destructive/90",
+          )}
+        >
           {row.lastIssue.statusCode != null && <span className="mr-1 opacity-70">HTTP {row.lastIssue.statusCode}</span>}
           {row.lastIssue.message}
         </div>

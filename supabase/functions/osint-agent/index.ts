@@ -14,10 +14,11 @@ import {
   corsHeaders, MINIMAX_API_KEY, LOVABLE_API_KEY,
   lovableGateway, PRIMARY_ORCHESTRATOR_MODEL_ID, FALLBACK_MODEL_ID,
   geminiDirectGateway, GEMINI_FALLBACK_MODEL_ID, ALLOW_LOVABLE_FALLBACK,
-  grokGateway, openAdapterGateway, ORCHESTRATOR_PROVIDER,
-  GROK_ORCHESTRATOR_MODEL_ID, OPENADAPTER_ORCHESTRATOR_MODEL_ID,
+  grokGateway, ORCHESTRATOR_PROVIDER,
+  GROK_ORCHESTRATOR_MODEL_ID,
   deepseekGateway, DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL, DEEPSEEK_VENDOR_HOST,
+  anthropicGateway, ANTHROPIC_MODEL_ID, ANTHROPIC_THINKING, ANTHROPIC_EFFORT, ANTHROPIC_RUN_LIMITS,
   degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
   promptBudgetHardCeilingEnabled,
 } from "./env.ts";
@@ -79,6 +80,10 @@ import { applyClusteringToThread } from "./lib/cluster.ts";
 import { buildTools, TOOL_NAME_ALIASES } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
 import { isMessageSchemaError, classifyStreamProviderError, describeStreamError } from "./stream-error-classify.ts";
+import {
+  anthropicModelRejectsForcedToolChoice, anthropicProviderOptions, classifyAnthropicError,
+  extractAnthropicUsage, runBudgetExhausted, salvageReserve, salvageWithinBudget, splitCachedSystem, stepCostMicroUsd,
+} from "./anthropic-orchestrator.ts";
 import {
   shouldFallbackAfterMinimaxPreflight,
   minimaxPreflightFailureLabel,
@@ -574,7 +579,7 @@ Deno.serve(async (req) => {
     const minimaxAvailable = !!MINIMAX_API_KEY;
     // Tranche 2: pick the PRIMARY orchestrator provider. With nothing new
     // configured this is always "minimax" and everything below is byte-for-byte
-    // the prior behavior. Grok/OpenAdapter only win when their key is set (and
+    // the prior behavior. Grok only wins when their key is set (and
     // ORCHESTRATOR_PROVIDER pins them, or they're the only provider available).
     // DeepSeek takes the lead role by default when its key is configured — see
     // orchestrator_select.ts precedence — with MiniMax staying wired as a
@@ -584,10 +589,23 @@ Deno.serve(async (req) => {
       deepseek: !!deepseekGateway,
       minimax: minimaxAvailable,
       grok: !!grokGateway,
-      openadapter: !!openAdapterGateway,
+      anthropic: !!anthropicGateway,
     });
     const minimaxIsPrimary = orchChoice.provider === "minimax";
     const deepseekIsPrimary = orchChoice.provider === "deepseek";
+    // Anthropic is PIN-ONLY (orchestrator_select.ts) and spends prepaid credits, so it is
+    // never a failover target and a failed Anthropic run is never moved to another
+    // provider: `useFallback` below is false for it by construction (no preflight, no
+    // overflow pivot), and the stream onError ends the run visibly instead of retrying.
+    const anthropicIsPrimary = orchChoice.provider === "anthropic";
+    if (anthropicIsPrimary && anthropicModelRejectsForcedToolChoice(ANTHROPIC_MODEL_ID)) {
+      // Fail BEFORE any spend: this loop forces a tool call (opening + finalize phases)
+      // and these models 400 on forced tool_choice, so the run would die at step 1.
+      throw new Error(
+        `ANTHROPIC_MODEL_ID=${ANTHROPIC_MODEL_ID} rejects forced tool_choice, which the orchestrator's finalize phases require. ` +
+          `Use claude-sonnet-5 (default) or another model that accepts it, or unset ORCHESTRATOR_PROVIDER.`,
+      );
+    }
     // Speed pass: operator can pin the orchestrator to the Lovable AI Gateway
     // (Gemini) via ORCHESTRATOR_PROVIDER=lovable. When pinned, we skip MiniMax
     // entirely — Gemini is faster and supports parallel tool calls natively
@@ -809,8 +827,8 @@ Deno.serve(async (req) => {
         ? { model: deepseekGateway!.chatModel(DEEPSEEK_ORCHESTRATOR_MODEL_ID), label: `${DEEPSEEK_ORCHESTRATOR_MODEL_ID} (${DEEPSEEK_VENDOR_HOST})` }
         : orchChoice.provider === "grok"
         ? { model: grokGateway!.chatModel(GROK_ORCHESTRATOR_MODEL_ID), label: `${GROK_ORCHESTRATOR_MODEL_ID} (xAI Grok)` }
-        : orchChoice.provider === "openadapter"
-        ? { model: openAdapterGateway!.chatModel(OPENADAPTER_ORCHESTRATOR_MODEL_ID), label: `${OPENADAPTER_ORCHESTRATOR_MODEL_ID} (OpenAdapter)` }
+        : orchChoice.provider === "anthropic"
+        ? { model: anthropicGateway!(ANTHROPIC_MODEL_ID), label: `${ANTHROPIC_MODEL_ID} (Anthropic)` }
         : { model: minimax.chatModel(PRIMARY_ORCHESTRATOR_MODEL_ID), label: `${PRIMARY_ORCHESTRATOR_MODEL_ID} (MiniMax direct)` };
     const orchestratorModel = useFallback
       ? fallbackTarget!.gateway.chatModel(fallbackTarget!.modelId)
@@ -928,6 +946,46 @@ Deno.serve(async (req) => {
     // `capReached && !capped` gate would never log. This latch fires the event exactly
     // once, the first step prepareStep observes an exhausted budget.
     let capLogged = false;
+    // Anthropic-only run accounting (all zero / inert on every other provider). Request-scoped
+    // like the other latches. `inputTokens` counts every input token billed (uncached + cache
+    // reads + cache writes) so the hard budget bounds the WORK done, not just the price.
+    const anthropicActive = anthropicIsPrimary && !useFallback;
+    const anthropicRun = { inputTokens: 0, costMicroUsd: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, budgetLogged: false };
+    const anthropicBudgetStatus = () =>
+      anthropicActive
+        ? runBudgetExhausted(
+          { inputTokens: anthropicRun.inputTokens, costMicroUsd: anthropicRun.costMicroUsd },
+          ANTHROPIC_RUN_LIMITS,
+        )
+        : { exhausted: false, reason: null };
+    // ONE metering path for every Anthropic request this run makes — the streamText steps AND
+    // the report-salvage generateText below — so no request can spend credits off-ledger or
+    // past the ceiling (Codex P1 on #748). Counts + cost only; feeds onCost (run cost + user
+    // credit debit) and anthropicRun (the hard budget).
+    const meterAnthropicUsage = (usage: unknown, phase: "step" | "salvage", stepNumber: number | null) => {
+      const su = extractAnthropicUsage(usage);
+      const micro = stepCostMicroUsd(ANTHROPIC_MODEL_ID, su);
+      anthropicRun.inputTokens += su.totalInput;
+      anthropicRun.outputTokens += su.output;
+      anthropicRun.cacheReadTokens += su.cacheRead;
+      anthropicRun.cacheWriteTokens += su.cacheWrite;
+      anthropicRun.costMicroUsd += micro;
+      // Durable home for cache-read tokens WITHOUT a schema change: the orchestrator
+      // telemetry tables have no token-bucket columns (and migrations are out of scope),
+      // so this structured edge-log event is the per-request record. Counts only.
+      console.log(JSON.stringify({
+        event: "orchestrator_usage", thread_id: threadId, provider: "anthropic", model: ANTHROPIC_MODEL_ID,
+        phase, step_number: stepNumber,
+        input_tokens: su.input, cache_read_tokens: su.cacheRead, cache_write_tokens: su.cacheWrite,
+        output_tokens: su.output, cost_micro_usd: micro,
+        run_input_tokens: anthropicRun.inputTokens, run_cache_read_tokens: anthropicRun.cacheReadTokens,
+        run_cost_micro_usd: anthropicRun.costMicroUsd,
+      }));
+      if (micro > 0) onCost(micro);
+    };
+    // The stable base (tools + base system prompt) carries the cache breakpoint; the per-step
+    // directive rides after it. Identity on every non-Anthropic provider.
+    const stepSystem = (full: string) => anthropicActive ? splitCachedSystem(full, baseSystemPrompt) : full;
     let openingGateLogged = false;
     // Correlation finalize-deferral counter. Request-scoped by construction, like the
     // nudge latches below, so one run's deferral cannot leak onto a concurrent run
@@ -1122,7 +1180,21 @@ Deno.serve(async (req) => {
         // run after it — so deferring there strands the run with no report. Only the
         // wall-clock trigger leaves later steps to finalize in.
         const stepCapDue = stepCapFinalizeDue(stepNumber ?? 0);
-        const forceFinalizeNow = wallClockFinalizeDue(elapsedMsNow) || stepCapDue;
+        // Anthropic hard per-run budget: crossing either ceiling enters the SAME finalize state
+        // machine as the wall-clock reserve (the run still writes its report; it just stops
+        // investigating). Unlike the wall-clock trigger it is NOT deferrable for a pending
+        // correlate step — a deferral is one more full-context turn on prepaid credits.
+        const anthropicBudget = anthropicBudgetStatus();
+        if (anthropicBudget.exhausted && !anthropicRun.budgetLogged) {
+          anthropicRun.budgetLogged = true;
+          console.warn(JSON.stringify({
+            event: "anthropic_run_budget_exhausted", thread_id: threadId, reason: anthropicBudget.reason,
+            run_input_tokens: anthropicRun.inputTokens, run_cost_micro_usd: anthropicRun.costMicroUsd,
+            max_input_tokens: ANTHROPIC_RUN_LIMITS.maxInputTokens, max_cost_micro_usd: ANTHROPIC_RUN_LIMITS.maxCostMicroUsd,
+            step_number: stepNumber ?? 0,
+          }));
+        }
+        const forceFinalizeNow = wallClockFinalizeDue(elapsedMsNow) || stepCapDue || anthropicBudget.exhausted;
         const correlatePending = shouldDeferFinalizeForCorrelate(
           correlateDue(),
           guard.lastCorrelateOutcome,
@@ -1130,7 +1202,7 @@ Deno.serve(async (req) => {
           elapsedMsNow,
           stepCapDue,
         );
-        const deferForCorrelate = forceFinalizeNow && correlatePending;
+        const deferForCorrelate = forceFinalizeNow && !anthropicBudget.exhausted && correlatePending;
         if (deferForCorrelate) {
           correlateDeferralsUsed++;
           console.log(JSON.stringify({
@@ -1150,7 +1222,7 @@ Deno.serve(async (req) => {
             finalizeBoundary = progress;
             console.log(JSON.stringify({
               event: "finalize_started", thread_id: threadId,
-              trigger: capReached ? "tool_cap" : "time_or_step",
+              trigger: capReached ? "tool_cap" : anthropicBudget.exhausted ? "anthropic_budget" : "time_or_step",
               step_number: stepNumber ?? 0,
               elapsed_ms: elapsedMsNow,
               genuine_tool_calls: toolCallBudget.genuine,
@@ -1165,7 +1237,7 @@ Deno.serve(async (req) => {
             messages: stepMessagesOut,
             activeTools: [...finalizePlan.activeTools],
             toolChoice: finalizePlan.toolChoice,
-            system: baseSystemPrompt + finalizePlan.directive,
+            system: stepSystem(baseSystemPrompt + finalizePlan.directive),
           };
         }
         // Intermediate (non-finalize) step: append the compact per-cycle directive so
@@ -1201,7 +1273,7 @@ Deno.serve(async (req) => {
           logPromptSize(intermediateSystem, nudgePlan.activeTools);
           return {
             messages: stepMessagesOut,
-            system: intermediateSystem,
+            system: stepSystem(intermediateSystem),
             ...nudgePlan,
           };
         }
@@ -1223,7 +1295,7 @@ Deno.serve(async (req) => {
         logPromptSize(intermediateSystem, intermediatePlan.activeTools);
         return {
           messages: stepMessagesOut,
-          system: intermediateSystem,
+          system: stepSystem(intermediateSystem),
           ...intermediatePlan,
         };
       };
@@ -1265,6 +1337,8 @@ Deno.serve(async (req) => {
         ? { minimax: { parallel_tool_calls: ORCHESTRATOR_PARALLEL_TOOL_CALLS } }
         : deepseekIsPrimary
         ? { deepseek: { parallel_tool_calls: false, thinking: { type: "disabled" } } }
+        : anthropicIsPrimary
+        ? anthropicProviderOptions({ thinking: ANTHROPIC_THINKING, effort: ANTHROPIC_EFFORT })
         : undefined,
       system: SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary,
       messages: trimmedMessages,
@@ -1278,7 +1352,7 @@ Deno.serve(async (req) => {
         toolCallBudget,
         budgetCeiling,
         shouldStopLiveLookups: () =>
-          shouldForceFinalize(Date.now() - runStartedAt, 0),
+          shouldForceFinalize(Date.now() - runStartedAt, 0) || anthropicBudgetStatus().exhausted,
         // See cache.ts's ctx field comment: the correlate exemption in the
         // finalize-window live-call guard is conditional on this, not automatic.
         // Recomputed live (not the stale elapsed captured at the last prepareStep)
@@ -1579,6 +1653,12 @@ Deno.serve(async (req) => {
         // record it so the NEXT turn's preflight probe can be skipped.
         if (!useFallback) markMinimaxHealthy();
         try {
+          if (anthropicActive) {
+            // Anthropic bills four distinct buckets (uncached input, cache read, cache write,
+            // output); the flat in/out meter below would double-charge the cached span.
+            meterAnthropicUsage(usage, "step", stepNumber ?? 0);
+            return;
+          }
           const u = usage as { inputTokens?: number; promptTokens?: number; outputTokens?: number; completionTokens?: number } | undefined;
           const inTok = Number(u?.inputTokens ?? u?.promptTokens ?? 0);
           const outTok = Number(u?.outputTokens ?? u?.completionTokens ?? 0);
@@ -1602,6 +1682,11 @@ Deno.serve(async (req) => {
         // gemini-direct fallbacks died as a bare "Bad Request"). NEVER the body: a
         // 4xx body echoes the request, which here is the investigation, and these
         // fields are durable and analyst-visible.
+        // Anthropic failures are classified (logged below as `anthropic_failure`). Terminal
+        // either way: the run ends here — no retry and no failover to another provider.
+        // (The recorded `detail` already carries Anthropic's own human reason — e.g. "Your credit
+        // balance is too low…" — because describeStreamError leads with error.message.)
+        const anthropicFailure = anthropicActive ? classifyAnthropicError(error) : null;
         const detail = describeStreamError(error);
         // STREAM_ERROR_BODY_DETAIL=true adds a bounded body excerpt to the LOG LINE
         // only — redacted, and kept out of every persisted field (Codex P2 on #672).
@@ -1627,7 +1712,7 @@ Deno.serve(async (req) => {
           JSON.stringify({
             thread_id: threadId,
             // Reflects the ACTUAL primary provider (minimax/deepseek/grok/
-            // openadapter), not hardcoded to "minimax" — a pre-existing gap
+            // anthropic), not hardcoded to "minimax" — a pre-existing gap
             // that mislabeled every non-MiniMax primary in this log.
             provider: useFallback ? fallbackTarget!.provider : orchChoice.provider,
             model: useFallback ? fallbackTarget!.modelId : primaryLabel,
@@ -1637,6 +1722,7 @@ Deno.serve(async (req) => {
             // never let the (now correctly-false) overflow flag mask it.
             message_schema_invalid: isSchemaError,
             error_name: errName,
+            anthropic_failure: anthropicFailure?.kind,
             // Redacted: a provider error can echo our key, and this line is kept in
             // the edge logs (lib/redact-error.ts).
             message: redactErrorMessage(logDetail).slice(0, 600),
@@ -1805,12 +1891,35 @@ Deno.serve(async (req) => {
             const cleanSalvageArts = applyReviewsToArtifacts(
               salvageArts.slice(0, 200), salvageReviews,
             );
+            // Salvage is a SEPARATE model request, outside the streamText loop and its
+            // per-step meter. On Anthropic it is metered below and gated here: it may use a
+            // bounded overrun of the ceiling (it exists to guarantee a report), but not an
+            // unbounded one. Skipped -> the run ends visibly Interrupted, never off-ledger.
+            const salvagePrompt = buildSalvageSynthesisPrompt(seedValueRaw, cleanSalvageArts);
+            // Admission RESERVES this request's own worst case (estimated prompt + the full output
+            // cap), not just what is already spent (Codex P2 on #748).
+            const salvageCost = salvageReserve(
+              ANTHROPIC_MODEL_ID, baseSystemPrompt.length + salvagePrompt.length, ORCHESTRATOR_MAX_OUTPUT_TOKENS,
+            );
+            if (anthropicActive && !salvageWithinBudget(
+              { inputTokens: anthropicRun.inputTokens, costMicroUsd: anthropicRun.costMicroUsd },
+              ANTHROPIC_RUN_LIMITS,
+              salvageCost,
+            )) {
+              console.warn(JSON.stringify({
+                event: "anthropic_salvage_skipped_budget", thread_id: threadId,
+                run_input_tokens: anthropicRun.inputTokens, run_cost_micro_usd: anthropicRun.costMicroUsd,
+                reserve_input_tokens: salvageCost.inputTokens, reserve_cost_micro_usd: salvageCost.costMicroUsd,
+              }));
+              throw new Error("salvage synthesis skipped: anthropic run budget exhausted");
+            }
             const salvage = await generateText({
               model: orchestratorModel,
               maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
               system: baseSystemPrompt,
-              prompt: buildSalvageSynthesisPrompt(seedValueRaw, cleanSalvageArts),
+              prompt: salvagePrompt,
             });
+            if (anthropicActive) meterAnthropicUsage(salvage?.usage, "salvage", null);
             const salvageText = (salvage?.text ?? "").trim();
             if (salvageText) {
               const salvagePart = { type: "text", text: salvageText } as unknown;
@@ -2215,6 +2324,10 @@ Deno.serve(async (req) => {
         // and keep their real (redacted) message — we do NOT mask those.
         if (isMessageSchemaError(m, name)) {
           return "Investigation ended early — partial results were saved.";
+        }
+        if (anthropicActive) {
+          const failure = classifyAnthropicError(error);
+          if (failure.kind !== "unknown") return failure.message;
         }
         const friendly = classifyStreamProviderError(m, name);
         if (friendly) return friendly;

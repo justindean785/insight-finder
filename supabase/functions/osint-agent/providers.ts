@@ -14,7 +14,7 @@ import { selectFallbackProvider } from "./orchestrator_select.ts";
 
 // ---- MiniMax OpenAI-compatible provider ----------------------------------------
 // MiniMax is the primary (near-always-live) orchestrator — every investigation
-// runs through it unless GROK/OPENADAPTER keys are set. `fetch: ORCHESTRATOR_FETCH`
+// runs through it unless GROK key are set. `fetch: ORCHESTRATOR_FETCH`
 // bounds it with an idle-timeout guard (see fetch_retry.ts) so a stalled stream
 // can't hang the run forever; without it this was the one unbounded outbound call
 // in the codebase.
