@@ -1,4 +1,5 @@
 import { guardUserSuppliedStatus } from "./lib/user-supplied-status.ts";
+import { leakcheckGuard, readLeakcheckQuota, resolveLeakcheckLimits } from "./lib/leakcheck-guard.ts";
 import { applyMemoryContext } from "./lib/memory-context.ts";
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
@@ -618,6 +619,11 @@ export function normalizeSocialPlatform(platform: unknown): string {
   };
   return ALIASES[raw] ?? raw;
 }
+
+/** The most recent `quota` LeakCheck reported, shared by every investigation on this isolate: the
+ *  quota belongs to the ACCOUNT, so any run's last reading is valid for all of them. Null = unknown,
+ *  which the guard treats as "allow" (see lib/leakcheck-guard.ts). */
+let lastLeakcheckQuota: number | null = null;
 
 export function buildTools(ctx: ToolContext) {
   const { supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector } = ctx;
@@ -2276,7 +2282,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     leakcheck_lookup: tool({
       description:
-        "LeakCheck Pro v2 breach lookup (https://leakcheck.io/api/v2). SECONDARY breach source — 200 calls/day. Returns leak sources, breach dates, and (where present) passwords/usernames for an email, username, phone, hash, or domain. Pass a phone in any format (E.164 ok — it's normalized to digits). For a person's full NAME, use oathnet_lookup type:'name' instead — LeakCheck v2 /query does not support keyword/name search and 400s on it. Use to corroborate breach_check and to surface password/source detail. Do NOT spam on low-value handles.",
+        "LeakCheck Pro v2 breach lookup (https://leakcheck.io/api/v2). SECONDARY breach source — the account holds a FIXED POOL of queries (200 in total, NOT per day); every lookup spends one and nothing refills it, and at most 3 run per investigation. Returns leak sources, breach dates, and (where present) passwords/usernames for an email, username, phone, hash, or domain. Pass a phone in any format (E.164 ok — it's normalized to digits). For a person's full NAME, use oathnet_lookup type:'name' instead — LeakCheck v2 /query does not support keyword/name search and 400s on it. Use to corroborate breach_check on confirmed emails and high-value handles, and to surface password/source detail. Do NOT spend it on low-value handles.",
       inputSchema: memoSchema("leakcheck_lookup", () => z.object({
         value: z.string().min(1),
         // NOTE: no 'keyword' — LeakCheck v2 /query 400s on keyword/name searches
@@ -2293,6 +2299,35 @@ export function buildTools(ctx: ToolContext) {
         // and route the caller to the tool that DOES support name search.
         if (!q.includes("@") && /\s/.test(q) && (type === "auto" || type === "username")) {
           return { ok: false, skipped: true, source: "leakcheck.v2", reason: "name/keyword not supported by LeakCheck v2 — use oathnet_lookup type:'name'", value: q };
+        }
+        // Quota guard (lib/leakcheck-guard.ts): the account has a fixed pool of queries, not a daily
+        // allowance. Count the quota-spending calls this investigation already made (cached replays and
+        // skips spend nothing) and read the provider's last-reported `quota`. Every read fails OPEN.
+        {
+          const limits = resolveLeakcheckLimits(
+            Deno.env.get("LEAKCHECK_MAX_PER_INVESTIGATION"),
+            Deno.env.get("LEAKCHECK_QUOTA_RESERVE"),
+          );
+          let priorCalls: number | null = null;
+          try {
+            const { count, error } = await supabaseAdmin
+              .from("tool_usage_log")
+              .select("id", { count: "exact", head: true })
+              .eq("thread_id", threadId)
+              .eq("tool_name", "leakcheck_lookup")
+              .eq("cached", false)
+              .in("outcome", ["ok", "empty", "failed"]);
+            priorCalls = error || typeof count !== "number" ? null : count;
+          } catch { priorCalls = null; }
+          const decision = leakcheckGuard(priorCalls, lastLeakcheckQuota, limits);
+          if (!decision.allow) {
+            console.log(JSON.stringify({
+              event: "leakcheck_guard_skip", thread_id: threadId, code: decision.code,
+              prior_calls: priorCalls, last_quota: lastLeakcheckQuota,
+              max_per_investigation: limits.maxPerInvestigation, quota_reserve: limits.quotaReserve,
+            }));
+            return { ok: false, skipped: true, provider_attempted: false, source: "leakcheck.v2", reason: decision.reason, value: q };
+          }
         }
         try {
           const url = buildLeakcheckUrl(q, type);
@@ -2314,6 +2349,8 @@ export function buildTools(ctx: ToolContext) {
           const d = data as LeakCheckResponse;
           const found = (typeof d?.found === "number" ? d.found : Array.isArray(d?.result) ? d.result.length : 0);
           const quota = typeof d?.quota === "number" ? d.quota : undefined;
+          const seenQuota = readLeakcheckQuota(d);
+          if (seenQuota != null) lastLeakcheckQuota = seenQuota; // feeds the guard on the next call
           const sources = Array.isArray(d?.result)
             ? Array.from(new Set(d.result.map((x: LeakCheckResult) => x?.source?.name).filter(Boolean))).slice(0, 50)
             : [];
