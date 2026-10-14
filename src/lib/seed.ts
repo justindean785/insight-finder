@@ -98,6 +98,21 @@ const URL_ANYWHERE = /https?:\/\/\S+/i;
 const PHONE_ANYWHERE = /\+?\d[\d\s().-]{8,}\d/;
 // Require an alphabetic TLD so ISO timestamps ("…:39.653Z") aren't read as domains.
 const DOMAIN_ANYWHERE = /\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/i;
+// A file name ("scan-report.pdf") has the shape of a domain. These extensions are not TLDs, so in the
+// FREE-TEXT scan below a match ending in one is a document name, not a selector. Deliberately NOT
+// listed: `.zip`, `.mov`, `.py`, `.sh`, `.md`, `.ps` — real TLDs that must keep working as domains.
+// Applies only to that scan: a clean single token still goes through detectSeed, unchanged.
+const DOCUMENT_EXTENSIONS = new Set([
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "rtf", "odt", "ods",
+  "png", "jpg", "jpeg", "gif", "svg", "webp", "json", "xml", "html", "htm", "log",
+]);
+function firstDomainInText(text: string): string | undefined {
+  for (const m of text.matchAll(new RegExp(DOMAIN_ANYWHERE.source, "gi"))) {
+    const tld = m[0].slice(m[0].lastIndexOf(".") + 1).toLowerCase();
+    if (!DOCUMENT_EXTENSIONS.has(tld)) return m[0];
+  }
+  return undefined;
+}
 
 export type DisplaySeed = { selector: string; kind: SeedKind; title: string };
 
@@ -158,7 +173,7 @@ export function extractDisplaySeed(
   if (phone && digitCount(phone) >= 10 && digitCount(phone) <= E164_MAX_DIGITS) {
     return { selector: phone, kind: "phone", title: phone };
   }
-  const domain = raw.match(DOMAIN_ANYWHERE)?.[0];
+  const domain = firstDomainInText(raw);
   if (domain) return { selector: domain.toLowerCase(), kind: "domain", title: domain.toLowerCase() };
 
   // A pasted postal address is a real selector even though it spans two lines
