@@ -119,6 +119,7 @@ import {
   triageState, bumpArtifacts, skipStub, takeCorrelateHint, resetCorrelateCycle,
 } from "./guard.ts";
 import { reviewMemoryBatch, type MemoryEntry } from "./lib/memory_consolidate.ts";
+import { normalizeMemoryEntry, parseStringArtifactElements, wrapFlatMemoryEntry } from "./lib/memory-input-normalization.ts";
 import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
@@ -990,7 +991,8 @@ export function buildTools(ctx: ToolContext) {
         // Models frequently pass `artifacts` as a JSON STRING; coerce to an
         // array before validating (same as record_artifacts) so a stringified
         // batch doesn't fail correlation and lose the run's findings.
-        artifacts: z.preprocess(coerceArtifactsInput, z.array(z.object({
+        // …and an array whose ELEMENTS are JSON strings parses element by element (lib/memory-input-normalization.ts).
+        artifacts: z.preprocess((raw) => parseStringArtifactElements(coerceArtifactsInput(raw)), z.array(z.object({
           kind: z.string(),
           value: z.string(),
           source: z.string().optional(),
@@ -6351,7 +6353,9 @@ export function buildTools(ctx: ToolContext) {
   (tools as ToolRegistry).memory_save = tool({
     description:
       "Persist a durable cross-investigation memory: a learned pattern, a confirmed connection between artifacts, an analyst lesson, or an identity cluster. Call AT THE END of an investigation with the strongest connections + any lessons (e.g. \"this domain is always parked\", \"this handle resolves to person X\", \"breach DB Y has stale phones\"). Idempotent: calling with the same kind+subject+content updates the existing entry.",
-    inputSchema: memoSchema("memory_save", () => z.object({
+    // Root preprocess: entry fields sent at the TOP LEVEL (no `entries`) are wrapped into `entries` — only when that is
+    // unambiguous (lib/memory-input-normalization.ts). Valid input is returned untouched.
+    inputSchema: memoSchema("memory_save", () => z.preprocess(wrapFlatMemoryEntry, z.object({
       // Tolerant input: some models emit `entries` as a JSON string, or as
       // an array containing stringified objects. Normalize both shapes.
       entries: z.preprocess((raw) => {
@@ -6370,6 +6374,8 @@ export function buildTools(ctx: ToolContext) {
         if (Array.isArray(v)) {
           v = v
             .map(parseMaybe)
+            // Field-name aliases / a sentence list for `content`, only when unambiguous (lib/memory-input-normalization.ts).
+            .map(normalizeMemoryEntry)
             .filter((x: unknown): x is Record<string, unknown> => !!x && typeof x === "object")
             // Drop entries with missing/blank subject — the LLM occasionally
             // emits one. Better to save the rest than reject the whole batch.
@@ -6387,7 +6393,7 @@ export function buildTools(ctx: ToolContext) {
       scope: z.enum(["global", "case"]).optional().default("global").describe(
         "global = reusable cross-case knowledge (default). case = facts/decisions tied to THIS investigation only (dismissed leads, analyst confirmations, false positives).",
       ),
-    })),
+    }))),
     execute: async ({ entries, scope }) => {
       // C-2: gate every entry through the deterministic C-1-subject consolidation
       // check BEFORE it can reach agent_memory. agent_memory's own upsert ratchets
