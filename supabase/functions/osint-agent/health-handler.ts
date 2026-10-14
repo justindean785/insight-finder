@@ -50,6 +50,7 @@ import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 import { memoryContextSelfTest } from "./lib/memory-context.ts";
 import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
 import { breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
+import { exactBooleanRepairSelfTest } from "./lib/exact-boolean-repair.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
 
 /**
@@ -517,6 +518,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.breach_origin_cap = breachOriginCapSelfTest();
   r.checks.memory_context = memoryContextSelfTest();
   r.checks.user_supplied_status = userSuppliedStatusSelfTest();
+
+  // Is a boolean parameter sent as the EXACT string "true"/"false" repaired instead of burning the step, while every other
+  // string and every consent flag stays rejected? Pure. PRESENCE proves the deployed bundle; ok:false = failed its own probe.
+  r.checks.exact_boolean_repair = exactBooleanRepairSelfTest();
 
   // Is a bare 17-20 digit platform account ID (Discord/Twitter snowflake, Steam64) kept out of
   // the phone playbook? It classified as `phone` and routed a Discord-ID case into phone
