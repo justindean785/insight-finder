@@ -450,6 +450,28 @@ const NEGATIVE_COUNT_KEYS = [
   "stealer_rows", "victim_logs", "results_count",
 ] as const;
 const NEGATIVE_LOOKUP_STATUSES = new Set(["not_found", "restricted", "blocked", "denied", "error"]);
+/** Kinds whose row IS a lookup's answer, so a zero counter describes the row itself. */
+const LOOKUP_RESULT_KINDS = new Set(["breach_exposure", "weak_lead"]);
+/** Tools whose output is a match count against a leak corpus. */
+const LEAK_LOOKUP_TOOL_RE = /breach|leak|stealer|paste|darkweb|oathnet|intelbase|snusbase|stolen\.tax|osintcat|dehashed|hibp/i;
+const ANALYST_SUPPLIED_RE = /user[-_ ]?(?:provided|supplied)|analyst[-_ ]?(?:provided|supplied)|\bseed\b/i;
+
+/**
+ * True when every tool named in the row's OWN `source` is a leak-corpus lookup:
+ * the row exists only because a breach check was asked about it. A selector that
+ * anything else produced (a people-search record, a page, a profile lookup) was
+ * observed, and a zero counter on it is one sub-lookup's answer, not the row's.
+ *
+ * Reads `source`, not `source_category`: the latter is the union of every class
+ * merged onto the row, and in production an analyst-supplied phone reads
+ * `["breach"]` there. Measured 2026-10-14: 13 observed selector rows across 8
+ * threads carried a zero breach counter and lost every merge key without this.
+ */
+function producedOnlyByLeakLookups(a: Artifact): boolean {
+  const src = typeof a.source === "string" ? a.source.replace(/\([^)]*\)/g, " ") : "";
+  const tools = src.split(/\s*[+;,|]\s*/).map((t) => t.trim()).filter(Boolean);
+  return tools.length > 0 && tools.every((t) => LEAK_LOOKUP_TOOL_RE.test(t));
+}
 
 /**
  * A row that records a lookup finding NOTHING: zero breach hits, a 404 profile,
@@ -460,10 +482,13 @@ const NEGATIVE_LOOKUP_STATUSES = new Set(["not_found", "restricted", "blocked", 
  * subject's cluster on the local-part and supplied its `breach` class, and the
  * report printed "3 independent source classes" for one profile lookup.
  *
- * Structured metadata only: every present match counter is 0 (and none is
- * positive), a not-found/blocked lookup status, or a 4xx HTTP status.
+ * Structured metadata only: a not-found/blocked lookup status, a 4xx HTTP
+ * status, or every present match counter at 0 (and none positive) on a row
+ * that a lookup produced — a lookup-result kind, or a selector no source but a
+ * leak lookup ever reported. A value the analyst supplied is never negative.
  */
 export function isNegativeResultArtifact(a: Artifact): boolean {
+  if (typeof a.source === "string" && ANALYST_SUPPLIED_RE.test(a.source)) return false;
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
   const status = typeof meta.lookup_status === "string" ? meta.lookup_status.trim().toLowerCase() : "";
   if (NEGATIVE_LOOKUP_STATUSES.has(status)) return true;
@@ -472,7 +497,8 @@ export function isNegativeResultArtifact(a: Artifact): boolean {
   const counts = NEGATIVE_COUNT_KEYS
     .map((k) => meta[k])
     .filter((v) => typeof v === "number" && Number.isFinite(v)) as number[];
-  return counts.length > 0 && counts.every((v) => v === 0);
+  if (counts.length === 0 || counts.some((v) => v !== 0)) return false;
+  return LOOKUP_RESULT_KINDS.has(String(a.kind ?? "").toLowerCase()) || producedOnlyByLeakLookups(a);
 }
 
 /**

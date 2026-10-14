@@ -148,6 +148,56 @@ describe("negative results — a zero-hit lookup is not an observation", () => {
   });
 });
 
+describe("negative results — a zero counter on an OBSERVED selector is not a zero-hit row", () => {
+  // Production 2026-10-14: 13 selector rows across 8 threads carried one breach
+  // counter at 0 (a breach check on a selector something ELSE found) and lost
+  // every merge key. Their source_category reads ["breach"] even when the source
+  // names the analyst or a people-search tool, so it cannot separate them.
+  const e = `${HANDLE}@example.test`;
+
+  it("an email a people-search tool observed is not negative because a breach check on it was empty", () => {
+    const observed = art("email", e, "indicia_person", { breach_hits: 0, source_category: ["breach"] });
+    expect(isNegativeResultArtifact(observed)).toBe(false);
+  });
+
+  it("an analyst-supplied value is never negative", () => {
+    const phone = art("phone", "+15550100199", "user-provided + indicia_phone + oathnet_lookup", {
+      breach_hits: 0, source_category: ["breach"],
+    });
+    expect(isNegativeResultArtifact(phone)).toBe(false);
+    const handle = art("social_profile", `Twitter/X ${HANDLE}`, "user_supplied", { lookup_status: "not_found" });
+    expect(isNegativeResultArtifact(handle)).toBe(false);
+  });
+
+  it("a found profile keeps its links when its breach counter is 0", () => {
+    const profile = art("social_profile", `Discord ${HANDLE}`, "cordcat_discord_lookup", {
+      platform: "discord", breach_hits: 0, source_category: ["social_profile_active"],
+    }, 70);
+    expect(isNegativeResultArtifact(profile)).toBe(false);
+  });
+
+  it("a selector only a leak lookup ever reported, with zero hits, is still negative", () => {
+    for (const source of ["oathnet_lookup", "rapidapi_breach_search", "breach_check (leakcheck, snusbase)"]) {
+      expect(isNegativeResultArtifact(art("email", e, source, { breaches_found: 0 })), source).toBe(true);
+    }
+    // A comma inside a qualifier does not split off a fake tool name.
+    expect(isNegativeResultArtifact(art("email", e, "indicia_person (a, b) + oathnet_lookup", { breach_hits: 0 }))).toBe(false);
+  });
+
+  it("a lookup-result row with zero hits is negative whatever its source says", () => {
+    expect(isNegativeResultArtifact(art("weak_lead", `${e} — no records`, "minimax_correlate", { total: 0 }))).toBe(true);
+  });
+
+  it("an observed email with an empty breach check still joins the cluster it belongs to", () => {
+    const observed = art("email", e, "indicia_person", { breach_hits: 0, source_category: ["breach"] });
+    const hit = art("breach_exposure", `${e} — 3 breaches`, "rapidapi_breach_search", {
+      email: e, breaches_found: 3, source_category: ["breach"],
+    });
+    const r = buildIdentityClusters([observed, hit], ID_SEED);
+    expect(r.clusters.some((c) => c.artifacts.length === 2)).toBe(true);
+  });
+});
+
 describe("tool coverage — analyst confirmation is not high confidence", () => {
   it("an ATTESTED row at confidence 45 is not counted high-confidence", () => {
     const avatar = art("avatar", "avatar description", "gemini_vision", { source_category: ["ai_summary"] }, 45);
