@@ -1963,6 +1963,25 @@ function extractStateFromText(s: string | null | undefined): string | null {
   return null;
 }
 
+/**
+ * Do two CLUSTERS carry area codes that share none?
+ *
+ * The check used to union the codes of every cluster and warn "likely different people" whenever the
+ * union held more than one — so a SINGLE cluster holding two phones from different area codes (one
+ * person who moved, or who carries a number from their old city) tripped it, and the warning also
+ * raised the same-name-collision banner. A conflict needs two clusters that each have a code and
+ * have no code in common; one cluster's own mix of codes is not a disagreement with anyone.
+ */
+export function areaCodesDisagreeAcrossClusters(codesPerCluster: ReadonlyArray<ReadonlyArray<string>>): boolean {
+  const withCodes = codesPerCluster.filter((codes) => codes.length > 0);
+  for (let i = 0; i < withCodes.length; i++) {
+    for (let j = i + 1; j < withCodes.length; j++) {
+      if (!withCodes[i].some((c) => withCodes[j].includes(c))) return true;
+    }
+  }
+  return false;
+}
+
 function extractAreaCode(phone: string): string | null {
   const digits = phone.replace(/\D/g, "");
   // US: optionally leading 1, then 3-digit area code.
@@ -2796,7 +2815,7 @@ export function buildIdentityClusters(
     const states = new Set(withEmail.map((c) => c.states[0]));
     return withEmail.length > 1 && states.size > 1;
   })();
-  const conflictingAreaCodes = new Set(out.flatMap((c) => c.areaCodes)).size > 1;
+  const conflictingAreaCodes = areaCodesDisagreeAcrossClusters(out.map((c) => c.areaCodes));
   const collision = dupeName || conflictingStates || conflictingEmailRegions || conflictingAreaCodes;
 
   const warnings: string[] = [];
@@ -2826,7 +2845,11 @@ export function buildIdentityClusters(
       `No direct ${seedState} corroboration found in this run. Out-of-area same-name candidates are shown separately — do not conclude the subject is "not from ${seedState}".`,
     );
   }
-  if (conflictingAreaCodes) warnings.push("Phone area codes across clusters disagree — likely different people.");
+  if (conflictingAreaCodes) {
+    warnings.push(
+      "Phone area codes differ between clusters. An area code shows where a number was issued, not where its holder lives — treat the difference as a lead for separating identities, not as proof of it.",
+    );
+  }
 
   // Minor-safety: surface a hard warning if any artifact carries a minor flag.
   const minorArtifacts = artifacts.filter((a) => {
