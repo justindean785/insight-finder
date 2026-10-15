@@ -120,6 +120,7 @@ export function checkBreachExposureRow(input: {
 /** Breach-capable tools that ran (ok or empty) in this thread. Fails OPEN to null on a read error. */
 export async function loadRanBreachTools(
   // deno-lint-ignore no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: any,
   threadId: string,
 ): Promise<Set<string> | null> {
