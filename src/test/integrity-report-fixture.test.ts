@@ -1,7 +1,7 @@
 // Integration regression — the REPORT-RENDER half of the chain where the original
 // bug surfaced: buildReportMarkdown over a small, fully synthetic, NON-SENSITIVE
 // fixture. No live tools, no network, no real-person seed, no deploy dependency.
-// Pairs with supabase/functions/osint-agent/integrity_report_fixture_test.ts,
+// Pairs with supabase/tests/osint-agent/integrity_report_fixture_test.ts,
 // which proves the backend half (safety scrub + evidence-cap) on the same values.
 //
 // The fixture represents what the FIXED backend stores: a date-like DOB WITHOUT

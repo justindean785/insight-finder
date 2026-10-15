@@ -1,0 +1,290 @@
+// recovery_output_integrity_test.ts — what the recovered stub is allowed to say.
+//
+// INCIDENT (2026-07-30, thread 6b3b0745): a run was reaped mid-work and published
+// "## Findings report — recovered run" listing 27 rows — 20 breach hits at
+// confidence 55, a Houston phone and a Puerto Rico phone — for a subject located
+// in Maracaibo, Venezuela. During that run the agent had explicitly written that
+// the OathNet name search was "a CLASSIC same-name collision situation... Many of
+// these are clearly different people", and that the seed email did not appear in
+// the email search at all.
+//
+// None of that reached the report, for three compounding reasons:
+//   1. recovery.ts SELECTed id,kind,value,confidence,source,created_at and never
+//      `metadata` — so status, reason_not_confirmed, source_category and the
+//      collision flags physically could not be rendered.
+//   2. The model called record_artifacts ZERO times, so all 27 rows were written
+//      by the auto-persist extractor before any model judgement — yet they were
+//      presented as "Recovered findings".
+//   3. Collision gating (excluded_collision @ confidence 15) lives only inside
+//      record_artifacts/record_artifact, so it was structurally unreachable from
+//      the auto-persist path that produced every published row.
+//
+// This file pins the OUTPUT contract. It does not attempt to fix (3) — see the
+// PR body; bulk-extractor collision inference is persistence-hygiene work.
+import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import {
+  buildRecoveredAssistantText,
+  classifyRecoveryRow,
+  type RecoveryArtifact,
+} from "../../functions/osint-agent/recovery.ts";
+import { hasReportShape } from "../../functions/osint-agent/orchestrator-finalize.ts";
+
+const THREAD = {
+  seed_value: "alexurdaneta60@gmail.com",
+  title: null,
+  last_heartbeat_at: "2026-07-30T07:15:47.750Z",
+  run_started_at: "2026-07-30T07:14:02.750Z",
+};
+
+/** Shapes taken verbatim from production artifact rows. */
+const autoPersisted = (over: Partial<RecoveryArtifact> = {}): RecoveryArtifact => ({
+  kind: "breach",
+  value: "MGM Resorts",
+  confidence: 55,
+  source: "oathnet_lookup",
+  created_at: "2026-07-30T07:14:29.673Z",
+  metadata: {
+    via: "oathnet_db",
+    status: "observed",
+    auto_recorded: true,
+    auto_persist_source: "tool_return_extractor",
+    reason_not_confirmed: "needs second independent class of evidence",
+    source_category: ["breach"],
+  },
+  ...over,
+});
+
+const modelRecorded = (over: Partial<RecoveryArtifact> = {}): RecoveryArtifact => ({
+  kind: "organization",
+  value: "Insomnia Security / Insomnia Scanner",
+  confidence: 70,
+  source: "http_fingerprint, jina_reader_scrape, exa_search",
+  created_at: "2026-07-30T14:59:37.640Z",
+  metadata: {
+    status: "needs_corroboration",
+    source_category: ["infra_scan", "independent_public"],
+    reason_not_confirmed: "evidence does not yet meet official+independent threshold",
+  },
+  ...over,
+});
+
+Deno.test("excluded_collision rows never render", () => {
+  const rows: RecoveryArtifact[] = [
+    modelRecorded(),
+    { kind: "excluded_collision", value: "Alex Urdaneta (France, DOB 1999)", confidence: 15, source: "oathnet_lookup", metadata: { status: "excluded" } },
+    { kind: "name", value: "Wayne Young", confidence: 40, source: "oathnet_lookup", metadata: { status: "excluded_collision" } },
+    { kind: "excluded_collision_summary", value: "12 excluded same-name matches", confidence: 15, source: "collision-policy", metadata: { status: "excluded" } },
+  ];
+  const out = buildRecoveredAssistantText(THREAD, rows);
+  assert(!out.includes("France, DOB 1999"), "an excluded collision row was rendered");
+  assert(!out.includes("Wayne Young"), "a row with status=excluded_collision was rendered");
+  assert(!out.includes("12 excluded same-name matches"), "a collision summary row was rendered");
+  assert(/3 rows were ruled out/.test(out), "the exclusion count must still be disclosed, not hidden");
+  // Auditability without republication: the analyst is told WHAT was ruled out by
+  // kind, but the values stay withheld — an excluded collision row is by
+  // definition another person's data.
+  assert(/excluded_collision/.test(out) && /1× name/.test(out), "exclusion breakdown by kind is missing");
+  assert(/Values are withheld/.test(out), "the reason values are withheld must be stated");
+});
+
+Deno.test("triage_decision never renders as evidence", () => {
+  // In the incident this was published as finding #27 with confidence "—",
+  // purely because the dump had no kind whitelist.
+  const rows: RecoveryArtifact[] = [
+    { kind: "triage_decision", value: "triage_decision: Stage 2 OPEN for alexurdaneta60@gmail.com", confidence: null, source: "triage_seed", metadata: {} },
+    modelRecorded(),
+  ];
+  const out = buildRecoveredAssistantText(THREAD, rows);
+  assert(!out.includes("Stage 2 OPEN"), "a triage_decision control row was rendered as evidence");
+  assert(/control\/telemetry record/.test(out), "omission of control records must be disclosed");
+});
+
+Deno.test("auto-persisted rows are labelled UNREVIEWED and never called findings", () => {
+  const out = buildRecoveredAssistantText(THREAD, [autoPersisted(), autoPersisted({ value: "Deezer" })]);
+  assert(/Machine-extracted candidates — UNREVIEWED/.test(out), "candidates section missing");
+  assert(
+    /No model or analyst judgement was applied/.test(out),
+    "the unreviewed caveat must be explicit, not implied by a section title",
+  );
+  assert(
+    !/### Model-reviewed findings/.test(out),
+    "a run with only extractor output must not present a model-reviewed findings section",
+  );
+  assert(
+    /No model-reviewed findings exist for this run/.test(out),
+    "zero reviewed rows must be stated plainly — this is the incident's core failure",
+  );
+  // The heading must not assert a findings report, which is what the old stub did.
+  assert(!/^## Findings report/m.test(out), "stub still claims to be a findings report");
+});
+
+Deno.test("reviewed findings keep provenance and their not-confirmed caveat", () => {
+  const out = buildRecoveredAssistantText(THREAD, [modelRecorded()]);
+  assert(/### Model-reviewed findings/.test(out));
+  assert(/http_fingerprint, jina_reader_scrape, exa_search/.test(out), "source provenance was dropped");
+  assert(/needs_corroboration/.test(out), "metadata.status was not rendered");
+  assert(
+    /evidence does not yet meet official\+independent threshold/.test(out),
+    "reason_not_confirmed was not surfaced — a 70 with no caveat reads as a finding",
+  );
+});
+
+Deno.test("reviewed evidence outranks higher-confidence bulk rows", () => {
+  // The extractor pushes breach rows at a hardcoded 55; a model-reviewed row at
+  // 45 is worth more. Confidence-descending ordering alone put the bulk rows on
+  // top of the incident report.
+  const reviewed = modelRecorded({ value: "REVIEWED-ROW", confidence: 45 });
+  const bulk = autoPersisted({ value: "BULK-ROW", confidence: 55 });
+  const out = buildRecoveredAssistantText(THREAD, [bulk, reviewed]);
+  assert(
+    out.indexOf("REVIEWED-ROW") < out.indexOf("BULK-ROW"),
+    "a bulk extractor row sorted above model-reviewed evidence on numeric confidence",
+  );
+});
+
+Deno.test("an empty eligible set says so honestly — and stays report-shaped", () => {
+  const out = buildRecoveredAssistantText(THREAD, []);
+  assert(/No evidence was durably recorded/.test(out));
+  assert(!/### Model-reviewed findings/.test(out));
+  // Load-bearing: if the stub is not report-shaped, shouldInsertRecoveredAssistant
+  // will not see `report_present` on a re-sweep and will stack a second stub.
+  assert(
+    hasReportShape(out),
+    "empty recovery stub lost report shape — a re-sweep would insert a duplicate stub",
+  );
+});
+
+Deno.test("legacy rows with missing metadata are treated conservatively", () => {
+  // Rows written before metadata existed cannot be SHOWN to have been reviewed,
+  // so they must not be promoted into the findings section by default.
+  assertEquals(classifyRecoveryRow({ kind: "email", value: "a@b.c", confidence: 45 }), "candidate");
+  assertEquals(classifyRecoveryRow({ kind: "email", value: "a@b.c", confidence: 45, metadata: null }), "candidate");
+  const out = buildRecoveredAssistantText(THREAD, [{ kind: "email", value: "legacy@example.com", confidence: 45, source: "oathnet_lookup" }]);
+  assert(/Machine-extracted candidates — UNREVIEWED/.test(out), "legacy row was not treated conservatively");
+  assert(!/### Model-reviewed findings/.test(out));
+});
+
+Deno.test("a populated stub stays report-shaped (duplicate-insert suppression)", () => {
+  for (const rows of [[modelRecorded()], [autoPersisted()], [modelRecorded(), autoPersisted()]]) {
+    assert(hasReportShape(buildRecoveredAssistantText(THREAD, rows)), "stub lost report shape");
+  }
+});
+
+// ── The stub must not present its own page cap as the thread total ───────────
+//
+// Follow-up to the code review of the PR above. The query fetches
+// `count: "exact"` alongside a page capped at RECOVERY_ARTIFACT_LIMIT, but the
+// count was never passed to the builder — so a thread holding 55 artifacts got a
+// stub that said "40 recovered rows", stating a completeness it had not earned.
+Deno.test("when the thread holds more artifacts than the page cap, the stub says so", () => {
+  const page = Array.from({ length: 40 }, (_, i) => autoPersisted({ value: `row-${i}@example.com` }));
+  const out = buildRecoveredAssistantText(THREAD, page, 55);
+  assert(/only the first 40 of 55 artifacts/.test(out), `missing truncation disclosure:\n${out}`);
+  assert(/15 were not examined/.test(out), `missing unexamined count:\n${out}`);
+  assert(/never read by recovery/.test(out), "truncation was not carried into Gaps");
+  assert(hasReportShape(out), "truncated stub lost report shape");
+});
+
+Deno.test("a thread that fits inside the page cap makes no truncation claim", () => {
+  const out = buildRecoveredAssistantText(THREAD, [modelRecorded(), autoPersisted()], 2);
+  assert(!/not examined/.test(out), `claimed truncation on a complete fetch:\n${out}`);
+  assert(!/never read by recovery/.test(out));
+});
+
+Deno.test("an absent count makes no claim either way (back-compat)", () => {
+  for (const count of [undefined, null]) {
+    const out = buildRecoveredAssistantText(THREAD, [modelRecorded()], count);
+    assert(!/not examined/.test(out), `invented a truncation claim from a ${count} count`);
+  }
+});
+
+Deno.test("the singular case reads correctly", () => {
+  const page = Array.from({ length: 40 }, (_, i) => autoPersisted({ value: `row-${i}@example.com` }));
+  const out = buildRecoveredAssistantText(THREAD, page, 41);
+  assert(/1 was not examined/.test(out), `bad singular agreement:\n${out}`);
+  assert(/1 artifact on this thread/.test(out));
+});
+
+// ── NULL-confidence rows must not eat the page cap from the top ──────────────
+//
+// Postgres orders NULLs FIRST under `ORDER BY confidence DESC`. Without
+// `nullsFirst: false` every unscored row sorted ABOVE the highest-confidence
+// finding and consumed the 40-row limit before a single real one was fetched.
+Deno.test("the artifact query pushes NULL confidence last", async () => {
+  const src = await Deno.readTextFile(new URL("../../functions/osint-agent/recovery.ts", import.meta.url));
+  const orderLine = src.split("\n").find((l) => l.includes(`.order("confidence"`));
+  assert(orderLine, "confidence ordering disappeared from recovery.ts");
+  assert(
+    /nullsFirst:\s*false/.test(orderLine!),
+    "recovery's confidence ordering lost `nullsFirst: false` — NULL-confidence rows will sort above real findings and eat the page cap",
+  );
+});
+
+Deno.test("the exact row count is passed into the builder, not just fetched", async () => {
+  const src = await Deno.readTextFile(new URL("../../functions/osint-agent/recovery.ts", import.meta.url));
+  assert(/count:\s*"exact"/.test(src), "recovery stopped requesting an exact count");
+  assert(
+    /buildRecoveredAssistantText\([^)]*artifactCount/.test(src),
+    "the exact count is fetched but never handed to buildRecoveredAssistantText — the stub can only see its own page",
+  );
+});
+
+// ── "Unexamined" is total minus FETCHED, never total minus DISPLAYED ─────────
+//
+// Review of the shipped fix: the caller passes `reviewedArtifacts` — the fetched
+// page after applyReviewsToArtifacts drops rows the analyst marked FALSE — and
+// the builder derived `fetched` from that array. Every analyst-dismissed row was
+// therefore counted as one recovery never looked at. That is not merely off by
+// N; it is backwards. A dismissed row is one the analyst examined most closely.
+Deno.test("analyst-dismissed rows are NOT reported as unexamined", () => {
+  // Raw total 55, query fetched 40, reviews suppressed 10 => 30 displayed.
+  const displayed = Array.from({ length: 30 }, (_, i) => autoPersisted({ value: `kept-${i}@example.com` }));
+  const out = buildRecoveredAssistantText(THREAD, displayed, 55, 40);
+
+  assert(/only the first 40 of 55 artifacts/.test(out), `wrong fetched figure:\n${out}`);
+  assert(/15 were not examined/.test(out), `expected 15 unexamined:\n${out}`);
+  assert(!/25 were not examined/.test(out), "analyst-dismissed rows were counted as unexamined");
+  assert(/15 artifacts on this thread were never read by recovery/.test(out));
+});
+
+Deno.test("with no reviews applied, displayed == fetched and the figure is unchanged", () => {
+  const page = Array.from({ length: 40 }, (_, i) => autoPersisted({ value: `row-${i}@example.com` }));
+  const out = buildRecoveredAssistantText(THREAD, page, 55, 40);
+  assert(/15 were not examined/.test(out), `regression in the no-review path:\n${out}`);
+});
+
+Deno.test("omitting fetchedCount falls back to the array length (back-compat)", () => {
+  const page = Array.from({ length: 40 }, (_, i) => autoPersisted({ value: `row-${i}@example.com` }));
+  // Identical to passing 40 explicitly, because no reviews were applied.
+  assertEquals(
+    buildRecoveredAssistantText(THREAD, page, 55),
+    buildRecoveredAssistantText(THREAD, page, 55, 40),
+  );
+});
+
+Deno.test("reviews that suppress the ENTIRE page still report only the true gap", () => {
+  // Every fetched row dismissed. Recovery still examined 40 of 55.
+  const out = buildRecoveredAssistantText(THREAD, [], 55, 40);
+  assert(/15 were not examined/.test(out), `wrong gap on a fully-suppressed page:\n${out}`);
+  assert(!/55 were not examined/.test(out), "an empty display array was read as an empty fetch");
+  assert(hasReportShape(out), "fully-suppressed stub lost report shape");
+});
+
+Deno.test("a fetch that reached the whole thread claims no gap, whatever reviews did", () => {
+  const displayed = Array.from({ length: 12 }, (_, i) => autoPersisted({ value: `kept-${i}@example.com` }));
+  const out = buildRecoveredAssistantText(THREAD, displayed, 20, 20);
+  assert(!/not examined/.test(out), `invented a gap when the fetch was complete:\n${out}`);
+});
+
+Deno.test("the call site passes the RAW page length, not the reviewed array", async () => {
+  const src = await Deno.readTextFile(new URL("../../functions/osint-agent/recovery.ts", import.meta.url));
+  // Anchor on the CALL, not the `export function` declaration — indexOf on the
+  // bare name finds the declaration first and the guard passes vacuously.
+  const at = src.indexOf("const text = buildRecoveredAssistantText(");
+  assert(at !== -1, "the recovery call site moved or was renamed");
+  const call = src.slice(at, at + 400);
+  assert(
+    /\(artifacts \?\? \[\]\)\.length/.test(call),
+    "the fetched-count argument is no longer the raw query result — analyst-dismissed rows will be miscounted as unexamined again",
+  );
+});
