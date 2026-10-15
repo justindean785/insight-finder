@@ -12,6 +12,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { caseDisplayLabel } from "@/lib/case-label";
 
 /**
  * Cross-investigation analysis.
@@ -322,7 +323,13 @@ export function AnalysisTab() {
           <h3 className="font-display text-title font-semibold tracking-tight">Per-case breakdown</h3>
           <p className="mt-1 text-micro text-muted-foreground">Top 15 by artifact count.</p>
           <div className="mt-3 -mx-2 overflow-x-auto">
-            <table className="w-full min-w-[420px] text-data">
+            <table className="w-full min-w-[420px] table-fixed text-data">
+              <colgroup>
+                <col />
+                <col className="w-[5.5rem]" />
+                <col className="w-[4.5rem]" />
+                <col className="w-[4rem]" />
+              </colgroup>
               <thead>
                 <tr className="text-eyebrow uppercase tracking-wider text-muted-foreground">
                   <th className="px-2 py-1.5 text-left font-normal">Case</th>
@@ -334,9 +341,13 @@ export function AnalysisTab() {
               <tbody className="divide-y divide-border-subtle/50">
                 {stats.rows.map((r) => (
                   <tr key={r.thread.id} className="hover:bg-white/[0.03]">
-                    <td className="px-2 py-1.5 max-w-[220px]">
-                      <Link to={`/cases/${r.thread.id}`} className="inline-flex items-center gap-1 truncate text-foreground/90 hover:text-foreground">
-                        <span className="truncate">{r.thread.title?.trim() || r.thread.seed_value || "Untitled case"}</span>
+                    <td className="min-w-0 px-2 py-1.5">
+                      <Link
+                        to={`/cases/${r.thread.id}`}
+                        title={r.thread.title?.trim() || r.thread.seed_value || undefined}
+                        className="flex min-w-0 items-center gap-1 text-foreground/90 hover:text-foreground"
+                      >
+                        <span className="min-w-0 truncate">{caseDisplayLabel(r.thread.title, r.thread.seed_value)}</span>
                         <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground/60" />
                       </Link>
                     </td>
