@@ -203,14 +203,14 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
   // survives. The chrome slot is the SAME element type on both breakpoints for
   // the same reason, one level up.
   return (
-    <div className="relative flex h-[100dvh] w-full overflow-hidden bg-background">
+    <div className="case-workspace relative flex h-[100dvh] w-full overflow-hidden bg-background">
       <CommandPalette />
 
       {/* Desktop: persistent sidebar rail. Mobile uses the off-canvas Sheet below. */}
       {!isMobile && (
         <aside className={cn(
           "rail-surface relative z-10 flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-white/8 shadow-[8px_0_38px_-30px_rgba(0,0,0,0.95)] transition-[width] duration-200 ease-out",
-          leftCollapsed ? "w-14" : "w-72",
+          leftCollapsed ? "w-14" : "w-60",
         )}>
           <ThreadSidebar collapsed={leftCollapsed} onToggleCollapse={() => setLeftCollapsed((c) => !c)} />
         </aside>

@@ -321,7 +321,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
 
   if (collapsed) {
     return (
-      <div className="w-14 h-full flex flex-col items-center py-3 gap-3">
+      <div className="desk-sidebar w-14 h-full flex flex-col items-center py-3 gap-3">
         <button
           onClick={onToggleCollapse}
           className="w-8 h-8 rounded-lg glass-interactive grid place-items-center"
@@ -454,9 +454,9 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   for (const t of listThreads) listGroups[bucketOf(t.updated_at)].push(t);
 
   return (
-    <div className="flex h-full w-full min-h-0 flex-col bg-[hsl(var(--surface-0))]">
+    <div className="desk-sidebar flex h-full w-full min-h-0 flex-col bg-[hsl(var(--surface-0))]">
       {/* Brand — shrink-0 so list never paints under it */}
-      <div className="shrink-0 flex items-center gap-2 border-b border-border-subtle px-3 py-3">
+      <div className="desk-sidebar-header shrink-0 flex items-center gap-2 border-b border-border-subtle px-3 py-3">
         <Link
           to="/"
           aria-label="Home"
@@ -618,7 +618,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           bounded card rather than four loose stacked lines: identity, plan and
           the sign-out control belong together, and grouping them stops the
           spend/credit instruments from reading as part of the same list. */}
-      <div className="shrink-0 space-y-2 border-t border-border-subtle bg-[hsl(var(--surface-0))] p-3">
+      <div className="desk-sidebar-footer shrink-0 space-y-2 border-t border-border-subtle bg-[hsl(var(--surface-0))] p-3">
         <SpendTrend threads={threads} totalCost={totalCost} />
         <CreditChip credits={credits} />
         <div className="panel flex items-center gap-2.5 px-2.5 py-2">
@@ -700,8 +700,9 @@ function ThreadRow({
   return (
     <Link
       to={`/chat/${t.id}`}
+      aria-current={active ? "page" : undefined}
       className={cn(
-        "group relative flex min-h-[2.75rem] items-center gap-2 overflow-hidden rounded-lg px-2.5 py-2 text-meta transition-colors",
+        "desk-case-row group relative flex min-h-[2.75rem] items-center gap-2 overflow-hidden rounded-lg px-2.5 py-2 text-meta transition-colors",
         "hover:bg-white/[0.04]",
         active && "bg-[hsl(var(--intel-blue)/0.12)] text-foreground ring-1 ring-[hsl(var(--intel-blue)/0.3)]",
         dim && !active && "opacity-55",

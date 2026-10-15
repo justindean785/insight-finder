@@ -1,3 +1,5 @@
+import { resizeComposer } from "@/lib/composer-layout";
+import { SuggestedActions } from "@/components/pivots/SuggestedActions";
 import { RunActivity } from "@/components/chat/RunActivity";
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -36,7 +38,7 @@ import {
 } from "@/lib/run-controls";
 import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
-import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
+import { type NextStepItem } from "@/components/pivots/NextSteps";
 import { registerPivotRunner } from "@/lib/pivot-runner";
 import { DEFAULT_CONTROLS, evaluatePreflight, type PreflightControls } from "@/lib/composer-preflight";
 import { TargetChip } from "@/components/composer/ComposerPreflight";
@@ -1422,7 +1424,6 @@ function ChatWindowInner({
   // Preflight around the free-form request: the parsed target and the analyst's
   // correction of its type (see composer-preflight.ts).
   const [controls, setControls] = useState<PreflightControls>(DEFAULT_CONTROLS);
-  const [composerFocused, setComposerFocused] = useState(false);
   // Which Next-steps row has its run preview open (see NextSteps).
   const [openStep, setOpenStep] = useState<string | null>(null);
   const composerIds = { textarea: useId(), help: useId() };
@@ -2469,11 +2470,8 @@ function ChatWindowInner({
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
-    el.style.height = "auto";
-    // A phone composer is one line until the text needs a second one.
-    const min = (composerFocused || input) && !isPhone ? 64 : 44;
-    el.style.height = `${Math.min(Math.max(el.scrollHeight, min), 208)}px`;
-  }, [input, composerFocused, isPhone]);
+    resizeComposer(el, input, isPhone);
+  }, [input, isPhone]);
   // Watchdog-only ref: the terminal-status realtime handler below is set up in
   // an effect with a stable dependency array (see stopRef further down), so its
   // closure would otherwise see a stale `isLoading` from whenever the effect
@@ -2803,7 +2801,7 @@ function ChatWindowInner({
   }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability]);
 
   return (
-    <div className="chat-stage relative h-full min-w-0 overflow-hidden bg-background">
+    <div className="scan-studio chat-stage relative h-full min-w-0 overflow-hidden bg-background">
       {/* Soft stage wash — fills the main pane so content doesn't float in void */}
       <div
         className="pointer-events-none absolute inset-0"
@@ -2813,6 +2811,17 @@ function ChatWindowInner({
             "radial-gradient(ellipse 80% 50% at 50% -10%, hsl(var(--film) / 0.045), transparent 55%), radial-gradient(ellipse 70% 40% at 50% 110%, hsl(0 0% 0% / 0.5), transparent 50%)",
         }}
       />
+      <header className="scan-studio-heading">
+        <div>
+          <span className="scan-studio-eyebrow">INVESTIGATE</span>
+          <h1>Case activity</h1>
+        </div>
+        {messages.length > 0 && (
+          <button type="button" onClick={jumpToLatest} className="scan-studio-latest">
+            <ArrowDown className="h-3.5 w-3.5" aria-hidden /> Latest activity
+          </button>
+        )}
+      </header>
       <div
         ref={scrollRef}
         onScroll={(event) => {
@@ -2967,16 +2976,6 @@ function ChatWindowInner({
           {error && !isLoading && !networkDropWhileAlive && !hasPersistedFailure(messages) && (
             <FailedRunCard reason={error.message} onRetry={retryLastUser} />
           )}
-          {suggestions.length > 0 && (
-            <NextSteps
-              items={suggestions}
-              onRunPivot={runPivotFromRail}
-              onRunAction={(prompt) => void sendText(prompt)}
-              busy={isLoading}
-              openKey={openStep}
-              onOpenChange={setOpenStep}
-            />
-          )}
           <div ref={endRef} />
         </div>
         </div>
@@ -2997,8 +2996,18 @@ function ChatWindowInner({
           column sits on the transcript column at every width (#645). On a
           phone the workspace's bottom tab bar sits below this and owns the
           safe-area inset, so the dock keeps only its own vertical padding. */}
-      <div className="relative z-10 border-t border-border-subtle bg-background px-5 pb-1.5 pt-2 sm:pb-5 sm:pt-4 lg:px-7">
+      <div className="scan-composer-dock relative z-10 border-t border-border-subtle bg-background px-5 pb-1.5 pt-2 sm:pb-3 sm:pt-3 lg:px-7">
         <div className="chat-column">
+          {suggestions.length > 0 && (
+            <SuggestedActions
+              items={suggestions}
+              onRunPivot={runPivotFromRail}
+              onRunAction={(prompt) => void sendText(prompt)}
+              busy={isLoading}
+              openKey={openStep}
+              onOpenChange={setOpenStep}
+            />
+          )}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
               {attachments.map((a) => {
@@ -3038,9 +3047,9 @@ function ChatWindowInner({
               className="hidden"
               onChange={(e) => onFilesPicked(e.target.files)}
             />
-            {/* Label row. Visually hidden on a phone, where the composer is one
-                line, but still the textarea's accessible name. */}
-            <div className="flex items-center justify-between gap-2 px-3 pt-2 max-sm:sr-only">
+            {/* Compact console composer; retain the field name and shortcut
+                for assistive technology without another visible toolbar row. */}
+            <div className="sr-only">
               <label htmlFor={composerIds.textarea} className="text-data font-medium text-foreground/90">
                 {isFollowUp ? "Message this case" : "Investigation request"}
               </label>
@@ -3050,14 +3059,14 @@ function ChatWindowInner({
                   : <><kbd className="font-sans">⌘/Ctrl</kbd> + <kbd className="font-sans">Enter</kbd> to {isFollowUp ? "send" : "start"} · Enter for a new line</>}
               </span>
             </div>
-            <div className="flex items-end gap-1 p-1.5 sm:block sm:p-0">
+            <div className="flex items-end gap-2 p-2">
               <Button
                 type="button"
                 variant="ghost"
                 size="icon"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isLoading}
-                className="h-11 w-11 shrink-0 rounded-full text-muted-foreground hover:bg-white/[0.05] hover:text-foreground sm:hidden"
+                className="h-11 w-11 shrink-0 rounded-lg text-muted-foreground hover:bg-white/[0.05] hover:text-foreground"
                 aria-label="Attach file"
               >
                 <Paperclip className="h-[18px] w-[18px]" aria-hidden />
@@ -3067,8 +3076,6 @@ function ChatWindowInner({
                 id={composerIds.textarea}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onFocus={() => setComposerFocused(true)}
-                onBlur={() => setComposerFocused(false)}
                 onKeyDown={(e) => {
                   // Enter writes a new line; Cmd/Ctrl+Enter runs the primary
                   // action — Continue on an open case with an empty box, else
@@ -3082,8 +3089,8 @@ function ChatWindowInner({
                   }
                 }}
                 placeholder={isFollowUp
-                  ? (isPhone ? "Ask or add a selector" : "Ask about this case, or add a selector to pivot on…")
-                  : (isPhone ? "Email, handle, phone…" : "e.g. analyst@example.com — who controls this mailbox?")}
+                  ? (isPhone ? "Ask or add a selector" : "Ask a question or add a selector…")
+                  : (isPhone ? "Email, handle, phone…" : "Enter a selector to investigate…")}
                 aria-describedby={composerIds.help}
                 aria-invalid={Boolean(preflight.errors.target)}
                 rows={1}
@@ -3093,19 +3100,7 @@ function ChatWindowInner({
                 spellCheck={false}
                 className="min-h-[44px] max-h-52 min-w-0 flex-1 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 px-1 py-2.5 text-[16px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70 sm:px-3 sm:py-1.5 sm:text-body"
               />
-              <div className="flex shrink-0 items-center gap-1 sm:gap-1.5 sm:px-2 sm:pb-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isLoading}
-                  className="hidden h-8 w-8 shrink-0 rounded-md text-muted-foreground transition-colors duration-fast hover:bg-white/[0.05] hover:text-foreground sm:inline-flex [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
-                  aria-label="Attach file"
-                  title="Attach file"
-                >
-                  <Paperclip className="h-4 w-4" aria-hidden />
-                </Button>
+              <div className="flex shrink-0 items-center gap-1 sm:gap-1.5">
                 <span className="hidden min-w-0 sm:contents">
                   <TargetChip
                     result={preflight}
@@ -3141,6 +3136,7 @@ function ChatWindowInner({
                   className={cn(
                     "h-11 w-11 shrink-0 gap-1.5 rounded-full p-0 text-data font-semibold transition-colors duration-fast",
                     "sm:h-9 sm:w-auto sm:rounded-lg sm:px-3.5 [@media(pointer:coarse)]:sm:h-11",
+                    primary.kind !== "stop" && "scan-primary",
                     !runControlsVisible && "sm:ml-auto",
                     primary.kind === "stop"
                       ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
@@ -3169,9 +3165,10 @@ function ChatWindowInner({
             className={cn(
               "mt-1.5 min-h-[1.25rem] truncate px-1 text-micro",
               preflight.errors.target ? "text-[hsl(var(--danger))]" : "text-muted-foreground",
-              // On a phone the default instruction is the placeholder's job;
-              // the line only appears when it says something about THIS input.
-              preflight.empty && !preflight.errors.target && "max-sm:sr-only",
+              // Keep the default hint available to assistive technology; the
+              // placeholder and shortcut already cover it visually. Errors and
+              // input-specific summaries remain visible.
+              preflight.empty && !preflight.errors.target && "sr-only",
             )}
           >
             {preflight.errors.target

@@ -167,7 +167,7 @@ function TabBar({
   };
 
   return (
-    <div className="relative flex min-w-0 items-stretch border-b border-white/[0.07] bg-surface-0">
+    <div className="workspace-tab-strip relative flex min-w-0 items-stretch border-b border-white/[0.07] bg-surface-0">
       {edges.before && (
         <button type="button" aria-label="Scroll workspace tabs left" onClick={() => scrollRef.current?.scrollBy({ left: -240, behavior: "smooth" })} className="w-9 shrink-0 border-r border-border-subtle text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
           <ChevronLeft className="mx-auto h-4 w-4" aria-hidden />

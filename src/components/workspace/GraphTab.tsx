@@ -128,7 +128,7 @@ type EntityNodeData = {
   degree: number;
 };
 
-/** A single graph node — group-colored chip; seed is the bright hub; a
+/** A single graph node — group-colored chip; seed is the outlined hub; a
  *  breach/conflict node carries the restrained destructive accent. */
 const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<EntityNodeData>) {
   const color = data.conflict ? "hsl(var(--danger))" : GROUP_COLOR[data.group];
@@ -136,8 +136,8 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
     return (
       <div
         className={cn(
-          "flex flex-col items-center gap-0.5 rounded-xl border px-3.5 py-2 text-center shadow-[0_0_28px_-6px_hsl(var(--info)/0.8)]",
-          "border-[hsl(var(--info))] bg-[hsl(var(--info))] text-black",
+          "flex flex-col items-center gap-1 rounded-lg border px-3.5 py-2.5 text-center",
+          "border-[hsl(var(--brand)/0.7)] bg-[hsl(var(--brand)/0.12)] text-foreground",
           selected && "ring-2 ring-foreground ring-offset-2 ring-offset-background",
         )}
       >

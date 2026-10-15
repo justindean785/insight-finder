@@ -119,7 +119,7 @@ export default function HomeHub() {
   const lastCaseLabel = relativeTime(counts.lastCaseAt);
 
   return (
-    <div className="relative min-h-screen bg-background text-foreground overflow-hidden">
+    <div className="desk-home relative min-h-screen bg-background text-foreground overflow-hidden">
       {/* Ambient backdrop — intel-blue overhead light + a masked halftone signal
           field, cohesive with the chat hero. Luminance + one accent, no orbs. */}
       <div
@@ -161,19 +161,19 @@ export default function HomeHub() {
       </header>
 
       <main className="relative z-10 mx-auto max-w-6xl px-6 sm:px-10 pb-16">
-        <section className="pt-6 sm:pt-10 pb-10 rounded-3xl border border-white/[0.07] bg-[linear-gradient(160deg,hsl(var(--film)/0.05),hsl(var(--film)/0.018)_52%,hsl(var(--film)/0.008))] px-5 sm:px-7 py-7 sm:py-8 shadow-[0_26px_90px_-54px_rgba(0,0,0,0.98)] backdrop-blur-xl">
+        <section className="desk-hero pt-6 sm:pt-10 pb-10 rounded-3xl border border-white/[0.07] bg-[linear-gradient(160deg,hsl(var(--film)/0.05),hsl(var(--film)/0.018)_52%,hsl(var(--film)/0.008))] px-5 sm:px-7 py-7 sm:py-8 shadow-[0_26px_90px_-54px_rgba(0,0,0,0.98)] backdrop-blur-xl">
           <div className="flex items-center gap-2 text-eyebrow font-mono uppercase tracking-[0.26em] text-[hsl(var(--intel-blue))]">
             <span aria-hidden className="h-1 w-1 rounded-full bg-[hsl(var(--intel-blue))]" />
-            Workspace
+            Your workspace / Insight Finder
           </div>
           <h1 className="mt-2 font-display text-3xl sm:text-4xl font-semibold tracking-tight">
-            Resume analysis or open a new case.
+            Your investigation desk.
           </h1>
           <p className="mt-3 max-w-xl text-sm text-muted-foreground">
-            Start a new investigation, resume active casework, or review intelligence already
-            assembled across your workspace.
+            Start with a selector. Follow the evidence.
+            Bring your casework into focus.
           </p>
-          <div className="mt-6 flex flex-wrap gap-3">
+          <div className="desk-hero-actions mt-6 flex flex-wrap gap-3">
             <Button
               onClick={startCase}
               disabled={creating}
@@ -196,15 +196,15 @@ export default function HomeHub() {
               </Link>
             )}
           </div>
-          <div className="mt-6 flex flex-wrap items-center gap-2 text-micro font-mono tracking-normal text-muted-foreground">
-            <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Cases {counts.cases.toLocaleString()}</span>
-            <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Artifacts {counts.artifacts.toLocaleString()}</span>
-            <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1">Memories {counts.memories.toLocaleString()}</span>
-            <span className="rounded-full border border-[hsl(var(--intel-blue)/0.35)] bg-[hsl(var(--intel-blue)/0.08)] px-2.5 py-1 text-[hsl(var(--intel-blue))]">Last active {lastCaseLabel}</span>
+          <div className="desk-metrics" aria-label="Workspace totals">
+            <div><span>Cases</span><strong>{counts.cases.toLocaleString()}</strong></div>
+            <div><span>Artifacts</span><strong>{counts.artifacts.toLocaleString()}</strong></div>
+            <div><span>Memories</span><strong>{counts.memories.toLocaleString()}</strong></div>
+            <div><span>Last active</span><strong className="desk-metrics-time">{lastCaseLabel}</strong></div>
           </div>
         </section>
 
-        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <section className="desk-launchers grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <HubCard
             to="/cases"
             icon={FileSearch}
@@ -303,7 +303,7 @@ function HubCard({
   return (
     <Link
       to={to}
-      className="group relative flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[linear-gradient(150deg,hsl(var(--film)/0.06),hsl(var(--film)/0.02)_55%,hsl(var(--film)/0.008))] p-5 shadow-[0_20px_70px_-44px_rgba(0,0,0,0.96)] transition-[transform,border-color,box-shadow] duration-standard ease-standard hover:-translate-y-0.5 hover:border-[hsl(var(--intel-blue)/0.4)] hover:shadow-[0_24px_70px_-34px_hsl(var(--intel-blue)/0.62)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--intel-blue)/0.5)]"
+      className="desk-launcher group relative flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[linear-gradient(150deg,hsl(var(--film)/0.06),hsl(var(--film)/0.02)_55%,hsl(var(--film)/0.008))] p-5 shadow-[0_20px_70px_-44px_rgba(0,0,0,0.96)] transition-[transform,border-color,box-shadow] duration-standard ease-standard hover:-translate-y-0.5 hover:border-[hsl(var(--intel-blue)/0.4)] hover:shadow-[0_24px_70px_-34px_hsl(var(--intel-blue)/0.62)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--intel-blue)/0.5)]"
     >
       {/* hover sheen — intel-blue wash that fades in on the top edge */}
       <div
