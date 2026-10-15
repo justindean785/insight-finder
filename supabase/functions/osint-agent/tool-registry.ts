@@ -69,7 +69,7 @@ export const TOOL_NAME_ALIASES: Record<string, string> = {
   fetch_url: "jina_reader_scrape",
 };
 import type { QueryType } from "./query-type-router.ts";
-import { buildAddressDorks, canonicalizeDorks, resolveDorkKind, type Dork } from "./dork-queries.ts";
+import { buildAddressDorks, canonicalizeDorks, harvestQueryFamily, resolveDorkKind, type Dork } from "./dork-queries.ts";
 import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
 import {
@@ -121,6 +121,7 @@ import {
 } from "./guard.ts";
 import { reviewMemoryBatch, type MemoryEntry } from "./lib/memory_consolidate.ts";
 import { normalizeMemoryEntry, parseStringArtifactElements, wrapFlatMemoryEntry } from "./lib/memory-input-normalization.ts";
+import { applyInputCoercion, inputCoercionDisabled, type InputCoercionSpec } from "./lib/tool-input-coercion.ts";
 import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
@@ -582,6 +583,20 @@ function memoSchema<T>(key: string, build: () => T): T {
   return cached as T;
 }
 
+// Near-miss input coercion (lib/tool-input-coercion.ts). Wraps an UNCHANGED object schema in a root z.preprocess — the
+// same shape memory_save already uses — so the model-facing JSON schema is the inner object's. The coerced value is
+// re-validated against `inner`; if it would still fail, the RAW input goes through and is rejected exactly as before.
+// Kill switch INPUT_COERCION_DISABLED=true, read at call time inside applyInputCoercion.
+function coercedSchema<T extends z.ZodTypeAny>(tool: string, spec: InputCoercionSpec, inner: T) {
+  return z.preprocess((raw) => applyInputCoercion(tool, raw, spec, (v) => inner.safeParse(v).success), inner);
+}
+
+// "address" was added to gemini_deep_dork / dork_harvest kind enums together with input coercion; under the kill switch
+// it is refused again so INPUT_COERCION_DISABLED=true restores the pre-change strict schema in full.
+const ADDRESS_KIND_GATE = (k: string) => k !== "address" || !inputCoercionDisabled();
+const ADDRESS_KIND_GATE_MSG = { message: "kind \"address\" is not accepted while INPUT_COERCION_DISABLED=true" };
+const QUERY_TO_SEED = [{ to: "seed", from: "query", coercion: "seed_from_query" as const }];
+
 /**
  * Canonicalize a SocialFetch platform argument.
  *
@@ -992,7 +1007,7 @@ export function buildTools(ctx: ToolContext) {
     minimax_correlate: tool({
       description:
         "Have MiniMax correlate and rescore a batch of artifacts. Pass the relevant artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after at least three meaningful new artifacts or before final verification. A repeat call after a successful pass is skipped (no cost) if fewer than three new artifacts have been recorded since — keep gathering evidence first.",
-      inputSchema: memoSchema("minimax_correlate", () => z.object({
+      inputSchema: memoSchema("minimax_correlate", () => coercedSchema("minimax_correlate", { stringFields: ["seed"] }, z.object({
         seed: z.string().describe("Original seed identifier"),
         // Models frequently pass `artifacts` as a JSON STRING; coerce to an
         // array before validating (same as record_artifacts) so a stringified
@@ -1005,7 +1020,7 @@ export function buildTools(ctx: ToolContext) {
           confidence: z.number().optional(),
           metadata: z.unknown().optional(),
         })).max(200)),
-      })),
+      }))),
       execute: async ({ seed, artifacts }, opts) => {
         // Input guard: never spend a paid MiniMax call on an empty/invalid
         // payload. The counter check below tracks how many NEW artifacts were
@@ -1530,12 +1545,16 @@ export function buildTools(ctx: ToolContext) {
     oathnet_lookup: tool({
      description:
        "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain/NAME, or geo+ASN on an IP. For a person's full NAME pass type:'name' (searched as a free-text query across the breach corpus — expect same-name collisions, so treat name-only hits as [VERIFY] until a selector overlaps). A first-class breach source: run it on the seed AND on high-value selectors/names discovered mid-investigation.",
-      inputSchema: memoSchema("oathnet_lookup", () => z.object({
+      inputSchema: memoSchema("oathnet_lookup", () => coercedSchema("oathnet_lookup", {
+        enumFields: { type: ["email", "username", "phone", "ip", "domain", "name"] },
+        stringFields: ["value"],
+        trimFields: ["value"],
+      }, z.object({
         type: z.enum(["email", "username", "phone", "ip", "domain", "name"]),
         value: z.string(),
         dbnames: z.array(z.string()).max(20).optional().describe("Optional v2 breach DB scoping (names from oathnet_breach_dbnames) to narrow the corpus."),
         filter_id: z.string().optional().describe("Optional 24-char AI/manual filter context from oathnet_ai_filter to reuse."),
-      })),
+      }))),
       execute: async ({ type, value, dbnames, filter_id }, opts) => {
         if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
         if (oathnetExhausted()) return skipStub("oathnet_lookup", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today) — the oathnet_* family is soft-disabled for this run.`, { quota_left: oathnetQuotaLeft() });
@@ -2410,7 +2429,7 @@ export function buildTools(ctx: ToolContext) {
     rapidapi_breach_search: tool({
       description:
         "PRIMARY + MANDATORY breach source — RapidAPI Email Breach Search (~8000 lookups/month, broadest corpus). MUST be the FIRST breach call on ANY email — the seed OR any email discovered mid-investigation (pivot/contact/breach-derived) — BEFORE breach_check / leakcheck_lookup / oathnet_lookup. For an email, returns the breach corpus it appears in: per-breach id/name, breach date, and the exposed field set (email, password, etc.) with per-field `sensitive` flags. Then corroborate hits with leakcheck_lookup / hibp_lookup / breach_check (independent corpora). A breach hit is an EXPOSURE association — record it as observed/needs_corroboration, never as confirmed identity on its own. Requires RAPIDAPI_KEY in Supabase secrets (host/path overridable via RAPIDAPI_BREACH_HOST/PATH); self-skips when the key is absent.",
-      inputSchema: memoSchema("rapidapi_breach_search", () => z.object({ email: z.string().email() })),
+      inputSchema: memoSchema("rapidapi_breach_search", () => coercedSchema("rapidapi_breach_search", { trimFields: ["email"] }, z.object({ email: z.string().email() }))),
       execute: async ({ email }) => {
         const RAPIDAPI_KEY = Deno.env.get("RAPIDAPI_KEY");
         if (!RAPIDAPI_KEY) return { error: "RAPIDAPI_KEY not configured", skipped: true };
@@ -3926,11 +3945,16 @@ export function buildTools(ctx: ToolContext) {
         "Generate copy-paste Google/Bing/DuckDuckGo/Yandex dork queries for a seed identifier. NO external API cost. Use once for the original seed or a corroborated high-value selector when the resulting query set supports a defined verification goal. " +
         "PICK THE KIND FROM THE SELECTOR, not from convenience: a street address is kind:\"address\" (exact-address, parcel/assessor/recorder, deed/ownership, address+person, address+business, public records, documents, archives, real estate). " +
         "kind:\"domain\" is ONLY for a valid hostname such as example.com — it emits site:, wildcard-subdomain, certificate and secret-exposure templates that are meaningless for anything else. A non-hostname seed sent as kind:\"domain\" is refused with error:'kind_mismatch' (or re-routed to the address family when it is recognisably an address); it does NOT silently return domain queries.",
-      inputSchema: memoSchema("google_dorks", () => z.object({
+      inputSchema: memoSchema("google_dorks", () => coercedSchema("google_dorks", {
+        enumFields: { kind: ["email", "username", "phone", "name", "person", "address", "domain", "ip", "hash", "crypto_wallet"] },
+        renames: QUERY_TO_SEED,
+        stringFields: ["seed"],
+        trimFields: ["seed"],
+      }, z.object({
         seed: z.string(),
         // Accept legacy/alias "person" → mapped to "name" in execute().
         kind: z.enum(["email", "username", "phone", "name", "person", "address", "domain", "ip", "hash", "crypto_wallet"]),
-      })),
+      }))),
       execute: async ({ seed, kind: rawKind }) => {
         const aliasedKind = rawKind === "person" ? "name" : rawKind;
         // The model-supplied `kind` is UNTRUSTED input, not a routing decision.
@@ -4267,11 +4291,20 @@ export function buildTools(ctx: ToolContext) {
     dork_harvest: tool({
       description:
         "Execute the highest-yield document/leak dorks for a seed and record the RELEVANT PDFs, Office docs, CSV/SQL/log/env dumps, pastebin entries, and stealer-log URLs as artifacts (kind='document' / 'leak_paste'). A URL is recorded ONLY if the seed appears in its path OR a bounded Gemini read (top few docs) finds the seed in the document text — irrelevant hits (resume templates, unrelated court/SEC/FEC filings) are held in `candidate_links_unread`, NOT recorded, so the evidence table stays clean. Runs N targeted Perplexity Sonar queries (Exa keyword fallback honors site: domains). Costs 1 Perplexity call per query plus up to 3 Gemini reads.",
-      inputSchema: memoSchema("dork_harvest", () => z.object({
+      inputSchema: memoSchema("dork_harvest", () => coercedSchema("dork_harvest", {
+        enumFields: { kind: ["email", "username", "phone", "name", "person", "address", "domain", "ip", "hash", "crypto_wallet"] },
+        renames: QUERY_TO_SEED,
+        stringFields: ["seed"],
+        trimFields: ["seed"],
+        numberFields: ["max_queries"],
+      }, z.object({
         seed: z.string(),
-        kind: z.enum(["email", "username", "phone", "name", "person", "domain", "ip", "hash", "crypto_wallet"]),
+        // "address" runs the NAME query family (dork-queries.ts harvestQueryFamily — this tool has no address family of
+        // its own); provenance keeps seed_kind "address". Refused again under INPUT_COERCION_DISABLED.
+        kind: z.enum(["email", "username", "phone", "name", "person", "address", "domain", "ip", "hash", "crypto_wallet"])
+          .refine(ADDRESS_KIND_GATE, ADDRESS_KIND_GATE_MSG),
         max_queries: z.number().int().min(1).max(12).default(5),
-      })),
+      }))),
       execute: async ({ seed, kind: rawKind, max_queries }) => {
         const kind = rawKind === "person" ? "name" : rawKind;
         // Targeted dork queries per kind, ordered by document/leak yield.
@@ -4342,7 +4375,7 @@ export function buildTools(ctx: ToolContext) {
         // `"<seed>" filetype:pdf` — the #1 source of the 78-100% dork false-positive
         // rate. (Per-URL content-relevance scoring via scoreDorkRelevance is the
         // remaining lever; it needs a fetch per hit + subject name/city plumbing.)
-        const queries = (QUERIES[kind] ?? []).slice(0, max_queries).map(augmentDorkQuery);
+        const queries = (QUERIES[harvestQueryFamily(kind)] ?? []).slice(0, max_queries).map(augmentDorkQuery);
         if (queries.length === 0) return { ok: false, error: `no dork_harvest queries for kind=${kind}` };
 
         const DOC_EXT_RE = /\.(pdf|docx?|pptx?|xlsx?|csv|txt|log|sql|bak|env|json|xml|ya?ml|zip|tar|gz|7z|rar|pcap|map|dump|sqlite|db)(?:[?#]|$)/i;
@@ -4608,11 +4641,21 @@ export function buildTools(ctx: ToolContext) {
     gemini_deep_dork: tool({
       description:
         "FALLBACK deep-dork via Gemini 2.5 Flash with native Google Search grounding. Use AFTER google_dorks + dork_harvest — ~46% success rate in production telemetry; do not lead with this. Gemini reasons about the seed, formulates targeted Google dork queries internally, executes them against real Google, and returns a synthesized writeup PLUS source URLs as grounding citations. Use when dork_harvest misses something or you need LLM-driven dork generation (tricky disambiguation, niche forum surfacing). AUTO-RECORDS every cited URL as an artifact (kind='url' or classified by extension as 'document'/'leak_paste'). Template/sample document URLs are dropped. 1 Gemini call ≈ $0.002.",
-      inputSchema: memoSchema("gemini_deep_dork", () => z.object({
+      inputSchema: memoSchema("gemini_deep_dork", () => coercedSchema("gemini_deep_dork", {
+        enumFields: { kind: ["email","username","phone","name","person","address","domain","ip","hash","crypto_wallet","url","other"] },
+        // A missing kind is the catch-all "other" the enum already offered; an UNKNOWN kind is not (it stays rejected).
+        defaults: { kind: "other" },
+        renames: QUERY_TO_SEED,
+        stringFields: ["seed"],
+        trimFields: ["seed"],
+      }, z.object({
         seed: z.string(),
-        kind: z.enum(["email","username","phone","name","person","domain","ip","hash","crypto_wallet","url","other"]),
+        // "address": Gemini drafts its own dorks from `Seed (<kind>): <seed>`, so an address needs no tool-side query
+        // family — the kind is only the label in the prompt. Refused again under INPUT_COERCION_DISABLED.
+        kind: z.enum(["email","username","phone","name","person","address","domain","ip","hash","crypto_wallet","url","other"])
+          .refine(ADDRESS_KIND_GATE, ADDRESS_KIND_GATE_MSG),
         focus: z.string().optional().describe("Optional angle, e.g. 'breach exposure', 'resume/CV leaks', 'social handles', 'pastebin dumps', 'forum posts', 'court records'."),
-      })),
+      }))),
       execute: async ({ seed, kind, focus }, opts) => {
         if (!GEMINI_API_KEY) return { ok: false, error: "GEMINI_API_KEY not configured" };
         const system =
@@ -4719,10 +4762,13 @@ export function buildTools(ctx: ToolContext) {
     jina_reader_scrape: tool({
       description:
         "#1 PRIMARY scraper for ANY URL — free, unlimited, returns clean LLM-ready markdown. Always prefer this over firecrawl/exa_contents for single-page extraction. Use https://r.jina.ai/{url} under the hood. Works on articles, profile pages, forums, leak listings, dorks hits, Discord/Telegram links, PDFs (best-effort), etc. Pass a fully-qualified http(s) URL — do NOT pass relative paths or text snippets.",
-      inputSchema: memoSchema("jina_reader_scrape", () => z.object({
+      inputSchema: memoSchema("jina_reader_scrape", () => coercedSchema("jina_reader_scrape", {
+        numberFields: ["maxChars"],
+        trimFields: ["url"],
+      }, z.object({
         url: z.string().url(),
         maxChars: z.number().int().min(500).max(40000).default(18000),
-      })),
+      }))),
       // opts carries the per-tool timeout AbortSignal (Phase B3): forwarding it to
       // fetchRetry makes the 8s cap truly cancel the scrape mid-flight rather than
       // abandon the promise while r.jina.ai keeps streaming.
