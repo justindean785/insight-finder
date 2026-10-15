@@ -195,7 +195,13 @@ function mutableFake(reviewRows: Array<Record<string, unknown>>, reads: { n: num
   artifacts.insert = () => Promise.resolve({ error: null });
   const reviews: Record<string, unknown> = {};
   for (const m of ["eq", "in", "order", "update", "limit"]) reviews[m] = () => reviews;
-  reviews.select = () => { reads.n += 1; return reviews; };
+  // Counts reads of THIS thread's review set. The E4 cross-case index read
+  // (`select` naming `thread_id`) is memoized once per run and is not what these
+  // tests measure — see cross_case_reviews_test.ts for that read.
+  reviews.select = (cols?: string) => {
+    if (!String(cols ?? "").includes("thread_id")) reads.n += 1;
+    return reviews;
+  };
   reviews.maybeSingle = () => Promise.resolve({ data: reviewRows, error: null });
   reviews.then = (r: (v: { data: unknown; error: unknown }) => void) => r({ data: reviewRows, error: null });
   return {

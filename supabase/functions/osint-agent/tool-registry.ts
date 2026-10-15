@@ -44,7 +44,7 @@ import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
-import { loadReviewsForThread, dropRejectedAndDerived, dropRejectedArtifacts, normalizeArtifactKey, type ReviewDb } from "./reviews.ts";
+import { loadReviewsForThread, dropRejectedAndDerived, dropRejectedArtifacts, enforcedRejectedRows, isRejectedByReview, type ReviewDb } from "./reviews.ts";
 import { applyMemorySupersession, refuseConflictingMemoryWrites, rejectedSelectorsFromRows, type MemoryRow } from "./lib/memory-supersession.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
 
@@ -1220,13 +1220,12 @@ export function buildTools(ctx: ToolContext) {
           // published unfiltered. Same posture `dropRejectedArtifacts` already
           // takes, for the same reason.
           const reviewLoad = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
-          const rejectedInputKeys = new Set(reviewLoad.rejectedKeys);
           // The thin {kind,value} list is supplied by the MODEL, so it can name a
           // rejected selector even when the table read is clean. Keyed on
           // kind|value like every other rejection check — never on value alone.
           const plannerArtifacts = reviewLoad.ok
             ? (artifacts as Array<{ kind: string; value: string }>).filter(
-              (a) => !rejectedInputKeys.has(normalizeArtifactKey(a?.kind, a?.value)),
+              (a) => !isRejectedByReview(reviewLoad, a?.kind, a?.value),
             )
             : [];
           console.log(JSON.stringify({
@@ -1281,7 +1280,7 @@ export function buildTools(ctx: ToolContext) {
               // here, not deleted; they remain in agent_memory for audit.
               const { active, superseded } = applyMemorySupersession(
                 (mem ?? []) as MemoryRow[],
-                reviewLoad.ok ? reviewLoad.rejectedRows : [],
+                enforcedRejectedRows(reviewLoad),
               );
               if (superseded.length) {
                 console.log(JSON.stringify({
@@ -5869,7 +5868,7 @@ export function buildTools(ctx: ToolContext) {
             let autoRecallRejected: Array<{ value?: unknown }> = [];
             try {
               const rl = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
-              if (rl.ok) autoRecallRejected = rl.rejectedRows;
+              if (rl.ok) autoRecallRejected = enforcedRejectedRows(rl);
             } catch { /* analyst lessons among the rows still supersede */ }
             const recalled = await Promise.all(
               recallSubjects.map(async (subj) => {
@@ -6355,7 +6354,7 @@ export function buildTools(ctx: ToolContext) {
       let threadRejected: Array<{ value?: unknown }> = [];
       try {
         const rl = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
-        if (rl.ok) threadRejected = rl.rejectedRows;
+        if (rl.ok) threadRejected = enforcedRejectedRows(rl);
         else console.warn("[memory_recall] review state unavailable; superseding by analyst lessons only:", rl.error);
       } catch (e) {
         console.warn("[memory_recall] review load threw; superseding by analyst lessons only:", String(e));
@@ -6450,7 +6449,7 @@ export function buildTools(ctx: ToolContext) {
       try {
         const rl = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
         if (rl.ok) {
-          const gate = refuseConflictingMemoryWrites(toPersist, rejectedSelectorsFromRows(rl.rejectedRows));
+          const gate = refuseConflictingMemoryWrites(toPersist, rejectedSelectorsFromRows(enforcedRejectedRows(rl)));
           toPersist = gate.toPersist;
           for (const r of gate.refused) {
             candidates.push({ entry: r.entry, reason: r.reason, subjectIds: [], verdict: "blocked" });

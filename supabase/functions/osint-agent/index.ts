@@ -73,6 +73,7 @@ import {
   loadReviewsForThread, applyReviewsToArtifacts, dropRejectedArtifacts,
   renderAnalystDecisionsBlock, REVIEW_STATE_UNAVAILABLE_NOTE,
 } from "./reviews.ts";
+import { crossCaseLogEvent, crossCaseReviewsDisabled, invalidateCrossCaseIndex } from "./lib/cross-case-reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 import { repairExactBooleanInput } from "./lib/exact-boolean-repair.ts";
 
@@ -376,6 +377,8 @@ Deno.serve(async (req) => {
     // debit failure being silently discarded while paid tool calls continue.
     let creditExhaustReason: string | null = null;
     clearRuntime(threadId);
+    // E4: read the user's cross-case verdict index fresh once for this run.
+    invalidateCrossCaseIndex(userId, threadId);
     // ---- Per-investigation spend instrument (A2a) ------------------------------
     // `clearRuntime` above zeroes paidCalls/totalCalls/toolCounts on EVERY request,
     // even though runtime-policy.ts documents those counters as lifetime-of-run and
@@ -897,6 +900,13 @@ Deno.serve(async (req) => {
         key: turnReviews.reviewedRows.filter((r) => r.state === "key").length,
         recheck: turnReviews.reviewedRows.filter((r) => r.state === "recheck").length,
       }));
+    }
+    // E4: one structured event per run — counts only, never a value.
+    if (turnReviews.ok) {
+      console.log(JSON.stringify(crossCaseLogEvent(
+        threadId, turnReviews.crossCase,
+        turnReviews.crossCase ? undefined : crossCaseReviewsDisabled() ? "disabled" : "unavailable",
+      )));
     }
     const baseSystemPrompt =
       SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum(detectedSeedType) + visionIntakeSummary

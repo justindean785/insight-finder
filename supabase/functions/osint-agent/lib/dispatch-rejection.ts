@@ -101,18 +101,41 @@ export function rejectionRefusal(
   tool: string,
   selectorType: string,
   normalizedValue: string,
+  /** E4: "other_case" when the verdict was recorded in another of the user's cases. */
+  origin: "this_case" | "other_case" = "this_case",
 ): Record<string, unknown> {
+  const where = origin === "other_case"
+    ? `was rejected by your review in another case (marked FALSE / unrelated by the analyst) `
+    : `was marked FALSE / unrelated by the analyst `;
   return {
     ok: false,
     refused: true,
     refused_by: REJECTED_DISPATCH_REFUSAL_MARKER,
+    ...(origin === "other_case" ? { rejected_in: "other_case" } : {}),
     tool,
     selector_type: selectorType,
     selector: normalizedValue,
     error:
-      `refused: ${selectorType} "${normalizedValue}" was marked FALSE / unrelated by the analyst ` +
+      `refused: ${selectorType} "${normalizedValue}" ${where}` +
       `and may not start a tool call. The row remains in the evidence history; only its ` +
       `authority to drive work is withheld. Do not re-derive or re-propose it. ` +
       `An analyst can restore it by resetting the review.`,
   };
+}
+
+/**
+ * E4: the dispatch rows for values the analyst rejected in ANOTHER case. Phones
+ * expand to every plausible spelling (`dispatchSpellings`) because
+ * `circuit.normalizeSelector("phone")` keeps a leading "+": without this,
+ * +16174427629 rejected in case A would not refuse 6174427629 in case B.
+ */
+export function crossCaseDispatchRows(
+  rejected: ReadonlyArray<{ kind: string; value: string }> | null | undefined,
+  spellings: (kind: string, value: string) => string[],
+): RejectedSelectorRow[] {
+  const out: RejectedSelectorRow[] = [];
+  for (const r of rejected ?? []) {
+    for (const v of spellings(r.kind, r.value)) out.push({ kind: r.kind, value: v });
+  }
+  return out;
 }

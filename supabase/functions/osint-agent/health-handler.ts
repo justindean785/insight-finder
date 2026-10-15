@@ -49,6 +49,7 @@ import { clusterBookkeepingSelfTest, legacyNeedsReviewContradiction } from "./li
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 import { memoryContextSelfTest } from "./lib/memory-context.ts";
+import { crossCaseReviewsSelfTest } from "./lib/cross-case-reviews.ts";
 import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
 import { breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 import { memoryInputNormalizationSelfTest } from "./lib/memory-input-normalization.ts";
@@ -538,6 +539,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // tooling. Pure. PRESENCE proves the deployed bundle; ok:false = the classifier failed its
   // own probe. (Client mirror: src/lib/seed.ts, same 15-digit E.164 ceiling.)
   r.checks.seed_account_id = seedAccountIdSelfTest();
+
+  // E4: do the analyst's dismissed/wrong marks carry across the user's cases (latest verdict wins,
+  // in-thread overrides, "#caseonly" stays put, phones fold by digits, username != name), while
+  // confirmed/key/recheck stay pivot priority only? Pure. PRESENCE proves the deployed bundle;
+  // "LEGACY" = CROSS_CASE_REVIEWS_DISABLED=true; ok:false = the index failed its own probe.
+  r.checks.cross_case_reviews = crossCaseReviewsSelfTest();
 
   // Are the agent's own setup rows (triage_decision / cluster_decision / coverage_audit /
   // tool_audit) kept out of identity clusters? A row naming the seed handle used to join

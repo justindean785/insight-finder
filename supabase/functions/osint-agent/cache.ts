@@ -24,7 +24,8 @@ import { dispatchTypeCandidates, isDispatchRefused, loadRefusedArtifacts, quaran
 import { unprovenLinkageMarker, UNPROVEN_LINKAGE_KEY, type UnprovenLinkage } from "./lib/unproven-linkage.ts";
 import { promotionQuarantineEnabled } from "./env.ts";
 import type { QuarantineRow } from "./lib/dispatch-quarantine.ts";
-import { buildRejectedDispatchKeys, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
+import { buildRejectedDispatchKeys, crossCaseDispatchRows, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
+import { dispatchSpellings } from "./lib/cross-case-reviews.ts";
 import {
   buildDeadTargets, deadTargetMemoryEnabled, deadTargetCount, deadTargetRefusal,
   DEAD_TARGET_FLOOR, DEAD_TARGET_REFUSAL_ERROR,
@@ -899,19 +900,30 @@ export function wrapToolsWithCache(
   // call leave after the analyst clicks Wrong. The promise is shared only while
   // a read is in flight (parallel sibling calls use one snapshot), then cleared
   // so the next sequential dispatch observes the latest decision.
-  let rejectedKeysPromise: Promise<Set<string>> | null = null;
+  //
+  // E4: `crossCase` holds the keys of values the analyst rejected in ANOTHER of
+  // their cases (latest verdict, in-thread verdicts already removed by the
+  // loader). Kept as a separate set only so the refusal can say where the verdict
+  // came from; the refusal path, shape and marker are identical.
+  type RejectedKeySets = { inThread: Set<string>; crossCase: Set<string> };
+  const noRejectedKeys = (): RejectedKeySets => ({ inThread: new Set<string>(), crossCase: new Set<string>() });
+  let rejectedKeysPromise: Promise<RejectedKeySets> | null = null;
   const loadRejectedKeys = () => {
     if (!rejectedKeysPromise) {
-      const request = (async () => {
+      const request = (async (): Promise<RejectedKeySets> => {
         try {
           const reviews = await loadReviewsForThread(
             adminDb as unknown as ReviewDb, ctx.investigationId, ctx.userId,
           );
           if (!reviews.ok) {
             console.warn("[rejected-dispatch] review load failed (boundary open this run):", reviews.error);
-            return new Set<string>();
+            return noRejectedKeys();
           }
           const keys = buildRejectedDispatchKeys(reviews.rejectedRows, circuit.normalizeSelector);
+          const crossKeys = buildRejectedDispatchKeys(
+            crossCaseDispatchRows(reviews.crossCase?.rejected, dispatchSpellings),
+            circuit.normalizeSelector,
+          );
           // Counts only — never a selector value.
           console.log(JSON.stringify({
             event: "analyst_decisions_applied",
@@ -921,11 +933,12 @@ export function wrapToolsWithCache(
             decisions: reviews.byId.size,
             rejected_rows: reviews.rejectedRows.length,
             rejected_dispatch_keys: keys.size,
+            cross_case_dispatch_keys: crossKeys.size,
           }));
-          return keys;
+          return { inThread: keys, crossCase: crossKeys };
         } catch (e) {
           console.warn("[rejected-dispatch] review load threw (boundary open this run):", e);
-          return new Set<string>();
+          return noRejectedKeys();
         }
       })();
       rejectedKeysPromise = request;
@@ -1176,10 +1189,16 @@ export function wrapToolsWithCache(
           // does not override it either: the analyst clears a rejection by
           // resetting the review, not by re-running the call.
           const rejectedKeys = await loadRejectedKeys();
-          const rejectedAs = isRejectedDispatch(rejectedKeys, candidateTypes, sel);
+          const rejectedAs = isRejectedDispatch(rejectedKeys.inThread, candidateTypes, sel);
           if (rejectedAs) {
             const refusal = rejectionRefusal(name, rejectedAs, sel);
             console.warn(`[rejected-dispatch] refused ${name} on ${rejectedAs}:${sel} (analyst rejected)`);
+            return refusal;
+          }
+          const crossRejectedAs = isRejectedDispatch(rejectedKeys.crossCase, candidateTypes, sel);
+          if (crossRejectedAs) {
+            const refusal = rejectionRefusal(name, crossRejectedAs, sel, "other_case");
+            console.warn(`[rejected-dispatch] refused ${name} on ${crossRejectedAs} (analyst rejected in another case)`);
             return refusal;
           }
         }
