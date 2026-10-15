@@ -5,6 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useCaseSnapshot, type CaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { Lock, ShieldAlert, Plus, Copy, Link2, Mail, Phone, Globe, Network, User, Hash, FileSearch, MapPin } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { verifiedHint, verifiedLabel } from "@/lib/authority";
 import { toast } from "sonner";
 import { extractDisplaySeed, type SeedKind } from "@/lib/seed";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -148,9 +149,9 @@ export function CaseFigures({
           <Sep />
           <Figure
             value={authority.verified}
-            label="verified"
+            label={verifiedLabel(authority.verified, snapshot.verifiedByAnalyst, dense)}
             tone="text-[hsl(var(--authority-verified))]"
-            hint={`${authority.verified} corroborated across two or more independent source classes, or analyst-confirmed.`}
+            hint={verifiedHint(authority.verified, snapshot.verifiedByAnalyst)}
           />
         </span>
       )}
@@ -340,4 +341,3 @@ export function MobileCaseStrip() {
     </div>
   );
 }
-

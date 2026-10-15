@@ -224,6 +224,10 @@ export interface CaseSnapshotCore {
   };
   tools: CaseToolFigures;
   authority: Record<AuthorityState, number>;
+  /** Of `authority.verified`, how many carry the analyst's own confirm/key verdict. A
+   *  verified count that is all analyst clicks reads very differently from one the
+   *  evidence earned, and the header must be able to say which it is. */
+  verifiedByAnalyst: number;
   spend: {
     /** `threads.cost_micro_usd`: model + tool spend, persisted in checkpoints during a run. */
     microUsd: number | null;
@@ -262,6 +266,8 @@ export interface CaseSnapshotInput {
     loadedAt: number | null;
   };
   authority: Record<AuthorityState, number>;
+  /** Optional so older callers compile; absent reads as 0. */
+  verifiedByAnalyst?: number;
   integrity: CaseIntegrity | null;
   readiness: ConfidenceProfile | null;
   chatRunning: boolean;
@@ -322,6 +328,7 @@ export function buildCaseSnapshot(input: CaseSnapshotInput): CaseSnapshotCore {
       available: !input.tools.error || input.tools.loadedAt !== null,
     },
     authority: input.authority,
+    verifiedByAnalyst: input.verifiedByAnalyst ?? 0,
     spend: {
       microUsd: input.thread ? Number(input.thread.cost_micro_usd ?? 0) : null,
       text: input.thread ? formatUsd(input.thread.cost_micro_usd) : "—",

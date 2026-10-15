@@ -386,3 +386,38 @@ export function tallyAuthority(
   for (const a of artifacts) out[authorityFor(a, review(a.id)).state]++;
   return out;
 }
+
+/**
+ * Of the rows `tallyAuthority` counts as `verified`, how many carry the analyst's own
+ * confirm/key verdict (or a persisted `metadata.reviewed`). Presentation only: it
+ * splits a figure the ladder already produced and changes no state, threshold or cap.
+ * Measured 2026-10-15 (dizosint): all 10 "verified" rows were analyst clicks and 0
+ * were corroborated by evidence, and the header could not say so.
+ */
+export function countVerifiedByAnalyst(
+  artifacts: readonly Artifact[],
+  review: (id: string) => ReviewState,
+): number {
+  let n = 0;
+  for (const a of artifacts) {
+    const r = review(a.id);
+    const attested = r === "confirmed" || r === "key" ||
+      ((a.metadata ?? {}) as Record<string, unknown>).reviewed === true;
+    if (attested && authorityFor(a, r).state === "verified") n++;
+  }
+  return n;
+}
+
+/** "verified" alone hides whether the evidence earned it or the analyst clicked
+ *  Confirm. Say which, without changing the number. */
+export function verifiedLabel(verified: number, byAnalyst: number, dense?: boolean): string {
+  if (byAnalyst <= 0) return "verified";
+  if (byAnalyst >= verified) return dense ? "confirmed" : "verified (analyst-confirmed)";
+  return dense ? "verified" : `verified (${byAnalyst} analyst-confirmed)`;
+}
+
+export function verifiedHint(verified: number, byAnalyst: number): string {
+  const byEvidence = Math.max(0, verified - byAnalyst);
+  return `${verified} verified: ${byEvidence} corroborated across two or more independent source classes, ` +
+    `${byAnalyst} confirmed by the analyst (a decision, not a second source).`;
+}

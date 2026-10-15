@@ -421,6 +421,16 @@ async function loadFromDb(threadId: string) {
   emit(threadId);
 }
 
+/**
+ * Re-read this thread's verdicts and notify every subscriber. The hook loads them
+ * once per page; the case snapshot calls this on each reconcile so a verdict
+ * written in another tab (or by another session) reaches this one. A failed read
+ * keeps the cached verdicts — see loadFromDb.
+ */
+export function reloadReviews(threadId: string): Promise<void> {
+  return loadFromDb(threadId);
+}
+
 /** Context captured with a verdict, for the feedback log and memory lessons. */
 export type ReviewCtx = { value?: string; kind?: string; confidence?: number; source?: string };
 
