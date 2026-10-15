@@ -211,8 +211,10 @@ export function deriveToolTone(part: {
  *  a *gated* call was blocked by a triage/policy/budget gate (an intentional
  *  decision, not a fault), and a *degraded* call returned a partial/stale result
  *  or hit a temporarily-disabled provider (worth a second look, but not a hard
- *  failure). Only a real provider/runtime error counts as *failed*. */
-export type ToolStatus = "succeeded" | "failed" | "skipped" | "gated" | "degraded" | "pending";
+ *  failure). Only a real provider/runtime error counts as *failed*. *empty*
+ *  ("No record") is produced only by `classifyActivityRow` for a log row whose
+ *  canonical outcome is `empty`; `deriveToolStatus` below never returns it. */
+export type ToolStatus = "succeeded" | "empty" | "failed" | "skipped" | "gated" | "degraded" | "pending";
 
 // Budget / policy / quota / triage / orchestration stops — an intentional
 // control decision, not a fault. These must read as "Gated", never red

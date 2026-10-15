@@ -18,8 +18,9 @@ import {
   promptBudgetHardCeilingEnabled,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
-import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
-import { anthropicOrchestratorHealth } from "./anthropic-orchestrator.ts";
+import { anthropicFallbackEligible, selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
+import { anthropicModelRejectsForcedToolChoice, anthropicOrchestratorHealth } from "./anthropic-orchestrator.ts";
+import { anthropicFallbackDisabled, orchestratorFallbackHealth } from "./lib/orchestrator-fallback.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn } from "./lib/opsis.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
@@ -38,10 +39,10 @@ import {
   deepseekPreflightAlways,
   geminiPreflightPivotEnabled,
   preflightPivotHealthDetail,
-  preflightPolicyHealthDetail,
+  preflightPolicyHealthDetailE2b,
   resolveFallbackProvider,
 } from "./lib/preflight-pivot.ts";
-import { positionalPairingSelfTest } from "./message-sanitize.ts";
+import { positionalPairingSelfTest, toolInputObjectRepairSelfTest } from "./message-sanitize.ts";
 import { streamErrorDetailSelfTest } from "./stream-error-classify.ts";
 import { contradictionClaimSelfTest } from "./contradictions.ts";
 import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
@@ -54,6 +55,7 @@ import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
 import { breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 import { memoryInputNormalizationSelfTest } from "./lib/memory-input-normalization.ts";
 import { exactBooleanRepairSelfTest } from "./lib/exact-boolean-repair.ts";
+import { inputCoercionSelfTest } from "./lib/tool-input-coercion.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
 
 /**
@@ -379,11 +381,20 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // diagnostic. So MiniMax is never labeled active when DeepSeek is selected.
   r.checks.deepseek = { ...deepseekCheck, role: providerRole(selected.provider, "deepseek") };
   r.checks.minimax = { ...minimaxCheck, role: providerRole(selected.provider, "minimax") };
-  // Anthropic orchestrator (pin-only). Config + cost-control posture only; deliberately NO
+  // Anthropic orchestrator (primary by pin; GLM's backup since E2b — `role`). Config + cost-control posture only; deliberately NO
   // network probe — a ping would spend prepaid credits on every /health. Reports presence
   // of the key as a boolean, never the key. Its PRESENCE proves a build with the Anthropic
   // orchestrator is the one running.
+  // E2b: is Anthropic armed as GLM's backup? The SAME pure rule index.ts routes by
+  // (orchestrator_select.ts → anthropicFallbackEligible), kill switch read at call time.
+  const anthropicFallbackOn = anthropicFallbackEligible({
+    primary: selected.provider,
+    anthropicKey: !!ANTHROPIC_API_KEY,
+    modelAcceptsForcedToolChoice: !anthropicModelRejectsForcedToolChoice(ANTHROPIC_MODEL_ID),
+    disabled: anthropicFallbackDisabled(),
+  });
   r.checks.orchestrator_anthropic = anthropicOrchestratorHealth({
+    fallback: anthropicFallbackOn,
     keyPresent: !!ANTHROPIC_API_KEY,
     pin: ORCHESTRATOR_PROVIDER,
     selectedProvider: selected.provider,
@@ -459,11 +470,30 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     hasLovableGateway: !!lovableGateway,
     hasGeminiDirect: !!geminiDirectGateway,
     allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
+    anthropicFallback: anthropicFallbackOn,
+  });
+  // E2b proof key. Its PRESENCE proves the build where Anthropic backs GLM is live;
+  // `fallback` is the target routing resolves, from the same resolveFallbackProvider.
+  r.checks.orchestrator_fallback = orchestratorFallbackHealth({
+    primary: selected.provider,
+    anthropicKey: !!ANTHROPIC_API_KEY,
+    modelAcceptsForcedToolChoice: !anthropicModelRejectsForcedToolChoice(ANTHROPIC_MODEL_ID),
+    disabled: anthropicFallbackDisabled(),
+    target: preflightFallback,
+  });
+  // The probe's RUN decision is the pre-E2b one (lib/preflight-pivot.ts →
+  // shouldRunDeepseekPreflight), so the detail is derived from the same legacy target.
+  const legacyPreflightFallback = resolveFallbackProvider({
+    orchestratorProvider: ORCHESTRATOR_PROVIDER,
+    hasLovableGateway: !!lovableGateway,
+    hasGeminiDirect: !!geminiDirectGateway,
+    allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
   });
   r.checks.preflight_policy = {
     ok: true,
-    detail: preflightPolicyHealthDetail(
+    detail: preflightPolicyHealthDetailE2b(
       preflightFallback ? { provider: preflightFallback } : null,
+      legacyPreflightFallback ? { provider: legacyPreflightFallback } : null,
       deepseekPreflightAlways(),
       geminiPreflightPivotEnabled(),
     ),
@@ -480,6 +510,13 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // silent, so health probes never emit sanitize_positional_pair_repair. Its
   // PRESENCE proves this build is live; ok:false means the pairing rule regressed.
   r.checks.message_sanitize = positionalPairingSelfTest();
+
+  // Does every REPLAYED tool-call carry an object `input` (message-sanitize.ts)?
+  // Anthropic answers a non-object `tool_use.input` with HTTP 400 on every request
+  // (11 runs, 2026-10-14). A self-test on a fixed synthetic history, pure and
+  // silent; `enabled:false` means TOOL_INPUT_OBJECT_REPAIR_DISABLED is set. Its
+  // PRESENCE proves this build is live.
+  r.checks.tool_input_object_repair = toolInputObjectRepairSelfTest();
 
   // Do stream errors record the provider's status and code WITHOUT the response
   // body (stream-error-classify.ts)? A self-test on a synthetic error, pure.
@@ -533,6 +570,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Is a boolean parameter sent as the EXACT string "true"/"false" repaired instead of burning the step, while every other
   // string and every consent flag stays rejected? Pure. PRESENCE proves the deployed bundle; ok:false = failed its own probe.
   r.checks.exact_boolean_repair = exactBooleanRepairSelfTest();
+
+  // Is a near-miss tool input (kind alias, query→seed, numeric string, number→string, stray whitespace) coerced INSIDE
+  // the schema when — and only when — the result validates? Pure. PRESENCE proves the deployed bundle; `switch` reports
+  // INPUT_COERCION_DISABLED; ok:false = a rule failed its own probe.
+  r.checks.input_coercion = inputCoercionSelfTest();
 
   // Is a bare 17-20 digit platform account ID (Discord/Twitter snowflake, Steam64) kept out of
   // the phone playbook? It classified as `phone` and routed a Discord-ID case into phone

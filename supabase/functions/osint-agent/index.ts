@@ -44,7 +44,14 @@ import { sanitizeModelMessages, capToolResultOutputs, summarizeToolResultValue }
 import { guard, routingGuard, triageState, countRecordArtifactCalls, countModelMessageToolCalls, bumpAutoPersistedArtifacts, resetCorrelateRun, correlateDue } from "./guard.ts";
 import { setupRequest } from "./auth.ts";
 import { minimax, minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
-import { selectOrchestratorProvider } from "./orchestrator_select.ts";
+import { anthropicFallbackEligible, selectOrchestratorProvider } from "./orchestrator_select.ts";
+import {
+  anthropicBoundModel,
+  anthropicFallbackDisabled,
+  createStartFallbackModel,
+  fallbackModelLabel,
+  preflightFallbackReason,
+} from "./lib/orchestrator-fallback.ts";
 import { FINDING_LABELS } from "./catalog.ts";
 import { SYSTEM_PROMPT_FULL } from "./system-prompt.ts";
 import { wrapToolsWithCache } from "./cache.ts";
@@ -98,7 +105,7 @@ import {
   geminiPreflightPivotEnabled,
   resolveFallbackProvider,
   shouldPivotOnPreflight,
-  shouldRunPreflight,
+  shouldRunDeepseekPreflight,
 } from "./lib/preflight-pivot.ts";
 import { redactErrorMessage } from "./lib/redact-error.ts";
 import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
@@ -597,11 +604,20 @@ Deno.serve(async (req) => {
     });
     const minimaxIsPrimary = orchChoice.provider === "minimax";
     const deepseekIsPrimary = orchChoice.provider === "deepseek";
-    // Anthropic is PIN-ONLY (orchestrator_select.ts) and spends prepaid credits, so it is
-    // never a failover target and a failed Anthropic run is never moved to another
-    // provider: `useFallback` below is false for it by construction (no preflight, no
-    // overflow pivot), and the stream onError ends the run visibly instead of retrying.
+    // Anthropic is the PRIMARY only by pin, and a failed PINNED Anthropic run is never moved
+    // to another provider: `useFallback` below is false for it by construction (no preflight,
+    // no overflow pivot), and the stream onError ends the run visibly instead of retrying.
+    // Since E2b it is also GLM's BACKUP (orchestrator_select.ts → anthropicFallbackEligible):
+    // it takes an invocation GLM cannot START — a failed preflight, or a start failure on the
+    // first real request before any tool is admitted (lib/orchestrator-fallback.ts). Never
+    // mid-run. ANTHROPIC_FALLBACK_DISABLED=true (read here, per request) restores the old chain.
     const anthropicIsPrimary = orchChoice.provider === "anthropic";
+    const anthropicFallbackReady = anthropicFallbackEligible({
+      primary: orchChoice.provider,
+      anthropicKey: !!anthropicGateway,
+      modelAcceptsForcedToolChoice: !anthropicModelRejectsForcedToolChoice(ANTHROPIC_MODEL_ID),
+      disabled: anthropicFallbackDisabled(),
+    });
     if (anthropicIsPrimary && anthropicModelRejectsForcedToolChoice(ANTHROPIC_MODEL_ID)) {
       // Fail BEFORE any spend: this loop forces a tool call (opening + finalize phases)
       // and these models 400 on forced tool_choice, so the run would die at step 1.
@@ -664,12 +680,20 @@ Deno.serve(async (req) => {
       hasLovableGateway: !!lovableGateway,
       hasGeminiDirect: !!geminiDirectGateway,
       allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
+      // E2b: Anthropic first behind GLM. Not for the >3M-char overflow pivot, which
+      // Anthropic's context window cannot take either — that keeps the pre-E2b target.
+      anthropicFallback: anthropicFallbackReady && !deepseekWouldOverflow,
     });
     const fallbackTarget = fallbackProvider === "lovable-gateway"
-      ? { gateway: lovableGateway!, modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
+      ? { makeModel: () => lovableGateway!.chatModel(FALLBACK_MODEL_ID), modelId: FALLBACK_MODEL_ID, label: "Lovable Gateway fallback", provider: "lovable-gateway" as const }
+      : fallbackProvider === "anthropic"
+      ? { makeModel: () => anthropicBoundModel(anthropicGateway!(ANTHROPIC_MODEL_ID)), modelId: ANTHROPIC_MODEL_ID, label: "Anthropic fallback", provider: "anthropic" as const }
       : fallbackProvider === "gemini-direct"
-      ? { gateway: geminiDirectGateway!, modelId: GEMINI_FALLBACK_MODEL_ID, label: "Gemini direct fallback", provider: "gemini-direct" as const }
+      ? { makeModel: () => geminiDirectGateway!.chatModel(GEMINI_FALLBACK_MODEL_ID), modelId: GEMINI_FALLBACK_MODEL_ID, label: "Gemini direct fallback", provider: "gemini-direct" as const }
       : null;
+    // Why this invocation runs on a fallback, when it does because GLM could not start it
+    // (E2b). Recorded in the invocation's model_id label and the orchestrator_fallback log.
+    let fallbackReason: string | null = null;
     // Pre-flight MiniMax health probe. The fallback selection above only fires
     // when MiniMax's key is missing or the prompt would overflow — it does NOT
     // catch the case where MiniMax is configured and accepts the request but is
@@ -745,14 +769,27 @@ Deno.serve(async (req) => {
     // with the gemini-direct pivot disabled the probe's only output is a log line, and
     // it sat serially on the path to the first byte (up to 2×12s + 250ms).
     // DEEPSEEK_PREFLIGHT_ALWAYS=true restores it on every request.
-    const runDeepseekPreflight = deepseekIsPrimary && !useFallback &&
-      shouldRunPreflight(fallbackTarget, geminiPreflightPivotEnabled(), deepseekPreflightAlways());
+    // E2b: the RUN decision is the pre-E2b one, over the target routing would resolve without
+    // Anthropic. An Anthropic target alone never turns the probe on (its latency tax is the
+    // regression #9-30 removed); the first-request wrapper is the Anthropic failover path.
+    const legacyFallbackProvider = resolveFallbackProvider({
+      orchestratorProvider: ORCHESTRATOR_PROVIDER,
+      hasLovableGateway: !!lovableGateway,
+      hasGeminiDirect: !!geminiDirectGateway,
+      allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
+    });
+    const runDeepseekPreflight = deepseekIsPrimary && !useFallback && !!fallbackTarget &&
+      shouldRunDeepseekPreflight(
+        legacyFallbackProvider ? { provider: legacyFallbackProvider } : null,
+        geminiPreflightPivotEnabled(),
+        deepseekPreflightAlways(),
+      );
     if (deepseekIsPrimary && !useFallback && fallbackTarget && !runDeepseekPreflight) {
       console.log(JSON.stringify({
         event: "preflight_skipped",
         thread_id: threadId,
         fallback: fallbackTarget.provider,
-        reason: "no outcome can pivot",
+        reason: fallbackTarget.provider === "anthropic" ? "anthropic failover runs on the first request" : "no outcome can pivot",
       }));
     }
     if (runDeepseekPreflight && fallbackTarget) {
@@ -805,6 +842,13 @@ Deno.serve(async (req) => {
         console.warn(
           `[orchestrator] deepseek preflight failed after ${DEEPSEEK_PREFLIGHT_ATTEMPTS} attempts (status=${lastDeepseekProbe.status}) → ${fallbackTarget.label} for thread ${threadId}`,
         );
+        if (fallbackTarget.provider === "anthropic") {
+          fallbackReason = preflightFallbackReason(lastDeepseekProbe.status);
+          console.warn(JSON.stringify({
+            event: "orchestrator_fallback", thread_id: threadId, phase: "preflight",
+            from: "deepseek", to: "anthropic", reason: fallbackReason, status: lastDeepseekProbe.status,
+          }));
+        }
       } else if (!lastDeepseekProbe.ok && lastDeepseekProbe.status >= 400) {
         console.warn(JSON.stringify({
           event: "preflight_pivot_suppressed",
@@ -832,10 +876,46 @@ Deno.serve(async (req) => {
         : orchChoice.provider === "grok"
         ? { model: grokGateway!.chatModel(GROK_ORCHESTRATOR_MODEL_ID), label: `${GROK_ORCHESTRATOR_MODEL_ID} (xAI Grok)` }
         : orchChoice.provider === "anthropic"
-        ? { model: anthropicGateway!(ANTHROPIC_MODEL_ID), label: `${ANTHROPIC_MODEL_ID} (Anthropic)` }
+        ? { model: anthropicBoundModel(anthropicGateway!(ANTHROPIC_MODEL_ID)), label: `${ANTHROPIC_MODEL_ID} (Anthropic)` }
         : { model: minimax.chatModel(PRIMARY_ORCHESTRATOR_MODEL_ID), label: `${PRIMARY_ORCHESTRATOR_MODEL_ID} (MiniMax direct)` };
+    // E2b start fallback: GLM runs this invocation, but if its FIRST request fails with a
+    // start failure before any tool is admitted, the same request goes to Anthropic and the
+    // invocation stays there. Armed only when Anthropic is the resolved fallback target and
+    // the preflight did not already move the run. The GLM request is not changed by a byte:
+    // the Anthropic providerOptions are added only on the fallback's copy of the call.
+    const startFallback = deepseekIsPrimary && !useFallback && fallbackTarget?.provider === "anthropic"
+      ? createStartFallbackModel({
+        primary: primaryModel,
+        fallback: fallbackTarget.makeModel(),
+        fallbackParams: (p) => ({
+          ...p,
+          providerOptions: {
+            ...(p?.providerOptions ?? {}),
+            ...anthropicProviderOptions({ thinking: ANTHROPIC_THINKING, effort: ANTHROPIC_EFFORT }),
+          },
+        }),
+        // Belt and braces with the wrapper's own "GLM accepted a request" latch: any admitted
+        // or recorded tool call in this invocation forbids the switch.
+        toolsAdmitted: () =>
+          toolCallBudget.genuine + toolCallBudget.reserved + invocationTelemetry.getToolCallCount(),
+        onSwitch: (ev) => {
+          fallbackReason = ev.reason;
+          console.warn(JSON.stringify({
+            event: "orchestrator_fallback", thread_id: threadId, phase: "start",
+            from: "deepseek", to: "anthropic", reason: ev.reason, status: ev.failure.status,
+            attempt: ev.attempt, why: ev.why,
+          }));
+          invocationTelemetry.setRoute({
+            provider: "anthropic",
+            modelId: fallbackModelLabel(ANTHROPIC_MODEL_ID, ev.reason),
+          });
+        },
+      })
+      : null;
     const orchestratorModel = useFallback
-      ? fallbackTarget!.gateway.chatModel(fallbackTarget!.modelId)
+      ? fallbackTarget!.makeModel()
+      : startFallback
+      ? startFallback.model
       : primaryModel;
     console.log(
       `[orchestrator] running on ${useFallback ? `${fallbackTarget!.modelId} (${fallbackTarget!.label})` : primaryLabel} ` +
@@ -960,10 +1040,17 @@ Deno.serve(async (req) => {
     // Anthropic-only run accounting (all zero / inert on every other provider). Request-scoped
     // like the other latches. `inputTokens` counts every input token billed (uncached + cache
     // reads + cache writes) so the hard budget bounds the WORK done, not just the price.
-    const anthropicActive = anthropicIsPrimary && !useFallback;
+    // A FUNCTION, not a constant, since E2b: the run is on Anthropic when it is the pinned
+    // primary, when the preflight moved it there, or once GLM's start failure switched it
+    // (decided inside the first model call, after this line runs). Metering, the hard budget,
+    // the cache-split system prompt and failure classification all follow the live answer.
+    const anthropicActive = () =>
+      (anthropicIsPrimary && !useFallback) ||
+      (useFallback && fallbackTarget?.provider === "anthropic") ||
+      !!startFallback?.state.switched;
     const anthropicRun = { inputTokens: 0, costMicroUsd: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, budgetLogged: false };
     const anthropicBudgetStatus = () =>
-      anthropicActive
+      anthropicActive()
         ? runBudgetExhausted(
           { inputTokens: anthropicRun.inputTokens, costMicroUsd: anthropicRun.costMicroUsd },
           ANTHROPIC_RUN_LIMITS,
@@ -996,7 +1083,7 @@ Deno.serve(async (req) => {
     };
     // The stable base (tools + base system prompt) carries the cache breakpoint; the per-step
     // directive rides after it. Identity on every non-Anthropic provider.
-    const stepSystem = (full: string) => anthropicActive ? splitCachedSystem(full, baseSystemPrompt) : full;
+    const stepSystem = (full: string) => anthropicActive() ? splitCachedSystem(full, baseSystemPrompt) : full;
     let openingGateLogged = false;
     // Correlation finalize-deferral counter. Request-scoped by construction, like the
     // nudge latches below, so one run's deferral cannot leak onto a concurrent run
@@ -1035,7 +1122,11 @@ Deno.serve(async (req) => {
       threadId,
       userId,
       provider: useFallback ? fallbackTarget!.provider : orchChoice.provider,
-      modelId: useFallback ? fallbackTarget!.modelId : primaryLabel,
+      // A preflight move to Anthropic records WHY in the label (E2b); a start-fallback
+      // switch re-labels the row via setRoute when it happens.
+      modelId: useFallback
+        ? (fallbackReason ? fallbackModelLabel(fallbackTarget!.modelId, fallbackReason) : fallbackTarget!.modelId)
+        : primaryLabel,
       startedAt: runStartedAt,
       initialContextChars: approxPromptChars,
     });
@@ -1342,8 +1433,12 @@ Deno.serve(async (req) => {
       //   field through multi-round streamed tool calls, and enabling parallel
       //   calls compounds the risk of missing/malformed tool-result pairing
       //   that produced prior orchestrator failures (MiniMax's exact crash).
+      // - Anthropic as GLM's backup after a failed preflight (E2b) → the same Anthropic
+      //   options as the pin. (The START fallback adds them on its own copy of the call.)
       providerOptions: useFallback
-        ? undefined
+        ? (fallbackTarget?.provider === "anthropic"
+          ? anthropicProviderOptions({ thinking: ANTHROPIC_THINKING, effort: ANTHROPIC_EFFORT })
+          : undefined)
         : minimaxIsPrimary
         ? { minimax: { parallel_tool_calls: ORCHESTRATOR_PARALLEL_TOOL_CALLS } }
         : deepseekIsPrimary
@@ -1664,7 +1759,7 @@ Deno.serve(async (req) => {
         // record it so the NEXT turn's preflight probe can be skipped.
         if (!useFallback) markMinimaxHealthy();
         try {
-          if (anthropicActive) {
+          if (anthropicActive()) {
             // Anthropic bills four distinct buckets (uncached input, cache read, cache write,
             // output); the flat in/out meter below would double-charge the cached span.
             meterAnthropicUsage(usage, "step", stepNumber ?? 0);
@@ -1697,7 +1792,7 @@ Deno.serve(async (req) => {
         // either way: the run ends here — no retry and no failover to another provider.
         // (The recorded `detail` already carries Anthropic's own human reason — e.g. "Your credit
         // balance is too low…" — because describeStreamError leads with error.message.)
-        const anthropicFailure = anthropicActive ? classifyAnthropicError(error) : null;
+        const anthropicFailure = anthropicActive() ? classifyAnthropicError(error) : null;
         const detail = describeStreamError(error);
         // STREAM_ERROR_BODY_DETAIL=true adds a bounded body excerpt to the LOG LINE
         // only — redacted, and kept out of every persisted field (Codex P2 on #672).
@@ -1725,8 +1820,14 @@ Deno.serve(async (req) => {
             // Reflects the ACTUAL primary provider (minimax/deepseek/grok/
             // anthropic), not hardcoded to "minimax" — a pre-existing gap
             // that mislabeled every non-MiniMax primary in this log.
-            provider: useFallback ? fallbackTarget!.provider : orchChoice.provider,
-            model: useFallback ? fallbackTarget!.modelId : primaryLabel,
+            provider: startFallback?.state.switched
+              ? "anthropic"
+              : useFallback ? fallbackTarget!.provider : orchChoice.provider,
+            model: startFallback?.state.switched
+              ? ANTHROPIC_MODEL_ID
+              : useFallback ? fallbackTarget!.modelId : primaryLabel,
+            // E2b: set when GLM could not start this invocation and Anthropic took it.
+            fallback_reason: fallbackReason,
             approx_prompt_chars: approxPromptChars,
             context_overflow: isCtxOverflow,
             // A schema/pairing fault is a builder bug, NOT context overflow —
@@ -1914,7 +2015,7 @@ Deno.serve(async (req) => {
             const salvageCost = salvageReserve(
               ANTHROPIC_MODEL_ID, baseSystemPrompt.length + salvagePrompt.length, ORCHESTRATOR_MAX_OUTPUT_TOKENS,
             );
-            if (anthropicActive && !salvageWithinBudget(
+            if (anthropicActive() && !salvageWithinBudget(
               { inputTokens: anthropicRun.inputTokens, costMicroUsd: anthropicRun.costMicroUsd },
               ANTHROPIC_RUN_LIMITS,
               salvageCost,
@@ -1932,7 +2033,7 @@ Deno.serve(async (req) => {
               system: baseSystemPrompt,
               prompt: salvagePrompt,
             });
-            if (anthropicActive) meterAnthropicUsage(salvage?.usage, "salvage", null);
+            if (anthropicActive()) meterAnthropicUsage(salvage?.usage, "salvage", null);
             const salvageText = (salvage?.text ?? "").trim();
             if (salvageText) {
               const salvagePart = { type: "text", text: salvageText } as unknown;
@@ -2339,7 +2440,7 @@ Deno.serve(async (req) => {
         if (isMessageSchemaError(m, name)) {
           return "Investigation ended early — partial results were saved.";
         }
-        if (anthropicActive) {
+        if (anthropicActive()) {
           const failure = classifyAnthropicError(error);
           if (failure.kind !== "unknown") return failure.message;
         }

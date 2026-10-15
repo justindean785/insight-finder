@@ -3,6 +3,16 @@ import { supabase } from "@/integrations/supabase/client";
 import { deriveToolReason, type ToolTone, type ToolStatus } from "@/lib/tool-run";
 import { toolDisplayName, toolActionLabel } from "@/lib/tool-display";
 import { chargedMicroUsd as effectiveCharge } from "@/lib/runCost";
+import {
+  classifyDetailedOutcome,
+  coarseOutcome,
+  emptyGroupCounts,
+  isGatedSkip,
+  outcomeGroup,
+  type CanonicalOutcome,
+  type OutcomeGroup,
+  type OutcomeGroupCounts,
+} from "@/lib/tool-outcome";
 
 /**
  * Best-effort short reason for a non-OK tool event, for the Activity feed.
@@ -32,8 +42,12 @@ export interface ToolEvent {
   displayName: string;
   actionLabel: string;
   tone: ToolTone;
-  /** Richer operational status: succeeded/failed/skipped/gated/degraded/pending. */
+  /** Richer operational status: succeeded/empty/failed/skipped/gated/degraded/pending. */
   status: ToolStatus;
+  /** Canonical outcome (src/lib/tool-outcome.ts) — the same category Health counts. */
+  category: CanonicalOutcome;
+  /** The tile group this call is counted in, shared with the Health panel. */
+  group: OutcomeGroup;
   state?: string;
   at: string;
   /** Short failure/skip reason, when the tone is not "ok". */
@@ -83,12 +97,19 @@ export interface ThreadToolActivity {
   persistedTotal: number;
   /** Activity-feed rows. Includes failures — nothing is suppressed. */
   total: number;
-  /** Calls that failed outright. Shown in the feed, counted here for the badge. */
+  /** Faulted calls (config / provider fault / unknown). Shown in the feed, counted here for the badge. */
   failed: number;
+  /** Genuine successes only — a clean "no record" is `noRecord`, as in Health. */
   ok: number;
+  /** Ran fine, target has no data. */
+  noRecord: number;
+  /** Skipped-group calls that are NOT gated; `skipped + gated` is the skipped group. */
   skipped: number;
+  /** Skipped because the tool was unavailable (no key / disabled / gated). */
   gated: number;
   degraded: number;
+  /** The five Health-panel groups for these rows. Same numbers as the Health tiles. */
+  groups: OutcomeGroupCounts;
   /** True until the FIRST load for this scope settles. Never true again after. */
   loading: boolean;
   /**
@@ -116,6 +137,8 @@ interface ActivityRow {
   ok: boolean | null;
   error_msg: string | null;
   created_at: string;
+  /** Provider HTTP status, when the tool recorded one. Health reads it; so must Activity. */
+  status_code?: number | null;
   /** Wall-clock for the call. Distinguishes "failed fast" from "timed out". */
   duration_ms: number | null;
   /** Served from cache — no provider call, no spend. */
@@ -128,51 +151,43 @@ interface ActivityRow {
   stage?: string | null;
 }
 
-const GATED_RE = /gated|missing.?key|not configured|disabled|unavailable|provider disabled/i;
 /**
- * Transient, non-fault conditions.
+ * Map a tool_usage_log row to a display tone + operational status.
  *
- * Beyond the original rate/budget terms this now covers the three shapes the
- * Health panel already classified as Degraded/Denied while Activity was still
- * calling them failures:
- *   - our OWN throttles: "internal paid-call cap reached (12 this run) —
- *     internal throttle, not a provider limit". The row states outright that it
- *     is not a provider limit, and Activity labelled it FAILED anyway.
- *   - upstream refusals: "reddit request failed (403)" — Denied, not breakage.
- *   - timeouts, which are transient by definition.
- * A genuine provider fault (5xx, unparseable error) still falls through to
- * `failed`, which is what "Needs attention" is for.
- */
-const DEGRADED_RE =
-  /degraded|suppressed|rate.?limit|burst|budget|concurrency|cycle limit|duplicate call|cap reached|internal throttle|paid-call cap|quota|denied|blocked|forbidden|timed?.?out|timeout|\b40[39]\b|\b429\b/i;
-
-/**
- * Map a tool_usage_log row to a display tone + operational status. The log's
- * `outcome` (`ok`/`skipped`/`empty`/`failed`, written by classifyToolOutcome in
- * the edge function) is the authoritative source; legacy rows with a null
- * outcome fall back to the `ok` boolean. Pure — exported for tests.
+ * ONE taxonomy: this delegates to `classifyDetailedOutcome` — the classifier the
+ * Health panel runs — and buckets the result with the shared `outcomeGroup`, so
+ * the Activity tiles and the Health tiles are the same numbers for the same rows.
+ * It used to keep its own GATED/DEGRADED regexes, test them BEFORE the stored
+ * outcome, count `empty` as succeeded and never see `status_code`; one 125-call
+ * case read "Succeeded 100 / Failed 6 / Degraded 8 / Skipped 11" here and
+ * "84 Succeeded / 16 No record / 15 Skipped / 3 Degraded / 7 Faulted" in Health.
+ *
+ * status ↔ group: succeeded = succeeded, empty = no record, skipped + gated =
+ * skipped (gated is a sub-count: the tool was not available at all), degraded =
+ * degraded, failed = faulted. Pure — exported for tests and for the chat tool
+ * chips (useThreadMessages), which pass no status code.
  */
 export function classifyActivityRow(
   outcome: string | null,
   ok: boolean | null,
   errorMsg: string | null,
-): { tone: ToolTone; status: ToolStatus } {
-  const oc = (outcome ?? (ok ? "ok" : "failed")).toLowerCase();
-  if (oc === "ok" || oc === "empty") return { tone: "ok", status: "succeeded" };
-
-  // The gate/degradation check applies to EVERY non-OK outcome, not just
-  // `skipped`. Consulting it only for `skipped` is why the Activity feed and
-  // the Health panel disagreed about the same rows: an internal paid-call cap
-  // and a reddit 403 both fell straight through to `failed` here, while Health
-  // correctly reported them as Degraded/Denied and "Needs attention 0". One
-  // call must not read FAILED in one panel and Degraded in the panel beside it.
-  const err = errorMsg ?? "";
-  if (GATED_RE.test(err)) return { tone: "skip", status: "gated" };
-  if (DEGRADED_RE.test(err)) return { tone: "skip", status: "degraded" };
-  if (oc === "skipped") return { tone: "skip", status: "skipped" };
-
-  // Nothing matched: a genuine fault. This is what "Needs attention" means.
-  return { tone: "error", status: "failed" };
+  statusCode: number | null = null,
+): { tone: ToolTone; status: ToolStatus; category: CanonicalOutcome; group: OutcomeGroup } {
+  const category = classifyDetailedOutcome(coarseOutcome(outcome, ok), errorMsg, statusCode);
+  const group = outcomeGroup(category);
+  switch (group) {
+    case "succeeded":
+      return { tone: "ok", status: "succeeded", category, group };
+    case "no_record":
+      return { tone: "ok", status: "empty", category, group };
+    case "skipped":
+      return { tone: "skip", status: isGatedSkip(category, errorMsg) ? "gated" : "skipped", category, group };
+    case "degraded":
+      return { tone: "skip", status: "degraded", category, group };
+    default:
+      // config_error / failed / unknown — what "Needs attention" is for.
+      return { tone: "error", status: "failed", category, group };
+  }
 }
 
 function cleanReason(errorMsg: string | null): string | undefined {
@@ -183,7 +198,9 @@ function cleanReason(errorMsg: string | null): string | undefined {
 }
 
 function toEvent(r: ActivityRow): ToolEvent {
-  const { tone, status } = classifyActivityRow(r.outcome, r.ok, r.error_msg);
+  const { tone, status, category, group } = classifyActivityRow(
+    r.outcome, r.ok, r.error_msg, typeof r.status_code === "number" ? r.status_code : null,
+  );
   const rawCharged = typeof r.charged_micro_usd === "number" ? r.charged_micro_usd : null;
   return {
     id: r.id,
@@ -192,6 +209,8 @@ function toEvent(r: ActivityRow): ToolEvent {
     actionLabel: toolActionLabel(r.tool_name),
     tone,
     status,
+    category,
+    group,
     at: r.created_at,
     reason: tone === "ok" ? undefined : cleanReason(r.error_msg),
     durationMs: typeof r.duration_ms === "number" ? r.duration_ms : null,
@@ -293,7 +312,7 @@ async function runLoad(store: Store): Promise<boolean> {
     .from("tool_usage_log")
     // `outcome` is not in the generated types yet (added by migration) —
     // cast via unknown below to keep typecheck green.
-    .select("id,tool_name,outcome,ok,error_msg,created_at,duration_ms,cached,charged_micro_usd,cost_micro_usd,stage:input_json->runtime->>stage", { count: "exact" })
+    .select("id,tool_name,outcome,ok,error_msg,status_code,created_at,duration_ms,cached,charged_micro_usd,cost_micro_usd,stage:input_json->runtime->>stage", { count: "exact" })
     .eq("thread_id", store.threadId)
     .order("created_at", { ascending: true });
   // A store released while its read was in flight must not be written to —
@@ -462,6 +481,23 @@ export function toolActivityStoreCount(): number {
 const EMPTY_EVENTS: ToolEvent[] = [];
 
 /**
+ * The Activity tally: the five Health groups plus the gated sub-count (inside
+ * `skipped`). Counts by the event's shared `group`, never by its display status,
+ * so it cannot drift from the Health panel. Exported for the parity test.
+ */
+export function tallyToolEvents(events: readonly Pick<ToolEvent, "group" | "status">[]): { groups: OutcomeGroupCounts; gated: number } {
+  const groups = emptyGroupCounts();
+  let gated = 0;
+  for (const e of events) {
+    // A "pending" event (never produced by the log path) has no group yet.
+    if (!e.group) continue;
+    groups[e.group] += 1;
+    if (e.status === "gated") gated += 1;
+  }
+  return { groups, gated };
+}
+
+/**
  * Authoritative per-thread tool activity, read from `tool_usage_log` (the same
  * source the Tool-Health panel uses) — NOT the chat message parts, which the
  * osint-agent orchestrator does not populate, so the old message-derived feed
@@ -503,24 +539,19 @@ export function useThreadToolActivity(threadId: string, accountId?: string): Thr
     : { events: EMPTY_EVENTS, persistedTotal: 0, loaded: false, error: false, loadedAt: null };
   const { events } = snap;
 
-  let failed = 0, ok = 0, skipped = 0, gated = 0, degraded = 0;
-  for (const e of events) {
-    if (e.status === "failed") failed++;
-    else if (e.status === "succeeded") ok++;
-    else if (e.status === "skipped") skipped++;
-    else if (e.status === "gated") gated++;
-    else if (e.status === "degraded") degraded++;
-  }
+  const { groups, gated } = tallyToolEvents(events);
 
   return {
     events,
     persistedTotal: snap.persistedTotal,
     total: events.length,
-    failed,
-    ok,
-    skipped,
+    failed: groups.faulted,
+    ok: groups.succeeded,
+    noRecord: groups.no_record,
+    skipped: groups.skipped - gated,
     gated,
-    degraded,
+    degraded: groups.degraded,
+    groups,
     loading: !snap.loaded,
     error: snap.error,
     loadedAt: snap.loadedAt,

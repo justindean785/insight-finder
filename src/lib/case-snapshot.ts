@@ -185,7 +185,10 @@ export interface CaseToolFigures {
   degraded: number;
   skipped: number;
   gated: number;
+  /** Genuine successes only (Health's "Succeeded"); a clean no-record is `noRecord`. */
   ok: number;
+  /** Ran fine, target has no data (Health's "No record"). */
+  noRecord: number;
   /** Stage of the most recent call that recorded one — "last stage with tool activity". */
   lastStage: string | null;
   lastAt: string | null;
@@ -252,6 +255,8 @@ export interface CaseSnapshotInput {
     skipped: number;
     gated: number;
     ok: number;
+    /** Optional so older callers compile; absent reads as 0. */
+    noRecord?: number;
     loading: boolean;
     error: boolean;
     loadedAt: number | null;
@@ -310,6 +315,7 @@ export function buildCaseSnapshot(input: CaseSnapshotInput): CaseSnapshotCore {
       skipped: input.tools.skipped,
       gated: input.tools.gated,
       ok: input.tools.ok,
+      noRecord: input.tools.noRecord ?? 0,
       lastStage,
       lastAt,
       events: input.tools.events,

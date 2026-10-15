@@ -16,12 +16,15 @@ import { classifyActivityRow } from "@/hooks/useThreadToolActivity";
 describe("classifyActivityRow — Activity/Health taxonomy parity", () => {
   const c = (err: string, outcome = "failed") => classifyActivityRow(outcome, false, err).status;
 
-  it("treats our own paid-call cap as degraded, not failed", () => {
-    expect(c("internal paid-call cap reached (12 this run) — internal throttle, not a provider limit")).toBe("degraded");
+  // Since F1 (2026-10) Activity delegates to the canonical classifier, which —
+  // like the Health panel — reads our OWN caps and throttles as governance
+  // SKIPS (the row says outright it is not a provider limit), not as Degraded.
+  it("treats our own paid-call cap as skipped, not failed", () => {
+    expect(c("internal paid-call cap reached (12 this run) — internal throttle, not a provider limit")).toBe("skipped");
   });
 
-  it("treats the per-investigation run cap as degraded, not failed", () => {
-    expect(c("internal run cap reached (30 calls this investigation) — internal throttle, not a provider limit")).toBe("degraded");
+  it("treats the per-investigation run cap as skipped, not failed", () => {
+    expect(c("internal run cap reached (30 calls this investigation) — internal throttle, not a provider limit")).toBe("skipped");
   });
 
   it("treats an upstream refusal as degraded (Health calls this Denied)", () => {
@@ -46,9 +49,10 @@ describe("classifyActivityRow — Activity/Health taxonomy parity", () => {
     expect(c("")).toBe("failed");
   });
 
-  it("leaves successful and empty outcomes untouched", () => {
+  it("reads ok as succeeded and empty as No record (Health's split)", () => {
     expect(classifyActivityRow("ok", true, null).status).toBe("succeeded");
-    expect(classifyActivityRow("empty", true, null).status).toBe("succeeded");
+    expect(classifyActivityRow("empty", true, null).status).toBe("empty");
+    expect(classifyActivityRow("empty", true, null).tone).toBe("ok");
   });
 
   it("keeps a bare skipped row skipped when nothing else matches", () => {
@@ -66,6 +70,7 @@ describe("classifyActivityRow — Activity/Health taxonomy parity", () => {
     ];
     const statuses = rows.map((r) => c(r));
     expect(statuses.filter((s) => s === "failed")).toHaveLength(0);
-    expect(statuses.every((s) => s === "degraded")).toBe(true);
+    // Four of our own caps (skipped) and one upstream 403 (degraded).
+    expect(statuses).toEqual(["skipped", "skipped", "skipped", "degraded", "skipped"]);
   });
 });

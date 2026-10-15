@@ -165,16 +165,18 @@ Deno.test("wiring: routing and /health resolve the fallback through the same fun
   assert(idx.includes("const fallbackProvider = resolveFallbackProvider({"), "index.ts must route by resolveFallbackProvider");
   assert(hh.includes("resolveFallbackProvider({"), "health-handler.ts must report by resolveFallbackProvider");
   assert(
-    /preflightPolicyHealthDetail\(\s*preflightFallback \? \{ provider: preflightFallback \} : null,/.test(hh),
+    /preflightPolicyHealthDetailE2b\(\s*preflightFallback \? \{ provider: preflightFallback \} : null,/.test(hh),
     "the health detail must be fed the resolved target",
   );
 });
 
 Deno.test("wiring: the DeepSeek preflight is gated by shouldRunPreflight and a skip is logged", async () => {
   const src = await Deno.readTextFile(new URL("./index.ts", import.meta.url));
+  // E2b: gated by shouldRunDeepseekPreflight (= shouldRunPreflight over the pre-E2b target).
   assert(
-    src.includes("shouldRunPreflight(fallbackTarget, geminiPreflightPivotEnabled(), deepseekPreflightAlways())"),
-    "the preflight must be gated by shouldRunPreflight with both call-time switches",
+    /shouldRunDeepseekPreflight\(\s*legacyFallbackProvider \? \{ provider: legacyFallbackProvider \} : null,\s*geminiPreflightPivotEnabled\(\),\s*deepseekPreflightAlways\(\),\s*\)/
+      .test(src),
+    "the preflight must be gated on the legacy target with both call-time switches",
   );
   assert(src.includes("if (runDeepseekPreflight && fallbackTarget) {"), "the probe block must sit behind the gate");
   assert(
@@ -187,7 +189,7 @@ Deno.test("wiring: the DeepSeek preflight is gated by shouldRunPreflight and a s
 Deno.test("wiring: /health reports checks.preflight_policy from the same switches", async () => {
   const src = await Deno.readTextFile(new URL("./health-handler.ts", import.meta.url));
   assert(
-    /preflightPolicyHealthDetail\(\s*preflightFallback \? \{ provider: preflightFallback \} : null,\s*deepseekPreflightAlways\(\),\s*geminiPreflightPivotEnabled\(\),\s*\)/
+    /preflightPolicyHealthDetailE2b\(\s*preflightFallback \? \{ provider: preflightFallback \} : null,\s*legacyPreflightFallback \? \{ provider: legacyPreflightFallback \} : null,\s*deepseekPreflightAlways\(\),\s*geminiPreflightPivotEnabled\(\),\s*\)/
       .test(src),
     "the proof key must be reported from the resolved fallback and the call-time switches",
   );

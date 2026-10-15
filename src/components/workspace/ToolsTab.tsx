@@ -10,12 +10,12 @@ import {
 } from "@/components/ui/workspace-primitives";
 import { CompactFilter, SubTabs, type CompactOption } from "@/components/ui/compact-controls";
 import { fmtWallClock } from "@/lib/duration";
-import { Activity, Gauge, Lock, HeartPulse, CheckCircle2, XCircle, MinusCircle, ListChecks, Clock, DatabaseZap, Timer, type LucideIcon } from "lucide-react";
+import { Activity, Gauge, Lock, HeartPulse, CheckCircle2, MinusCircle, CircleSlash, ShieldAlert, ListChecks, Clock, DatabaseZap, Timer, type LucideIcon } from "lucide-react";
 import { timeAgo } from "@/lib/time";
 import { toolSecondaryLine } from "@/lib/tool-display";
 import { cn } from "@/lib/utils";
 
-type ActivityFilter = "all" | "succeeded" | "failed" | "skipped" | "gated" | "degraded" | "pending";
+type ActivityFilter = "all" | "succeeded" | "empty" | "failed" | "skipped" | "gated" | "degraded" | "pending";
 
 type View = "activity" | "health" | "audit" | "custody";
 
@@ -78,6 +78,7 @@ export function ToolsTab({
           <ActivityLog
             events={tools?.events ?? []}
             ok={tools?.ok ?? 0}
+            noRecord={tools?.noRecord ?? 0}
             failed={tools?.failed ?? 0}
             skipped={tools?.skipped ?? 0}
             gated={tools?.gated ?? 0}
@@ -96,8 +97,10 @@ export function ToolsTab({
 }
 
 function ActivityLog({
-  events, ok, failed, skipped, gated, degraded, total, loading, unavailable = false,
-}: { events: ToolEvent[]; ok: number; failed: number; skipped: number; gated: number; degraded: number; total: number; loading: boolean; unavailable?: boolean }) {
+  events, ok, noRecord, failed, skipped, gated, degraded, total, loading, unavailable = false,
+}: { events: ToolEvent[]; ok: number; noRecord: number; failed: number; skipped: number; gated: number; degraded: number; total: number; loading: boolean; unavailable?: boolean }) {
+  // The skipped GROUP, as Health counts it: plain skips + gated (unavailable) skips.
+  const skippedGroup = skipped + gated;
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const pending = events.filter((e) => e.status === "pending").length;
   /**
@@ -173,6 +176,8 @@ function ActivityLog({
   const ordered = useMemo(() => {
     return [...events].reverse().filter((e) => {
       if (filter === "all") return true;
+      // "Skipped" is the whole group, matching its tile; "Gated" narrows to the sub-count.
+      if (filter === "skipped") return e.status === "skipped" || e.status === "gated";
       return e.status === filter;
     });
   }, [events, filter]);
@@ -202,8 +207,9 @@ function ActivityLog({
   const filters: CompactOption<ActivityFilter>[] = [
     { key: "all", label: "All", count: events.length },
     { key: "succeeded", label: "Succeeded", count: ok, tone: "ok" },
-    ...(failed > 0 ? [{ key: "failed" as const, label: "Failed", count: failed, tone: "danger" as const }] : []),
-    { key: "skipped", label: "Skipped", count: skipped },
+    ...(failed > 0 ? [{ key: "failed" as const, label: "Faulted", count: failed, tone: "danger" as const }] : []),
+    ...(noRecord > 0 ? [{ key: "empty" as const, label: "No record", count: noRecord }] : []),
+    { key: "skipped", label: "Skipped", count: skippedGroup },
     ...(gated > 0 ? [{ key: "gated" as const, label: "Gated", count: gated, tone: "warn" as const }] : []),
     ...(degraded > 0 ? [{ key: "degraded" as const, label: "Degraded", count: degraded, tone: "warn" as const }] : []),
     ...(pending > 0 ? [{ key: "pending" as const, label: "Running", count: pending }] : []),
@@ -222,24 +228,32 @@ function ActivityLog({
             ? `Every tool call recorded for this case, failures included. The list below holds the ${events.length} rows the server returned; the ledger holds more.`
             : "Every tool call recorded for this case, failures included. The same figure as the case bar and the Tools tab."}
         />
+        {/* The five outcome tiles are the Health panel's five groups, computed by
+            the same classifier (src/lib/tool-outcome.ts → outcomeGroup), so
+            Activity and Health print the same numbers for the same rows. */}
         <MetricCard
           label="Succeeded" value={ok} icon={CheckCircle2}
           of={total || null} share={total ? ok / total : null}
           tone={ok > 0 ? "ok" : "neutral"}
-          hint="Calls that returned a usable result."
+          hint="Calls that returned a usable result. A clean no-record is counted under No record, as in Health."
         />
         <MetricCard
-          label="Failed"
+          label="No record" value={noRecord} icon={MinusCircle}
+          of={total || null} share={total ? noRecord / total : null}
+          hint="Ran fine, and the target has no data at this source. An expected answer, not a fault."
+        />
+        <MetricCard
+          label="Faulted"
           value={failed}
-          icon={XCircle}
+          icon={ShieldAlert}
           of={total || null}
           share={total ? failed / total : null}
           tone={failed > 0 ? "danger" : "neutral"}
-          hint="Calls that errored outright. Each one is a coverage gap: the lookup did not happen, so anything it would have found is missing from this case."
+          hint="Calls that hit a config/key error, a genuine provider fault, or an opaque unknown. Each one is a coverage gap: anything the lookup would have found is missing from this case."
         />
         {/* Degraded earns its own tile whenever it is non-zero. Without it a run
             whose only non-OK rows are throttles or upstream refusals reads
-            "Failed 0 / Skipped 0" and looks perfectly clean, which is how the
+            "Faulted 0 / Skipped 0" and looks perfectly clean, which is how the
             suppressed-failure problem would quietly come back in a new form. */}
         {degraded > 0 && (
           <MetricCard
@@ -249,17 +263,17 @@ function ActivityLog({
             of={total || null}
             share={total ? degraded / total : null}
             tone="warn"
-            hint="Transient, not breakage: our own throttles and caps, upstream rate limits, denials and timeouts. The lookup can succeed on a retry."
+            hint="Transient, not breakage: timeouts, upstream rate limits, access denials (403) and legal blocks (451). The lookup can succeed on a retry."
           />
         )}
         <MetricCard
-          label={gated > 0 ? "Skipped / Gated" : "Skipped"}
-          value={gated > 0 ? `${skipped}/${gated}` : skipped}
-          icon={MinusCircle}
+          label={gated > 0 ? `Skipped · ${gated} gated` : "Skipped"}
+          value={skippedGroup}
+          icon={CircleSlash}
           of={total || null}
-          share={total ? (skipped + gated) / total : null}
+          share={total ? skippedGroup / total : null}
           tone={gated > 0 ? "warn" : "neutral"}
-          hint="Skipped = deduped/no-op. Gated = blocked by a triage, policy, or budget gate (an intentional decision, not a fault)."
+          hint="Intentionally not run: governance, dedup, our own caps and throttles, or cancelled by the run's time budget. Gated (counted inside Skipped) = the tool was unavailable — no key, disabled, or gated."
         />
         {/* Time spent is the other half of "what did this run cost". A case
             that burned four minutes on two hung providers reads as healthy on
@@ -417,15 +431,10 @@ function fmtDuration(ms: number | null): string | null {
 }
 
 function ActivityRowSummary({ e }: { e: ToolEvent }) {
-  const duration = fmtDuration(e.durationMs);
-  const cost = fmtMicroUsd(e.effectiveChargedMicroUsd);
-  // A slow failure is a different problem from a fast one: 30s says the
-  // provider hung, 300ms says we never called it. Flag the long tail so the
-  // distinction is visible without reading every number.
-  const slow = e.durationMs != null && e.durationMs >= 10_000;
+  const secondary = toolSecondaryLine(e);
   return (
-    <div className="flex items-center gap-3">
-      <ToolStatusBadge status={e.status} />
+    <div className="flex items-start gap-3 sm:items-center">
+      <ToolStatusBadge status={e.status} className="mt-px shrink-0 sm:mt-0" />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-meta text-foreground truncate">{e.displayName}</span>
@@ -440,38 +449,58 @@ function ActivityRowSummary({ e }: { e: ToolEvent }) {
             </span>
           )}
         </div>
+        {/* Phone width: the display name truncates to "Data Hunter — Ga…", so
+            the RAW tool name gets its own line and is never hidden — it is the
+            only thing that says which tool actually ran. Desktop shows it
+            inline beside the display name, as before. */}
+        <div className="font-mono text-micro text-muted-foreground break-all sm:hidden">{e.toolName}</div>
         {/* Title truncates once above; the REASON body carries the full provider
             string — wrap to 2 lines instead of a single-line clip (Phase C3).
             `actionLabel` is derived from `displayName` (the slice after " — ",
             or the whole string when there is no dash), so on a row with no
             reason it restates the title verbatim or as a substring. Render the
             secondary line only when it actually adds information. */}
-        {toolSecondaryLine(e) && (
-          <div className="text-data text-muted-foreground line-clamp-2 break-words">{toolSecondaryLine(e)}</div>
+        {secondary && (
+          <div className="text-data text-muted-foreground line-clamp-2 break-words">{secondary}</div>
         )}
+        {/* Cost / time / age drop under the text on a phone instead of
+            squeezing the tool name down to two characters beside them. */}
+        <ActivityRowMeta e={e} className="mt-1 sm:hidden" />
       </div>
-      <div className="flex shrink-0 items-center gap-2.5 text-data tabular-nums">
-        {cost && (
-          <span
-            className="font-mono text-muted-foreground/80"
-            title={`This call was charged ${cost}. Cached calls and gated refusals cost nothing.`}
-          >
-            {cost}
-          </span>
-        )}
-        {duration && (
-          <span
-            className={cn("font-mono", slow ? "text-[hsl(var(--confidence-mid))]" : "text-muted-foreground/70")}
-            title={slow ? `${duration} — long-running; likely an upstream hang rather than a fast refusal` : `Took ${duration}`}
-          >
-            {duration}
-          </span>
-        )}
-        <span className="flex items-center gap-1 text-muted-foreground">
-          <Clock className="w-3 h-3" aria-hidden />
-          {timeAgo(e.at)}
+      <ActivityRowMeta e={e} className="hidden shrink-0 sm:flex" />
+    </div>
+  );
+}
+
+function ActivityRowMeta({ e, className }: { e: ToolEvent; className?: string }) {
+  const duration = fmtDuration(e.durationMs);
+  const cost = fmtMicroUsd(e.effectiveChargedMicroUsd);
+  // A slow failure is a different problem from a fast one: 30s says the
+  // provider hung, 300ms says we never called it. Flag the long tail so the
+  // distinction is visible without reading every number.
+  const slow = e.durationMs != null && e.durationMs >= 10_000;
+  return (
+    <div className={cn("flex items-center gap-2.5 text-data tabular-nums", className)}>
+      {cost && (
+        <span
+          className="font-mono text-muted-foreground/80"
+          title={`This call was charged ${cost}. Cached calls and gated refusals cost nothing.`}
+        >
+          {cost}
         </span>
-      </div>
+      )}
+      {duration && (
+        <span
+          className={cn("font-mono", slow ? "text-[hsl(var(--confidence-mid))]" : "text-muted-foreground/70")}
+          title={slow ? `${duration} — long-running; likely an upstream hang rather than a fast refusal` : `Took ${duration}`}
+        >
+          {duration}
+        </span>
+      )}
+      <span className="flex items-center gap-1 text-muted-foreground">
+        <Clock className="w-3 h-3" aria-hidden />
+        {timeAgo(e.at)}
+      </span>
     </div>
   );
 }

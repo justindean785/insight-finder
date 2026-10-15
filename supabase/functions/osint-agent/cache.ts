@@ -38,6 +38,7 @@ import {
 } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
 import { cacheVersionFor } from "./lib/tool-cache-version.ts";
+import { takeInputCoercions } from "./lib/tool-input-coercion.ts";
 import { isFinalizeWindowLiveLookupExempt } from "./orchestrator-finalize.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
@@ -1240,6 +1241,9 @@ export function wrapToolsWithCache(
         // Result-interpretation version for this tool (lib/tool-cache-version.ts), read at call
         // time so its kill switch binds without a deploy. null ⇒ legacy, unversioned keys.
         const cacheVersion = cacheVersionFor(name);
+        // Near-miss input coercions the schema applied to THIS call (lib/tool-input-coercion.ts): field + coercion kind
+        // only, never a value. Claimed by matching the coerced values against `inp`. Never part of any hash or key.
+        const inputCoercion = takeInputCoercions(name, inp);
         const runtimeMetaBase = {
           selector: sel,
           selector_type: selectorType,
@@ -1258,6 +1262,8 @@ export function wrapToolsWithCache(
           // Rides the base meta so every tool_usage_log row — live or replayed — records
           // which interpretation served it. Omitted for unversioned tools.
           ...(cacheVersion == null ? {} : { cache_version: cacheVersion }),
+          // Rides the base meta so every logged path (live, replay, refusal) carries it. Omitted when nothing was coerced.
+          ...(inputCoercion ? { input_coercion: inputCoercion } : {}),
         };
         let hash: string | null = null;
         let paramsHash: string | null = null;
