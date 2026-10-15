@@ -1,3 +1,4 @@
+import { providerBusyQueueSelfTest } from "./lib/provider-busy-queue.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { describeCredentialHealth, summarizeCredentialHealth } from "./lib/credential-health.ts";
 import {
@@ -575,6 +576,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // the schema when — and only when — the result validates? Pure. PRESENCE proves the deployed bundle; `switch` reports
   // INPUT_COERCION_DISABLED; ok:false = a rule failed its own probe.
   r.checks.input_coercion = inputCoercionSelfTest();
+
+  // E3: is a call refused only because its provider already has a call in flight WAITED for (bounded, never into the
+  // finalize window) and re-checked, instead of dropped? Pure. PRESENCE proves the deployed bundle; `switch` reports
+  // PROVIDER_BUSY_QUEUE_DISABLED; ok:false = the wait failed its own probe.
+  r.checks.provider_busy_queue = await providerBusyQueueSelfTest();
 
   // Is a bare 17-20 digit platform account ID (Discord/Twitter snowflake, Steam64) kept out of
   // the phone playbook? It classified as `phone` and routed a Discord-ID case into phone

@@ -23,7 +23,7 @@ export type FailureKind =
 
 export type BreakerDecision =
   | { allow: true }
-  | { allow: false; reason: string; until?: number; duplicateInFlight?: boolean };
+  | { allow: false; reason: string; until?: number; duplicateInFlight?: boolean; providerBusy?: boolean };
 
 // ---- Investigation-level provider suppression (Phase 8) --------------------
 // When a provider returns a 429 or times out, it's suppressed for the rest of
@@ -387,7 +387,7 @@ export function shouldRun(
   // sibling scrapes. Exempt them; same-URL repeats are still caught by the dedup
   // gate below (callKey includes the selector).
   if (s && s.inFlight.has(provider) && !GENERAL_MULTI_ORIGIN_TOOLS.has(tool)) {
-    return { allow: false, reason: `provider '${provider}' already has a call in-flight — waiting for its result` };
+    return { allow: false, providerBusy: true, reason: `provider '${provider}' already has a call in-flight — waiting for its result` };
   }
   if (b.disabledUntil && now < b.disabledUntil) {
     return { allow: false, reason: b.disabledReason ?? "backoff", until: b.disabledUntil };
