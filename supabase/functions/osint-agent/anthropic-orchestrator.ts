@@ -343,6 +343,8 @@ export function classifyAnthropicError(error: unknown): AnthropicFailure {
 // ---- /health -------------------------------------------------------------------------
 
 export interface AnthropicHealthInput {
+  /** E2b: armed as GLM's backup (orchestrator_select.ts -> anthropicFallbackEligible). Default false. */
+  fallback?: boolean;
   keyPresent: boolean;
   /** Normalised ORCHESTRATOR_PROVIDER pin ("" when unset). */
   pin: string;
@@ -371,11 +373,15 @@ export function anthropicOrchestratorHealth(i: AnthropicHealthInput) {
   if (i.keyPresent && !forcedToolOk) problems.push("model_rejects_forced_tool_choice (runs would 400 at step 1)");
   if (i.keyPresent && !pricingKnown) problems.push("model_not_in_rate_table (metered at the highest known rate)");
   const configured = i.keyPresent;
+  const fallback = !selected && configured && i.fallback === true;
   return {
     ok: problems.length === 0,
     configured,
     pinned: pinnedAnthropic,
     selected,
+    // Same vocabulary as checks.deepseek / checks.minimax (providerRole): "active" is the live
+    // orchestrator, "fallback" the backup (E2b); absent when Anthropic plays no part.
+    role: selected ? ("active" as const) : fallback ? ("fallback" as const) : undefined,
     model_id: i.modelId,
     model_source: i.modelSource,
     forced_tool_choice_supported: forcedToolOk,
@@ -391,6 +397,8 @@ export function anthropicOrchestratorHealth(i: AnthropicHealthInput) {
       ? "inactive: ANTHROPIC_API_KEY not set (default orchestrator unchanged)"
       : selected
       ? "active: orchestrator is Anthropic"
+      : fallback
+      ? "fallback: backs the GLM (deepseek) primary for an invocation GLM cannot start; never mid-run"
       : "configured but not selected (set ORCHESTRATOR_PROVIDER=anthropic to use it)",
   };
 }

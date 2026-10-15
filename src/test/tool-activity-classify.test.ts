@@ -2,9 +2,9 @@ import { describe, it, expect } from "vitest";
 import { classifyActivityRow } from "@/hooks/useThreadToolActivity";
 
 describe("classifyActivityRow (#22 — tool_usage_log → activity)", () => {
-  it("ok / empty outcomes read as succeeded", () => {
+  it("ok reads as succeeded; empty reads as No record", () => {
     expect(classifyActivityRow("ok", true, null).status).toBe("succeeded");
-    expect(classifyActivityRow("empty", true, null).status).toBe("succeeded");
+    expect(classifyActivityRow("empty", true, null).status).toBe("empty");
   });
 
   it("a gated skip (missing key / unavailable) reads as gated", () => {
@@ -12,9 +12,9 @@ describe("classifyActivityRow (#22 — tool_usage_log → activity)", () => {
     expect(classifyActivityRow("skipped", false, "provider disabled in config").status).toBe("gated");
   });
 
-  it("a throttle/budget skip reads as degraded", () => {
-    expect(classifyActivityRow("skipped", false, "burst limit reached for jina_reader_scrape").status).toBe("degraded");
-    expect(classifyActivityRow("skipped", false, "duplicate call: prior other").status).toBe("degraded");
+  it("a throttle/budget/dedup skip reads as skipped (governance — Health's Skipped)", () => {
+    expect(classifyActivityRow("skipped", false, "burst limit reached for jina_reader_scrape").status).toBe("skipped");
+    expect(classifyActivityRow("skipped", false, "duplicate call: prior other").status).toBe("skipped");
   });
 
   it("a plain governance skip reads as skipped", () => {

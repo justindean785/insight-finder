@@ -276,6 +276,9 @@ export interface InvocationTelemetryRecorder {
   getStepCount(): number;
   getToolCallCount(): number;
   getLastFinishReason(): string | null;
+  /** Re-label the provider/model this invocation actually ran on (E2b: GLM's start
+   *  failure moved it to Anthropic after the recorder was created). Ignored after finish. */
+  setRoute(route: { provider: string | null; modelId: string | null }): void;
   finish(input: InvocationFinishInput): void;
 }
 
@@ -298,6 +301,7 @@ export function createInvocationTelemetry(input: CreateInvocationTelemetryInput)
   let toolCallTotal = 0;
   let lastFinishReason: string | null = null;
   let finished = false;
+  let route = { provider: input.provider, modelId: input.modelId };
   // ---- Why step rows are BUFFERED rather than inserted as they finish --------
   // orchestrator_step_metrics.invocation_id is a FOREIGN KEY to
   // orchestrator_invocations(id), and the parent row is only written in finish(),
@@ -414,6 +418,10 @@ export function createInvocationTelemetry(input: CreateInvocationTelemetryInput)
     getLastFinishReason() {
       return lastFinishReason;
     },
+    setRoute(next: { provider: string | null; modelId: string | null }) {
+      if (finished) return;
+      route = { provider: next?.provider ?? null, modelId: next?.modelId ?? null };
+    },
 
     finish(finishInput: InvocationFinishInput) {
       if (finished) return;
@@ -430,8 +438,8 @@ export function createInvocationTelemetry(input: CreateInvocationTelemetryInput)
             invocationId,
             threadId: input.threadId,
             userId: input.userId,
-            provider: input.provider,
-            modelId: input.modelId,
+            provider: route.provider,
+            modelId: route.modelId,
             startedAt: input.startedAt,
             finishedAt: finishInput.finishedAt,
             stepCount,

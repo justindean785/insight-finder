@@ -100,22 +100,32 @@ export function shouldRunPreflight(
   return always || preflightCanPivot(target, geminiPivotEnabled);
 }
 
-export type FallbackProvider = "lovable-gateway" | "gemini-direct";
+export type FallbackProvider = "lovable-gateway" | "gemini-direct" | "anthropic";
 
 /**
  * Which provider takes a fallback turn. This IS the precedence `index.ts` builds
  * `fallbackTarget` from, so `/health` reports the target routing actually resolves
  * rather than re-deriving it from the switches alone (Codex P2 on #657): a pinned
- * Lovable gateway first, then direct Gemini, then the Lovable gateway only when
- * the operator opted in with ALLOW_LOVABLE_FALLBACK.
+ * Lovable gateway first, then Anthropic when it is GLM's backup (E2b), then direct
+ * Gemini, then the Lovable gateway only when the operator opted in with
+ * ALLOW_LOVABLE_FALLBACK.
+ *
+ * `anthropicFallback` is `anthropicFallbackEligible(...)` (orchestrator_select.ts): true
+ * only when the primary is the GLM/deepseek slot, the key is configured, the model accepts
+ * forced tool_choice and ANTHROPIC_FALLBACK_DISABLED is off. Omitted/false = the pre-E2b
+ * chain, unchanged. An Anthropic target does NOT make the preflight run (see
+ * `shouldRunDeepseekPreflight`); when the probe runs for its pre-E2b reasons, an explicit
+ * failure (HTTP >= 400) pivots to Anthropic and a timeout (status 0) still never pivots.
  */
 export function resolveFallbackProvider(c: {
   orchestratorProvider: string;
   hasLovableGateway: boolean;
   hasGeminiDirect: boolean;
   allowLovableFallback: boolean;
+  anthropicFallback?: boolean;
 }): FallbackProvider | null {
   if (c.orchestratorProvider === "lovable" && c.hasLovableGateway) return "lovable-gateway";
+  if (c.anthropicFallback) return "anthropic";
   if (c.hasGeminiDirect) return "gemini-direct";
   if (c.hasLovableGateway && c.allowLovableFallback) return "lovable-gateway";
   return null;
@@ -142,6 +152,43 @@ export function preflightPolicyHealthDetail(
   return always
     ? `preflight runs on every request (${DEEPSEEK_PREFLIGHT_ALWAYS_ENV}=true); a failure can pivot (${fb})`
     : `preflight runs: a failure can pivot (${fb})`;
+}
+
+/**
+ * E2b: does the DeepSeek/GLM preflight run? EXACTLY the pre-E2b decision.
+ *
+ * An Anthropic routing target must NOT turn the probe on by itself: the probe costs up to
+ * 2x12s + 250ms on the path to the first byte (24.5s+ in ~4% of runs, measured 2026-09-30),
+ * and it is redundant behind GLM — the first-request wrapper (lib/orchestrator-fallback.ts)
+ * already moves a balance/auth failure at once and a 429/5xx/connection failure after the
+ * SDK's retries. So the run decision is `shouldRunPreflight` over the target routing would
+ * have resolved WITHOUT Anthropic (`legacyTarget`). When that decision runs the probe anyway
+ * (gemini-direct pivot enabled, or DEEPSEEK_PREFLIGHT_ALWAYS with a legacy target), an
+ * explicit failure may still pivot to the real routing target, Anthropic included.
+ */
+export function shouldRunDeepseekPreflight(
+  legacyTarget: { provider: string } | null,
+  geminiPivotEnabled: boolean,
+  always: boolean,
+): boolean {
+  return shouldRunPreflight(legacyTarget, geminiPivotEnabled, always);
+}
+
+/**
+ * `/health` detail for `checks.preflight_policy` under E2b. The pre-E2b text (derived from
+ * the same legacy target the run decision uses), plus where an Anthropic failover happens.
+ */
+export function preflightPolicyHealthDetailE2b(
+  routingTarget: { provider: string } | null,
+  legacyTarget: { provider: string } | null,
+  always: boolean,
+  geminiPivotEnabled: boolean,
+): string {
+  const base = preflightPolicyHealthDetail(legacyTarget, always, geminiPivotEnabled);
+  if (routingTarget?.provider !== "anthropic") return base;
+  return shouldRunDeepseekPreflight(legacyTarget, geminiPivotEnabled, always)
+    ? `${base}; anthropic armed: a preflight failure pivots to anthropic, start failures also fail over on the first request`
+    : `${base}; anthropic armed: failover happens on the first request, not the preflight`;
 }
 
 /** `/health` detail for `checks.preflight_pivot`. Its PRESENCE proves this build is live. */

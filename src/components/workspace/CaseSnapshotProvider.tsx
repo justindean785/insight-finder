@@ -353,6 +353,7 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
         skipped: tools.skipped,
         gated: tools.gated,
         ok: tools.ok,
+        noRecord: tools.noRecord,
         loading: tools.loading,
         error: tools.error,
         loadedAt: tools.loadedAt,
@@ -366,7 +367,7 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
     [
       threadId, authLoading, accountId, thread, threadLoaded,
       artifacts.items, artifacts.loading, artifacts.error,
-      tools.events, tools.persistedTotal, tools.failed, tools.degraded, tools.skipped, tools.gated, tools.ok,
+      tools.events, tools.persistedTotal, tools.failed, tools.degraded, tools.skipped, tools.gated, tools.ok, tools.noRecord,
       tools.loading, tools.error, tools.loadedAt,
       authority, integrity, readiness, chatRunning, nowMs,
     ],
