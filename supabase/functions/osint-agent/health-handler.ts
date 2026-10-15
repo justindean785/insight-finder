@@ -54,7 +54,7 @@ import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 import { memoryContextSelfTest } from "./lib/memory-context.ts";
 import { crossCaseReviewsSelfTest } from "./lib/cross-case-reviews.ts";
 import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
-import { breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
+import { archiveOriginRuleSelfTest, breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 import { memoryInputNormalizationSelfTest } from "./lib/memory-input-normalization.ts";
 import { exactBooleanRepairSelfTest } from "./lib/exact-boolean-repair.ts";
 import { inputCoercionSelfTest } from "./lib/tool-input-coercion.ts";
@@ -561,6 +561,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // from the HOST (source-classification.ts classifyOriginHost)? Pure. Its PRESENCE
   // proves the build is live; ok:false means a rule misclassified its own probe.
   r.checks.source_origin_rules = sourceOriginRulesSelfTest();
+  // An archived copy read by a page-fetch tool classes as `archive`, never `social_profile_active`. Pure;
+  // `switch` reports ARCHIVE_ORIGIN_RULE_DISABLED.
+  r.checks.archive_origin_rule = archiveOriginRuleSelfTest();
   r.checks.breach_origin_cap = breachOriginCapSelfTest();
   r.checks.memory_context = memoryContextSelfTest();
   r.checks.user_supplied_status = userSuppliedStatusSelfTest();
