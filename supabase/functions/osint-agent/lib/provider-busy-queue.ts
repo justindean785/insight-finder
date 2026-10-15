@@ -49,7 +49,9 @@ export interface AwaitProviderTurnOpts<D extends BusyAwareDecision> {
   initial: D;
   /** Re-run the gate. Must be synchronous with the caller's in-flight mark. */
   recheck: () => D;
-  /** True once the run must stop starting live lookups (finalize window). */
+  /** True once the run must stop starting live lookups (finalize window, or the step was aborted).
+   *  Checked before every tick AND once more after the wait, so a call the gate allows on the
+   *  tick the finalize window opened is still refused. */
   shouldStop?: () => boolean;
   /** Keep the run's liveness heartbeat fresh while waiting. */
   onTick?: () => void;
@@ -66,6 +68,9 @@ export interface ProviderTurnResult<D> {
   waitedMs: number;
   /** Set when the call waited and the final decision is still a busy refusal. */
   timedOut: boolean;
+  /** Set when the call waited and `shouldStop` turned true: the caller must NOT run it,
+   *  even if `decision.allow` is true. */
+  stopped: boolean;
 }
 
 /** Wait (bounded) while the ONLY reason for refusal is a busy provider. */
@@ -74,7 +79,7 @@ export async function awaitProviderTurn<D extends BusyAwareDecision>(
 ): Promise<ProviderTurnResult<D>> {
   let decision = o.initial;
   if (decision.allow || !decision.providerBusy || o.disabled) {
-    return { decision, waitedMs: 0, timedOut: false };
+    return { decision, waitedMs: 0, timedOut: false, stopped: false };
   }
   const now = o.now ?? Date.now;
   const sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -89,7 +94,10 @@ export async function awaitProviderTurn<D extends BusyAwareDecision>(
     decision = o.recheck();
   }
   const waitedMs = now() - start;
-  return { decision, waitedMs, timedOut: !decision.allow && !!decision.providerBusy };
+  // Re-check AFTER the wait: the loop tests shouldStop before each sleep, so without this a
+  // call allowed on the very tick the finalize window opened (or the step aborted) would run.
+  const stopped = !!o.shouldStop?.();
+  return { decision, waitedMs, timedOut: !stopped && !decision.allow && !!decision.providerBusy, stopped };
 }
 
 /** /health → checks.provider_busy_queue. Pure; presence proves this build. */
@@ -121,11 +129,21 @@ export async function providerBusyQueueSelfTest(): Promise<{ ok: boolean; switch
   t = 0;
   const c = await awaitProviderTurn<BusyAwareDecision>({ initial: { allow: false, providerBusy: true }, recheck: () => ({ allow: false, providerBusy: true }), ...clock });
   if (!c.timedOut || c.waitedMs > PROVIDER_BUSY_MAX_WAIT_MS + PROVIDER_BUSY_TICK_MS) wrong.push("wait was not bounded");
+  // finalize window opens during the last tick, gate then allows → must still be stopped
+  t = 0;
+  let open = false;
+  const d = await awaitProviderTurn<BusyAwareDecision>({
+    initial: { allow: false, providerBusy: true },
+    recheck: () => { open = true; return { allow: true }; },
+    shouldStop: () => open,
+    ...clock,
+  });
+  if (!d.stopped) wrong.push("a call allowed as the finalize window opened was not stopped");
   return wrong.length
     ? { ok: false, switch: `${sw}=false`, detail: wrong.join("; ") }
     : {
       ok: true,
       switch: `${sw}=false`,
-      detail: `a call refused only because its provider is busy waits (≤${PROVIDER_BUSY_MAX_WAIT_MS / 1000}s, never into the finalize window) and re-checks the gate instead of being dropped`,
+      detail: `a call refused only because its provider is busy waits (≤${PROVIDER_BUSY_MAX_WAIT_MS / 1000}s, never into the finalize window) and re-checks the gate instead of being dropped; finalize/abort stop it, including on the tick it would run`,
     };
 }

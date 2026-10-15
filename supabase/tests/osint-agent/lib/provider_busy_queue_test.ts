@@ -122,3 +122,40 @@ Deno.test("/health self-test passes", async () => {
   const r = await providerBusyQueueSelfTest();
   assertEquals(r.ok, true, r.detail);
 });
+
+Deno.test("a call the gate allows on the tick the finalize window opened is still stopped", async () => {
+  const clock = fakeClock();
+  let finalizing = false;
+  const turn = await awaitProviderTurn({
+    initial: { allow: false, providerBusy: true },
+    // provider frees up on the same tick the finalize window opens
+    recheck: () => { finalizing = true; return { allow: true }; },
+    shouldStop: () => finalizing,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+  assertEquals(turn.decision.allow, true);
+  assertEquals(turn.stopped, true, "caller must not run it");
+  assertEquals(turn.timedOut, false);
+});
+
+Deno.test("an aborted step stops waiting at once and is reported stopped", async () => {
+  const clock = fakeClock();
+  const ac = new AbortController();
+  let rechecks = 0;
+  const turn = await awaitProviderTurn({
+    initial: { allow: false, providerBusy: true },
+    recheck: () => { if (++rechecks === 1) ac.abort(); return { allow: false, providerBusy: true }; },
+    shouldStop: () => ac.signal.aborted,
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+  assertEquals(rechecks, 1);
+  assertEquals(turn.stopped, true);
+  assertEquals(turn.timedOut, false);
+});
+
+Deno.test("no wait means no stop, even if shouldStop would be true (the existing finalize gate owns that path)", async () => {
+  const turn = await awaitProviderTurn({ initial: { allow: true }, recheck: () => ({ allow: true }), shouldStop: () => true });
+  assertEquals([turn.stopped, turn.waitedMs], [false, 0]);
+});
