@@ -105,7 +105,7 @@ import { geoseer_geolocate } from "./tools/geoseer.ts";
 
 import {
   validateArtifact, TTL_24H_MS, TOOL_TTL_MS, NO_CACHE_TOOLS,
-  coerceArtifactsInput,
+  coerceArtifactsInput, detectSeedServer,
 } from "./validation.ts";
 
 import type { NavigatorQueryResponse, NavigatorSearchResponse, NavigatorTool, GitHubCodeSearchResponse, GitHubCodeMatch } from "./api_types.ts";
@@ -122,7 +122,7 @@ import {
 } from "./guard.ts";
 import { reviewMemoryBatch, type MemoryEntry } from "./lib/memory_consolidate.ts";
 import { normalizeMemoryEntry, parseStringArtifactElements, wrapFlatMemoryEntry } from "./lib/memory-input-normalization.ts";
-import { applyInputCoercion, inputCoercionDisabled, type InputCoercionSpec } from "./lib/tool-input-coercion.ts";
+import { applyInputCoercion, inferSelectorKind, inputCoercionDisabled, type InputCoercionSpec } from "./lib/tool-input-coercion.ts";
 import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
@@ -597,6 +597,36 @@ function coercedSchema<T extends z.ZodTypeAny>(tool: string, spec: InputCoercion
 const ADDRESS_KIND_GATE = (k: string) => k !== "address" || !inputCoercionDisabled();
 const ADDRESS_KIND_GATE_MSG = { message: "kind \"address\" is not accepted while INPUT_COERCION_DISABLED=true" };
 const QUERY_TO_SEED = [{ to: "seed", from: "query", coercion: "seed_from_query" as const }];
+// A missing google_dorks `kind` is read off the seed's SHAPE (free tool, so a bare token may read as a username).
+const DORK_KIND_FROM_SEED = {
+  kind: {
+    from: "seed",
+    infer: (v: string) => {
+      const k = inferSelectorKind(v, detectSeedServer, { allowUsername: true });
+      return k === "crypto" ? "crypto_wallet" : k;
+    },
+  },
+};
+// serus_darkweb_scan is PAID: only unambiguous shapes are inferred, never a bare-token username.
+export const SERUS_INPUT_SPEC: InputCoercionSpec = {
+  enumFields: { identifierType: ["email", "phone", "username", "domain", "keyword", "origin", "password"] },
+  renames: [
+    { to: "identifierValue", from: "identifier", coercion: "field_alias" },
+    { to: "identifierValue", from: "value", coercion: "field_alias" },
+    { to: "identifierType", from: "type", coercion: "field_alias" },
+  ],
+  stringFields: ["identifierValue"],
+  trimFields: ["identifierValue"],
+  infer: {
+    identifierType: {
+      from: "identifierValue",
+      infer: (v: string) => {
+        const k = inferSelectorKind(v, detectSeedServer);
+        return k === "ip" ? "origin" : k === "crypto" ? null : k;
+      },
+    },
+  },
+};
 
 /**
  * Canonicalize a SocialFetch platform argument.
@@ -3948,6 +3978,7 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: memoSchema("google_dorks", () => coercedSchema("google_dorks", {
         enumFields: { kind: ["email", "username", "phone", "name", "person", "address", "domain", "ip", "hash", "crypto_wallet"] },
         renames: QUERY_TO_SEED,
+        infer: DORK_KIND_FROM_SEED,
         stringFields: ["seed"],
         trimFields: ["seed"],
       }, z.object({
@@ -6334,6 +6365,13 @@ export function buildTools(ctx: ToolContext) {
 
   // Serus darkweb scan — imported from tools/serus.ts (was missing from inline tools).
   (tools as ToolRegistry).serus_darkweb_scan = serus_darkweb_scan;
+  // Then its schema is wrapped in input coercion (SERUS_INPUT_SPEC): `{identifier, identifierType}` was rejected in
+  // production. A fresh object — the imported tool is never mutated. (The plain assignment above stays: the timeout
+  // contract test reads it to attach serus's measured budget.)
+  (tools as ToolRegistry).serus_darkweb_scan = {
+    ...serus_darkweb_scan,
+    inputSchema: memoSchema("serus_darkweb_scan", () => coercedSchema("serus_darkweb_scan", SERUS_INPUT_SPEC, serus_darkweb_scan.inputSchema as z.ZodTypeAny)),
+  } as typeof serus_darkweb_scan;
 
   // Indicia (api.indicia.app) — 6 person/phone/email/address + web-DB breach tools,
   // imported from tools/indicia.ts. Gated on INDICIA_API_KEY via capabilities.ts;
