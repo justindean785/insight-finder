@@ -2801,7 +2801,7 @@ function ChatWindowInner({
   }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability]);
 
   return (
-    <div className="scan-studio chat-stage relative h-full min-w-0 overflow-hidden bg-background">
+    <div className={`scan-studio chat-stage relative h-full min-w-0 overflow-hidden bg-background ${messages.length === 0 ? "scan-studio--empty" : ""}`}>
       {/* Soft stage wash — fills the main pane so content doesn't float in void */}
       <div
         className="pointer-events-none absolute inset-0"
@@ -2811,7 +2811,7 @@ function ChatWindowInner({
             "radial-gradient(ellipse 80% 50% at 50% -10%, hsl(var(--film) / 0.045), transparent 55%), radial-gradient(ellipse 70% 40% at 50% 110%, hsl(0 0% 0% / 0.5), transparent 50%)",
         }}
       />
-      <header className="scan-studio-heading">
+      {messages.length > 0 && <header className="scan-studio-heading">
         <div>
           <span className="scan-studio-eyebrow">INVESTIGATE</span>
           <h1>Case activity</h1>
@@ -2821,7 +2821,7 @@ function ChatWindowInner({
             <ArrowDown className="h-3.5 w-3.5" aria-hidden /> Latest activity
           </button>
         )}
-      </header>
+      </header>}
       <div
         ref={scrollRef}
         onScroll={(event) => {
@@ -2847,81 +2847,22 @@ function ChatWindowInner({
         <div className="chat-stage__frame">
         <div ref={contentRef} className="chat-column space-y-3 min-w-0">
           {messages.length === 0 && (
-            <div className="flex flex-col items-center px-4 py-6 text-center sm:py-8">
-              {/* halftone signal-field hero — a dotted intel field with a slow
-                  radar sweep passing over it. Distinctive + on-brand; no asset. */}
-              <div className="relative mb-6 h-28 w-full max-w-[280px] select-none" aria-hidden>
-                <div
-                  className="absolute inset-0"
-                  style={{
-                    backgroundImage:
-                      "radial-gradient(circle, hsl(var(--intel-blue) / 0.7) 1px, transparent 1.5px)",
-                    backgroundSize: "9px 9px",
-                    WebkitMaskImage:
-                      "radial-gradient(58% 78% at 50% 50%, #000 0%, rgba(0,0,0,0.45) 46%, transparent 72%)",
-                    maskImage:
-                      "radial-gradient(58% 78% at 50% 50%, #000 0%, rgba(0,0,0,0.45) 46%, transparent 72%)",
-                  }}
-                />
-                <div
-                  className="absolute left-1/2 top-1/2 h-36 w-36 -translate-x-1/2 -translate-y-1/2 animate-[spin_7s_linear_infinite] rounded-full motion-reduce:animate-none"
-                  style={{
-                    background:
-                      "conic-gradient(from 0deg, transparent 0deg, transparent 308deg, hsl(var(--intel-blue) / 0.32) 350deg, hsl(var(--intel-blue) / 0.7) 360deg)",
-                    WebkitMaskImage: "radial-gradient(circle, #000 0%, transparent 70%)",
-                    maskImage: "radial-gradient(circle, #000 0%, transparent 70%)",
-                  }}
-                />
-                <span className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[hsl(var(--intel-blue))] shadow-[0_0_12px_3px_hsl(var(--intel-blue)/0.7)]" />
-              </div>
-
-              <h1 className="font-display text-2xl font-semibold leading-tight tracking-[-0.02em] text-foreground sm:text-[2rem]">
-                What are we investigating?
-              </h1>
-              <p className="mt-3 max-w-md text-sm leading-relaxed text-muted-foreground">
-                Drop an email, username, phone, IP, domain, or wallet — the agent
-                routes providers, pivots across what it finds, and lands evidence
-                with confidence tiers.
-              </p>
-
-              <div className="mt-5 w-full max-w-md">
-                <div className="mb-2 text-center font-mono text-eyebrow uppercase tracking-[0.2em] text-muted-foreground/55">
-                  Try an example
-                </div>
-                <div className="flex flex-wrap items-center justify-center gap-2">
-                  {["jordan.sample@example.com", "elonmusk", "8.8.8.8", "lovable.app"].map((s) => (
-                    <button
-                      key={s}
-                      // Prefill the composer AND focus it so the caret lands in the
-                      // now-populated box — a tap that silently set state read as
-                      // "nothing happened", especially on mobile where the composer
-                      // sits below the fold.
-                      onClick={() => { setInput(s); inputRef.current?.focus(); }}
-                      className="rounded-full border border-white/10 bg-white/[0.03] px-3.5 py-1.5 font-mono text-data tabular-nums text-foreground/75 transition-colors hover:border-[hsl(var(--intel-blue)/0.45)] hover:bg-[hsl(var(--intel-blue)/0.07)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--intel-blue)/0.4)]"
-                    >
-                      {s}
+            <section className="scan-start" aria-labelledby="scan-start-title">
+              <span className="scan-start__eyebrow">NEW CASE / SELECTOR INTAKE</span>
+              <h1 id="scan-start-title">Start with a lead.</h1>
+              <p>Enter an email, username, phone, IP, domain, or wallet in the field below.</p>
+              <div className="scan-start__examples">
+                <span>Example selectors</span>
+                <div>
+                  {["jordan.sample@example.com", "8.8.8.8", "example.com"].map((selector) => (
+                    <button key={selector} type="button" onClick={() => { setInput(selector); inputRef.current?.focus(); }}>
+                      {selector}
                     </button>
                   ))}
                 </div>
               </div>
-
-              {/* clean hairline steps (à la the references) — understated, no boxes */}
-              <div className="mt-8 w-full max-w-md border-t border-white/[0.06] text-left">
-                {[
-                  ["01", "Seed", "Email, username, phone, IP, domain, or wallet."],
-                  ["02", "Route", "The agent selects providers and pivots on what it finds."],
-                  ["03", "Reveal", "Evidence lands on the board with confidence tiers."],
-                ].map(([n, t, d]) => (
-                  <div key={n} className="flex gap-4 border-b border-white/[0.06] py-3">
-                    <span className="font-mono text-data tabular-nums text-[hsl(var(--intel-blue)/0.85)]">{n}</span>
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-foreground">{t}</div>
-                      <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{d}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+              <div className="scan-start__note">Results, sources, and leads will appear in this workspace.</div>
+            </section>
           )}
           {/* Hide mid-run progress checkpoints once the final report lands so the
               same findings never render twice (see src/lib/chat-checkpoints.ts). */}

@@ -3046,3 +3046,23 @@ All colors MUST be HSL.
 .case-workspace [role="tabpanel"] { background: hsl(var(--background)); }
 .case-workspace .panel-head { background: hsl(var(--surface-2) / .5); }
 .case-workspace .panel { border-radius: 9px; }
+
+/* Keep selector intake entirely visible in short analyst workspaces. */
+.scan-studio--empty .chat-stage__frame { display: flex; align-items: center; padding: 24px 28px; }
+.scan-studio--empty .chat-column { width: 100%; }
+.scan-start { width: 100%; max-width: 640px; margin: 0 auto; padding: 24px 0; }
+.scan-start__eyebrow { color: hsl(var(--brand)); font-family: ui-monospace, monospace; font-size: 10px; letter-spacing: .14em; }
+.scan-start h1 { margin: 14px 0 10px; color: hsl(var(--foreground)); font-size: clamp(28px, 3vw, 38px); font-weight: 600; line-height: 1.12; letter-spacing: -.04em; }
+.scan-start > p { max-width: 430px; color: hsl(var(--muted-foreground)); font-size: 14px; line-height: 1.65; }
+.scan-start__examples { margin-top: 26px; }
+.scan-start__examples > span { color: hsl(var(--muted-foreground)); font-size: 11px; }
+.scan-start__examples > div { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
+.scan-start__examples button { padding: 8px 10px; border: 1px solid hsl(var(--border)); border-radius: 6px; background: hsl(var(--surface-1)); color: hsl(var(--foreground) / .8); font-family: ui-monospace, monospace; font-size: 11px; }
+.scan-start__examples button:hover { border-color: hsl(var(--brand) / .6); color: hsl(var(--brand)); }
+.scan-start__examples button:focus-visible { outline: 2px solid hsl(var(--brand)); outline-offset: 3px; }
+.scan-start__note { margin-top: 26px; padding-top: 16px; border-top: 1px solid hsl(var(--border-subtle)); color: hsl(var(--muted-foreground)); font-size: 11px; }
+@media (max-width: 639px) {
+  .scan-studio--empty .chat-stage__frame { padding: 20px; }
+  .scan-start { padding: 16px 0; }
+  .scan-start__examples { margin-top: 20px; }
+}
