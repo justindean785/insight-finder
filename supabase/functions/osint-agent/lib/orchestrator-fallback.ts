@@ -16,8 +16,11 @@
  *
  * ## WHEN Anthropic takes over — and when it never does
  *
- *  1. PREFLIGHT (index.ts, lib/preflight-pivot.ts): an explicit HTTP >= 400 from the GLM
- *     ping moves the whole invocation onto Anthropic. A timeout never does (unchanged policy).
+ *  1. PREFLIGHT (index.ts, lib/preflight-pivot.ts): Anthropic being armed does NOT make the
+ *     preflight run — that decision is exactly the pre-E2b one (shouldRunDeepseekPreflight),
+ *     because the probe costs 24.5s+ in ~4% of runs and is redundant with (2). When it runs
+ *     anyway (DEEPSEEK_PREFLIGHT_ALWAYS, gemini pivot enabled), an explicit HTTP >= 400 moves
+ *     the invocation onto Anthropic. A timeout never does (unchanged policy).
  *  2. FIRST MODEL CALL (this module, `createStartFallbackModel`): the real step-0 request to
  *     GLM fails with a START failure — insufficient balance / quota (402, or the Z.AI balance
  *     message on a 429), auth (401/403), rate limit or 5xx once the SDK's bounded retries are
@@ -176,8 +179,10 @@ export interface StartFallbackEvent {
 }
 
 // deno-lint-ignore no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyModel = any;
 // deno-lint-ignore no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyParams = any;
 
 /**
@@ -192,6 +197,7 @@ export function asLanguageModelV3Compat(model: AnyModel): AnyModel {
   if (!model || model.specificationVersion === "v3") return model;
   const finishReason = (r: unknown) => ({ unified: r === "unknown" ? "other" : r, raw: undefined });
   // deno-lint-ignore no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const usage = (u: any) => ({
     inputTokens: { total: u?.inputTokens, noCache: undefined, cacheRead: u?.cachedInputTokens, cacheWrite: undefined },
     outputTokens: { total: u?.outputTokens, text: undefined, reasoning: u?.reasoningTokens },
@@ -329,8 +335,8 @@ export function orchestratorFallbackHealth(i: {
   const armed = i.target === "anthropic";
   let detail: string;
   if (armed) {
-    detail = "anthropic is GLM's backup: a preflight HTTP failure, or a start failure before any tool " +
-      "(balance/quota, 401/403, 429/5xx after retries, connection), moves that invocation to Anthropic; never mid-run";
+    detail = "anthropic is GLM's backup: a start failure on the first request before any tool " +
+      "(balance/quota, 401/403, 429/5xx after retries, connection) moves that invocation to Anthropic; the preflight only pivots when it already runs; never mid-run";
   } else if (!glmPrimary) {
     detail = `inactive: primary is ${i.primary}, not the GLM (deepseek) slot`;
   } else if (i.disabled) {

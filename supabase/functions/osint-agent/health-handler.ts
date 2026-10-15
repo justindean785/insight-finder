@@ -39,7 +39,7 @@ import {
   deepseekPreflightAlways,
   geminiPreflightPivotEnabled,
   preflightPivotHealthDetail,
-  preflightPolicyHealthDetail,
+  preflightPolicyHealthDetailE2b,
   resolveFallbackProvider,
 } from "./lib/preflight-pivot.ts";
 import { positionalPairingSelfTest, toolInputObjectRepairSelfTest } from "./message-sanitize.ts";
@@ -479,10 +479,19 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     disabled: anthropicFallbackDisabled(),
     target: preflightFallback,
   });
+  // The probe's RUN decision is the pre-E2b one (lib/preflight-pivot.ts →
+  // shouldRunDeepseekPreflight), so the detail is derived from the same legacy target.
+  const legacyPreflightFallback = resolveFallbackProvider({
+    orchestratorProvider: ORCHESTRATOR_PROVIDER,
+    hasLovableGateway: !!lovableGateway,
+    hasGeminiDirect: !!geminiDirectGateway,
+    allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
+  });
   r.checks.preflight_policy = {
     ok: true,
-    detail: preflightPolicyHealthDetail(
+    detail: preflightPolicyHealthDetailE2b(
       preflightFallback ? { provider: preflightFallback } : null,
+      legacyPreflightFallback ? { provider: legacyPreflightFallback } : null,
       deepseekPreflightAlways(),
       geminiPreflightPivotEnabled(),
     ),

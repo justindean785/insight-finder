@@ -104,7 +104,7 @@ import {
   geminiPreflightPivotEnabled,
   resolveFallbackProvider,
   shouldPivotOnPreflight,
-  shouldRunPreflight,
+  shouldRunDeepseekPreflight,
 } from "./lib/preflight-pivot.ts";
 import { redactErrorMessage } from "./lib/redact-error.ts";
 import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
@@ -766,14 +766,27 @@ Deno.serve(async (req) => {
     // with the gemini-direct pivot disabled the probe's only output is a log line, and
     // it sat serially on the path to the first byte (up to 2×12s + 250ms).
     // DEEPSEEK_PREFLIGHT_ALWAYS=true restores it on every request.
-    const runDeepseekPreflight = deepseekIsPrimary && !useFallback &&
-      shouldRunPreflight(fallbackTarget, geminiPreflightPivotEnabled(), deepseekPreflightAlways());
+    // E2b: the RUN decision is the pre-E2b one, over the target routing would resolve without
+    // Anthropic. An Anthropic target alone never turns the probe on (its latency tax is the
+    // regression #9-30 removed); the first-request wrapper is the Anthropic failover path.
+    const legacyFallbackProvider = resolveFallbackProvider({
+      orchestratorProvider: ORCHESTRATOR_PROVIDER,
+      hasLovableGateway: !!lovableGateway,
+      hasGeminiDirect: !!geminiDirectGateway,
+      allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
+    });
+    const runDeepseekPreflight = deepseekIsPrimary && !useFallback && !!fallbackTarget &&
+      shouldRunDeepseekPreflight(
+        legacyFallbackProvider ? { provider: legacyFallbackProvider } : null,
+        geminiPreflightPivotEnabled(),
+        deepseekPreflightAlways(),
+      );
     if (deepseekIsPrimary && !useFallback && fallbackTarget && !runDeepseekPreflight) {
       console.log(JSON.stringify({
         event: "preflight_skipped",
         thread_id: threadId,
         fallback: fallbackTarget.provider,
-        reason: "no outcome can pivot",
+        reason: fallbackTarget.provider === "anthropic" ? "anthropic failover runs on the first request" : "no outcome can pivot",
       }));
     }
     if (runDeepseekPreflight && fallbackTarget) {

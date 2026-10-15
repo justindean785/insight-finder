@@ -20,6 +20,8 @@ import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@1";
 import { anthropicFallbackEligible, selectOrchestratorProvider } from "./orchestrator_select.ts";
 import {
   preflightCanPivot,
+  preflightPolicyHealthDetailE2b,
+  shouldRunDeepseekPreflight,
   preflightPolicyHealthDetail,
   resolveFallbackProvider,
   shouldPivotOnPreflight,
@@ -160,12 +162,53 @@ Deno.test("preflight: an explicit GLM failure pivots to Anthropic; a timeout or 
   }
   assertEquals(shouldPivotOnPreflight({ ok: false, status: 0 }, target, false), false, "a timeout is ambiguous");
   assertEquals(shouldPivotOnPreflight({ ok: true, status: 200 }, target, false), false);
-  // The gemini-direct switch does not gate Anthropic.
+  // The gemini-direct switch does not gate Anthropic: WHEN the probe runs, it can pivot there.
   assertEquals(preflightCanPivot(target, false), true);
-  assertEquals(shouldRunPreflight(target, false, false), true, "a pivot target exists, so the probe runs");
-  assertEquals(preflightPolicyHealthDetail(target, false, false), "preflight runs: a failure can pivot (fallback=anthropic)");
-  // Kill switch on -> gemini-direct target -> the probe is skipped again, exactly as before.
-  assertStringIncludes(preflightPolicyHealthDetail({ provider: "gemini-direct" }, false, false), "preflight skipped");
+});
+
+Deno.test("preflight: Anthropic armed does NOT by itself turn the preflight on (identical to pre-E2b)", () => {
+  const GEMINI = { provider: "gemini-direct" };
+  const ANTHROPIC = { provider: "anthropic" };
+  // Every (legacy target, gemini switch, ALWAYS) combination: the run decision is exactly
+  // what shouldRunPreflight decided before this branch, over the pre-E2b target.
+  for (const legacy of [null, GEMINI, { provider: "lovable-gateway" }]) {
+    for (const gem of [false, true]) {
+      for (const always of [false, true]) {
+        assertEquals(
+          shouldRunDeepseekPreflight(legacy, gem, always),
+          shouldRunPreflight(legacy, gem, always),
+          `${legacy?.provider ?? "none"}/${gem}/${always}`,
+        );
+      }
+    }
+  }
+  // Production today: GLM primary, gemini key, gemini pivot OFF, no ALWAYS -> skipped.
+  assertEquals(shouldRunDeepseekPreflight(GEMINI, false, false), false, "anthropic armed adds no 24.5s probe");
+  assertEquals(shouldRunDeepseekPreflight(null, false, false), false);
+  // Forced on by the existing switch: it runs, and a failure may then pivot to Anthropic.
+  assertEquals(shouldRunDeepseekPreflight(GEMINI, false, true), true);
+  assertEquals(shouldPivotOnPreflight({ ok: false, status: 429 }, ANTHROPIC, false), true);
+
+  const skipped = preflightPolicyHealthDetailE2b(ANTHROPIC, GEMINI, false, false);
+  assertStringIncludes(skipped, "preflight skipped");
+  assertStringIncludes(skipped, "failover happens on the first request, not the preflight");
+  const forced = preflightPolicyHealthDetailE2b(ANTHROPIC, GEMINI, true, false);
+  assertStringIncludes(forced, "preflight runs on every request");
+  assertStringIncludes(forced, "a preflight failure pivots to anthropic");
+  // Kill switch on (routing target = legacy): the detail is exactly the pre-E2b text.
+  assertEquals(preflightPolicyHealthDetailE2b(GEMINI, GEMINI, false, false), preflightPolicyHealthDetail(GEMINI, false, false));
+});
+
+Deno.test("wiring: index.ts decides the preflight run on the LEGACY target, never the Anthropic one", async () => {
+  const src = await Deno.readTextFile(new URL("./index.ts", import.meta.url));
+  const at = src.indexOf("const runDeepseekPreflight =");
+  assert(at > 0);
+  const decl = src.slice(at, at + 400);
+  assertStringIncludes(decl, "shouldRunDeepseekPreflight(");
+  assertStringIncludes(decl, "legacyFallbackProvider");
+  assertEquals(decl.includes("shouldRunPreflight(fallbackTarget"), false);
+  const legacy = src.slice(src.indexOf("const legacyFallbackProvider = resolveFallbackProvider({"), at);
+  assertEquals(legacy.includes("anthropicFallback"), false, "the legacy target never includes Anthropic");
 });
 
 Deno.test("preflight: the recorded reason names the failure", () => {
