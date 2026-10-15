@@ -449,7 +449,12 @@ export const supabaseConfigError = null;
 
 export const supabase = {
   from: (table: string) => builder(table),
-  rpc: (name: string) => (SCENARIO === "syncing" ? new Promise(() => {}) : Promise.resolve({ data: RPC[name] ?? null, error: null })),
+  rpc: (name: string, args?: Record<string, unknown>) => (SCENARIO === "syncing" ? new Promise(() => {}) : Promise.resolve({
+    data: name === "verify_evidence_chain" && args?._thread_id === DRAFT_THREAD_ID
+      ? [{ ok: true, total: 0, first_break: null }]
+      : RPC[name] ?? null,
+    error: null,
+  })),
   channel: () => {
     const mine: Binding[] = [];
     const ch: Record<string, unknown> = {};
