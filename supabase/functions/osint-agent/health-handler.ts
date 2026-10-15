@@ -18,8 +18,9 @@ import {
   promptBudgetHardCeilingEnabled,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
-import { selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
-import { anthropicOrchestratorHealth } from "./anthropic-orchestrator.ts";
+import { anthropicFallbackEligible, selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
+import { anthropicModelRejectsForcedToolChoice, anthropicOrchestratorHealth } from "./anthropic-orchestrator.ts";
+import { anthropicFallbackDisabled, orchestratorFallbackHealth } from "./lib/orchestrator-fallback.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn } from "./lib/opsis.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
@@ -38,7 +39,7 @@ import {
   deepseekPreflightAlways,
   geminiPreflightPivotEnabled,
   preflightPivotHealthDetail,
-  preflightPolicyHealthDetail,
+  preflightPolicyHealthDetailE2b,
   resolveFallbackProvider,
 } from "./lib/preflight-pivot.ts";
 import { positionalPairingSelfTest, toolInputObjectRepairSelfTest } from "./message-sanitize.ts";
@@ -378,11 +379,20 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // diagnostic. So MiniMax is never labeled active when DeepSeek is selected.
   r.checks.deepseek = { ...deepseekCheck, role: providerRole(selected.provider, "deepseek") };
   r.checks.minimax = { ...minimaxCheck, role: providerRole(selected.provider, "minimax") };
-  // Anthropic orchestrator (pin-only). Config + cost-control posture only; deliberately NO
+  // Anthropic orchestrator (primary by pin; GLM's backup since E2b — `role`). Config + cost-control posture only; deliberately NO
   // network probe — a ping would spend prepaid credits on every /health. Reports presence
   // of the key as a boolean, never the key. Its PRESENCE proves a build with the Anthropic
   // orchestrator is the one running.
+  // E2b: is Anthropic armed as GLM's backup? The SAME pure rule index.ts routes by
+  // (orchestrator_select.ts → anthropicFallbackEligible), kill switch read at call time.
+  const anthropicFallbackOn = anthropicFallbackEligible({
+    primary: selected.provider,
+    anthropicKey: !!ANTHROPIC_API_KEY,
+    modelAcceptsForcedToolChoice: !anthropicModelRejectsForcedToolChoice(ANTHROPIC_MODEL_ID),
+    disabled: anthropicFallbackDisabled(),
+  });
   r.checks.orchestrator_anthropic = anthropicOrchestratorHealth({
+    fallback: anthropicFallbackOn,
     keyPresent: !!ANTHROPIC_API_KEY,
     pin: ORCHESTRATOR_PROVIDER,
     selectedProvider: selected.provider,
@@ -458,11 +468,30 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     hasLovableGateway: !!lovableGateway,
     hasGeminiDirect: !!geminiDirectGateway,
     allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
+    anthropicFallback: anthropicFallbackOn,
+  });
+  // E2b proof key. Its PRESENCE proves the build where Anthropic backs GLM is live;
+  // `fallback` is the target routing resolves, from the same resolveFallbackProvider.
+  r.checks.orchestrator_fallback = orchestratorFallbackHealth({
+    primary: selected.provider,
+    anthropicKey: !!ANTHROPIC_API_KEY,
+    modelAcceptsForcedToolChoice: !anthropicModelRejectsForcedToolChoice(ANTHROPIC_MODEL_ID),
+    disabled: anthropicFallbackDisabled(),
+    target: preflightFallback,
+  });
+  // The probe's RUN decision is the pre-E2b one (lib/preflight-pivot.ts →
+  // shouldRunDeepseekPreflight), so the detail is derived from the same legacy target.
+  const legacyPreflightFallback = resolveFallbackProvider({
+    orchestratorProvider: ORCHESTRATOR_PROVIDER,
+    hasLovableGateway: !!lovableGateway,
+    hasGeminiDirect: !!geminiDirectGateway,
+    allowLovableFallback: ALLOW_LOVABLE_FALLBACK,
   });
   r.checks.preflight_policy = {
     ok: true,
-    detail: preflightPolicyHealthDetail(
+    detail: preflightPolicyHealthDetailE2b(
       preflightFallback ? { provider: preflightFallback } : null,
+      legacyPreflightFallback ? { provider: legacyPreflightFallback } : null,
       deepseekPreflightAlways(),
       geminiPreflightPivotEnabled(),
     ),

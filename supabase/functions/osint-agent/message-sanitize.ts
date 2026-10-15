@@ -626,3 +626,235 @@ export function capToolResultOutputs(input: ModelMessage[], maxChars: number): M
     return any ? ({ ...m, content } as ModelMessage) : raw;
   });
 }
+
+// ---- Anthropic-bound prompt repair (E2b, 2026-10-15) ---------------------------
+//
+// GLM (the deepseek slot, OpenAI-compatible) and Anthropic accept DIFFERENT request
+// shapes. History written while GLM drove a thread is valid for GLM and can be invalid
+// for Anthropic, which validates the whole conversation on every request:
+//
+//   a. a whitespace-only text block -> "text content blocks must contain non-whitespace text";
+//   b. a reasoning part from another provider carries no Anthropic signature, so
+//      @ai-sdk/anthropic DROPS it (a warning, not an error); an assistant message whose
+//      only content was that reasoning goes out EMPTY -> "all messages must have non-empty
+//      content";
+//   c. a tool_use id that occurs twice (the positional overlap repair above can produce
+//      one: the same id answered in two places) -> "tool_use ids must be unique";
+//   d. a tool_result that is not in the message immediately after its tool_use (a stray
+//      result for an EARLIER call, or a tool message that lands after a user turn) ->
+//      "unexpected tool_use_id found in tool_result blocks" / "tool_use ids were found
+//      without tool_result blocks immediately after".
+//
+// These rules are applied ONLY to a prompt about to be sent to Anthropic (wired as model
+// middleware: lib/orchestrator-fallback.ts -> anthropicBoundModel), at the provider-prompt
+// level, so not one byte of a GLM / MiniMax / Gemini request changes. They only remove or
+// rename what Anthropic would reject; a valid prompt comes back as the same array.
+// Kill switch ANTHROPIC_PROMPT_REPAIR_DISABLED=true, read at call time.
+
+/** Kill switch, read at CALL time: ANTHROPIC_PROMPT_REPAIR_DISABLED=true restores pass-through. */
+export function anthropicPromptRepairDisabled(): boolean {
+  try {
+    return (Deno.env.get("ANTHROPIC_PROMPT_REPAIR_DISABLED") ?? "").trim().toLowerCase() === "true";
+  } catch {
+    return false;
+  }
+}
+
+const RESULT_UNAVAILABLE_PLACEHOLDER = "[tool result unavailable in this history]";
+
+export interface AnthropicPromptRepairCounts {
+  whitespace_text: number;
+  foreign_reasoning: number;
+  empty_message: number;
+  duplicate_tool_id: number;
+  invalid_tool_id: number;
+  relocated_result: number;
+  synthesized_result: number;
+  stray_result: number;
+}
+
+/** A reasoning part Anthropic can replay: it carries an Anthropic signature or redacted data. */
+function hasAnthropicReasoningMetadata(p: AnyPart): boolean {
+  const po = p.providerOptions as Record<string, unknown> | undefined;
+  const a = (po?.anthropic ?? null) as Record<string, unknown> | null;
+  return !!a && (typeof a.signature === "string" || typeof a.redactedData === "string");
+}
+
+const ANTHROPIC_TOOL_ID = /^[a-zA-Z0-9_-]+$/;
+
+/**
+ * Repair a provider-level prompt (LanguageModelV3Prompt, or a ModelMessage[]: the two
+ * share every field read here) so Anthropic accepts it. Pure; the caller logs. Returns the
+ * SAME array reference when nothing needed repair.
+ *
+ * Guarantees for user / assistant / tool messages in the returned prompt:
+ *   - no whitespace-only text part (a);
+ *   - no reasoning part without Anthropic metadata, and no message left empty (b);
+ *   - every tool-call id is unique across the prompt and matches ^[a-zA-Z0-9_-]+$ (c);
+ *   - every assistant message with tool calls is followed IMMEDIATELY by one tool message
+ *     answering each of its calls in call order: the adjacent result if there is one, else
+ *     the first unclaimed result with that id elsewhere (moved), else a value-free
+ *     placeholder; a tool-result that no call claims is dropped (d).
+ * System messages, file parts and tool-call inputs are never touched.
+ */
+export function repairAnthropicPrompt<T>(
+  prompt: T[],
+): { prompt: T[]; repairs: AnthropicPromptRepairCounts; changed: boolean } {
+  const counts: AnthropicPromptRepairCounts = {
+    whitespace_text: 0, foreign_reasoning: 0, empty_message: 0, duplicate_tool_id: 0,
+    invalid_tool_id: 0, relocated_result: 0, synthesized_result: 0, stray_result: 0,
+  };
+  if (!Array.isArray(prompt)) return { prompt, repairs: counts, changed: false };
+
+  // Pass 1: part-level cleanup (a, b) and empty-message removal.
+  const cleaned: AnyMsg[] = [];
+  for (const m of prompt as unknown as AnyMsg[]) {
+    if (!m || typeof m !== "object" || (m.role !== "user" && m.role !== "assistant" && m.role !== "tool")) {
+      cleaned.push(m);
+      continue;
+    }
+    if (!Array.isArray(m.content)) {
+      if (typeof m.content === "string" && m.content.trim() === "" && m.role !== "tool") {
+        counts.empty_message++;
+        continue;
+      }
+      cleaned.push(m);
+      continue;
+    }
+    let partsChanged = false;
+    const parts: AnyPart[] = [];
+    for (const p of m.content as AnyPart[]) {
+      if (p?.type === "text" && typeof p.text === "string" && p.text.trim() === "") {
+        counts.whitespace_text++;
+        partsChanged = true;
+        continue;
+      }
+      if (m.role === "assistant" && p?.type === "reasoning" && !hasAnthropicReasoningMetadata(p)) {
+        counts.foreign_reasoning++;
+        partsChanged = true;
+        continue;
+      }
+      parts.push(p);
+    }
+    if (parts.length === 0) {
+      counts.empty_message++;
+      continue;
+    }
+    cleaned.push(partsChanged ? { ...m, content: parts } : m);
+  }
+
+  // Pass 2: positional pairing (d) and id uniqueness (c) in ONE walk, so a renamed call
+  // and its result can never disagree. Results are pooled by id first; each assistant then
+  // claims, per call and in order, its adjacent result, else the first unclaimed one.
+  type Pooled = { part: AnyPart; msgIndex: number; claimed: boolean };
+  const pool = new Map<string, Pooled[]>();
+  let totalResults = 0;
+  cleaned.forEach((m, idx) => {
+    if (m?.role !== "tool" || !Array.isArray(m.content)) return;
+    for (const p of m.content as AnyPart[]) {
+      if (p?.type !== "tool-result" || typeof p.toolCallId !== "string") continue;
+      const list = pool.get(p.toolCallId) ?? [];
+      list.push({ part: p, msgIndex: idx, claimed: false });
+      pool.set(p.toolCallId, list);
+      totalResults++;
+    }
+  });
+
+  const usedIds = new Set<string>();
+  const uniqueId = (raw: string): string => {
+    let base = raw;
+    if (!ANTHROPIC_TOOL_ID.test(base)) {
+      counts.invalid_tool_id++;
+      base = base.replace(/[^a-zA-Z0-9_-]/g, "_") || "toolu_unnamed";
+    }
+    let id = base;
+    if (usedIds.has(id)) {
+      counts.duplicate_tool_id++;
+      let n = 2;
+      while (usedIds.has(`${base}_dup${n}`)) n++;
+      id = `${base}_dup${n}`;
+    }
+    usedIds.add(id);
+    return id;
+  };
+
+  const out: AnyMsg[] = [];
+  let claimedTotal = 0;
+  for (let i = 0; i < cleaned.length; i++) {
+    const m = cleaned[i];
+    if (m?.role === "tool" && Array.isArray(m.content)) {
+      // Results are re-emitted by the assistant that claims them; anything else stays put.
+      const others = (m.content as AnyPart[]).filter((p) => p?.type !== "tool-result");
+      if (others.length > 0) out.push({ ...m, content: others });
+      continue;
+    }
+    if (m?.role !== "assistant" || !Array.isArray(m.content)) {
+      out.push(m);
+      continue;
+    }
+    const calls = (m.content as AnyPart[]).filter((p) => p?.type === "tool-call" && !p.providerExecuted);
+    if (calls.length === 0) {
+      out.push(m);
+      continue;
+    }
+    let adjEnd = i + 1;
+    while (adjEnd < cleaned.length && cleaned[adjEnd]?.role === "tool") adjEnd++;
+    const isAdjacent = (idx: number) => idx > i && idx < adjEnd;
+
+    const renamed = new Map<AnyPart, string>();
+    const results: AnyPart[] = [];
+    for (const call of calls) {
+      const originalId = typeof call.toolCallId === "string" ? call.toolCallId : "";
+      const id = uniqueId(originalId);
+      renamed.set(call, id);
+      const candidates = pool.get(originalId) ?? [];
+      let hit = candidates.find((c) => !c.claimed && isAdjacent(c.msgIndex));
+      if (!hit) {
+        hit = candidates.find((c) => !c.claimed);
+        if (hit) counts.relocated_result++;
+      }
+      if (hit) {
+        hit.claimed = true;
+        claimedTotal++;
+        results.push(id === originalId ? hit.part : { ...hit.part, toolCallId: id });
+      } else {
+        counts.synthesized_result++;
+        results.push({
+          type: "tool-result",
+          toolCallId: id,
+          toolName: typeof call.toolName === "string" ? call.toolName : "unknown",
+          output: { type: "text", value: RESULT_UNAVAILABLE_PLACEHOLDER },
+        });
+      }
+    }
+    const anyRename = calls.some((c) => renamed.get(c) !== c.toolCallId);
+    out.push(
+      anyRename
+        ? {
+          ...m,
+          content: (m.content as AnyPart[]).map((p) =>
+            renamed.has(p) && renamed.get(p) !== p.toolCallId ? { ...p, toolCallId: renamed.get(p) } : p
+          ),
+        }
+        : m,
+    );
+    out.push({ role: "tool", content: results });
+  }
+  counts.stray_result = totalResults - claimedTotal;
+
+  const changed = Object.values(counts).some((n) => n > 0);
+  // Nothing needed repair: hand back the caller's array untouched (pass 2 rebuilds tool
+  // messages even when every result was already adjacent).
+  if (!changed) return { prompt, repairs: counts, changed: false };
+  return { prompt: out as unknown as T[], repairs: counts, changed: true };
+}
+
+/** Repair plus one value-free log line (counts only) when anything changed. */
+export function sanitizeAnthropicPrompt<T>(prompt: T[]): T[] {
+  if (anthropicPromptRepairDisabled()) return prompt;
+  const r = repairAnthropicPrompt(prompt);
+  if (r.changed) {
+    console.warn(JSON.stringify({ event: "anthropic_prompt_repair", ...r.repairs, messages: r.prompt.length }));
+  }
+  return r.prompt;
+}
