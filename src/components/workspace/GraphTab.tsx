@@ -62,17 +62,20 @@ const GROUP_COLOR: Record<Group, string> = {
 // every edge comes from buildEntityGraph's shared-selector analysis.
 const EDGE_STYLE: Record<EdgeType, { stroke: string; dashed: boolean; baseOpacity: number }> = {
   identity: { stroke: "hsl(var(--kind-identity))", dashed: false, baseOpacity: 0.55 },
+  "co-record": { stroke: "hsl(var(--kind-identity))", dashed: true, baseOpacity: 0.45 },
   "shared-infra": { stroke: "hsl(var(--kind-infrastructure))", dashed: true, baseOpacity: 0.4 },
   "seed-discovery": { stroke: "hsl(var(--foreground))", dashed: false, baseOpacity: 0.14 },
 };
 const EDGE_LABEL: Record<EdgeType, string> = {
   identity: "Identity link",
+  "co-record": "Named in the same record",
   "shared-infra": "Shared infrastructure",
   "seed-discovery": "Discovered in run (provenance only)",
 };
 /** What each line CLAIMS — the distinction between a finding and a coincidence. */
 const EDGE_HINT: Record<EdgeType, string> = {
   identity: "These entities share a selector that ties them to the same identity.",
+  "co-record": "One record names both of these selectors (e.g. a breach row's associated email). That groups them; it is NOT independent confirmation that either belongs to the subject.",
   "shared-infra": "These entities sit on shared infrastructure. That is co-location, NOT common ownership or identity.",
   "seed-discovery": "This entity was surfaced during the run from the seed. Provenance, not a relationship claim.",
 };
