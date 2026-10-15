@@ -42,6 +42,8 @@ const event = (i: number, over: Partial<ToolEvent> = {}): ToolEvent => ({
   actionLabel: "Search",
   tone: "ok",
   status: "succeeded",
+  category: "success",
+  group: "succeeded",
   at: new Date(NOW - (100 - i) * 1000).toISOString(),
   durationMs: 500,
   cached: false,

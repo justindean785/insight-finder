@@ -7,6 +7,15 @@
  *   • classifyActivityRow (useThreadToolActivity): succeeded | gated | degraded | skipped | failed
  *   • the Tool-Health panel: painted EVERY stored `failed` row red as "needs attention"
  *
+ * `classifyActivityRow` and the Health panel now BOTH run `classifyDetailedOutcome`
+ * and BOTH bucket the result with `outcomeGroup` below, so the Activity tiles and
+ * the Health tiles are the same five numbers for the same rows. (Until 2026-10
+ * Activity kept its own regexes, counted `empty` as succeeded and never fetched
+ * `status_code`: one 125-call case read Succeeded 100 / Failed 6 in Activity and
+ * Succeeded 84 / No record 16 / Faulted 7 in Health.) `deriveToolStatus`
+ * (tool-run.ts) still classifies AI-SDK message parts on its own — it sees a
+ * part's output object, not a log row.
+ *
  * The result was the "tool health is lying" bug: a tool that TIMED OUT, was
  * RATE-LIMITED, hit a 403/451, or was skipped by governance (`already ran for
  * this entity`, `guard not met`) all showed up in the same alarming red
@@ -86,7 +95,7 @@ export const CANONICAL_OUTCOME_META: Record<CanonicalOutcome, OutcomeMeta> = {
 // classifier historically stored it as `failed` (the two known bugs:
 // "already ran for this entity" and "guard not met" — see the 2026-07 prod audit).
 const SKIP_RE =
-  /execution plan required|duplicate call|burst limit|same-tool (?:cycle limit|budget)|paid-call (?:cycle limit|budget)|active-call concurrency|internal concurrency cap|internal (?:paid-call|throttle)|already has a call in-flight|already ran for this entity|high-cost tool already used|guard not met|weak lead blocked|expected value\s+\d+\s+below|disabled after \d+ consecutive|degraded this run|suppressed for investigation|selector blacklisted|unavailable:\s*(?:disabled|missing_key|gated)|\bgated\b|not configured|provider disabled|rate-limited\s*[—-]\s*provider|provider\b[^]*?\bsuppressed|5xx\s*[—-]\s*provider|finalize window open|run tool-call cap reached/i;
+  /execution plan required|duplicate call|burst limit|same-tool (?:cycle limit|budget)|paid-call (?:cycle limit|budget)|active-call concurrency|internal concurrency cap|internal (?:paid-call|throttle)|paid-call cap reached|already has a call in-flight|already ran for this entity|high-cost tool already used|guard not met|weak lead blocked|expected value\s+\d+\s+below|disabled after \d+ consecutive|degraded this run|suppressed for investigation|selector blacklisted|unavailable:\s*(?:disabled|missing_key|gated)|\bgated\b|not configured|provider disabled|rate-limited\s*[—-]\s*provider|provider\b[^]*?\bsuppressed|5xx\s*[—-]\s*provider|finalize window open|run tool-call cap reached/i;
 
 const EMPTY_RE = /no usable result|no record found|not found\b|no results?\b/i;
 const CANCEL_RE = /\babort(?:ed|error)?\b|signal (?:has been|was) aborted|\bcancell?ed\b/i;
@@ -112,6 +121,13 @@ const STATUS_ONLY_RE = /^(?:upstream returned HTTP 403)?$/i;
 const NON_RETRYABLE_5XX_RE =
   /too large|too big|maximum size|max(?:imum)? (?:file )?(?:size|length)|size limit|exceeds? the (?:maximum|limit|size)|payload too|unsupported (?:file|format|content|media|type)|malformed|invalid (?:url|input|file|document|format)/i;
 
+/** A bare 403 / 429 / 451 in an error message, e.g. "nominatim 403" or "request failed (403)". */
+const TEXT_REFUSAL_CODE_RE = /\b(403|429|451)\b/;
+function inferRefusalCode(msg: string): number | null {
+  const m = msg ? TEXT_REFUSAL_CODE_RE.exec(msg) : null;
+  return m ? Number(m[1]) : null;
+}
+
 /**
  * Refine a coarse stored outcome (`ok`/`skipped`/`empty`/`failed`, or null for
  * legacy rows) + its error/status into ONE canonical category.
@@ -135,6 +151,12 @@ export function classifyDetailedOutcome(
   const oc = String(coarse ?? "").toLowerCase();
   const msg = String(errorMsg ?? "").trim();
   const code = typeof statusCode === "number" ? statusCode : null;
+  // Many tools put the provider's status in the message and leave `status_code`
+  // null ("nominatim 403", "reddit request failed (403)"). Read ONLY the three
+  // refusal codes back out of the text, and only when the column is empty — a
+  // stored code always wins. Without this an upstream refusal with no stored
+  // code fell through to `failed` and read as provider breakage.
+  const textCode = code == null ? inferRefusalCode(msg) : null;
 
   if (oc === "ok") return "success";
   if (oc === "empty") return "empty";
@@ -155,12 +177,12 @@ export function classifyDetailedOutcome(
   if (msg && CANCEL_RE.test(msg) && !TIMEOUT_RE.test(msg)) return "cancelled";
   if (msg && TIMEOUT_RE.test(msg)) return "timeout";
 
-  if (code === 429 || (msg && RATELIMIT_RE.test(msg))) return "rate_limited";
-  if (code === 451) return "blocked";
+  if (code === 429 || textCode === 429 || (msg && RATELIMIT_RE.test(msg))) return "rate_limited";
+  if (code === 451 || textCode === 451) return "blocked";
   // Config/auth: 401/402, or an explicit bad-key message even at HTTP 200
   // (e.g. ipqualityscore returns 200 with "Invalid or unauthorized key").
   if (code === 401 || code === 402 || (msg && CONFIG_RE.test(msg))) return "config_error";
-  if (code === 403 || (msg && DENIED_RE.test(msg))) return "http_denied";
+  if (code === 403 || textCode === 403 || (msg && DENIED_RE.test(msg))) return "http_denied";
   if (code != null && (code >= 500 || code === 400 || code === 422)) return "failed";
   if (msg && /\bHTTP\s*5\d\d\b|upstream returned/i.test(msg)) return "failed";
 
@@ -271,4 +293,73 @@ export function normalizeProviderError(
 /** Convenience: the categories that represent a genuine problem to surface. */
 export function needsAttention(cat: CanonicalOutcome): boolean {
   return CANONICAL_OUTCOME_META[cat].needsAttention;
+}
+
+/**
+ * The coarse outcome to feed `classifyDetailedOutcome` for one `tool_usage_log`
+ * row. Legacy rows predate the `outcome` column: they fall back to the `ok`
+ * boolean, and only an explicit `ok === false` reads as failed. Shared so the
+ * Activity feed and the Health panel cannot disagree about a legacy row.
+ */
+export function coarseOutcome(outcome: string | null | undefined, ok: boolean | null | undefined): string {
+  return outcome ?? (ok === false ? "failed" : "ok");
+}
+
+/**
+ * The FIVE groups every tool-outcome tile on the Tools tab reports — Activity
+ * and Health alike. They partition the canonical outcomes, so the five counts
+ * always sum to the number of calls.
+ *
+ *  succeeded  success
+ *  no_record  empty — the tool ran and the target has no data (expected)
+ *  skipped    skipped, cancelled — intentionally not run, or aborted by the run's own budget
+ *  degraded   timeout, rate_limited, http_denied, blocked — transient / upstream refusal
+ *  faulted    config_error, failed, unknown — the only group that needs attention
+ */
+export type OutcomeGroup = "succeeded" | "no_record" | "skipped" | "degraded" | "faulted";
+
+export const OUTCOME_GROUP_MEMBERS: Record<OutcomeGroup, readonly CanonicalOutcome[]> = {
+  succeeded: ["success"],
+  no_record: ["empty"],
+  skipped: ["skipped", "cancelled"],
+  degraded: ["timeout", "rate_limited", "http_denied", "blocked"],
+  faulted: ["config_error", "failed", "unknown"],
+};
+
+const GROUP_OF: Record<CanonicalOutcome, OutcomeGroup> = (() => {
+  const out = {} as Record<CanonicalOutcome, OutcomeGroup>;
+  for (const [group, members] of Object.entries(OUTCOME_GROUP_MEMBERS) as [OutcomeGroup, readonly CanonicalOutcome[]][]) {
+    for (const c of members) out[c] = group;
+  }
+  return out;
+})();
+
+export function outcomeGroup(cat: CanonicalOutcome): OutcomeGroup {
+  return GROUP_OF[cat];
+}
+
+export type OutcomeGroupCounts = Record<OutcomeGroup, number>;
+
+export function emptyGroupCounts(): OutcomeGroupCounts {
+  return { succeeded: 0, no_record: 0, skipped: 0, degraded: 0, faulted: 0 };
+}
+
+/** Roll per-category counts up into the five tile groups. */
+export function groupOutcomeCounts(counts: Partial<Record<CanonicalOutcome, number>>): OutcomeGroupCounts {
+  const out = emptyGroupCounts();
+  for (const [cat, n] of Object.entries(counts) as [CanonicalOutcome, number | undefined][]) {
+    const group = GROUP_OF[cat];
+    if (group && n) out[group] += n;
+  }
+  return out;
+}
+
+/**
+ * Within the `skipped` group: a skip because the tool is not AVAILABLE at all
+ * (no key, disabled, gated) rather than a per-call policy decision. A sub-count
+ * only — it is always counted inside `skipped`, never beside it.
+ */
+const GATED_SUBRE = /\bgated\b|missing.?key|not configured|disabled|unavailable/i;
+export function isGatedSkip(cat: CanonicalOutcome, errorMsg: string | null | undefined): boolean {
+  return cat === "skipped" && GATED_SUBRE.test(String(errorMsg ?? ""));
 }
