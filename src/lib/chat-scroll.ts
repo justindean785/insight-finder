@@ -29,3 +29,11 @@ export function shouldFollowChatScroll(
 export function shouldAdoptInitialMessages(initialLen: number, currentLen: number): boolean {
   return initialLen >= currentLen;
 }
+
+/** Keyboard reading intent must release the streaming bottom pin too. */
+export function isChatHistoryNavigation(event: { key: string; shiftKey: boolean; defaultPrevented: boolean }): boolean {
+  return !event.defaultPrevented && (
+    event.key === "PageUp" || event.key === "Home" || event.key === "ArrowUp" ||
+    (event.key === " " && event.shiftKey)
+  );
+}

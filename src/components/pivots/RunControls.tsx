@@ -21,8 +21,8 @@ import {
  *              (stop rules in lib/run-controls.ts)
  *   Write report — ask for the closing dossier
  *
- * Desktop gets them as quiet chips in the composer's action row; a phone gets
- * them behind one ⋯ button so the composer stays a single line. Nothing here
+ * The composer uses a labelled options menu on desktop and one ⋯ button on a
+ * phone. Enabled auto-run stays visible on the trigger. Nothing here
  * composes prompts or talks to the transport; ChatWindow owns both.
  */
 type RunActionsProps = {
@@ -97,13 +97,14 @@ export function RunMenu({
             ? `Run options, Auto-run on (${Math.min(autoRunCyclesRun, autoRunMaxCycles)} of ${autoRunMaxCycles})`
             : "Run options"}
           className={cn(
-            "relative grid h-11 w-11 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors duration-fast hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            "relative inline-flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-full sm:h-9 sm:rounded-lg sm:px-2.5 text-muted-foreground transition-colors duration-fast hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             className,
           )}
         >
-          <MoreHorizontal className="h-5 w-5" aria-hidden />
+          <MoreHorizontal className="h-5 w-5 sm:h-4 sm:w-4" aria-hidden />
+          <span className="hidden text-data sm:inline">{autoRunEnabled ? `Auto-run ${Math.min(autoRunCyclesRun, autoRunMaxCycles)}/${autoRunMaxCycles}` : "Run options"}</span>
           {autoRunEnabled && (
-            <span aria-hidden className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-[hsl(var(--brand))]" />
+            <span aria-hidden className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-[hsl(var(--brand))] sm:hidden" />
           )}
         </button>
       </DropdownMenuTrigger>

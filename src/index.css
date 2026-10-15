@@ -2885,3 +2885,17 @@ All colors MUST be HSL.
     text-shadow: none;
   }
 }
+
+/* Settled scan traffic is supporting detail; prose keeps the primary surface. */
+.run-activity {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border-subtle));
+  border-radius: 8px;
+  background: hsl(var(--surface-0));
+}
+.run-activity .chat-card[data-speaker="tool"] {
+  border-color: transparent;
+  background: transparent;
+}
+.run-activity .chat-card[data-speaker="tool"]::before { display: none; }

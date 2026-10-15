@@ -1,3 +1,4 @@
+import { RunActivity } from "@/components/chat/RunActivity";
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useChat } from "@ai-sdk/react";
@@ -25,7 +26,7 @@ import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked, submitRefusal, submitRefusalMessage } from "@/lib/submit-guard";
 import { messageIntegrity, narrativeIsUnadjudicated } from "@/lib/message-integrity";
-import { RunChips, RunMenu } from "@/components/pivots/RunControls";
+import { RunMenu } from "@/components/pivots/RunControls";
 import { composerPrimary } from "@/lib/composer-primary";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
@@ -51,7 +52,7 @@ import {
   isNetworkDropError, isTransportAuthFailure, withHttpStatusInErrorBody,
 } from "@/lib/tool-run";
 import { isRunHeartbeatAlive } from "@/lib/stale-thread";
-import { shouldFollowChatScroll, shouldAdoptInitialMessages, CHAT_REENGAGE_THRESHOLD_PX } from "@/lib/chat-scroll";
+import { isChatHistoryNavigation, shouldFollowChatScroll, shouldAdoptInitialMessages, CHAT_REENGAGE_THRESHOLD_PX } from "@/lib/chat-scroll";
 import {
   extractRecommendedPivots,
   pivotSkipStorageKey,
@@ -690,11 +691,11 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
           themselves are one click away. */}
       <button
         type="button"
-        className="w-full px-3.5 py-2 text-left"
+        className="w-full px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         aria-expanded={expanded}
         onClick={() => setExpanded((value) => !value)}
       >
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden />}
           <span className="shrink-0 font-medium text-foreground/90">
             {cycleSummaryLabel(humanizeStage(group.stage), group.cycleId)}
@@ -702,7 +703,7 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
           <span className="shrink-0 tabular-nums">{group.parts.length} call{group.parts.length === 1 ? "" : "s"}</span>
           {avgExpected != null && <span className="hidden shrink-0 tabular-nums sm:inline">EV {avgExpected}</span>}
           {(selectors.length > 0 || extra > 0) && (
-            <span className="min-w-0 flex-1 truncate text-foreground/70" title={Array.from(new Set(group.selectors)).join(" · ")}>
+            <span className="min-w-0 flex-1 basis-24 truncate text-foreground/70" title={Array.from(new Set(group.selectors)).join(" · ")}>
               {selectors.join(" · ")}{extra > 0 ? ` · +${extra}` : ""}
             </span>
           )}
@@ -1209,14 +1210,14 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
           cards and shows them collapsed under a single row. Rendering them here
           too would put the same tool calls on screen twice. */}
       {!live && visibleToolGroups.length > 0 && (
-        <div className="flex w-full flex-col gap-2">
+        <RunActivity calls={visibleToolGroups.reduce((total, entry) => total + ("part" in entry ? 1 : entry.parts.length), 0)} stages={visibleToolGroups.length}>
           <RunFlowRail groups={groupedCycles} />
           {visibleToolGroups.map((entry, i) => "part" in entry ? (
             <ToolPart key={`tool-${i}`} part={entry.part} createdAt={createdAt} />
           ) : (
             <ToolGroupSummary key={`${entry.key}-${i}`} group={entry} createdAt={createdAt} />
           ))}
-        </div>
+        </RunActivity>
       )}
       {prose && superseded && (
         <details className="chat-card w-full min-w-0 group/sup" data-speaker="agent">
@@ -1870,16 +1871,19 @@ function ChatWindowInner({
       setShowJumpToLatest(true);
     };
     const onWheel = (e: WheelEvent) => { if (e.deltaY < 0) disengage(); };
+    const onHistoryKey = (e: KeyboardEvent) => { if (isChatHistoryNavigation(e)) disengage(); };
     let touchY = 0;
     const onTouchStart = (e: TouchEvent) => { touchY = e.touches[0]?.clientY ?? 0; };
     const onTouchMove = (e: TouchEvent) => {
       // Finger dragging downward reveals earlier messages (scrolls up).
       if ((e.touches[0]?.clientY ?? 0) - touchY > 6) disengage();
     };
+    viewport.addEventListener("keydown", onHistoryKey);
     viewport.addEventListener("wheel", onWheel, { passive: true });
     viewport.addEventListener("touchstart", onTouchStart, { passive: true });
     viewport.addEventListener("touchmove", onTouchMove, { passive: true });
     return () => {
+      viewport.removeEventListener("keydown", onHistoryKey);
       viewport.removeEventListener("wheel", onWheel);
       viewport.removeEventListener("touchstart", onTouchStart);
       viewport.removeEventListener("touchmove", onTouchMove);
@@ -3087,7 +3091,7 @@ function ChatWindowInner({
                 autoCapitalize="off"
                 autoCorrect="off"
                 spellCheck={false}
-                className="min-h-[44px] max-h-52 min-w-0 flex-1 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 px-1 py-2.5 text-[16px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70 sm:px-3 sm:py-2 sm:text-body"
+                className="min-h-[44px] max-h-52 min-w-0 flex-1 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 px-1 py-2.5 text-[16px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70 sm:px-3 sm:py-1.5 sm:text-body"
               />
               <div className="flex shrink-0 items-center gap-1 sm:gap-1.5 sm:px-2 sm:pb-2">
                 <Button
@@ -3111,21 +3115,13 @@ function ChatWindowInner({
                 </span>
                 {runControlsVisible && (
                   <>
-                    <RunChips
-                      busy={isLoading}
-                      autoRunEnabled={autoRun.enabled}
-                      autoRunCyclesRun={autoRun.cyclesRun}
-                      onToggleAutoRun={toggleAutoRun}
-                      onWriteReport={runWriteReport}
-                      className="ml-auto max-sm:hidden"
-                    />
                     <RunMenu
                       busy={isLoading}
                       autoRunEnabled={autoRun.enabled}
                       autoRunCyclesRun={autoRun.cyclesRun}
                       onToggleAutoRun={toggleAutoRun}
                       onWriteReport={runWriteReport}
-                      className="sm:hidden"
+                      className="ml-auto"
                     />
                   </>
                 )}

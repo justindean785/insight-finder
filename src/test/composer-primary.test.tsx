@@ -53,10 +53,12 @@ describe("run actions inside the composer", () => {
     expect((screen.getByRole("switch", { name: /Auto-run/ }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("phone menu trigger is named, and says when Auto-run is on", () => {
+  it("options trigger is named and keeps enabled auto-run progress visible", () => {
     const { rerender } = render(<RunMenu {...props} />);
     expect(screen.getByRole("button", { name: "Run options" })).toBeTruthy();
     rerender(<RunMenu {...props} autoRunEnabled autoRunCyclesRun={2} />);
     expect(screen.getByRole("button", { name: "Run options, Auto-run on (2 of 3)" })).toBeTruthy();
+    expect(screen.getByText("Auto-run 2/3")).toBeTruthy();
+    expect(props.onToggleAutoRun).not.toHaveBeenCalled();
   });
 });

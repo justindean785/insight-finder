@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isChatHistoryNavigation,
   shouldFollowChatScroll,
   shouldAdoptInitialMessages,
   CHAT_REENGAGE_THRESHOLD_PX,
@@ -47,5 +48,20 @@ describe("shouldAdoptInitialMessages", () => {
   it("refuses to clobber a fuller live store with a shorter snapshot", () => {
     expect(shouldAdoptInitialMessages(0, 4)).toBe(false);
     expect(shouldAdoptInitialMessages(2, 5)).toBe(false);
+  });
+});
+
+describe("keyboard transcript reading", () => {
+  it("releases follow for upward navigation, including Shift+Space", () => {
+    for (const key of ["PageUp", "Home", "ArrowUp"]) {
+      expect(isChatHistoryNavigation({ key, shiftKey: false, defaultPrevented: false })).toBe(true);
+    }
+    expect(isChatHistoryNavigation({ key: " ", shiftKey: true, defaultPrevented: false })).toBe(true);
+  });
+  it("preserves follow for downward or already-handled keys", () => {
+    for (const key of ["ArrowDown", "PageDown", "End", "Enter", " "]) {
+      expect(isChatHistoryNavigation({ key, shiftKey: false, defaultPrevented: false })).toBe(false);
+    }
+    expect(isChatHistoryNavigation({ key: "ArrowUp", shiftKey: false, defaultPrevented: true })).toBe(false);
   });
 });

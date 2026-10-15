@@ -77,7 +77,7 @@ export function NextSteps({
           const detail = pivot ? pivot.reason : item.kind === "action" ? item.detail : "";
           const blocked = item.kind === "pivot" && item.eligibility !== null && !item.eligibility.runnable;
           return (
-            <li key={item.key} className="px-4 py-3">
+            <li key={item.key} className="px-3 py-2.5 sm:px-4">
               <div className="flex items-start gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">

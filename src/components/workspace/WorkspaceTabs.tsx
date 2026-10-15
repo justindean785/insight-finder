@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { MoreHorizontal, MessagesSquare, Database, FileText, Share2, Activity, LayoutDashboard, Check, type LucideIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, MoreHorizontal, MessagesSquare, Database, FileText, Share2, Activity, LayoutDashboard, Check, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -122,6 +122,30 @@ function TabBar({
 }) {
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ before: false, after: false });
+  const updateEdges = () => {
+    const node = scrollRef.current;
+    if (!node) return;
+    // Account for the space occupied by the arrows themselves, so resizing
+    // back to a fitting width does not leave unnecessary arrows stuck on.
+    const available = node.parentElement?.clientWidth ?? 0;
+    if (available > 0 && node.scrollWidth <= available) {
+      setEdges({ before: false, after: false });
+      return;
+    }
+    setEdges({ before: node.scrollLeft > 1, after: node.scrollLeft + node.clientWidth < node.scrollWidth - 1 });
+  };
+  useEffect(() => {
+    const node = scrollRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(updateEdges);
+    observer.observe(node);
+    if (node.firstElementChild) observer.observe(node.firstElementChild);
+    updateEdges();
+    return () => observer.disconnect();
+  }, []);
+
   // Keep the active tab in view when it changes from outside (command palette,
   // "View failed tools").
   useEffect(() => {
@@ -143,8 +167,13 @@ function TabBar({
   };
 
   return (
-    <div className="relative border-b border-white/[0.07] bg-surface-0">
-      <div className="flex overflow-x-auto px-1 sm:px-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div className="relative flex min-w-0 items-stretch border-b border-white/[0.07] bg-surface-0">
+      {edges.before && (
+        <button type="button" aria-label="Scroll workspace tabs left" onClick={() => scrollRef.current?.scrollBy({ left: -240, behavior: "smooth" })} className="w-9 shrink-0 border-r border-border-subtle text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+          <ChevronLeft className="mx-auto h-4 w-4" aria-hidden />
+        </button>
+      )}
+      <div ref={scrollRef} onScroll={updateEdges} className="flex min-w-0 flex-1 overflow-x-auto px-1 sm:px-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div role="tablist" aria-label="Investigation workspace" className="flex w-max shrink-0 items-stretch gap-1">
           {TABS.map((t, idx) => {
             const Icon = t.icon;
@@ -182,6 +211,11 @@ function TabBar({
           })}
         </div>
       </div>
+      {edges.after && (
+        <button type="button" aria-label="Scroll workspace tabs right" onClick={() => scrollRef.current?.scrollBy({ left: 240, behavior: "smooth" })} className="w-9 shrink-0 border-l border-border-subtle text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+          <ChevronRight className="mx-auto h-4 w-4" aria-hidden />
+        </button>
+      )}
     </div>
   );
 }
