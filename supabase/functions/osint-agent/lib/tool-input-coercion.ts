@@ -15,6 +15,10 @@
 //     outside the enum is looked up in INPUT_KIND_ALIASES (below) and then in the shared KIND_ALIASES table
 //     (lib/kind-alias.ts); the first candidate that IS in the enum wins. If none is, the input is left as sent.
 //   • `query` → `seed` for the dork tools, only when `seed` is absent;
+//   • a missing `kind` is INFERRED from the selector's own shape where the tool declares it (google_dorks, and
+//     serus_darkweb_scan's identifierType) — email, IP, domain, crypto, a 10+ digit phone; a bare token reads as a
+//     username only for a free tool. Anything ambiguous stays missing and is rejected as before (inferSelectorKind);
+//   • field aliases: serus_darkweb_scan `identifier`/`value` → `identifierValue`, `type` → `identifierType`;
 //   • a missing `kind` takes a per-tool DEFAULT only where the tool declares one (gemini_deep_dork → "other", which its
 //     enum already had as the catch-all);
 //   • a numeric STRING ("15000") → number, only on fields the schema types as a number;
@@ -35,7 +39,7 @@
 //
 // KILL SWITCH, read at call time: INPUT_COERCION_DISABLED=true restores today's strict behaviour (including the
 // "address" enum value added to gemini_deep_dork / dork_harvest, which is refused again under the switch).
-// /health proof key: checks.input_coercion.
+// /health proof keys: checks.input_coercion, checks.input_kind_inference (inference + field aliases).
 
 import { KIND_ALIASES } from "./kind-alias.ts";
 
@@ -89,11 +93,12 @@ export const INPUT_KIND_ALIASES: Readonly<Record<string, readonly string[]>> = {
   hostname: ["domain"],
   host: ["domain"],
   fqdn: ["domain"],
-  // ip
-  ip_address: ["ip"],
-  ipv4: ["ip"],
-  ipv6: ["ip"],
-  ip_addr: ["ip"],
+  // ip (`origin` is Serus's name for an IP-or-hostname target; it is only reached on an enum that has no `ip`)
+  ip: ["origin"],
+  ip_address: ["ip", "origin"],
+  ipv4: ["ip", "origin"],
+  ipv6: ["ip", "origin"],
+  ip_addr: ["ip", "origin"],
   // wallet
   wallet: ["crypto_wallet", "wallet"],
   crypto: ["crypto_wallet", "wallet"],
@@ -109,6 +114,8 @@ export type CoercionKind =
   | "kind_alias" // a different spelling of a supported kind ("location" → "address")
   | "seed_from_query" // `query` used as the missing `seed`
   | "default_kind" // a missing kind took the tool's declared default
+  | "kind_inferred" // a missing kind was read off the SHAPE of the selector it describes (an email, an IP, …)
+  | "field_alias" // a differently named field carried the value ("identifier" → "identifierValue")
   | "numeric_string" // "15000" → 15000
   | "number_to_string" // 6175550100 → "6175550100"
   | "trimmed"; // surrounding whitespace removed
@@ -118,6 +125,12 @@ export type CoercionRecord = { field: string; coercion: CoercionKind };
 export interface InputCoercionSpec {
   /** field → the field's own enum values (the alias target must be one of these). */
   enumFields?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * field → infer a MISSING enum field from the SHAPE of another field's value. `infer` returns an enum value or null;
+   * null (an ambiguous or unrecognised shape) leaves the field missing, so the call is rejected exactly as before.
+   * Applied before `defaults`. Structural only — never reads prose or intent.
+   */
+  infer?: Readonly<Record<string, { from: string; infer: (value: string) => string | null }>>;
   /** field → default enum value used ONLY when the field is absent. */
   defaults?: Readonly<Record<string, string>>;
   /** Fill a missing `to` field from the first present `from` field (then drop `from`). */
@@ -191,6 +204,16 @@ export function coerceToolInput(raw: unknown, spec: InputCoercionSpec): { value:
     }
   }
   for (const [f, allowed] of Object.entries(spec.enumFields ?? {})) {
+    const inf = spec.infer && Object.prototype.hasOwnProperty.call(spec.infer, f) ? spec.infer[f] : null;
+    if (out[f] === undefined && inf && typeof out[inf.from] === "string") {
+      let k: string | null = null;
+      try { k = inf.infer(out[inf.from] as string); } catch { k = null; }
+      if (k && allowed.includes(k)) {
+        out[f] = k;
+        records.push({ field: f, coercion: "kind_inferred" });
+        continue;
+      }
+    }
     if (out[f] === undefined && spec.defaults && Object.prototype.hasOwnProperty.call(spec.defaults, f)) {
       out[f] = spec.defaults[f];
       records.push({ field: f, coercion: "default_kind" });
@@ -266,6 +289,59 @@ export function applyInputCoercion(
   } catch {
     return raw; // a coercion fault must never break the step; the SDK validates the raw input as before
   }
+}
+
+/**
+ * Structural kind inference for a selector value, used by `spec.infer`. Returns only shapes that cannot be mistaken
+ * for anything else; a phone needs at least 10 digits so a date ("2026-10-15") is never read as one. A single bare
+ * token reads as a username only when `allowUsername` is set (free tools only — a paid scan never runs on a guess).
+ */
+export function inferSelectorKind(
+  value: string,
+  detect: (v: string) => { kind: string } | null,
+  opts: { allowUsername?: boolean } = {},
+): "email" | "phone" | "ip" | "domain" | "username" | "crypto" | null {
+  const v = (value ?? "").trim();
+  if (!v || v.length > 256) return null;
+  const d = detect(v);
+  if (!d) return null;
+  switch (d.kind) {
+    case "email": case "ip": case "domain": case "crypto": return d.kind;
+    case "phone": return v.replace(/\D/g, "").length >= 10 ? "phone" : null;
+    case "username": return opts.allowUsername ? "username" : null;
+    default: return null;
+  }
+}
+
+/** /health → checks.input_kind_inference. Pure; presence proves this build. */
+export function inputKindInferenceSelfTest(detect: (v: string) => { kind: string } | null): { ok: boolean; switch: string; detail: string } {
+  const sw = "INPUT_COERCION_DISABLED";
+  if (inputCoercionDisabled()) return { ok: true, switch: `${sw}=true`, detail: "LEGACY via INPUT_COERCION_DISABLED (strict schemas)" };
+  const wrong: string[] = [];
+  const spec: InputCoercionSpec = {
+    enumFields: { identifierType: ["email", "phone", "domain", "origin"] },
+    renames: [{ to: "identifierValue", from: "identifier", coercion: "field_alias" }],
+    infer: { identifierType: { from: "identifierValue", infer: (v) => {
+      const k = inferSelectorKind(v, detect);
+      return k === "ip" ? "origin" : k;
+    } } },
+  };
+  const a = coerceToolInput({ identifier: "a@example.com" }, spec).value as Record<string, unknown>;
+  if (a.identifierValue !== "a@example.com" || a.identifierType !== "email") wrong.push("field alias + inference not applied");
+  const b = coerceToolInput({ identifierValue: "2026-10-15" }, spec).value as Record<string, unknown>;
+  if (b.identifierType !== undefined) wrong.push("a date was inferred as a phone");
+  const c = coerceToolInput({ identifierValue: "someone" }, spec).value as Record<string, unknown>;
+  if (c.identifierType !== undefined) wrong.push("a bare token was guessed for a paid scan");
+  const ip = coerceToolInput({ identifierValue: "198.51.100.7", identifierType: "ip" }, spec).value as Record<string, unknown>;
+  if (ip.identifierType !== "origin") wrong.push("ip did not map to origin");
+  return wrong.length
+    ? { ok: false, switch: `${sw}=false`, detail: wrong.join("; ") }
+    : {
+      ok: true,
+      switch: `${sw}=false`,
+      detail: "a missing kind is inferred only from an unambiguous selector shape (email, IP, domain, 10+ digit phone; " +
+        "bare-token username only for free tools); serus_darkweb_scan accepts identifier/value as identifierValue",
+    };
 }
 
 /** /health → checks.input_coercion. Presence proves this build; ok:false means a rule failed its own probe. */

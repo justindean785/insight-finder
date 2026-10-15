@@ -57,7 +57,8 @@ import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
 import { archiveOriginRuleSelfTest, breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 import { memoryInputNormalizationSelfTest } from "./lib/memory-input-normalization.ts";
 import { exactBooleanRepairSelfTest } from "./lib/exact-boolean-repair.ts";
-import { inputCoercionSelfTest } from "./lib/tool-input-coercion.ts";
+import { inputCoercionSelfTest, inputKindInferenceSelfTest } from "./lib/tool-input-coercion.ts";
+import { detectSeedServer } from "./validation.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
 
 /**
@@ -580,6 +581,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // the schema when — and only when — the result validates? Pure. PRESENCE proves the deployed bundle; `switch` reports
   // INPUT_COERCION_DISABLED; ok:false = a rule failed its own probe.
   r.checks.input_coercion = inputCoercionSelfTest();
+  r.checks.input_kind_inference = inputKindInferenceSelfTest(detectSeedServer);
 
   // breach_exposure needs a breach-class tool that RAN in the case and a non-zero result (record_artifacts), and
   // auto-extraction keeps it only from breach-capable tools. Pure. `switch` reports BREACH_EXPOSURE_GUARD_DISABLED.

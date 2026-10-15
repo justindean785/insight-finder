@@ -148,7 +148,7 @@ Deno.test("google_dorks keeps its own address family (it already had one) — no
 
 Deno.test("STILL REJECTED: unknown kinds, non-numeric strings, out-of-range numbers, invalid emails, missing required fields", () => {
   rejected("google_dorks", { seed: "x", kind: "planet" });
-  rejected("google_dorks", { seed: "x" }); // google_dorks declares no default kind
+  rejected("google_dorks", { seed: "x" }); // no default kind, and "x" has no recognisable shape to infer one from
   rejected("google_dorks", { kind: "email" });
   rejected("gemini_deep_dork", { seed: "x", kind: "planet" }); // an unknown kind is NOT widened to "other"
   rejected("gemini_deep_dork", {}); // no seed, no query
