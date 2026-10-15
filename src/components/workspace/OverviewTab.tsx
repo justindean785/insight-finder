@@ -12,6 +12,7 @@ import { readableSourceLabel } from "@/lib/tool-display";
 import { timeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { fmtWallClock } from "@/lib/duration";
+import { buildDecisionQueue } from "@/lib/decision-queue";
 import {
   Unlink, AlertTriangle, XCircle, ShieldCheck, Timer,
   DatabaseZap, Activity, ArrowRight, type LucideIcon,
@@ -168,13 +169,19 @@ export function OverviewTab({ threadId }: { threadId: string }) {
   }, [items, review]);
 
   /** What cannot be attributed, and what is actively disputed. */
-  const unresolved = useMemo(() => {
-    return [...items]
+  const queue = useMemo(() => {
+    const candidates = items
       .map((a) => ({ a, v: authorityFor(a, review.get(a.id)) }))
       .filter((x) => x.v.state === "quarantined" || x.v.state === "conflict")
-      .sort((x, y) => LEDGER_SORT_RANK[x.v.state] - LEDGER_SORT_RANK[y.v.state])
-      .slice(0, 5);
+      .map((x) => ({
+        item: x,
+        state: x.v.state as "quarantined" | "conflict",
+        metadata: x.a.metadata,
+        confidence: effectiveConfidenceOrZero(x.a),
+      }));
+    return buildDecisionQueue(candidates);
   }, [items, review]);
+  const unresolved = queue.shown;
 
   const failures = useMemo(
     () => activity.events.filter((e) => e.status === "failed" || e.status === "degraded").slice(-5).reverse(),
@@ -255,7 +262,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
         <section className="panel panel-primary overflow-hidden">
           <RuleLabel
             right={
-              unresolved.length > 0 ? (
+              unresolved.length > 0 || queue.heldBack > 0 ? (
                 <button type="button" onClick={() => jump("artifacts")} className="inline-flex items-center gap-1 text-micro text-muted-foreground hover:text-foreground">
                   Open <ArrowRight className="h-3 w-3" aria-hidden />
                 </button>
@@ -266,7 +273,9 @@ export function OverviewTab({ threadId }: { threadId: string }) {
           </RuleLabel>
           {unresolved.length === 0 ? (
             <p className="p-3 text-data text-muted-foreground">
-              Nothing disputed or unattributable. Conflicts and quarantined selectors would appear here.
+              {queue.heldBack > 0
+                ? "Nothing disputed or awaiting attribution."
+                : "Nothing disputed or unattributable. Conflicts and quarantined selectors would appear here."}
             </p>
           ) : (
             <ul>
@@ -281,6 +290,17 @@ export function OverviewTab({ threadId }: { threadId: string }) {
                 </li>
               ))}
             </ul>
+          )}
+          {(queue.more > 0 || queue.heldBack > 0) && (
+            <p className="border-t border-border-subtle px-3 py-2 text-micro text-muted-foreground" data-testid="decision-queue-footer">
+              {queue.more > 0 && <span>+{queue.more} more to decide. </span>}
+              {queue.heldBack > 0 && (
+                <span>
+                  {queue.heldBack} breach/corpus row{queue.heldBack === 1 ? "" : "s"} held back — they belong to other
+                  people in the same dataset and stay quarantined on the Evidence board.
+                </span>
+              )}
+            </p>
           )}
         </section>
 
