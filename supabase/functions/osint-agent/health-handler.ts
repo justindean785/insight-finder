@@ -54,6 +54,7 @@ import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
 import { breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 import { memoryInputNormalizationSelfTest } from "./lib/memory-input-normalization.ts";
 import { exactBooleanRepairSelfTest } from "./lib/exact-boolean-repair.ts";
+import { inputCoercionSelfTest } from "./lib/tool-input-coercion.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
 
 /**
@@ -568,6 +569,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Is a boolean parameter sent as the EXACT string "true"/"false" repaired instead of burning the step, while every other
   // string and every consent flag stays rejected? Pure. PRESENCE proves the deployed bundle; ok:false = failed its own probe.
   r.checks.exact_boolean_repair = exactBooleanRepairSelfTest();
+
+  // Is a near-miss tool input (kind alias, query→seed, numeric string, number→string, stray whitespace) coerced INSIDE
+  // the schema when — and only when — the result validates? Pure. PRESENCE proves the deployed bundle; `switch` reports
+  // INPUT_COERCION_DISABLED; ok:false = a rule failed its own probe.
+  r.checks.input_coercion = inputCoercionSelfTest();
 
   // Is a bare 17-20 digit platform account ID (Discord/Twitter snowflake, Steam64) kept out of
   // the phone playbook? It classified as `phone` and routed a Discord-ID case into phone

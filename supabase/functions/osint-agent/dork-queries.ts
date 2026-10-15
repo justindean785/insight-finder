@@ -144,6 +144,26 @@ export type DorkKindResolution =
  * how a disabled tool once reached a chain-of-custody record as
  * "completed" — a quarantine refusal must read as a refusal.
  */
+/**
+ * Which of dork_harvest's query families runs for a kind.
+ *
+ * dork_harvest has NO address family of its own (its QUERIES table is keyed
+ * email/username/phone/name/domain/ip/hash/crypto_wallet). An address seed runs
+ * the NAME family: every one of those queries exact-phrase quotes the seed and
+ * targets documents where a street address genuinely appears — deeds, property
+ * records and assessor pages, court dockets, FEC/OpenSecrets filings (which list
+ * contributor addresses), plus generic PDF/DOC hits. The alternatives are worse:
+ * the domain family would emit `site:<address>` (the exact production defect
+ * resolveDorkKind exists to stop), and the email/username/phone families target
+ * paste sites and stealer logs, which do not index street addresses. The
+ * relevance gate is unchanged — a hit is recorded only if the address itself is
+ * in the URL or the document text — and provenance keeps `seed_kind: "address"`.
+ */
+export function harvestQueryFamily(kind: string): string {
+  if (kind === "address" || kind === "person") return "name";
+  return kind;
+}
+
 export function resolveDorkKind(seed: string, kind: string): DorkKindResolution {
   if (kind !== "domain") return { ok: true, kind };
   if (isHostname(seed)) return { ok: true, kind };
