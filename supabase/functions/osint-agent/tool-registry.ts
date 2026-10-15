@@ -1,3 +1,4 @@
+import { BREACH_EXPOSURE_KINDS, breachExposureGuardDisabled, checkBreachExposureRow, loadRanBreachTools } from "./lib/breach-exposure-guard.ts";
 import { guardUserSuppliedStatus } from "./lib/user-supplied-status.ts";
 import { leakcheckGuard, readLeakcheckQuota, resolveLeakcheckLimits } from "./lib/leakcheck-guard.ts";
 import { applyMemoryContext } from "./lib/memory-context.ts";
@@ -5551,6 +5552,11 @@ export function buildTools(ctx: ToolContext) {
           recorded_confidence: number;
           attempted_confidence: number;
         }> = [];
+        // breach_exposure source guard (lib/breach-exposure-guard.ts): loaded once, only when
+        // the batch carries a breach row. null = read failed → guard fails open for this batch.
+        const breachGuardOn = !breachExposureGuardDisabled() &&
+          artifacts.some((x) => /breach/i.test(String(x?.kind ?? "")));
+        const ranBreachTools = breachGuardOn ? await loadRanBreachTools(supabase, threadId) : null;
         artifacts.forEach((aRaw, i) => {
           // E3: recalled memory is context, never a source (lib/memory-context.ts).
           const memCtx = applyMemoryContext(aRaw.source, aRaw.metadata as Record<string, unknown> | undefined);
@@ -5588,6 +5594,19 @@ export function buildTools(ctx: ToolContext) {
           if (!v.ok) {
             rejected.push({ index: i, reason: v.reason, kind: a.kind, value: a.value });
             return;
+          }
+          if (ranBreachTools && BREACH_EXPOSURE_KINDS.has(v.kind)) {
+            const verdict = checkBreachExposureRow({
+              value: v.value,
+              sourceLabels: disclosedSourceLabels(a.source, a.metadata ?? null),
+              metadata: (a.metadata ?? null) as Record<string, unknown> | null,
+              ranTools: ranBreachTools,
+            });
+            if (!verdict.ok) {
+              console.log(JSON.stringify({ event: "breach_exposure_rejected", code: verdict.code, source: a.source ?? null }));
+              rejected.push({ index: i, reason: verdict.reason, kind: a.kind, value: a.value });
+              return;
+            }
           }
           // Apply conservative confidence caps based on source class.
           const disclosedSources = disclosedSourceLabels(a.source, a.metadata ?? null);
