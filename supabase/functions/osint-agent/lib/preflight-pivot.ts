@@ -100,22 +100,32 @@ export function shouldRunPreflight(
   return always || preflightCanPivot(target, geminiPivotEnabled);
 }
 
-export type FallbackProvider = "lovable-gateway" | "gemini-direct";
+export type FallbackProvider = "lovable-gateway" | "gemini-direct" | "anthropic";
 
 /**
  * Which provider takes a fallback turn. This IS the precedence `index.ts` builds
  * `fallbackTarget` from, so `/health` reports the target routing actually resolves
  * rather than re-deriving it from the switches alone (Codex P2 on #657): a pinned
- * Lovable gateway first, then direct Gemini, then the Lovable gateway only when
- * the operator opted in with ALLOW_LOVABLE_FALLBACK.
+ * Lovable gateway first, then Anthropic when it is GLM's backup (E2b), then direct
+ * Gemini, then the Lovable gateway only when the operator opted in with
+ * ALLOW_LOVABLE_FALLBACK.
+ *
+ * `anthropicFallback` is `anthropicFallbackEligible(...)` (orchestrator_select.ts): true
+ * only when the primary is the GLM/deepseek slot, the key is configured, the model accepts
+ * forced tool_choice and ANTHROPIC_FALLBACK_DISABLED is off. Omitted/false = the pre-E2b
+ * chain, unchanged. `shouldPivotOnPreflight` gates only `gemini-direct`, so with an
+ * Anthropic target an explicit preflight failure (HTTP >= 400) pivots and the preflight
+ * runs again; a timeout (status 0) still never pivots.
  */
 export function resolveFallbackProvider(c: {
   orchestratorProvider: string;
   hasLovableGateway: boolean;
   hasGeminiDirect: boolean;
   allowLovableFallback: boolean;
+  anthropicFallback?: boolean;
 }): FallbackProvider | null {
   if (c.orchestratorProvider === "lovable" && c.hasLovableGateway) return "lovable-gateway";
+  if (c.anthropicFallback) return "anthropic";
   if (c.hasGeminiDirect) return "gemini-direct";
   if (c.hasLovableGateway && c.allowLovableFallback) return "lovable-gateway";
   return null;

@@ -159,11 +159,14 @@ Deno.test("/health check reports config + model, and can never leak the key", ()
   assertEquals(h.model_id, "claude-sonnet-5");
 });
 
-Deno.test("wiring: the Anthropic path can never fail over, and the budget feeds the finalize machine", async () => {
+Deno.test("wiring: the PINNED Anthropic path can never fail over, and the budget feeds the finalize machine", async () => {
   const src = await Deno.readTextFile(new URL("./index.ts", import.meta.url));
   // useFallback has no Anthropic arm: the chain ends in `: false`, so no preflight/pivot applies.
   assert(/deepseekIsPrimary\s*\n\s*\? \(!DEEPSEEK_API_KEY \|\| deepseekWouldOverflow\)\s*\n\s*: false;/.test(src));
-  assertStringIncludes(src, "const anthropicActive = anthropicIsPrimary && !useFallback;");
+  // E2b: anthropicActive became a function (Anthropic can also be GLM's backup), but the
+  // pinned arm is unchanged, and the start fallback is armed ONLY behind a GLM primary.
+  assertStringIncludes(src, "(anthropicIsPrimary && !useFallback) ||");
+  assertStringIncludes(src, `const startFallback = deepseekIsPrimary && !useFallback && fallbackTarget?.provider === "anthropic"`);
   assertStringIncludes(src, "|| stepCapDue || anthropicBudget.exhausted");
   assertStringIncludes(src, "anthropicBudgetStatus().exhausted");
 });

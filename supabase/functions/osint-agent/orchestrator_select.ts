@@ -19,7 +19,14 @@ export interface OrchestratorAvailability {
   minimax: boolean;
   /** xAI/Grok gateway configured (XAI_API_KEY present). */
   grok: boolean;
-  /** Anthropic (Claude API) configured (ANTHROPIC_API_KEY present). PIN-ONLY: never a default or fallback. */
+  /**
+   * Anthropic (Claude API) configured (ANTHROPIC_API_KEY present). Never a DEFAULT: it is the
+   * primary only by an explicit ORCHESTRATOR_PROVIDER=anthropic|claude pin. Since E2b it is
+   * also the BACKUP behind the GLM (deepseek-slot) primary — but only for an invocation GLM
+   * cannot START (see `anthropicFallbackEligible` below and lib/orchestrator-fallback.ts);
+   * never mid-run, never behind MiniMax/Grok/Lovable, and ANTHROPIC_FALLBACK_DISABLED=true
+   * (read at call time) restores the old pin-only rule.
+   */
   anthropic: boolean;
 }
 
@@ -48,9 +55,9 @@ function normalizePin(pin: string): OrchestratorProvider | "" {
  *   3. Otherwise MiniMax if configured → "minimax" ("default-minimax").
  *   4. Otherwise the first configured alternative → "only-available". Anthropic
  *      is deliberately NOT in that list: Claude spends finite prepaid credits, so
- *      it is selected ONLY by an explicit ORCHESTRATOR_PROVIDER=anthropic|claude
- *      pin (rule 1) and never by default, by absence of other keys, or as a
- *      fallback.
+ *      it is the PRIMARY only by an explicit ORCHESTRATOR_PROVIDER=anthropic|claude
+ *      pin (rule 1) and never by default or by absence of other keys. It may be the
+ *      FALLBACK behind a GLM primary — see `anthropicFallbackEligible`.
  *   5. Nothing configured → "minimax" / "none-configured" (caller errors,
  *      same contract as before).
  */
@@ -78,6 +85,33 @@ export function selectOrchestratorProvider(a: OrchestratorAvailability): Orchest
   return { provider: "minimax", reason: "none-configured" };
 }
 
+export interface AnthropicFallbackInput {
+  /** What selectOrchestratorProvider chose as the PRIMARY. */
+  primary: OrchestratorProvider;
+  /** ANTHROPIC_API_KEY configured (the gateway exists). */
+  anthropicKey: boolean;
+  /** The configured ANTHROPIC_MODEL_ID accepts forced tool_choice (the finalize phases need it). */
+  modelAcceptsForcedToolChoice: boolean;
+  /** ANTHROPIC_FALLBACK_DISABLED=true — the kill switch, read at call time by the caller. */
+  disabled: boolean;
+}
+
+/**
+ * The E2b rule (operator decision, 2026-10-15): GLM-5.2 in the deepseek slot stays the
+ * PRIMARY and Anthropic is its BACKUP. Anthropic takes an invocation only when:
+ *   - the primary is the deepseek/GLM slot (never behind MiniMax, Grok or the Lovable gateway,
+ *     and never "behind itself" when Anthropic is pinned);
+ *   - ANTHROPIC_API_KEY is configured;
+ *   - the model accepts forced tool_choice (otherwise the fallback run would 400 at step 1);
+ *   - ANTHROPIC_FALLBACK_DISABLED is not "true".
+ * WHEN it takes over is decided elsewhere and only ever BEFORE the run admits a tool
+ * (lib/preflight-pivot.ts for the preflight, lib/orchestrator-fallback.ts for the first
+ * real model call). With the kill switch on, today's Gemini → Lovable chain is restored.
+ */
+export function anthropicFallbackEligible(a: AnthropicFallbackInput): boolean {
+  return a.primary === "deepseek" && a.anthropicKey && a.modelAcceptsForcedToolChoice && !a.disabled;
+}
+
 export interface FallbackAvailability {
   /** Direct Gemini API configured (GEMINI_API_KEY present). */
   gemini: boolean;
@@ -94,6 +128,11 @@ export interface FallbackChoice {
 
 /**
  * Choose the FALLBACK provider when MiniMax can't take (or dropped) a turn.
+ *
+ * Scope: this is the SUB-TOOL fallback for `minimaxChat` (providers.ts), not the
+ * orchestrator's. The orchestrator's precedence — including Anthropic as GLM's backup —
+ * lives in `resolveFallbackProvider` (lib/preflight-pivot.ts). Anthropic is deliberately
+ * NOT added here: it would route every failed sub-tool LLM call onto prepaid Claude credits.
  *
  * Order: direct Gemini → Lovable gateway (opt-in only) → none. Grok/xAI is
  * deliberately never a fallback — it stays an explicit primary pin
