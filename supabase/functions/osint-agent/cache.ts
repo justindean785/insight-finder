@@ -1583,7 +1583,9 @@ export function wrapToolsWithCache(
         const turn = await awaitProviderTurn({
           initial: circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force }),
           recheck: () => circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force }),
-          shouldStop: () => !!ctx.shouldStopLiveLookups?.() && !ALWAYS_ALLOW_TOOLS.has(name) && !correlateExempt,
+          shouldStop: () =>
+            (!!ctx.shouldStopLiveLookups?.() && !ALWAYS_ALLOW_TOOLS.has(name) && !correlateExempt) ||
+            !!(opts as { abortSignal?: AbortSignal } | null | undefined)?.abortSignal?.aborted,
           onTick: () => ctx.onHeartbeat?.(),
           disabled: providerBusyQueueDisabled(),
         });
@@ -1593,8 +1595,26 @@ export function wrapToolsWithCache(
             event: "provider_busy_wait",
             tool: name,
             waited_ms: turn.waitedMs,
-            outcome: decision.allow ? "ran" : turn.timedOut ? "timed_out" : "refused_after_wait",
+            outcome: turn.stopped ? "stopped" : decision.allow ? "ran" : turn.timedOut ? "timed_out" : "refused_after_wait",
           }));
+        }
+        if (turn.stopped) {
+          // The finalize window opened (or the step was aborted) while this call waited for its
+          // provider: it never ran and consumed no budget.
+          const aborted = !!(opts as { abortSignal?: AbortSignal } | null | undefined)?.abortSignal?.aborted;
+          const why = aborted ? "step aborted while waiting for a busy provider; live lookup skipped" : "finalize window open; live lookup skipped";
+          const reasonKey = aborted ? "aborted_while_queued" : "finalize_window";
+          await logUsage(false, false, Date.now() - t0, why, null, true, {
+            input: inputJson,
+            runtime: { ...runtimeMetaBase, rejection_reason: reasonKey, rejection_source: "deadline", stale_cache: !!staleRecord },
+          });
+          return attachRuntimeMeta({ ok: false, skipped: true, finalizing: !aborted, error: why }, {
+            ...runtimeMetaBase,
+            rejection_reason: reasonKey,
+            stage: "REPORT",
+            cache_layer: "miss",
+            stale_cache: !!staleRecord,
+          });
         }
         if (!decision.allow) {
           noteRejectedCall(ctx.investigationId, {
