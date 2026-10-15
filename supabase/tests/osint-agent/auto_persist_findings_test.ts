@@ -44,7 +44,7 @@ Deno.test("extractFindings pulls perplexity citations", () => {
 });
 
 Deno.test("extractFindings pulls hibp breaches", () => {
-  const out = extractFindings("hibp_check", {
+  const out = extractFindings("hibp_lookup", {
     ok: true,
     data: { breaches: [{ Name: "LinkedIn" }, { name: "Adobe" }] },
   });
@@ -63,7 +63,7 @@ Deno.test("breach corpus names never become standalone artifacts again", () => {
   // bare corpus names at a flat 55, and 708 such rows exist across 45 threads
   // (mean 43.5, max 88). ALLOWED_KINDS no longer contains "breach", so the
   // extractor cannot mint one even if a future branch tries.
-  const out = extractFindings("hibp_check", {
+  const out = extractFindings("hibp_lookup", {
     ok: true,
     data: { breaches: Array.from({ length: 60 }, (_, i) => ({ Name: `Corpus${String(i).padStart(2, "0")}` })) },
   });
@@ -76,7 +76,7 @@ Deno.test("breach corpus names never become standalone artifacts again", () => {
 Deno.test("the collapsed row survives the per-call cap that used to evict findings", () => {
   // extractFindings stops at MAX_AUTO_PERSIST_PER_TOOL_CALL with a hard break.
   // Corpus names used to consume that budget and push real identity findings out.
-  const out = extractFindings("hibp_check", {
+  const out = extractFindings("hibp_lookup", {
     ok: true,
     data: { breaches: Array.from({ length: 40 }, (_, i) => ({ Name: `C${i}` })) },
     items: Array.from({ length: 20 }, (_, i) => ({ email: `p${i}@example.com` })),
@@ -103,8 +103,8 @@ Deno.test("extractFindings handles github_user", () => {
 });
 
 Deno.test("extractFindings skips explicit tool errors", () => {
-  assertEquals(extractFindings("hibp_check", { ok: false, error: "bad key" }), []);
-  assertEquals(extractFindings("hibp_check", { error: "boom" }), []);
+  assertEquals(extractFindings("hibp_lookup", { ok: false, error: "bad key" }), []);
+  assertEquals(extractFindings("hibp_lookup", { error: "boom" }), []);
 });
 
 Deno.test("extractStepFindings dedups across tool calls", () => {

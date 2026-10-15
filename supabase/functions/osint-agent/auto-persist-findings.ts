@@ -25,6 +25,7 @@
  *     duplicate tool call never inserts twice.
  */
 
+import { BREACH_EXPOSURE_KINDS, breachExposureGuardDisabled, isBreachCapableTool } from "./lib/breach-exposure-guard.ts";
 import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 import { scrubArtifactRows } from "./safety.ts";
 import { checkpointKey } from "./incremental-persist.ts";
@@ -1593,7 +1594,10 @@ export function extractFindings(
   // De-dup within this extraction.
   const seen = new Set<string>();
   const uniq: ExtractedFinding[] = [];
+  const breachGuard = !breachExposureGuardDisabled();
   for (const f of findings) {
+    // A breach_exposure finding is kept only from a breach-capable tool (lib/breach-exposure-guard.ts).
+    if (breachGuard && BREACH_EXPOSURE_KINDS.has(f.kind) && !isBreachCapableTool(toolName)) continue;
     const k = checkpointKey(f.kind, f.value);
     if (seen.has(k)) continue;
     seen.add(k);
