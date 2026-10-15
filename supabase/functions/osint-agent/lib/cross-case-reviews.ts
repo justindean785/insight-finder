@@ -236,6 +236,7 @@ export function applyCrossCaseIndex(
 // ---- loader ----------------------------------------------------------------
 
 // deno-lint-ignore no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type CrossCaseDb = { from: (table: string) => any };
 
 export const CROSS_CASE_PAGE = 1000;
