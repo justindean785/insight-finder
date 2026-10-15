@@ -19,9 +19,19 @@
  * Once one malformed message is in history every subsequent cycle re-includes
  * it and re-fails identically → the run WEDGES until an analyst stops it.
  *
- * These helpers are PURE apart from ONE structured `console.warn`
- * (`sanitize_positional_pair_repair`, emitted only when a repair actually
- * happens) — no other I/O, no SDK calls — so they can be unit-tested against
+ *   - HTTP 400 `tool_use.input: Input should be an object` (Anthropic) — caused
+ *     by an assistant tool-call whose `input` is not a JSON object. A tool call
+ *     whose input never parsed is persisted as a UI part with `rawInput` (the
+ *     raw text) and `convertToModelMessages` rebuilds it with that STRING as
+ *     `input`. The SDK schema types `input` as unknown, so nothing client-side
+ *     objects, and `@ai-sdk/anthropic` copies it verbatim into `tool_use.input`.
+ *     Measured 2026-10-14: 11 consecutive Anthropic runs died on it.
+ *
+ * These helpers are PURE apart from TWO structured `console.warn`s
+ * (`sanitize_positional_pair_repair`, `tool_input_object_repair`, each emitted
+ * only when that repair actually happens) and one call-time env read (the
+ * TOOL_INPUT_OBJECT_REPAIR_DISABLED kill switch) — no other I/O, no SDK calls
+ * — so they can be unit-tested against
  * the real `modelMessageSchema`, and are applied immediately before EVERY
  * model call (the initial streamText prompt and every prepareStep).
  *
@@ -158,6 +168,50 @@ export function normalizeToolOutput(output: unknown): { type: string; value: unk
   return { type: "json", value: output };
 }
 
+// ---- Tool-call input must be a JSON object (Anthropic 400, 2026-10-14) -------
+
+/** Kill switch, read at CALL time: TOOL_INPUT_OBJECT_REPAIR_DISABLED=true restores pass-through. */
+export function toolInputObjectRepairDisabled(): boolean {
+  try {
+    return (Deno.env.get("TOOL_INPUT_OBJECT_REPAIR_DISABLED") ?? "").trim().toLowerCase() === "true";
+  } catch {
+    return false;
+  }
+}
+
+type InputKind = "text" | "empty" | "array" | "other";
+
+/**
+ * Guarantee a tool-call `input` is a plain JSON object. An object passes through
+ * BY REFERENCE. A string that parses to an object is recovered as that object.
+ * Anything else becomes a small, value-free marker object — never the raw text:
+ *   - unparsable / non-object text → `{ _unparsed_input_chars: <length> }`
+ *   - undefined / null / blank text → `{}`
+ *   - array / number / boolean      → `{ _non_object_input: "<kind>" }`
+ * The paired tool-result (which already says the call failed) is not touched.
+ */
+export function coerceToolCallInput(
+  input: unknown,
+): { input: Record<string, unknown>; repaired: boolean; kind?: InputKind } {
+  if (input !== null && typeof input === "object" && !Array.isArray(input)) {
+    return { input: input as Record<string, unknown>, repaired: false };
+  }
+  if (typeof input === "string") {
+    const text = input.trim();
+    if (text === "") return { input: {}, repaired: true, kind: "empty" };
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return { input: parsed as Record<string, unknown>, repaired: true, kind: "text" };
+      }
+    } catch { /* not JSON — fall through to the marker */ }
+    return { input: { _unparsed_input_chars: input.length }, repaired: true, kind: "text" };
+  }
+  if (input == null) return { input: {}, repaired: true, kind: "empty" };
+  if (Array.isArray(input)) return { input: { _non_object_input: "array" }, repaired: true, kind: "array" };
+  return { input: { _non_object_input: typeof input }, repaired: true, kind: "other" };
+}
+
 /**
  * Repair a ModelMessage[] so it always satisfies the AI SDK's ModelMessage
  * schema AND the tool-call/tool-result pairing invariant.
@@ -171,11 +225,26 @@ export function normalizeToolOutput(output: unknown): { type: string; value: unk
  *      message if one is missing).
  *   5. No orphaned tool-result (a tool-result whose tool-call is absent is
  *      dropped).
+ *   6. Every assistant tool-call `input` is a plain JSON object (see
+ *      coerceToolCallInput) — unless TOOL_INPUT_OBJECT_REPAIR_DISABLED=true.
  *
  * Pure: returns a new array; does not mutate the input.
  */
 export function sanitizeModelMessages(input: ModelMessage[]): ModelMessage[] {
-  const { out, overlapRepairs, messages } = sanitizeCore(input);
+  const { out, overlapRepairs, messages, inputRepairs, inputRepairKinds } = sanitizeCore(
+    input,
+    !toolInputObjectRepairDisabled(),
+  );
+  // Durable signal for the Anthropic `tool_use.input` 400: counts and KINDS only,
+  // never an input value or a tool argument.
+  if (inputRepairs > 0) {
+    console.warn(JSON.stringify({
+      event: "tool_input_object_repair",
+      repaired_calls: inputRepairs,
+      kinds: inputRepairKinds,
+      messages,
+    }));
+  }
   // Durable signal: counts the overlap repairs this build makes in production.
   // Only emitted when a repair actually happened — a quiet log means no
   // overlap. (Proof of deploy is /health checks.message_sanitize, not this.)
@@ -189,9 +258,25 @@ export function sanitizeModelMessages(input: ModelMessage[]): ModelMessage[] {
   return out;
 }
 
-/** The repair itself, with no logging. Shared by sanitizeModelMessages and the /health self-test. */
-function sanitizeCore(input: ModelMessage[]): { out: ModelMessage[]; overlapRepairs: number; messages: number } {
-  if (!Array.isArray(input)) return { out: [], overlapRepairs: 0, messages: 0 };
+type CoreResult = {
+  out: ModelMessage[];
+  overlapRepairs: number;
+  messages: number;
+  inputRepairs: number;
+  inputRepairKinds: Record<string, number>;
+};
+
+/**
+ * The repair itself, with no logging. Shared by sanitizeModelMessages and the
+ * /health self-tests. `repairToolInputs` is passed in (not read here) so the
+ * self-test exercises the repair regardless of the kill switch.
+ */
+function sanitizeCore(input: ModelMessage[], repairToolInputs = true): CoreResult {
+  if (!Array.isArray(input)) {
+    return { out: [], overlapRepairs: 0, messages: 0, inputRepairs: 0, inputRepairKinds: {} };
+  }
+  let inputRepairs = 0;
+  const inputRepairKinds: Record<string, number> = {};
 
   // Pass 1 — collect every toolCallId that has a real assistant tool-call.
   const callIds = new Set<string>();
@@ -238,6 +323,17 @@ function sanitizeCore(input: ModelMessage[]): { out: ModelMessage[]; overlapRepa
         if (typeof p.text !== "string" || p.text.length === 0) continue;
         parts.push(p);
         continue;
+      }
+
+      if (p.type === "tool-call" && repairToolInputs) {
+        const r = coerceToolCallInput(p.input);
+        if (r.repaired) {
+          inputRepairs++;
+          const k = r.kind ?? "other";
+          inputRepairKinds[k] = (inputRepairKinds[k] ?? 0) + 1;
+          parts.push({ ...p, input: r.input });
+          continue;
+        }
       }
 
       // tool-call / reasoning / file / image / etc. → keep as-is.
@@ -316,7 +412,7 @@ function sanitizeCore(input: ModelMessage[]): { out: ModelMessage[]; overlapRepa
     }
   }
 
-  return { out, overlapRepairs, messages: cleaned.length };
+  return { out, overlapRepairs, messages: cleaned.length, inputRepairs, inputRepairKinds };
 }
 
 const PAIRING_PROBE_ID = "health-probe-overlap";
@@ -409,6 +505,78 @@ export function positionalPairingSelfTest(
   if (!genuine) return fail("the genuine tool result was dropped");
 
   return { ok: true, detail: "pairing=positional (overlap probe: every call answered in place, genuine result kept)" };
+}
+
+const INPUT_PROBE_RAW = '{"artifacts":[{"kind":"email","val';
+
+/**
+ * /health `checks.tool_input_object_repair`: run the DEPLOYED sanitizer on a
+ * fixed synthetic history whose tool-calls carry every non-object input shape
+ * (truncated JSON text, JSON-object text, null, an array) plus one valid object,
+ * and check that every replayed input is a plain object, the valid one is
+ * untouched, the JSON text is recovered, the truncated text becomes the
+ * value-free marker, and the failure result is kept. Pure and silent (non-logging
+ * core, repair forced ON so the CODE is proven even while the switch is off);
+ * `enabled` reports the kill switch separately. `sanitize` is injectable only so
+ * a test can prove the probe catches a sanitizer that does not repair.
+ */
+export function toolInputObjectRepairSelfTest(
+  sanitize: (m: ModelMessage[]) => ModelMessage[] = (m) => sanitizeCore(m, true).out,
+): { ok: boolean; enabled: boolean; detail: string } {
+  const enabled = !toolInputObjectRepairDisabled();
+  const sw = enabled ? "" : " — DISABLED by TOOL_INPUT_OBJECT_REPAIR_DISABLED (inputs replay as-is)";
+  const valid = { handle: "probe" };
+  const calls: Array<[string, unknown]> = [
+    ["p-text", INPUT_PROBE_RAW],
+    ["p-json", '{"handle":"probe"}'],
+    ["p-null", null],
+    ["p-array", [1]],
+    ["p-valid", valid],
+  ];
+  const fixture = [
+    { role: "user", content: "probe" },
+    ...calls.flatMap(([id, input]) => [
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: id, toolName: "health_probe", input }] },
+      {
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: id,
+          toolName: "health_probe",
+          output: { type: "error-text", value: "probe failed" },
+        }],
+      },
+    ]),
+    { role: "user", content: "continue" },
+  ] as unknown as ModelMessage[];
+  let msgs: AnyMsg[];
+  try {
+    msgs = sanitize(fixture) as unknown as AnyMsg[];
+  } catch (e) {
+    return { ok: false, enabled, detail: `tool-input self-test threw: ${String(e).slice(0, 120)}${sw}` };
+  }
+  const fail = (why: string) => ({ ok: false, enabled, detail: `tool-input repair BROKEN: ${why}${sw}` });
+  const parts = msgs.flatMap((m) => (Array.isArray(m?.content) ? (m.content as AnyPart[]) : []));
+  const inputOf = (id: string) => parts.find((p) => p?.type === "tool-call" && p.toolCallId === id)?.input;
+  for (const [id] of calls) {
+    const v = inputOf(id);
+    if (v === null || typeof v !== "object" || Array.isArray(v)) return fail(`${id} input is not an object`);
+  }
+  if (inputOf("p-valid") !== valid) return fail("a valid object input was rewritten");
+  if ((inputOf("p-json") as { handle?: unknown }).handle !== "probe") return fail("JSON-object text not recovered");
+  if ((inputOf("p-text") as { _unparsed_input_chars?: unknown })._unparsed_input_chars !== INPUT_PROBE_RAW.length) {
+    return fail("truncated text did not become the value-free marker");
+  }
+  const errorKept = parts.some((p) =>
+    p?.type === "tool-result" && p.toolCallId === "p-text" &&
+    (p.output as { type?: unknown } | undefined)?.type === "error-text"
+  );
+  if (!errorKept) return fail("the failure result was dropped");
+  return {
+    ok: true,
+    enabled,
+    detail: `tool-call input=object (probe: text→marker, json→object, null/array→object, valid untouched)${sw}`,
+  };
 }
 
 /**
