@@ -117,12 +117,14 @@ describe("summarizeMessageRow — non-OK outcomes are not all failures", () => {
     expect(out({ ok: false, error: "deepfind 403 forbidden" })).toBe("degraded");
   });
 
-  it("a missing key / unconfigured provider is gated, not failed", () => {
-    expect(out({ ok: false, error: "skipped: missing key for provider" })).toBe("gated");
+  // Since F1 (2026-10) classifyActivityRow delegates to the canonical
+  // classifier the Health panel runs, so these read exactly as Health reads them.
+  it("an unavailable (missing-key) provider is gated, not failed", () => {
+    expect(out({ ok: false, error: "unavailable: missing_key (HIBP_API_KEY not set)" })).toBe("gated");
   });
 
-  it("an internal paid-call cap is degraded, not failed", () => {
-    expect(out({ ok: false, error: "paid-call cap reached for this cycle" })).toBe("degraded");
+  it("an internal paid-call cap is a governance skip, not failed", () => {
+    expect(out({ ok: false, error: "paid-call cap reached for this cycle" })).toBe("skipped");
   });
 
   it("a rate limit is degraded, not failed", () => {
@@ -145,7 +147,7 @@ describe("summarizeMessageRow — non-OK outcomes are not all failures", () => {
     const s = summarizeMessageRow(row("assistant", [
       { type: "tool-minimax_correlate", toolCallId: "c9", state: "output-error", input: {}, errorText: "paid-call budget exhausted" },
     ]));
-    expect(s.toolCalls[0].resultSummary).toBe("degraded");
+    expect(s.toolCalls[0].resultSummary).toBe("skipped");
   });
 
   it("a successful call is still completed, and an uncharacterised one still returns", () => {

@@ -220,7 +220,7 @@ describe("useThreadToolActivity persisted count", () => {
   // The Activity feed still collapses `empty` into `succeeded` (an empty result
   // IS a completed call), but failures are no longer dropped. A thread with
   // 10 ok + 1 empty + 2 failed persists 13 rows and now SHOWS all 13.
-  it("counts an empty outcome as succeeded and still surfaces failures", async () => {
+  it("counts an empty outcome as No record (as Health does) and still surfaces failures", async () => {
     mock.rowsByThread.set("thread-a", mixedRows({ ok: 10, empty: 1, failed: 2 }));
 
     const { result } = renderActivityHook("thread-a", "account-a");
@@ -228,13 +228,14 @@ describe("useThreadToolActivity persisted count", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.persistedTotal).toBe(13);
     expect(result.current.total).toBe(13);
-    // ok + empty are both "succeeded" rows.
-    expect(result.current.ok).toBe(11);
+    // Health counts a clean empty as "No record", not "Succeeded"; so does Activity.
+    expect(result.current.ok).toBe(10);
+    expect(result.current.noRecord).toBe(1);
     expect(result.current.failed).toBe(2);
-    // Empty is grouped with ok, so no separate skipped/gated/degraded rows.
     expect(result.current.skipped).toBe(0);
     expect(result.current.gated).toBe(0);
     expect(result.current.degraded).toBe(0);
+    expect(result.current.groups).toEqual({ succeeded: 10, no_record: 1, skipped: 0, degraded: 0, faulted: 2 });
   });
 
   it("realtime insertion increments the active thread only", async () => {
