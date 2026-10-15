@@ -4,6 +4,7 @@
  * All 77 tools flow through wrapToolsWithCache().
  */
 
+import { awaitProviderTurn, providerBusyQueueDisabled } from "./lib/provider-busy-queue.ts";
 import { redactErrorMessage } from "./lib/redact-error.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import type { Tool } from "npm:ai@6";
@@ -1577,7 +1578,24 @@ export function wrapToolsWithCache(
           });
         }
 
-        const decision = circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force });
+        // E3: a call refused ONLY because its provider is busy waits its turn and
+        // re-checks the gate instead of being dropped (lib/provider-busy-queue.ts).
+        const turn = await awaitProviderTurn({
+          initial: circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force }),
+          recheck: () => circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force }),
+          shouldStop: () => !!ctx.shouldStopLiveLookups?.() && !ALWAYS_ALLOW_TOOLS.has(name) && !correlateExempt,
+          onTick: () => ctx.onHeartbeat?.(),
+          disabled: providerBusyQueueDisabled(),
+        });
+        const decision = turn.decision;
+        if (turn.waitedMs > 0) {
+          console.log(JSON.stringify({
+            event: "provider_busy_wait",
+            tool: name,
+            waited_ms: turn.waitedMs,
+            outcome: decision.allow ? "ran" : turn.timedOut ? "timed_out" : "refused_after_wait",
+          }));
+        }
         if (!decision.allow) {
           noteRejectedCall(ctx.investigationId, {
             tool_name: name,
