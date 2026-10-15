@@ -68,7 +68,9 @@ update production edge code. The verified recipe (canonical copy in `CLAUDE.md`)
    even after a real deploy.
 3. Open a surgical sync PR to the Lovable mirror `seeker-spark-search-5362c57c`
    (per-function `cp -R` + `git diff` review; never blanket-overwrite — the mirror
-   holds un-backported work like `tools/peopledatalabs.ts`).
+   holds un-backported work like `tools/peopledatalabs.ts`). `cp -R` cannot delete:
+   also `git rm` in the mirror exactly the paths canonical deleted under
+   `supabase/functions/` since the last stamp (e.g. tests moved to `supabase/tests/`).
 4. **Explicitly trigger the Lovable edge-function deploy** — the Lovable project
    agent runs `supabase--deploy_edge_functions` for `osint-agent`. Merging the
    mirror PR does NOT deploy; a "redeploy" nudge often only creates a commit.

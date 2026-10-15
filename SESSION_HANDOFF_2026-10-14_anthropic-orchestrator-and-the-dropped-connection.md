@@ -90,7 +90,7 @@
 curl -s "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1" | python3 -m json.tool | head -80
 git fetch origin main refs/heads/deploy/live:refs/heads/deploy/live && git log --oneline -3 origin/main && git rev-parse --short refs/heads/deploy/live
 npm run verify:deploy -- --previous 66cf1c3 --mirror ../seeker-spark-search-5362c57c
-cd supabase/functions/osint-agent && deno test --no-check --no-lock --allow-net --allow-env --allow-sys --allow-read . ../evidence-export   # expect ~2310+ / 0 / 6
+cd supabase/tests/osint-agent && deno test --config=../../functions/osint-agent/deno.json --no-check --no-lock --allow-net --allow-env --allow-sys --allow-read . ../evidence-export   # expect ~2310+ / 0 / 6
 npx vitest run                     # expect ~2557+ / 1 skipped
 PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium-1194/chrome-linux/chrome npm run test:e2e   # expect 52 / 2
 ```
