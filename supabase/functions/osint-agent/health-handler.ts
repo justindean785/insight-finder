@@ -41,7 +41,7 @@ import {
   preflightPolicyHealthDetail,
   resolveFallbackProvider,
 } from "./lib/preflight-pivot.ts";
-import { positionalPairingSelfTest } from "./message-sanitize.ts";
+import { positionalPairingSelfTest, toolInputObjectRepairSelfTest } from "./message-sanitize.ts";
 import { streamErrorDetailSelfTest } from "./stream-error-classify.ts";
 import { contradictionClaimSelfTest } from "./contradictions.ts";
 import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
@@ -479,6 +479,13 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // silent, so health probes never emit sanitize_positional_pair_repair. Its
   // PRESENCE proves this build is live; ok:false means the pairing rule regressed.
   r.checks.message_sanitize = positionalPairingSelfTest();
+
+  // Does every REPLAYED tool-call carry an object `input` (message-sanitize.ts)?
+  // Anthropic answers a non-object `tool_use.input` with HTTP 400 on every request
+  // (11 runs, 2026-10-14). A self-test on a fixed synthetic history, pure and
+  // silent; `enabled:false` means TOOL_INPUT_OBJECT_REPAIR_DISABLED is set. Its
+  // PRESENCE proves this build is live.
+  r.checks.tool_input_object_repair = toolInputObjectRepairSelfTest();
 
   // Do stream errors record the provider's status and code WITHOUT the response
   // body (stream-error-classify.ts)? A self-test on a synthetic error, pure.
