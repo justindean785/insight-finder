@@ -12,7 +12,7 @@ import { FullPageLoader } from "@/components/ui/full-page-loader";
 import { supabase } from "@/integrations/supabase/client";
 import { MessageSquare, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { isRunningThread } from "@/lib/thread-status";
+import { deriveRunState } from "@/lib/case-snapshot";
 import { extractDisplaySeed } from "@/lib/seed";
 import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
 import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
@@ -37,6 +37,10 @@ type ThreadMeta = {
   seed_type: string | null;
   seed_value: string | null;
   updated_at: string;
+  run_started_at: string | null;
+  last_heartbeat_at: string | null;
+  recovered_at: string | null;
+  recovery_reason: string | null;
 };
 
 export default function CaseViewPage() {
@@ -62,7 +66,7 @@ export default function CaseViewPage() {
     (async () => {
       const { data, error } = await supabase
         .from("threads")
-        .select("id,title,status,seed_type,seed_value,updated_at,run_started_at,last_heartbeat_at")
+        .select("id,title,status,seed_type,seed_value,updated_at,run_started_at,last_heartbeat_at,recovered_at,recovery_reason")
         .eq("id", threadId)
         .eq("user_id", user.id)
         .maybeSingle();
@@ -109,9 +113,10 @@ export default function CaseViewPage() {
   }
 
 
-  // A thread that never started is not running, however "active" its status
-  // column looks — see isRunningThread / CLAUDE.md invariant I-1.
-  const running = isRunningThread(meta ?? null);
+  // Live only on a fresh heartbeat, as in the workspace header (deriveRunState):
+  // a never-started thread (I-1) and a killed run whose row is still `active`
+  // are both "active" in the status column, and neither is running.
+  const running = deriveRunState({ thread: meta ?? null, chatRunning: false, nowMs: Date.now() }) === "running";
   // The stored title / seed_value can be the whole pasted run-prompt, which
   // overran the header and truncated mid-word. Pull the clean selector out of
   // the blob (same helper the report cover uses) for the heading, and keep the

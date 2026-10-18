@@ -1,0 +1,190 @@
+import { cleanup, render, screen, within } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * The Cases list and the read-only case page must say what the workspace header
+ * says about a run: they share `deriveRunState` (case-snapshot.ts).
+ *
+ * Before this, both pages used `isRunningThread`, which reads `status='active'` +
+ * a run marker as Running. That is exactly the row a CPU-killed run leaves
+ * behind, and since #795 the sidebar no longer writes `finished` over it, so the
+ * row stays `active` until server recovery runs (at the next run start or a
+ * `/health` probe). The pages called that dead run "Running".
+ *
+ * The other half is invariant I-2: once the server recovers the run it writes
+ * `finished` + `recovery_reason`, which the Cases list rendered as "Finished",
+ * i.e. complete. A dead run is "Interrupted" before AND after recovery.
+ *
+ * The Supabase stub returns only the columns a query asks for, so a page that
+ * does not SELECT `recovery_reason` / `recovered_at` cannot see them here either.
+ */
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+const m = vi.hoisted(() => ({
+  threadRows: [] as Array<Record<string, unknown>>,
+  auth: { user: { id: "user-1", email: "analyst@test.local" }, session: { access_token: "t" }, loading: false, error: null },
+}));
+
+vi.mock("@/hooks/useAuth", () => ({ useAuth: () => m.auth }));
+
+vi.mock("@/integrations/supabase/client", () => {
+  const pick = (row: Record<string, unknown>, cols: string | null) => {
+    if (!cols || cols.trim() === "*") return row;
+    const out: Record<string, unknown> = {};
+    for (const c of cols.split(",").map((s) => s.trim()).filter(Boolean)) {
+      if (c in row) out[c] = row[c];
+    }
+    return out;
+  };
+  const makeChain = (table: string) => {
+    let cols: string | null = null;
+    const rows = () => (table === "threads" ? m.threadRows.map((r) => pick(r, cols)) : []);
+    const chain: Record<string | symbol, unknown> = {};
+    const proxy: Record<string | symbol, unknown> = new Proxy(chain, {
+      get(target, key) {
+        if (key === "select") {
+          return (c?: string) => {
+            cols = c ?? null;
+            return proxy;
+          };
+        }
+        if (key === "maybeSingle" || key === "single") {
+          return () => Promise.resolve({ data: rows()[0] ?? null, error: null });
+        }
+        if (key === "then") {
+          return (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+            Promise.resolve({ data: rows(), error: null, count: rows().length }).then(resolve, reject);
+        }
+        if (key in target) return target[key];
+        return () => proxy;
+      },
+    });
+    return proxy;
+  };
+  const ch = { on: () => ch, subscribe: () => ch };
+  return {
+    supabase: {
+      from: (table: string) => makeChain(table),
+      rpc: () => Promise.resolve({ data: [], error: null }),
+      auth: {
+        getUser: () => Promise.resolve({ data: { user: { id: "user-1" } }, error: null }),
+        getSession: () => Promise.resolve({ data: { session: null }, error: null }),
+        onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+      },
+      channel: () => ch,
+      removeChannel: () => Promise.resolve(),
+    },
+  };
+});
+
+import CasesPage from "@/pages/CasesPage";
+import CaseViewPage from "@/pages/CaseViewPage";
+
+const NOW = Date.now();
+const ago = (ms: number) => new Date(NOW - ms).toISOString();
+
+function row(id: string, title: string, over: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id,
+    title,
+    created_at: ago(60 * 60_000),
+    updated_at: ago(20 * 60_000),
+    status: "active",
+    seed_type: "email",
+    seed_value: `${id}@example.test`,
+    run_started_at: null,
+    last_heartbeat_at: null,
+    recovered_at: null,
+    recovery_reason: null,
+    ...over,
+  };
+}
+
+const DEAD_ACTIVE = row("dead", "Dead run case", { run_started_at: ago(25 * 60_000), last_heartbeat_at: ago(20 * 60_000) });
+const LIVE = row("live", "Live run case", { updated_at: ago(5_000), run_started_at: ago(60_000), last_heartbeat_at: ago(5_000) });
+const RECOVERED = row("recovered", "Recovered run case", {
+  status: "finished",
+  run_started_at: ago(30 * 60_000),
+  last_heartbeat_at: ago(28 * 60_000),
+  recovered_at: ago(10 * 60_000),
+  recovery_reason: "stale_active",
+});
+const DRAFT = row("draft", "Draft case", {});
+const DONE = row("done", "Done case", { status: "finished", run_started_at: ago(40 * 60_000), last_heartbeat_at: ago(35 * 60_000) });
+const STOPPED = row("stopped", "Stopped case", { status: "stopped", run_started_at: ago(40 * 60_000), last_heartbeat_at: ago(35 * 60_000) });
+
+afterEach(() => {
+  cleanup();
+  m.threadRows = [];
+});
+
+async function chipFor(title: string): Promise<string> {
+  const name = await screen.findByText(title);
+  const li = name.closest("li");
+  expect(li).not.toBeNull();
+  const chip = within(li as HTMLElement).getAllByText(/^(Running|Interrupted|Draft|Stopped|Finished)$/);
+  expect(chip).toHaveLength(1);
+  return chip[0].textContent ?? "";
+}
+
+function renderCases() {
+  return render(
+    <MemoryRouter initialEntries={["/cases"]}>
+      <Routes>
+        <Route path="/cases" element={<CasesPage />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+describe("Cases list labels a run the way the workspace header does", () => {
+  it("a run whose heartbeat died is Interrupted, not Running (row still active, recovery not run yet)", async () => {
+    m.threadRows = [DEAD_ACTIVE];
+    renderCases();
+    expect(await chipFor("Dead run case")).toBe("Interrupted");
+  });
+
+  it("a run the server already recovered is Interrupted, not Finished (I-2)", async () => {
+    m.threadRows = [RECOVERED];
+    renderCases();
+    expect(await chipFor("Recovered run case")).toBe("Interrupted");
+  });
+
+  it("controls: a live heartbeat is Running; a never-started thread is Draft; a clean finish is Finished; a stop is Stopped", async () => {
+    m.threadRows = [LIVE, DRAFT, DONE, STOPPED];
+    renderCases();
+    expect(await chipFor("Live run case")).toBe("Running");
+    expect(await chipFor("Draft case")).toBe("Draft");
+    expect(await chipFor("Done case")).toBe("Finished");
+    expect(await chipFor("Stopped case")).toBe("Stopped");
+  });
+});
+
+function renderCaseView(id: string) {
+  return render(
+    <MemoryRouter initialEntries={[`/cases/${id}`]}>
+      <Routes>
+        <Route path="/cases/:threadId" element={<CaseViewPage />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+describe("Read-only case page does not call a dead run live", () => {
+  it("no Running badge and no 'Open live chat' when the heartbeat has died", async () => {
+    m.threadRows = [DEAD_ACTIVE];
+    renderCaseView("dead");
+    expect(await screen.findByRole("link", { name: /Continue in chat/ })).toBeTruthy();
+    expect(screen.queryByText("Running")).toBeNull();
+    expect(screen.queryByRole("link", { name: /Open live chat/ })).toBeNull();
+  });
+
+  it("control: a live heartbeat still shows Running and 'Open live chat'", async () => {
+    m.threadRows = [LIVE];
+    renderCaseView("live");
+    expect(await screen.findByRole("link", { name: /Open live chat/ })).toBeTruthy();
+    expect(screen.getByText("Running")).toBeTruthy();
+  });
+});
