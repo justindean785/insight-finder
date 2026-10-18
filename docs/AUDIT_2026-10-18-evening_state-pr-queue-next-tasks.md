@@ -5,7 +5,14 @@
 
 ## 1 · Executive summary
 
-**Verdict: in sync and green, and blocked on decisions and money rather than on code.**
+**Verdict: in sync and green; blocked on decisions, on reported provider credit, and on unmerged evidence-integrity fixes.**
+
+> **Corrected at 21:15Z after an outside review.** The first version said "blocked on decisions and money rather than on code". That understated the integrity defects that are still open on `main`:
+> - the model can write analyst-only keys on non-name rows (#741);
+> - recalled memory can produce a `confirmed` finding with no tool run;
+> - display deduplication donates authority between rows (#593).
+>
+> §10 records the re-trace and the revised order. The gate results in §3 apply to `main` `8fae8c8`, not to every open PR merged with it.
 
 **Sync.** Production Vercel serves `main` `8fae8c8`. The `osint-agent` source in the mirror is byte-identical to canonical, in all four shared function folders. Since the last recorded deploy (`cabfeb9`, 10-15) nothing has merged that touches edge runtime code, so there is no deploy lag; the frontend and the edge simply ship on separate channels.
 
@@ -22,7 +29,7 @@
 
 **The single most important finding is operational, not code.** Four parts of the stack sit on paid credit, and three of them are short or out:
 
-- **Lovable** ran out of credits today, at 19:55Z according to its own agent. Every edge deploy goes through a message to that agent, so #797 cannot ship until the credits are topped up.
+- **Lovable** *reported* running out of credits at 19:55Z (its own agent's message). This review did not verify the balance or whether another authorized deploy route exists. Treat it as a dated report. If it holds, it blocks the Lovable deploy step for #797.
 - **Z.AI**, the primary orchestrator, ran dry in the middle of a run at 06:31Z today, for the second time in five days.
 - **Anthropic**, the backup orchestrator, has not run since 10-14. The 10-14 handoff says its promotional credit expires 10-23 (Unverified).
 - **OathNet** still returns 401 on every call. JD is handling it with the provider.
@@ -219,13 +226,17 @@ The stored `input_json` keeps only the `runtime` key, so the alias the model use
 
 **New this pass:**
 
-- **F34 — Lovable credits exhausted.** Medium confidence, from the Lovable agent's own message at 19:55Z. Every edge deploy, #797 first, needs a Lovable agent message, so the edge channel is blocked until JD tops up. Frontend merges are unaffected because Vercel builds from canonical.
+- **F34 — Lovable credits reported exhausted.** Unverified. The only source is the Lovable agent's own message at 19:55Z. Nobody has checked the current balance, or whether every authorized deploy route is unavailable. If it holds, the Lovable deploy step for every edge PR (#797 first) is blocked. Frontend merges are unaffected because Vercel builds from canonical.
 - **F35 — Five edge PRs still carry their tests in the old location.** Confirmed by inspecting the trees. #763 merges without a textual conflict, yet the result would fail `src/test/edge-deploy-bundle.test.ts`, and `test:edge` would no longer run its tests. #764, #741, #738 and #701 need the same `supabase/tests/` move when they are rebased.
 - **F36 — The #793 PR body was stale.** Confirmed. It listed #794–#796 as unmerged, #593 as conflicting and #797 as a draft. Corrected alongside this report.
 - **F37 — CLAUDE.md baselines are stale.** Confirmed: vitest 2560/198 is now 2653/210, and the edge suite at 2316 is now 2449. This is part of F30, and it rides separately.
-- **F38 — The GitHub key is saved but unproven.** The first scan that calls `github_code_search` is the test. Read the result from `tool_usage_log` (`outcome`, `status_code`), not from `/health`.
+- **F38 — The GitHub key is saved but unproven.** Wait for the next real scan that happens to call `github_code_search`; **do not trigger a scan just to test the key.** Read the result from `tool_usage_log` (`outcome`, `status_code`), not from `/health`.
 - **F39 — Small residual of input-schema rejections.** 6 since the 10-15 deploy (§5). Real but small; covered by PR 5 in §8b.
-- **F40 — A 403 from one target suppresses Jina for the rest of the run.** Confirmed in code (`circuit.ts` `http_403` → `suppressProvider`) and in production: 4 skips reading "provider 'jina_reader_scrape' suppressed", the latest at 05:13Z today, while Jina's key works (257 ok in 30 days). Covered by PR 1 in §8b.
+- **F40 — A raw 403 from r.jina.ai suppresses Jina for the rest of the run.**
+  - The suppression is Confirmed in code (`circuit.ts` `http_403` → `suppressProvider`) and in production: 4 skips read "provider 'jina_reader_scrape' suppressed", the latest at 05:13Z today.
+  - **That these 403s are not a dead key is Likely.** Jina succeeded within minutes before and after each one, and returned 257 ok in 30 days.
+  - **The cause of each individual 403 is Unverified.** Response bodies are not stored, and Jina documents no meaning for a 403.
+  - Covered by PR 1 (#799), which §10 proposes to amend.
 - **F41 — `wayback_cdx_search` returned 1 ok in 49 calls over 30 days** (21 failed with 503s, 19 empty, 8 skipped). Confirmed. Covered by PR 2 in §8b.
 - **Opsis ran out of credit twice** (402 "out of API credits" on 10-09 and 10-14), but `opsis_search` succeeded again today. Intermittent; it joins the F8 money list.
 
@@ -233,22 +244,42 @@ The stored `input_json` keeps only the `runtime` key, so the alias the model use
 
 **Everything below needs JD's go. Nothing here merges or deploys by itself, and a mirror merge is not a deploy.**
 
-1. **Money first (F8, F34).**
-   - Top up **Lovable**. Without credits no edge fix can ship.
-   - Put **Z.AI** on auto-recharge: it ran dry mid-run today.
-   - Decide the **Anthropic** budget before **10-23**.
-   - *Cost:* account settings only, no code.
-2. **Merge and deploy #797 (F3)** once Lovable credits exist. It is ready, green and Codex-clean. Deploy cycle: stamp, surgical sync, `verify:deploy` gate, Lovable message, verify. Each step needs JD's go. The `/health` read in the verify step is the one deliberate, labelled `/health` call.
-3. **Sign off #593 (F6 remainder).** Frontend only; it ships when merged.
-4. **Decide F33**: option (a), (b) or (c).
-5. **Queue hygiene**, all closures needing JD's go:
+*Re-ordered at 21:15Z after the outside review and the §10 re-trace. The evidence-integrity work now comes before any new tool fallbacks.*
+
+1. **Provider credit (F8, F34): JD's decision, treated as reported conditions.**
+   - Confirm the Lovable balance, or another authorized deploy route.
+   - Decide Z.AI recharge settings (do not assume auto-recharge exists).
+   - Decide the Anthropic budget before the reported 10-23 expiry.
+   - No code.
+2. **#797 (F3): ready for JD's merge decision.**
+   - Re-verified 21:03Z, merged locally onto current `main` in an isolated worktree:
+     - lint 0 errors, typecheck clean;
+     - vitest 2653 passed;
+     - edge suite 2475 / 0 / 6;
+     - working tree and lockfiles unchanged.
+   - Deploy follows the normal cycle. The `/health` read in its verify step is the one deliberate, labelled `/health` call.
+3. **#741: rebase it onto `main`, so the model can no longer write analyst-only keys (§10, Confirmed).**
+   - Mechanical rebase: two import-only conflicts, plus moving the tests to `supabase/tests/`.
+   - Proposed addition: a model-supplied protective flag may only be `true`.
+   - Evidence-integrity work, so it needs JD's sign-off.
+4. **Executed-source gate (§10, new, not built).** A tool named in `supporting_sources` grants a source class only if that tool ran in the case. It closes the memory-to-`confirmed` path, which #738 does not close. Needs JD's sign-off.
+5. **#593: JD's decision, A, B or C (§10).**
+   - Re-verified 21:08Z on current `main`:
+     - lint and typecheck clean;
+     - vitest 2736 passed;
+     - build passed;
+     - e2e 52 / 2.
+6. **#738: land only its tokenizer slice** (`lib/memory-context.ts`). Its prompt-wording parts are guidance, not enforcement. Split, don't rebase whole.
+7. **Decide F33**: option (a), (b) or (c).
+8. **Queue hygiene**, each closure needing JD's go:
    - close **#764** (superseded) and **#701** (wrong premise);
    - close or restart **#516**;
    - fold **mirror #117** into the F21 decision.
-   - Each closure removes a conflicting draft from the queue.
-6. **Free-tool fill-ins (Lovable prompt v2): approve the plan in §8b.** Then build it as small edge PRs, one in flight at a time, **after #797 is deployed**.
-7. **Rebase and sign off #741 (F4)**, with the F35 test move. Then split #738 before rebasing it.
-8. The rest of the morning audit's list, unchanged:
+9. **Tool reliability and fill-ins, after the integrity items:**
+   - #799 (amend first; see §10);
+   - #800;
+   - then the §8b plan, as corrected.
+10. The rest of the morning audit's list, unchanged:
    - F9: gate `/health`;
    - F7/F12: run-state fixes;
    - F11/F22: schema hardening via Lovable;
@@ -283,7 +314,7 @@ The prompt says "plan first, wait for the user's OK", and this section is that p
 **New defects found by the check** (not in the prompt):
 - **F40 — Jina: a 403 from one target suppresses Jina for the rest of the run.** Confirmed in code and in production.
   - When `r.jina.ai` answers HTTP 403, the circuit treats it as a dead credential (`circuit.ts` `http_403`) and suppresses the provider.
-  - Jina's key works (257 ok in 30 days), so these 403s are about the target, not the key.
+  - Jina's key works (257 ok in 30 days), so these 403s are **Likely** not a dead key. Whether each one came from the target or from Jina's own refusal is Unverified: the bodies are not stored. See §10.
   - Production logged 11 such 403s and then 4 skips reading `"401/403 unauthorized — provider 'jina_reader_scrape' suppressed"`, the latest today at 05:13Z.
 - **F41 — `wayback_cdx_search` is effectively broken: 1 ok in 49 calls over 30 days** (21 failed with 503s, 19 empty, 8 skipped).
 - `urlscanner_scan` has a 45 s internal budget but the 12 s default wrapper, with no override. It is **latent, not observed**: 8 of 8 production calls succeeded, in 2–12.4 s.
@@ -295,8 +326,8 @@ The prompt says "plan first, wait for the user's OK", and this section is that p
 | 1 | A 403 from a target no longer suppresses Jina for the run. Shield it like the 200-wrapped target errors and skip **that URL** only. | F40 | none | no |
 | 2 | Wayback reliability: `fl=`, smaller limits and an 8 s budget per query in `wayback_cdx_search`, falling back to the availability API. | F41, A13 | none (archive.org already) | no |
 | 3 | crt.sh → **CertSpotter** fallback inside `crtsh_lookup`/`crtsh_subdomains` on a 5xx or a timeout. | A6 (crt.sh failed 9 of 17) | CertSpotter receives **domains** (public CT data) | provider OK |
-| 4 | Disposable-email check run **locally** (the open disposable-domains list, cached per cold start) plus an MX lookup over the existing DoH path, as the fallback for `deepfind_disposable_email`. | A4 | none: nothing is disclosed | no |
-| 5 | Input-repair residuals: `breach_check` number → string; `minimax_correlate` with no `artifacts` → empty array (a free skip); and a keys-only shape log for `memory_save` with no `entries`, so the next occurrence names the alias the model used. | C1 residual (6 rejections) | none | no |
+| 4 | Two **separate** operations as the fallback for `deepfind_disposable_email`: (a) a **local** match against the open disposable-domains list, cached per cold start; (b) an **optional** MX lookup over the existing DoH path. | A4 | (a) discloses nothing. (b) discloses the **domain** to the DoH resolver (Cloudflare), as `dns_records` already does. *(corrected 21:15Z)* | (b) needs OK |
+| 5 | Input-repair residuals, *corrected 21:15Z*:<br>– **no blind number → string repair.** A number cannot regain lost leading zeros or precision, so repair only when the selector is unambiguous (for example a safe integer for a field that never has leading zeros); otherwise keep the clear rejection;<br>– `minimax_correlate` with no `artifacts`: check the intended contract first. It must return an explicit skip or error, never a fake success;<br>– a keys-only shape log for `memory_save` with no `entries`, so the next occurrence names the alias the model used. | C1 residual (6 rejections) | none | no |
 | 6 | GitHub: add `X-GitHub-Api-Version`, drop the unauthenticated retry for code search, respect `X-RateLimit-Remaining`/`Retry-After`, and correct the description. | A14 | none (GitHub already) | after F38 |
 | 7 | Guidance-only update to `playbooks.ts`/`pivot-checklists.ts`:<br>– fetch Opsis results before 90 s;<br>– `exa_find_similar` after a strong profile URL;<br>– OpenCorporates/GLEIF for an organisation;<br>– HIBP k-anonymity for exposed passwords;<br>– Hudson Rock for stealer hits;<br>– ransomware.live for a domain or org.<br>Also correct the false "queued automatically" comment and drop the unregistered `osintnova_phone_lookup`. Measure the prompt size before and after. | B1–B6, B9 as guidance | none | no |
 | 8 | Nominatim: a 1 req/s limiter and a **Photon** fallback, with `census_geocode` first for US addresses. | A10 | Photon receives **addresses** | provider OK; user agent is JD's call |
@@ -333,3 +364,127 @@ The prompt says "plan first, wait for the user's OK", and this section is that p
 - **Mirror CI logs were not read.**
 - **Lovable's "Audited 10 scans, 5 issues" commit is opaque.** Its message names an audit, but the diff is a 20-line auth-storage change, and the "5 issues" report exists only in Lovable's sandbox (`/mnt/documents`).
 - **CI runs on the PR heads are from their own dates.** "Green" on #772, #764, #763, #741, #738, #701, #613 and #516 says nothing about those PRs against today's `main`.
+
+## 10 · Review corrections and integrity re-trace (2026-10-18, 20:56–21:15Z)
+
+*Prompted by an outside review of this report. Read-only throughout: no merges, deploys, PR closures, Lovable messages, `/health` calls or scans. Production was read with SELECT only.*
+
+### 10.1 · State re-verified at 20:57Z
+
+- **Unchanged since the evening audit.** `main` is `8fae8c8`, `deploy/live` is `cabfeb9`, `BUILD_MARKER` is `cabfeb9`, and mirror `main` is `98c015e`.
+- **Function trees.** All four shared folders are EQUAL between canonical and mirror (`osint-agent` `121cb64`, `evidence-export` `3ffcadb`, `security-test-lab` `2c85781`, `_shared` `305af5d`).
+- **Ledger row (10-15 14:30Z).** It records `runtime_marker cabfeb9`, `mirror_tree_equality equal`, `deployed_bytes_verified false` and `deployed_artifact_digest null`.
+- **Four layers, which this report keeps apart:**
+
+  | Layer | Status |
+  |---|---|
+  | Repository equality | Confirmed |
+  | Recorded deployment | Confirmed that the record exists |
+  | Runtime marker *now* | Unverified: no `/health` call; `npm run verify:deploy` also calls `/health`, so it was not run |
+  | Runtime behaviour | Unverified, as it always is |
+
+- **No new commits on older PRs.** Every older PR's head is unchanged since the evening sweep. The only new PRs are #799 and #800. Both are drafts, and CI is green on both heads (`8d2db98`, `666ec8c`).
+- **No concurrent session** is working on the repo (`list_sessions`).
+
+### 10.2 · Integration tests on current `main` (isolated worktrees, local merge commits, never pushed)
+
+| PR + `main` | lint | typecheck | vitest | edge | build | e2e | tree after |
+|---|---|---|---|---|---|---|---|
+| #797 (`d467e19`) | 0 errors / 10 warnings | ok | 2653 / 1 / 210 files | **2475 / 0 / 6** | — | — (edge only) | clean |
+| #593 (`4afe07a`) | 0 errors / 10 warnings | ok | **2736 / 1 / 213 files** | — | ok | **52 / 2** | clean |
+
+- **#797:** all 4 review threads are resolved.
+- **Test locations.** The tests for #797, #799 and #800 live in `supabase/tests/osint-agent/`. The tests for #741, #738, #763, #764 and #701 still live under `supabase/functions/` and would fail `src/test/edge-deploy-bundle.test.ts` (F35).
+
+### 10.3 · The highest-impact unresolved defects (each traced with file:line on `main` `8fae8c8`)
+
+**A. The model can write analyst-only keys onto artifacts. Confirmed in code; #741 fixes it and is not merged.**
+- **Where it happens.** `record_artifacts` (`tool-registry.ts:5712-5713`) and `record_artifact` (`:6182-6183`) build `metadata` as `{...(a.metadata ?? {}), …server keys}`. After that, the server overwrites only status/category/cluster/reason/contradiction/cap keys. `scrubArtifactRow` (`safety.ts:47-135`) never removes a key.
+- **Which client writes.** These paths use the user-JWT client (`auth.ts:114`), and RLS checks only `auth.uid() = user_id`. The database therefore cannot tell a model write from an analyst write.
+- **The only guard.** The one `delete meta.linkage_confirmed` sits inside the name-quarantine branch (`:5749-5755`, `:6216-6221`). Username, email, phone and unquarantined-name rows keep whatever the model wrote.
+- **Keys the model can write, and what they do:**
+
+  | Key | Effect |
+  |---|---|
+  | `reviewed` | ATTESTED label (`src/lib/intel.ts:625`); "verified" status |
+  | `linkage_confirmed` | Releases quarantine (`src/lib/quarantine.ts:58`) |
+  | `false_positive` | Self-dismissal |
+  | `parent*` / `seed` | Changes labels to CORRELATED and adds graph edges |
+  | `source_quote` / `ownership_proof` | Cluster promotion to 90 / CONFIRMED (`lib/cluster.ts:280-283`) |
+  | `subject_unlinked:false` / `possible_minor:false` | Release a quarantine through the frontend dedupe merge (C below) |
+
+- **Production prevalence (SELECT, 11,082 non-auto-persisted, non-finding rows since 07-05):**
+
+  | Model-written key | Rows |
+  |---|---|
+  | `reviewed=true` | **0** |
+  | `linkage_confirmed` | **0** |
+  | `false_positive=true` | 2 |
+  | `source_quote` / `ownership_proof` | 4 (none promoted ≥ 90) |
+  | Protective flags written `false` | 7 (none with a quarantined twin) |
+  | Parent pointers | 373 (53 containing `@`) |
+
+  The path is live but has barely been used. Whether the 53 `@` parent pointers changed any label is Possible, not measured.
+- **What #741 does.** It strips `reviewed`, `linkage_confirmed(_at)`, `false_positive`, `review_state`, `analyst_confirmed`, `analyst_review`, `attested` and `human_verified` from P1 and P2, and discloses `analyst_authority_stripped`. Kill switch: `ANALYST_AUTHORITY_STRIP_DISABLED`. Proof key: `checks.analyst_authority_boundary`.
+- **Rebase needs.** Base `32f5ddb`, 60 commits behind. There is one import-only conflict in each of `tool-registry.ts` and `health-handler.ts`, and two test files must move.
+- **What #741 does not cover** (each is evidence-ranking work and needs JD's ruling):
+  - protective flags written `false`;
+  - `source_quote` / `ownership_proof`;
+  - `parent*` / `seed`;
+  - `user_provided` / `analyst_provided`;
+  - custody `classification:"hard"`;
+  - `label:"triage_decision"`;
+  - re-recording a quarantined non-name selector, which yields an unquarantined row.
+
+**B. Recalled memory can become a `confirmed` finding with no tool run. Confirmed in code and by a local probe; not closed by #738.**
+- **The prompt invites it.** `system-prompt.ts:145` tells the model to cite memory as `"[MEMORY] previously corroborated"`.
+- **Nothing checks the citation.** `record_finding` takes `supporting_sources` as free "Tool names that produced the evidence" (`tool-registry.ts:6856`). `lib/finding-row.ts:95-97` counts those names as source classes, and `confidence.ts:714` gives `independent >= 2 && !contra → "confirmed"`. Nothing checks that a cited tool ran; the only such check is for `breach_exposure`.
+- **The E3 guard does not catch it.** `MEMORY_TOKEN_RE` in `lib/memory-context.ts:18` only strips tokens that start with "memory".
+- **Probe result.** A memory row naming `court_record_search` plus a news site, re-cited by `record_finding`, persists as classes `court_record` + `news`, independent count 2, status `confirmed`.
+- **Production use (SELECT):**
+  - 25 finding rows ever, 7 in the last 30 days;
+  - **0** with status confirmed or verified;
+  - `record_finding` called 8 times and `memory_recall` 160 times in 30 days;
+  - of 199 cited sources, 105 are known tool names, and **1** names a tool that never ran in its thread.
+
+  The path is reachable and rarely exercised today.
+- **Related gap.** 94 citations are free text, and free text can classify into a counted class (probe: "county assessor parcel record" → `government_property_record`).
+- **Smallest fix (not built).**
+  - A `lib/executed-source.ts` filter in `record_finding`, then `record_artifacts` and `record_artifact`: a known tool name that has no run in this thread grants no class.
+  - The originals are kept in metadata.
+  - It only ever lowers, and fails open with a logged event.
+  - Kill switch `UNEXECUTED_SOURCE_GATE_DISABLED`; proof key `checks.executed_source_gate`.
+- **#738.** Its only enforcement change is the `MEMORY_TOKEN_RE` widening (about 70 runtime lines). The rest is prompt and history wording, which is guidance, not enforcement. It is 18 files, +2,923 lines, 61 commits behind, with conflicts in 3 files and 5 test files in the old location.
+
+**C. Display dedupe donates authority between rows, and the release button can save the donated metadata. Confirmed in code; #593 fixes the merge.**
+- **The merge.** `dedupeArtifacts` (`src/hooks/useThreadArtifacts.ts:70-99`) groups by kind + value, spreads the later row's metadata over the earlier one, and takes max confidence. Which row survives depends on arrival order.
+- **The release button.** It writes `{...meta, ...patch}` from the *merged* item back onto the surviving row (`ResourcesPanel.tsx:957`). So a display merge can become stored data (Confirmed in code; whether it has happened in production is Unverified).
+- **#593 shows each row under its own authority.** It also brings three value-level rules that are themselves evidence-integrity changes:
+  - rejections spread across rows of a value;
+  - the minor-safety ceiling spreads across rows of a value;
+  - corroboration is counted per value.
+- **Side effect.** Counts become "N values (M records)" on some surfaces, while other surfaces still count records, so the numbers will differ (Confirmed by grep).
+- **JD's choice:**
+
+  | Option | What it means |
+  |---|---|
+  | **A** | Approve #593 as built, including the three value-level rules. |
+  | **B** | Collapse to one item per value, using the weakest authority. Not built; it restores #794's over-exclusion. |
+  | **C** | Keep #593 parked; the donation continues. |
+
+  Ship #741 regardless: it is complementary.
+
+### 10.4 · Corrections applied to this report
+
+| Was | Now |
+|---|---|
+| "blocked on decisions and money rather than on code" | Integrity defects A–C are open code defects |
+| Lovable credit exhaustion stated as fact | A dated, reported condition; balance and alternative routes unverified |
+| Jina 403s are "about the target, not the key" | Not a dead key is Likely; the cause of each 403 is Unverified (bodies not stored) |
+| PR 4 "nothing is disclosed" | The local list match discloses nothing; the MX lookup discloses the domain to the DoH resolver |
+| PR 5 "number → string" | Repair only when unambiguous; a missing-`artifacts` call returns an explicit skip or error, never a fake success |
+| F38 "the first scan is the test" | Wait for a natural scan; do not trigger one to test the key |
+| Tool fill-ins at position 6, #741 at 7 | Integrity work (#797, #741, executed-source gate, #593, #738 slice) before tool work |
+
+- **The old cheatsheet is historical only.** `INSIGHT_FINDER_AGENT_CHEATSHEET.md` was last verified 2026-07-05. Its model details, and its instruction to call `/health` first, are stale.
+- **Proposed #799 amendment (not pushed; needs JD's OK).** Keep provider suppression for a 403 whose Jina error body indicates auth, billing or quota. Treat a 403 as page-level only when the body says nothing of the kind. Also record Jina's error `name` in the error string (for example `jina 403 (<name>)`), so future 403s become measurable. No page content is logged. The alternative is to park #799 and ship only that measurement first.
