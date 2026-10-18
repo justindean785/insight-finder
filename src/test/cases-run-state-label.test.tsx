@@ -25,6 +25,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const m = vi.hoisted(() => ({
   threadRows: [] as Array<Record<string, unknown>>,
   metricsFail: false,
+  metricsDelayMs: 0,
   threadsFail: false,
   realtime: [] as Array<() => void>,
   auth: { user: { id: "user-1", email: "analyst@test.local" }, session: { access_token: "t" }, loading: false, error: null },
@@ -81,8 +82,12 @@ vi.mock("@/integrations/supabase/client", () => {
   return {
     supabase: {
       from: (table: string) => makeChain(table),
-      rpc: () =>
-        Promise.resolve(m.metricsFail ? { data: null, error: { message: "get_case_metrics unavailable" } } : { data: [], error: null }),
+      rpc: () => {
+        const result = m.metricsFail ? { data: null, error: { message: "get_case_metrics unavailable" } } : { data: [], error: null };
+        return m.metricsDelayMs > 0
+          ? new Promise((r) => setTimeout(() => r(result), m.metricsDelayMs))
+          : Promise.resolve(result);
+      },
       auth: {
         getUser: () => Promise.resolve({ data: { user: { id: "user-1" } }, error: null }),
         getSession: () => Promise.resolve({ data: { session: null }, error: null }),
@@ -135,6 +140,7 @@ afterEach(() => {
   m.threadRows = [];
   m.metricsFail = false;
   m.threadsFail = false;
+  m.metricsDelayMs = 0;
   m.realtime = [];
 });
 
@@ -282,6 +288,19 @@ describe("Cases list labels a run the way the workspace header does", () => {
       m.threadsFail = false;
       await vi.advanceTimersByTimeAsync(31_000);
       expect(await screen.findByText("Case created elsewhere")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rows are judged as of when the threads read returned, not after a slow counts call", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      m.metricsDelayMs = 90_000;
+      m.threadRows = [LIVE];
+      renderCases();
+      await vi.advanceTimersByTimeAsync(91_000);
+      expect(await chipFor("Live run case")).toBe("Running");
     } finally {
       vi.useRealTimers();
     }

@@ -109,13 +109,15 @@ export default function CasesPage() {
       // Counts are aggregated in Postgres (get_case_metrics). Tallying fetched
       // ROWS in the browser silently under-reported once an account passed the
       // row cap — see src/lib/case-metrics.ts for the measured production case.
-      const [threadsRes, metricsRes] = await Promise.all([
+      const [{ threadsRes, readAt }, metricsRes] = await Promise.all([
         supabase
           .from("threads")
           .select("id,title,updated_at,created_at,status,seed_type,seed_value,run_started_at,last_heartbeat_at,recovered_at,recovery_reason")
           .eq("user_id", user.id)
           .order("updated_at", { ascending: false })
-          .limit(200),
+          .limit(200)
+          // Stamp the rows when THEY arrive: a slow counts call must not age a live heartbeat.
+          .then((res) => ({ threadsRes: res, readAt: Date.now() })),
         loadCaseMetrics(supabase).then(
           (map) => ({ map }),
           (failure: unknown) => ({ failure }),
@@ -143,7 +145,7 @@ export default function CasesPage() {
         const fresh = new Map(rows.map((r) => [r.id, r]));
         setCases((prev) => prev.map((r) => fresh.get(r.id) ?? r));
       }
-      setCasesReadAt(Date.now());
+      setCasesReadAt(readAt);
     } catch (e) {
       captureError(e, "cases.load");
       // Surface the failure instead of silently rendering the "no cases" empty
