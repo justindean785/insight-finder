@@ -126,13 +126,19 @@ export default function CasesPage() {
         if (!opts?.silent || !metricsLoadedRef.current) throw metricsRes.failure;
         captureError(metricsRes.failure, "cases.metrics");
       }
+      const rows = (threadsRes.data ?? []) as CaseRow[];
       setError(null);
-      setCases((threadsRes.data ?? []) as CaseRow[]);
-      setCasesReadAt(Date.now());
       if ("map" in metricsRes) {
         metricsLoadedRef.current = true;
         setMetrics(metricsRes.map);
+        setCases(rows);
+      } else {
+        // Counts are stale: refresh the rows already on screen (their run state)
+        // but add none the cached counts never covered — a new case would read 0/0.
+        const fresh = new Map(rows.map((r) => [r.id, r]));
+        setCases((prev) => prev.map((r) => fresh.get(r.id) ?? r));
       }
+      setCasesReadAt(Date.now());
     } catch (e) {
       captureError(e, "cases.load");
       // Surface the failure instead of silently rendering the "no cases" empty

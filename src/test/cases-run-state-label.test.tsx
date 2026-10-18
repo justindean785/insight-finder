@@ -219,6 +219,24 @@ describe("Cases list labels a run the way the workspace header does", () => {
     }
   });
 
+  it("a counts failure during a re-read updates rows on screen but adds no row the cached counts never covered", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      m.threadRows = [LIVE];
+      renderCases();
+      expect(await chipFor("Live run case")).toBe("Running");
+      // The counts RPC goes down, and a case is created elsewhere meanwhile.
+      m.metricsFail = true;
+      m.threadRows = [row("fresh", "Case created elsewhere", { updated_at: ago(1_000) }), LIVE];
+      vi.setSystemTime(NOW + 5 * 60_000);
+      await vi.advanceTimersByTimeAsync(31_000);
+      await waitFor(async () => expect(await chipFor("Live run case")).toBe("Interrupted"));
+      expect(screen.queryByText("Case created elsewhere")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("when counts have never loaded, a background refresh keeps the error instead of showing zero counts", async () => {
     m.metricsFail = true;
     m.threadRows = [LIVE];
