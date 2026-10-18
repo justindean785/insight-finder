@@ -26,9 +26,12 @@ type Exec = { execute: (i: unknown, o: unknown) => Promise<unknown> };
 
 const REJECTED_EMAIL = "wrong.person@example.test";
 const REJECTED_HANDLE = "jordan.vale";
-const REJECTED_PHONE = "+1 555 010 0000";
+// Stored the way validation.ts writes phones: canonical E.164.
+const REJECTED_PHONE = "+15550100000";
+const REJECTED_DOMAIN = "example.com";
 const REJECTED_DISCORD = "123456789012345678";
 const QUARANTINED_EMAIL = "namesake@example.test";
+const QUARANTINED_PHONE = "+15550109999";
 const CLEAN_EMAIL = "real@example.test";
 
 function makeChain(resolveValue: { data: unknown; error: unknown }): Record<string, unknown> {
@@ -54,6 +57,11 @@ function fakeSupabase(cacheWrites: Array<Record<string, unknown>> = []): Supabas
       id: "q1", kind: "email", value: QUARANTINED_EMAIL, confidence: 60, source: "minimax_web_search",
       metadata: { subject_unlinked: true, subject_unlinked_reason: "name-only echo" },
     },
+    { id: "r5", kind: "domain", value: REJECTED_DOMAIN, confidence: 60, source: "crtsh", metadata: {} },
+    {
+      id: "q2", kind: "phone", value: QUARANTINED_PHONE, confidence: 55, source: "minimax_web_search",
+      metadata: { subject_unlinked: true, subject_unlinked_reason: "name-only echo" },
+    },
     { id: "c1", kind: "email", value: CLEAN_EMAIL, confidence: 90, source: "hibp", metadata: {} },
   ];
   const reviewRows = [
@@ -61,6 +69,7 @@ function fakeSupabase(cacheWrites: Array<Record<string, unknown>> = []): Supabas
     { artifact_id: "r2", state: "wrong", note: null },
     { artifact_id: "r3", state: "dismissed", note: null },
     { artifact_id: "r4", state: "wrong", note: null },
+    { artifact_id: "r5", state: "dismissed", note: null },
   ];
   const inert = makeChain({ data: [], error: null });
   inert.insert = () => Promise.resolve({ error: null });
@@ -101,6 +110,11 @@ function wrap(calls: { n: number }, db: SupabaseClient = fakeSupabase()) {
     indicia_phone: tool,
     cordcat_discord_lookup: tool,
     exa_search: tool,
+    oathnet_breach_dbnames: tool,
+    indicia_web_dbs: tool,
+    indicia_hudsonrock: tool,
+    // Any tool whose phone sits in the central `phone` field.
+    phone_lookup: tool,
   }, { investigationId, userId: "u1", supabase: db });
 }
 
@@ -148,6 +162,30 @@ Deno.test("CordCat {discord_id} on a rejected account id is refused", async () =
   assertEquals(refusedBy(out), REJECTED_DISPATCH_REFUSAL_MARKER);
 });
 
+Deno.test("a rejected phone stored as +1… is refused however the call spells it (alias and central field)", async () => {
+  const calls = { n: 0 };
+  const tools = wrap(calls);
+  await (tools.indicia_phone as Exec).execute({ query: "5550100000" }, {});
+  await (tools.indicia_phone as Exec).execute({ query: "(555) 010-0000" }, {});
+  await (tools.phone_lookup as Exec).execute({ phone: "555-010-0000" }, {});
+  await (tools.phone_lookup as Exec).execute({ phone: "15550100000" }, {});
+  assertEquals(calls.n, 0, "the stored form is +15550100000; every spelling of that number must be refused");
+});
+
+Deno.test("a bare username reaches the boundary on tools whose query IS a selector", async () => {
+  const calls = { n: 0 };
+  const tools = wrap(calls);
+  await (tools.indicia_web_dbs as Exec).execute({ query: "@Jordan.Vale" }, {});
+  await (tools.indicia_hudsonrock as Exec).execute({ query: "Jordan.Vale", type: "username" }, {});
+  assertEquals(calls.n, 0);
+});
+
+Deno.test("oathnet_breach_dbnames q is a database-name fragment, never a selector", async () => {
+  const calls = { n: 0 };
+  await (wrap(calls).oathnet_breach_dbnames as Exec).execute({ q: REJECTED_DOMAIN }, {});
+  assertEquals(calls.n, 1, "a DB-name search for 'example.com' is not a lookup on the rejected domain");
+});
+
 // ── quarantine taint reaches them too ─────────────────────────────────────────
 Deno.test("Serus on a QUARANTINED email runs, and its result carries the unproven-linkage taint", async () => {
   const calls = { n: 0 };
@@ -156,6 +194,13 @@ Deno.test("Serus on a QUARANTINED email runs, and its result carries the unprove
   assertEquals(calls.n, 1, "promotion quarantine: the lookup itself is allowed");
   const taint = taintOf(out);
   assert(taint, "the result must be tainted so nothing it finds inherits subject authority");
+});
+
+Deno.test("a QUARANTINED phone stored as +1… taints the same number spelled without the country code", async () => {
+  const calls = { n: 0 };
+  const out = await (wrap(calls).indicia_phone as Exec).execute({ query: "555 010 9999" }, {});
+  assertEquals(calls.n, 1);
+  assert(taintOf(out), "the lookup on a quarantined number must carry the unproven-linkage taint");
 });
 
 // ── what must NOT change ──────────────────────────────────────────────────────
@@ -193,7 +238,10 @@ Deno.test("the cache identity of a call is unchanged by the dispatch aliases", a
 
 Deno.test("KILL SWITCH: DISPATCH_SELECTOR_ALIASES_DISABLED=true restores the previous behaviour", async () => {
   const calls = { n: 0 };
-  await withSwitch("true", () =>
-    (wrap(calls).serus_darkweb_scan as Exec).execute({ identifierValue: REJECTED_EMAIL, identifierType: "email" }, {}));
-  assertEquals(calls.n, 1, "with the switch on, the old (ungoverned) dispatch is restored");
+  await withSwitch("true", async () => {
+    const tools = wrap(calls);
+    await (tools.serus_darkweb_scan as Exec).execute({ identifierValue: REJECTED_EMAIL, identifierType: "email" }, {});
+    await (tools.phone_lookup as Exec).execute({ phone: "5550100000" }, {});
+  });
+  assertEquals(calls.n, 2, "with the switch on, the old dispatch is restored: no aliases, no phone spellings");
 });

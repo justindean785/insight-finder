@@ -18,14 +18,19 @@
  * and only by the rejection and quarantine checks, so no cache or circuit
  * identity moves.
  *
- * EXACT SELECTORS ONLY. A free-text `query` ("x@y.z" leak OR breach) is not a
- * selector and yields nothing; only a query that IS an email / phone / domain /
- * IP is matched. A Serus `password` search is never a selector: a password is
- * not an identity to match against reviews, and must not reach a log line.
+ * TOOL-AWARE `query` / `q`. On the Indicia tools the query IS the selector, so
+ * a bare handle counts (Hudson Rock: the declared `type`, else the tool's own
+ * inference). `oathnet_breach_dbnames.q` is a breach-database NAME fragment and
+ * never a selector. Every other tool's query is free text, and only a query that
+ * IS one exact email / phone / domain / IP is matched ("x@y.z" leak OR breach
+ * yields nothing). A `password` is never a selector, on Serus or Hudson Rock: it
+ * is not an identity to match against reviews, and must not reach a log line.
  *
  * Kill switch DISPATCH_SELECTOR_ALIASES_DISABLED=true (read at call time)
  * restores the previous behaviour with no deploy.
  */
+
+import { HUDSONROCK_TYPES, inferHudsonRockType } from "../tools/indicia.ts";
 
 export interface DispatchSelectorCandidate {
   /** Selector type in the dispatch keyspace (`email`, `phone`, `username`, …). */
@@ -76,6 +81,33 @@ function serusTypes(identifierType: unknown, value: string): string[] {
   return shapeTypes(value);
 }
 
+/** Tools whose `query` IS the lookup target, and the type it carries ("any": by shape, else a handle). */
+const SELECTOR_QUERY_TOOLS: Readonly<Record<string, string>> = {
+  indicia_email: "email",
+  indicia_phone: "phone",
+  indicia_web_dbs: "any",
+  indicia_hudsonrock: "hudsonrock",
+};
+/** Tools whose `query` / `q` is never a selector. */
+const NON_SELECTOR_QUERY_TOOLS = new Set(["oathnet_breach_dbnames"]);
+
+/** Dispatch types for a `query` / `q` value on `tool`. */
+function queryTypes(tool: string, value: string, declaredType: unknown): string[] {
+  if (NON_SELECTOR_QUERY_TOOLS.has(tool)) return [];
+  const mode = SELECTOR_QUERY_TOOLS[tool];
+  if (!mode) return shapeTypes(value);
+  if (mode === "hudsonrock") {
+    // What the tool will send: a valid declared type, else its own inference.
+    const hint = typeof declaredType === "string" ? declaredType.trim().toLowerCase() : "";
+    const resolved = (HUDSONROCK_TYPES as readonly string[]).includes(hint) ? hint : inferHudsonRockType(value);
+    return resolved === "password" ? [] : [resolved];
+  }
+  if (mode !== "any") return [mode];
+  const shaped = shapeTypes(value);
+  const handleLike = !/\s/.test(value.trim()) && !shaped.some((t) => t === "email" || t === "phone" || t === "ip");
+  return handleLike ? [...shaped, "username"] : shaped;
+}
+
 /**
  * Extra (type, value) candidates for the dispatch checks. Returns `[]` unless one
  * of the recognised alternate selector fields is present, or when the kill switch
@@ -83,6 +115,7 @@ function serusTypes(identifierType: unknown, value: string): string[] {
  */
 export function dispatchSelectorCandidates(
   input: unknown,
+  tool = "",
   env: (k: string) => string | undefined = readEnv,
 ): DispatchSelectorCandidate[] {
   if (dispatchSelectorAliasesDisabled(env)) return [];
@@ -98,7 +131,7 @@ export function dispatchSelectorCandidates(
   }
   for (const key of ["query", "q"] as const) {
     const v = inp[key];
-    if (typeof v === "string" && v.trim()) add(shapeTypes(v), v);
+    if (typeof v === "string" && v.trim()) add(queryTypes(tool, v, inp.type), v);
   }
   if (typeof inp.discord_id === "string" && /^\d{17,20}$/.test(inp.discord_id.trim())) {
     add(["account_id"], inp.discord_id.trim());
@@ -114,17 +147,19 @@ export function dispatchSelectorAliasesSelfTest(
     return { ok: true, switch: `${SWITCH}=true`, detail: `LEGACY via ${SWITCH}: Serus/Indicia/CordCat selectors are invisible to the dispatch checks` };
   }
   const wrong: string[] = [];
-  const types = (input: unknown) => dispatchSelectorCandidates(input, env).map((c) => c.type).join(",");
+  const types = (input: unknown, tool = "") => dispatchSelectorCandidates(input, tool, env).map((c) => c.type).join(",");
   if (types({ identifierValue: "a@b.co", identifierType: "email" }) !== "email") wrong.push("serus email");
   if (types({ identifierValue: "secret", identifierType: "password" }) !== "") wrong.push("serus password became a selector");
   if (types({ query: "+1 (555) 010-0000" }) !== "phone") wrong.push("query phone");
   if (types({ query: "\"a@b.co\" leak OR breach" }) !== "") wrong.push("free-text query became a selector");
   if (types({ discord_id: "123456789012345678" }) !== "account_id") wrong.push("discord_id");
+  if (types({ q: "example.com" }, "oathnet_breach_dbnames") !== "") wrong.push("breach-DB name fragment became a selector");
+  if (types({ query: "jordan.vale", type: "username" }, "indicia_hudsonrock") !== "username") wrong.push("hudsonrock declared type");
   return wrong.length
     ? { ok: false, switch: `${SWITCH}=false`, detail: wrong.join("; ") }
     : {
       ok: true,
       switch: `${SWITCH}=false`,
-      detail: "rejection and quarantine checks read Serus identifierValue/identifierType, exact-selector query/q and discord_id when the cache selector is empty; cache and circuit keys unchanged",
+      detail: "rejection and quarantine checks read Serus identifierValue/identifierType, tool-aware query/q and discord_id when the cache selector is empty, and check a phone under every spelling of its stored form; cache and circuit keys unchanged",
     };
 }

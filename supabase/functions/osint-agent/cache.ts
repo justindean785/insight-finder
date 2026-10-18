@@ -22,7 +22,7 @@ import * as circuit from "./circuit.ts";
 // (`dispatch-rejection.ts` + `loadReviewsForThread`) is a SEPARATE boundary that
 // runs alongside the quarantine read, not a competing implementation of it.
 import { dispatchTypeCandidates, isDispatchRefused, loadRefusedArtifacts, quarantineRefusal, reasonForKey } from "./lib/dispatch-quarantine.ts";
-import { dispatchSelectorCandidates } from "./lib/dispatch-selector.ts";
+import { dispatchSelectorAliasesDisabled, dispatchSelectorCandidates } from "./lib/dispatch-selector.ts";
 import { unprovenLinkageMarker, UNPROVEN_LINKAGE_KEY, type UnprovenLinkage } from "./lib/unproven-linkage.ts";
 import { promotionQuarantineEnabled } from "./env.ts";
 import type { QuarantineRow } from "./lib/dispatch-quarantine.ts";
@@ -1170,9 +1170,26 @@ export function wrapToolsWithCache(
           // circuit keys still use `sel`. Kill switch DISPATCH_SELECTOR_ALIASES_DISABLED.
           const govChecks: Array<{ types: string[]; sel: string }> = [{ types: candidateTypes, sel }];
           if (!sel) {
-            for (const c of dispatchSelectorCandidates(inp)) {
+            for (const c of dispatchSelectorCandidates(inp, name)) {
               const norm = circuit.normalizeSelector(c.type, c.value);
               if (norm) govChecks.push({ types: [c.type], sel: norm });
+            }
+          }
+          // A stored phone is canonical E.164 (+1…, validation.ts), but a call may
+          // spell it 5550100000 or 15550100000, and normalizeSelector("phone") keeps
+          // a leading "+": one number, different keys. Check every spelling the
+          // stored form could take — the expansion the cross-case set already uses.
+          // Same kill switch.
+          if (!dispatchSelectorAliasesDisabled()) {
+            for (const c of [...govChecks]) {
+              for (const t of c.types) {
+                const spellings = dispatchSpellings(t, c.sel);
+                if (spellings.length < 2) continue; // not a phone: nothing to expand
+                for (const spelling of spellings) {
+                  const norm = circuit.normalizeSelector(t, spelling);
+                  if (norm && norm !== c.sel) govChecks.push({ types: [t], sel: norm });
+                }
+              }
             }
           }
           const refusedHit = govChecks.find((c) => isDispatchRefused(refusedKeys, c.types, c.sel));

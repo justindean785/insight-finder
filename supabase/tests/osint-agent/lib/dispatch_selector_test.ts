@@ -9,7 +9,8 @@ import {
 
 const on = (_k: string) => undefined;
 const off = (k: string) => (k === "DISPATCH_SELECTOR_ALIASES_DISABLED" ? "true" : undefined);
-const types = (input: unknown, env = on) => dispatchSelectorCandidates(input, env).map((c) => c.type);
+const types = (input: unknown, tool = "any_tool", env = on) =>
+  dispatchSelectorCandidates(input, tool, env).map((c) => c.type);
 
 Deno.test("Serus identifierType maps onto the dispatch keyspace", () => {
   assertEquals(types({ identifierValue: "a@b.co", identifierType: "email" }), ["email"]);
@@ -38,6 +39,23 @@ Deno.test("query / q count only when the whole value IS one exact selector", () 
   assertEquals(types({ q: "link" }), [], "a DB-name fragment is not a selector");
 });
 
+Deno.test("query extraction is tool-aware: some tools' query IS a selector, one tool's q never is", () => {
+  // Indicia: the query is the selector, so a bare handle counts.
+  assertEquals(types({ query: "a@b.co" }, "indicia_email"), ["email"]);
+  assertEquals(types({ query: "5550100000" }, "indicia_phone"), ["phone"]);
+  assertEquals(types({ query: "jordanvale" }, "indicia_web_dbs"), ["username"]);
+  assertEquals(types({ query: "a@b.co" }, "indicia_web_dbs"), ["email"]);
+  // Hudson Rock: a declared type wins; otherwise the tool's own inference.
+  assertEquals(types({ query: "jordan.vale", type: "username" }, "indicia_hudsonrock"), ["username"]);
+  assertEquals(types({ query: "jordanvale" }, "indicia_hudsonrock"), ["username"]);
+  assertEquals(types({ query: "example.com" }, "indicia_hudsonrock"), ["domain"]);
+  assertEquals(types({ query: "hunter2", type: "password" }, "indicia_hudsonrock"), [], "a password is never a selector");
+  // A breach-DB NAME search is not a lookup on a selector.
+  assertEquals(types({ q: "example.com" }, "oathnet_breach_dbnames"), []);
+  // Free-text search tools: a bare word is not a selector.
+  assertEquals(types({ query: "jordanvale" }, "exa_search"), []);
+});
+
 Deno.test("discord_id is an account id, and only a real snowflake counts", () => {
   assertEquals(types({ discord_id: "123456789012345678" }), ["account_id"]);
   assertEquals(types({ discord_id: "12345" }), []);
@@ -50,7 +68,7 @@ Deno.test("no alternate field, no candidates", () => {
 });
 
 Deno.test("kill switch: DISPATCH_SELECTOR_ALIASES_DISABLED=true yields nothing", () => {
-  assertEquals(types({ identifierValue: "a@b.co", identifierType: "email" }, off), []);
+  assertEquals(types({ identifierValue: "a@b.co", identifierType: "email" }, "serus_darkweb_scan", off), []);
 });
 
 Deno.test("/health self-test passes, and reports the switch", () => {
