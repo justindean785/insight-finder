@@ -2346,6 +2346,13 @@ function ChatWindowInner({
       toast.error("Wait for the current run to finish");
       return;
     }
+    // This tab is idle but the SERVER still reports a live run (second tab,
+    // dropped stream). Re-running here deletes the cache replay and starts a
+    // second billed run on top of it; the server rejects no overlaps.
+    if (serverRunActiveRef.current) {
+      toast.info(submitRefusalMessage("server_running"));
+      return;
+    }
     const firstUser = messages.find((m) => m.role === "user") as UIMessage | undefined;
     if (!firstUser) return;
     const text = (firstUser.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("").trim();
@@ -2399,8 +2406,10 @@ function ChatWindowInner({
   const retryLastUser = async () => {
     // The same synchronous lock the composer and the pivot rail hold. Retry used
     // to skip it, so a double-click on "Retry investigation" started two billed
-    // runs: the server has no idempotency key and does not reject overlaps.
-    const retryRefusal = submitRefusal(status, submitLockRef.current);
+    // runs: the server has no idempotency key and does not reject overlaps. The
+    // server-run check matters for the same reason: a stale failure card in this
+    // tab must not start a run on top of one that is still live on the server.
+    const retryRefusal = submitRefusal(status, submitLockRef.current, serverRunActiveRef.current);
     if (retryRefusal) {
       toast.info(submitRefusalMessage(retryRefusal));
       return;
