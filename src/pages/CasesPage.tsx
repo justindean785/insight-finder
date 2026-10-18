@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -15,7 +15,7 @@ import {
   Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { isNeverStartedThread, isRunningThread } from "@/lib/thread-status";
+import { deriveRunState, RUN_STATE_LABEL, type CaseRunState } from "@/lib/case-snapshot";
 import { captureError } from "@/lib/telemetry";
 import { loadCaseMetrics } from "@/lib/case-metrics";
 import { toast } from "sonner";
@@ -31,6 +31,9 @@ type CaseRow = {
   // Run markers: an "active" row with neither of these never started (I-1).
   run_started_at: string | null;
   last_heartbeat_at: string | null;
+  // Written by server recovery: a `finished` row carrying either did not finish normally (I-2).
+  recovered_at: string | null;
+  recovery_reason: string | null;
 };
 
 import type { CaseMetrics } from "@/lib/case-metrics";
@@ -50,34 +53,59 @@ function relativeTime(iso: string | null): string {
   return `${d}d ago`;
 }
 
+/** While a row shows Running, re-read this often: the case snapshot's own live-poll interval. */
+const RUNNING_REREAD_MS = 30_000;
+
+const STATUS_CHIP: Record<CaseRunState, { text: string; tone: string }> = {
+  running: { text: "Running", tone: "text-[hsl(var(--intel-blue))] border-[hsl(var(--intel-blue)/0.35)] bg-[hsl(var(--intel-blue)/0.08)]" },
+  draft: { text: "Draft", tone: "text-muted-foreground border-white/10 bg-white/[0.03]" },
+  stopped: { text: "Stopped", tone: "text-warning border-warning/30 bg-warning/10" },
+  interrupted: { text: RUN_STATE_LABEL.interrupted, tone: "text-[hsl(var(--warning))] border-[hsl(var(--warning)/0.45)] bg-[hsl(var(--warning)/0.1)]" },
+  completed: { text: "Finished", tone: "text-muted-foreground border-white/10 bg-white/[0.03]" },
+};
+
 /**
- * Takes the ROW, not just the status, because "active" alone cannot distinguish
- * a live run from a thread that was created and never used. Pressing "New
- * investigation" inserts `{ user_id }` and the status column defaults to
- * 'active', so a blank thread rendered a blue "Running" chip forever — a run the
- * analyst never started. A never-started thread is a Draft.
+ * The same run state the workspace header shows (`deriveRunState`), so the list
+ * and the case can never disagree about one run.
+ *
+ * Takes the ROW, not just the status. `active` alone cannot tell a live run from
+ * a never-started thread (born `active` from the column default: a Draft, I-1),
+ * nor from a run whose isolate was killed (still `active`, heartbeat lapsed:
+ * Interrupted). A `finished` row carrying a recovery marker is Interrupted too,
+ * never Finished (I-2).
+ *
+ * `nowMs` is when the rows were READ, not render time: a heartbeat is only as
+ * fresh as the read that returned it, so judging old rows against a later clock
+ * would turn a live run Interrupted on any re-render (typing in search).
  */
-function statusLabel(row: CaseRow): { text: string; tone: string } {
-  const status = row.status;
-  if (isRunningThread(row)) {
-    return { text: "Running", tone: "text-[hsl(var(--intel-blue))] border-[hsl(var(--intel-blue)/0.35)] bg-[hsl(var(--intel-blue)/0.08)]" };
-  }
-  if (isNeverStartedThread(row)) {
-    return { text: "Draft", tone: "text-muted-foreground border-white/10 bg-white/[0.03]" };
-  }
-  if (status === "stopped") {
-    return { text: "Stopped", tone: "text-warning border-warning/30 bg-warning/10" };
-  }
-  return { text: "Finished", tone: "text-muted-foreground border-white/10 bg-white/[0.03]" };
+function statusLabel(row: CaseRow, nowMs: number): { text: string; tone: string } {
+  return STATUS_CHIP[deriveRunState({ thread: row, chatRunning: false, nowMs })];
 }
 
 export default function CasesPage() {
   const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const [cases, setCases] = useState<CaseRow[]>([]);
+  // When `cases` was read: the clock its run states are judged against.
+  const [casesReadAt, setCasesReadAt] = useState(() => Date.now());
   const [metrics, setMetrics] = useState<Map<string, CaseMetrics>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Whether `metrics` has ever held real counts. Until it has, a counts failure is
+  // an error even on a background refresh: rows with 0/0 counts would mislead.
+  const metricsLoadedRef = useRef(false);
+  // The last read's counts failed: the list is not current (new cases held back,
+  // or an error shown). Keeps the timed re-read below running until counts load.
+  const [countsStale, setCountsStale] = useState(false);
+  // Reads overlap (realtime, the timer, a retry). A read publishes unless a NEWER
+  // read already has: an older read finishing late must not overwrite newer rows,
+  // yet a read must not be dropped just because a newer one STARTED (that one may
+  // fail, or be superseded in turn), or the list would never publish.
+  const loadSeqRef = useRef(0);
+  const publishedSeqRef = useRef(0);
+  // The newest read that has set `countsStale`. An older read may still publish its
+  // rows, but must not clear a newer read's stale flag (that stops the retry).
+  const countsSeqRef = useRef(0);
   const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState("");
 
@@ -85,30 +113,61 @@ export default function CasesPage() {
   // list in place (silent) so a live scan doesn't flash back to skeleton.
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!user) return;
+    const seq = ++loadSeqRef.current;
     if (!opts?.silent) setLoading(true);
     try {
       // Counts are aggregated in Postgres (get_case_metrics). Tallying fetched
       // ROWS in the browser silently under-reported once an account passed the
       // row cap — see src/lib/case-metrics.ts for the measured production case.
-      const [threadsRes, metricsMap] = await Promise.all([
+      const [{ threadsRes, readAt }, metricsRes] = await Promise.all([
         supabase
           .from("threads")
-          .select("id,title,updated_at,created_at,status,seed_type,seed_value,run_started_at,last_heartbeat_at")
+          .select("id,title,updated_at,created_at,status,seed_type,seed_value,run_started_at,last_heartbeat_at,recovered_at,recovery_reason")
           .eq("user_id", user.id)
           .order("updated_at", { ascending: false })
-          .limit(200),
-        loadCaseMetrics(supabase),
+          .limit(200)
+          // Stamp the rows when THEY arrive: a slow counts call must not age a live heartbeat.
+          .then((res) => ({ threadsRes: res, readAt: Date.now() })),
+        loadCaseMetrics(supabase).then(
+          (map) => ({ map }),
+          (failure: unknown) => ({ failure }),
+        ),
       ]);
+      if (seq <= publishedSeqRef.current) return; // a newer read already published
+      // A failed threads read leaves the flag as it was: the list is no more current.
       if (threadsRes.error) throw threadsRes.error;
+      if (seq > countsSeqRef.current) {
+        countsSeqRef.current = seq;
+        setCountsStale("failure" in metricsRes);
+      }
+      if ("failure" in metricsRes) {
+        // No counts yet is an error: zeros would mislead. Once counts have loaded, a
+        // background re-read keeps the last good counts but still applies the thread
+        // rows, so a dead run's label does not wait on an unrelated RPC.
+        if (!opts?.silent || !metricsLoadedRef.current) throw metricsRes.failure;
+        captureError(metricsRes.failure, "cases.metrics");
+      }
+      const rows = (threadsRes.data ?? []) as CaseRow[];
+      publishedSeqRef.current = seq;
       setError(null);
-      setCases((threadsRes.data ?? []) as CaseRow[]);
-      setMetrics(metricsMap);
+      if ("map" in metricsRes) {
+        metricsLoadedRef.current = true;
+        setMetrics(metricsRes.map);
+        setCases(rows);
+      } else {
+        // Counts are stale: refresh the rows already on screen (their run state)
+        // but add none the cached counts never covered — a new case would read 0/0.
+        const fresh = new Map(rows.map((r) => [r.id, r]));
+        setCases((prev) => prev.map((r) => fresh.get(r.id) ?? r));
+      }
+      setCasesReadAt(readAt);
     } catch (e) {
       captureError(e, "cases.load");
       // Surface the failure instead of silently rendering the "no cases" empty
-      // state — but only for a foreground load; a failed background realtime
-      // refresh should keep the list we're already showing, not flash an error.
-      if (!opts?.silent) {
+      // state — for a foreground load, or for any read while nothing has published
+      // yet; a failed background refresh keeps the list already shown, no flash.
+      // Never over a newer read's result.
+      if (seq > publishedSeqRef.current && (!opts?.silent || publishedSeqRef.current === 0)) {
         setError(e instanceof Error ? e.message : "Could not load your cases.");
       }
     } finally {
@@ -148,6 +207,23 @@ export default function CasesPage() {
       void supabase.removeChannel(channel);
     };
   }, [user, load]);
+
+  // A run that dies stops writing, so no realtime event will ever re-read its
+  // row, and the label above is judged as of the last read. While any row shows
+  // Running, re-read on a timer so a dead run turns Interrupted once its
+  // heartbeat lapses. Also while counts are stale, so whatever a counts outage
+  // held back appears once they load. Stops by itself when neither holds.
+  const anyRunning = useMemo(
+    () => cases.some((c) => deriveRunState({ thread: c, chatRunning: false, nowMs: casesReadAt }) === "running"),
+    [cases, casesReadAt],
+  );
+  useEffect(() => {
+    if (!user || !(anyRunning || countsStale)) return;
+    const id = setInterval(() => {
+      if (document.visibilityState !== "hidden") void load({ silent: true });
+    }, RUNNING_REREAD_MS);
+    return () => clearInterval(id);
+  }, [user, anyRunning, countsStale, load]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -235,7 +311,7 @@ export default function CasesPage() {
             <ul className="divide-y divide-border-subtle/60">
               {filtered.map((c) => {
                 const m = metrics.get(c.id) ?? { artifacts: 0, toolCalls: 0 };
-                const st = statusLabel(c);
+                const st = statusLabel(c, casesReadAt);
                 return (
                   <li key={c.id}>
                     <Link

@@ -12,7 +12,6 @@ import { FullPageLoader } from "@/components/ui/full-page-loader";
 import { supabase } from "@/integrations/supabase/client";
 import { MessageSquare, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { isRunningThread } from "@/lib/thread-status";
 import { extractDisplaySeed } from "@/lib/seed";
 import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
 import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
@@ -109,9 +108,6 @@ export default function CaseViewPage() {
   }
 
 
-  // A thread that never started is not running, however "active" its status
-  // column looks — see isRunningThread / CLAUDE.md invariant I-1.
-  const running = isRunningThread(meta ?? null);
   // The stored title / seed_value can be the whole pasted run-prompt, which
   // overran the header and truncated mid-word. Pull the clean selector out of
   // the blob (same helper the report cover uses) for the heading, and keep the
@@ -139,19 +135,7 @@ export default function CaseViewPage() {
               <p className="text-xs text-muted-foreground font-mono truncate mt-0.5">{caseSubtitle}</p>
             )}
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {running && (
-              <span className="text-eyebrow font-mono uppercase tracking-wider px-2 py-1 rounded-full border border-[hsl(var(--intel-blue)/0.35)] bg-[hsl(var(--intel-blue)/0.08)] text-[hsl(var(--intel-blue))]">
-                Running
-              </span>
-            )}
-            <Button asChild variant="cta" size="sm" className="rounded-lg gap-1.5">
-              <Link to={`/chat/${threadId}`}>
-                <MessageSquare className="w-3.5 h-3.5" />
-                {running ? "Open live chat" : "Continue in chat"}
-              </Link>
-            </Button>
-          </div>
+          <CaseRunControls threadId={threadId} />
         </div>
       </div>
 
@@ -187,6 +171,33 @@ export default function CaseViewPage() {
       </main>
     </div>
     </CaseSnapshotProvider>
+  );
+}
+
+/**
+ * "Running" and the chat link, from the live case snapshot: the run state the
+ * workspace header shows. The snapshot re-reads the thread (realtime + poll) and
+ * judges liveness on a fresh heartbeat, so a never-started thread (I-1) and a
+ * killed run whose row is still `active` are not running, while a live run does
+ * not lose the badge because this page's own one-time read has aged.
+ */
+function CaseRunControls({ threadId }: { threadId: string }) {
+  const { snapshot } = useCaseSnapshot();
+  const running = snapshot?.run.state === "running";
+  return (
+    <div className="flex items-center gap-2 shrink-0">
+      {running && (
+        <span className="text-eyebrow font-mono uppercase tracking-wider px-2 py-1 rounded-full border border-[hsl(var(--intel-blue)/0.35)] bg-[hsl(var(--intel-blue)/0.08)] text-[hsl(var(--intel-blue))]">
+          Running
+        </span>
+      )}
+      <Button asChild variant="cta" size="sm" className="rounded-lg gap-1.5">
+        <Link to={`/chat/${threadId}`}>
+          <MessageSquare className="w-3.5 h-3.5" />
+          {running ? "Open live chat" : "Continue in chat"}
+        </Link>
+      </Button>
+    </div>
   );
 }
 
