@@ -1,4 +1,5 @@
 import { breachExposureGuardSelfTest } from "./lib/breach-exposure-guard.ts";
+import { dispatchSelectorAliasesSelfTest } from "./lib/dispatch-selector.ts";
 import { providerBusyQueueSelfTest } from "./lib/provider-busy-queue.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { describeCredentialHealth, summarizeCredentialHealth } from "./lib/credential-health.ts";
@@ -586,6 +587,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // breach_exposure needs a breach-class tool that RAN in the case and a non-zero result (record_artifacts), and
   // auto-extraction keeps it only from breach-capable tools. Pure. `switch` reports BREACH_EXPOSURE_GUARD_DISABLED.
   r.checks.breach_exposure_guard = breachExposureGuardSelfTest();
+
+  // Do the analyst-rejection and quarantine-taint dispatch checks see a selector that lives in Serus
+  // identifierValue/identifierType, an exact-selector query/q, or discord_id? Before this they saw an EMPTY
+  // selector and failed open. Pure. PRESENCE proves the deployed bundle; `switch` reports
+  // DISPATCH_SELECTOR_ALIASES_DISABLED; ok:false = the extractor failed its own probe.
+  r.checks.dispatch_selector_aliases = dispatchSelectorAliasesSelfTest();
 
   // E3: is a call refused only because its provider already has a call in flight WAITED for (bounded, never into the
   // finalize window) and re-checked, instead of dropped? Pure. PRESENCE proves the deployed bundle; `switch` reports
