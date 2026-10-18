@@ -115,8 +115,10 @@ Corpus totals: 322 threads · 16,764 artifacts · 25 `kind='finding'` · 20,480 
 - 5 threads are `active` with no run marker. These are blank drafts from September, and leaving them alone is correct per I-1.
 
 **Tool failures, last 7 days** (`outcome='failed'`):
-- **OathNet: 7 of 7 calls failed with HTTP 401 on 10-18.** It had 8 successful calls on 10-15, so the key probably expired or its quota ran out today.
-- `github_code_search` has returned 401 since 09-13, still unfixed.
+- **OathNet: 7 of 7 calls failed with HTTP 401 on 10-18.** It had 8 successful calls on 10-15. JD is working the cause out with OathNet's owner (2026-10-18).
+- `github_code_search` is intermittent, not dead: 9 ok and 3 failed (401) in 30 days, last ok 10-13.
+- **DeepFind (`deepfind_*`, 4 tools): effectively down.** 32 failed (403) and 2 ok in 30 days; last ok 10-10.
+- `nominatim_geocode`: 403 since 09-23, its last success (upstream usage policy, which typically wants an identifying User-Agent).
 - `fofa_search`: 3 of 3 failed with a plan error.
 - `reddit_user`: 403, the datacenter-IP block.
 - `jina_reader_scrape`: 13 failures, mostly 403s from target sites.
@@ -311,8 +313,10 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 - Fix: backport these as canonical migrations (sign-off needed for the evidence-archive part) and regenerate `types.ts`.
 
 **F23 — Credentials.** *Operational.* **Confirmed**.
-- OathNet has returned 401 on every call today (new). JD is adding OathNet credits (2026-10-18), which points to an exhausted balance rather than a dead key.
-- `github_code_search` has returned 401 since 09-13 (still open).
+- OathNet (`oathnet_lookup`, `oathnet_subdomains`) has returned 401 on every call today (new). **JD is resolving it with OathNet's owner (2026-10-18); no code change is planned.**
+- **DeepFind's 4 tools return 403**: 32 failed and 2 ok in 30 days, last ok 10-10. Check the key or plan.
+- `nominatim_geocode` has returned 403 since 09-23.
+- `github_code_search` is intermittent (9 ok and 3 failed in 30 days), not dead as 09-13 reported.
 - `reddit_user` is blocked by datacenter IPs and has never worked; consider disabling it.
 - `fofa_search` fails on plan limits.
 
@@ -369,7 +373,7 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 
 These need JD's authorization. Nothing here auto-merges or auto-deploys, and a mirror merge is not a deploy.
 
-1. **F8: money.** Recharge or auto-recharge Z.AI, and decide the Anthropic budget before the **10-23** credit expiry. **OathNet:** JD is adding credits (2026-10-18). Afterwards, confirm with a `tool_usage_log` query that `oathnet_lookup` returns `ok` again (F23).
+1. **F8: money.** Recharge or auto-recharge Z.AI, and decide the Anthropic budget before the **10-23** credit expiry. **OathNet:** JD is resolving it with OathNet's owner (2026-10-18). Once fixed, confirm with a `tool_usage_log` query that `oathnet_lookup` returns `ok` again. **DeepFind:** check the key or plan (F23).
 2. *(F1 breach reveal: settled by JD, leave as is, no action.)*
 3. **F3 + F2: close the reopened quarantine boundaries.** Two small edge PRs, each with tests and a kill switch: the dispatch selector extractor (F3), then the Serus keyword name check (F2). Ship them one at a time through the normal stamp → sync → gate → deploy → `/health` cycle.
 4. **F6 + F10 + F13: frontend integrity fixes.** These are small and frontend-only, so they can go in parallel. Run e2e by hand before merging.
