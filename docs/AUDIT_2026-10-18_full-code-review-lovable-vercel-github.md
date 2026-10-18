@@ -19,11 +19,9 @@ Every test gate was re-run from a clean `npm ci`. Five parallel review agents re
 - The mirror tree equals canonical byte-for-byte.
 - Every gate is green: vitest 2603/1, edge 2449/0/6, e2e 52/2, typecheck, lint and build.
 
-**Product.** It is at risk on access control and evidence authority. **The most important finding is new and is not a re-run of a settled decision.** `REVEAL_BREACH_DATA=true` was settled as "on, **on the owner's account**". The code applies it to the whole deployment. Combined with open, auto-confirmed sign-up, that means any stranger who registers receives raw stealer-log passwords and cookies:
-- 30 of the 34 accounts were confirmed within 5 seconds of signing up.
-- 13 non-admin accounts have made 28 breach-tool calls.
+**Product.** It is at risk on evidence authority.
 
-The decision itself stands. What needs fixing is the premise the code doesn't enforce. The cheapest fix scopes reveal to `isAdmin`, which `index.ts:228` already computes; the alternative is closing sign-up.
+**Breach reveal: JD ruling, 2026-10-18.** `REVEAL_BREACH_DATA` **stays ON, exactly as it is, deployment-wide. Do not change the breach reveal settings at all.** This audit noted that the flag applies to every account, not only the owner's. JD has reviewed that and ruled to leave it unchanged. Re-verified live after the ruling: `/health` `reveal_breach_data=true`. This is settled. Do not re-raise it or offer "scope reveal to admins" as a fix (see F1).
 
 **Top open question for JD.** There are several **model-writable authority paths** (findings F2–F5). One is a Serus keyword search for a person's name that skips write-side quarantine. Another is the dispatch guard not seeing Serus and Indicia selectors at all. Two more are model-written custody classifications and free-text "court records" labels that earn confidence 90. Each of these touches evidence ranking or custody, so each needs JD's sign-off. Production shows **no observed instance yet** of any of them. They are latent, and they reopen boundaries that #433/#448/#581 closed.
 
@@ -146,7 +144,7 @@ Corpus totals: 322 threads · 16,764 artifacts · 25 `kind='finding'` · 20,480 
 | PR | Repo | Kind | Draft | Merge vs `main` | Behind | Risk / note |
 |---|---|---|---|---|---|---|
 | #772 workspace redesign | canonical | frontend, 27 files | yes | **clean** | 20 | CI green (e2e skipped on PRs: run it by hand before merging) |
-| #763 apify_skip_trace | canonical | edge, 13 files | yes | **clean** | 27 | a new paid people-search tool; it would ship under the deployment-wide reveal and open sign-up (F1) |
+| #763 apify_skip_trace | canonical | edge, 13 files | yes | **clean** | 27 | a new paid people-search tool; review it on its own merits (breach reveal settled, F1) |
 | #764 invalid-JSON tool call wedges on Anthropic | canonical | edge | yes | CONFLICT | 27 | probably superseded by #765/#769: production now logs `invalid_json` as a plain failed call (4× on 10-18, no wedge). **Check, then close** |
 | #741 model cannot write review/release keys (A1) | canonical | edge | yes | CONFLICT | 56 | **the defect is still live** (F4); needs a rebase and JD sign-off |
 | #738 memory is context, not evidence | canonical | edge, 18 files | yes | CONFLICT | 57 | JD review |
@@ -164,12 +162,10 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 
 ### P1
 
-**F1 — Raw breach data reaches any self-registered account.** *New angle on a settled decision.* **Confirmed** (code and production DB).
-- `reveal-policy.ts:47` sets `REVEAL_BREACH_DATA` for the whole deployment. Sign-up is open (`Auth.tsx:133-152`, "auto-confirm on"), and the production timing above confirms auto-confirm.
-- Every new account gets a $0.50 credit, so creating several accounts gets around the credit gate.
-- The 13 non-admin accounts with breach calls are counted in §5.
-- **Not reopened:** reveal stays ON for JD.
-- **Fix (JD's choice):** (a) `reveal = REVEAL_BREACH_DATA && isAdmin`, threaded from `index.ts:228` into the trimmers and `serus` reveal (small, edge, needs a kill switch and a `/health` key), or (b) disable sign-up or make it invite-only in Supabase Auth settings (no deploy needed), or both. #763 (a new people-search tool) should wait on this.
+**F1 — Breach reveal scope: SETTLED by JD on 2026-10-18; leave as is.** *Recorded for history, not an open action.*
+- Observed: `reveal-policy.ts:47` applies `REVEAL_BREACH_DATA` to the whole deployment, sign-up is open with auto-confirm (`Auth.tsx:133-152`; 30 of 34 accounts confirmed in under 5 s), and 13 non-admin accounts made 28 breach-tool calls.
+- **JD's ruling: breach reveal stays ON, unchanged, for the whole deployment. Do not change any breach reveal setting, and do not scope it to admins.** Re-verified live after the ruling: `reveal_breach_data=true`.
+- Separate from reveal, and informational only: every new account gets a $0.50 starting credit (column default on `user_credits.balance_micro_usd`), so several accounts add up to more free spend. Whether sign-up stays open is JD's call; it is not tied to the reveal setting.
 
 **F2 — A Serus `keyword` search for a person's name is never quarantined.** *New.* **Confirmed** by an agent probe against the real module; **0 production instances**.
 - `queryIsNameOnly` (`auto-persist-findings.ts:769-773`) treats `identifierValue` as a concrete selector and returns before reading `identifierType`. The tool's own description tells the model to search names with `keyword`.
@@ -315,7 +311,7 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 - Fix: backport these as canonical migrations (sign-off needed for the evidence-archive part) and regenerate `types.ts`.
 
 **F23 — Credentials.** *Operational.* **Confirmed**.
-- OathNet has returned 401 on every call today (new).
+- OathNet has returned 401 on every call today (new). JD is adding OathNet credits (2026-10-18), which points to an exhausted balance rather than a dead key.
 - `github_code_search` has returned 401 since 09-13 (still open).
 - `reddit_user` is blocked by datacenter IPs and has never worked; consider disabling it.
 - `fofa_search` fails on plan limits.
@@ -373,8 +369,8 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 
 These need JD's authorization. Nothing here auto-merges or auto-deploys, and a mirror merge is not a deploy.
 
-1. **F1: decide access.** Either turn off open sign-up in Supabase Auth (a settings change, no deploy, reversible) or scope reveal to admins (a small edge PR plus a `/health` key). Hold #763 until this is decided.
-2. **F8: money.** Recharge or auto-recharge Z.AI, and decide the Anthropic budget before the **10-23** credit expiry. Replace or renew the **OathNet** key (F23).
+1. **F8: money.** Recharge or auto-recharge Z.AI, and decide the Anthropic budget before the **10-23** credit expiry. **OathNet:** JD is adding credits (2026-10-18). Afterwards, confirm with a `tool_usage_log` query that `oathnet_lookup` returns `ok` again (F23).
+2. *(F1 breach reveal: settled by JD, leave as is, no action.)*
 3. **F3 + F2: close the reopened quarantine boundaries.** Two small edge PRs, each with tests and a kill switch: the dispatch selector extractor (F3), then the Serus keyword name check (F2). Ship them one at a time through the normal stamp → sync → gate → deploy → `/health` cycle.
 4. **F6 + F10 + F13: frontend integrity fixes.** These are small and frontend-only, so they can go in parallel. Run e2e by hand before merging.
 5. **F4: rebase #741 and get sign-off**, extending it to `source_quote`/`ownership_proof` and server-derived custody classification. Then F5's quarantine inheritance.
