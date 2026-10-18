@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -91,6 +91,9 @@ export default function CasesPage() {
   const [metrics, setMetrics] = useState<Map<string, CaseMetrics>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Whether `metrics` has ever held real counts. Until it has, a counts failure is
+  // an error even on a background refresh: rows with 0/0 counts would mislead.
+  const metricsLoadedRef = useRef(false);
   const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState("");
 
@@ -117,16 +120,19 @@ export default function CasesPage() {
       ]);
       if (threadsRes.error) throw threadsRes.error;
       if ("failure" in metricsRes) {
-        // A first load with no counts is an error: zeros would mislead. A background
-        // re-read keeps the last good counts but still applies the thread rows, so a
-        // dead run's label does not wait on an unrelated RPC.
-        if (!opts?.silent) throw metricsRes.failure;
+        // No counts yet is an error: zeros would mislead. Once counts have loaded, a
+        // background re-read keeps the last good counts but still applies the thread
+        // rows, so a dead run's label does not wait on an unrelated RPC.
+        if (!opts?.silent || !metricsLoadedRef.current) throw metricsRes.failure;
         captureError(metricsRes.failure, "cases.metrics");
       }
       setError(null);
       setCases((threadsRes.data ?? []) as CaseRow[]);
       setCasesReadAt(Date.now());
-      if ("map" in metricsRes) setMetrics(metricsRes.map);
+      if ("map" in metricsRes) {
+        metricsLoadedRef.current = true;
+        setMetrics(metricsRes.map);
+      }
     } catch (e) {
       captureError(e, "cases.load");
       // Surface the failure instead of silently rendering the "no cases" empty

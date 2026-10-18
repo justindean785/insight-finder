@@ -25,6 +25,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const m = vi.hoisted(() => ({
   threadRows: [] as Array<Record<string, unknown>>,
   metricsFail: false,
+  realtime: [] as Array<() => void>,
   auth: { user: { id: "user-1", email: "analyst@test.local" }, session: { access_token: "t" }, loading: false, error: null },
 }));
 
@@ -64,7 +65,15 @@ vi.mock("@/integrations/supabase/client", () => {
     });
     return proxy;
   };
-  const ch = { on: () => ch, subscribe: () => ch };
+  // Keep the realtime callbacks so a test can fire a change event.
+  const ch: { on: (...a: unknown[]) => unknown; subscribe: () => unknown } = {
+    on: (...a: unknown[]) => {
+      const cb = a[2];
+      if (typeof cb === "function") m.realtime.push(cb as () => void);
+      return ch;
+    },
+    subscribe: () => ch,
+  };
   return {
     supabase: {
       from: (table: string) => makeChain(table),
@@ -121,6 +130,7 @@ afterEach(() => {
   cleanup();
   m.threadRows = [];
   m.metricsFail = false;
+  m.realtime = [];
 });
 
 async function chipFor(title: string): Promise<string> {
@@ -207,6 +217,18 @@ describe("Cases list labels a run the way the workspace header does", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("when counts have never loaded, a background refresh keeps the error instead of showing zero counts", async () => {
+    m.metricsFail = true;
+    m.threadRows = [LIVE];
+    renderCases();
+    expect(await screen.findByText(/get_case_metrics unavailable/)).toBeTruthy();
+    // A realtime change schedules a silent refresh; the counts RPC is still down.
+    for (const cb of m.realtime) cb();
+    await new Promise((r) => setTimeout(r, 800));
+    expect(screen.getByText(/get_case_metrics unavailable/)).toBeTruthy();
+    expect(screen.queryByText(/0 artifacts/)).toBeNull();
   });
 });
 
