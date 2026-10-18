@@ -172,8 +172,10 @@ describe("Breach Exposure: every authority state through the canonical predicate
   });
 
   it("the same breach seen for the subject and for a quarantined namesake keeps only the subject's values", () => {
+    // The subject's row captured no hash, so the merge (one value per label) has
+    // no reason to drop the namesake's: only the authority filter can keep it out.
     const c = renderReport([
-      breach("subj", "Canva", { password_hash: "subjecthash000" }),
+      breach("subj", "Canva", { city: "Subjectville" }),
       art({
         id: "namesake",
         value: "Jordan Vale - Canva",
@@ -188,8 +190,77 @@ describe("Breach Exposure: every authority state through the canonical predicate
     ]);
     const text = tableOf(c);
     expect(text).toContain("Canva");
-    expect(text).toContain("subjecthash000");
+    expect(text).toContain("Subjectville");
     expect(text).not.toContain("strangerhash999");
+  });
+});
+
+/**
+ * One extra breach row (`ExtraCorp`) in each authority state, beside three clean
+ * subject breaches. The table, the Hunter's Note count and the Key risks count
+ * must make the same call: 4 when the row speaks for the subject, 3 when it
+ * does not. Both narrative lines fire at >= 3, so a disagreement is visible.
+ */
+describe("table, breach-corpora note and Key risks agree in every authority state", () => {
+  const base = [breach("b1", "Canva"), breach("b2", "Wattpad"), breach("b3", "Dropbox")];
+  const rejectedEmail = art({ id: "rej-email", kind: "email", value: "other.person@example.com", confidence: 55 });
+  const STATES: Array<{
+    state: string;
+    rows: ReturnType<typeof art>[];
+    reviews: Record<string, string>;
+    speaksForSubject: boolean;
+  }> = [
+    { state: "clean", rows: [breach("x", "ExtraCorp")], reviews: {}, speaksForSubject: true },
+    { state: "active quarantine", rows: [breach("x", "ExtraCorp", UNLINKED)], reviews: {}, speaksForSubject: false },
+    {
+      state: "explicit linkage release",
+      rows: [breach("x", "ExtraCorp", { ...UNLINKED, linkage_confirmed: true })],
+      reviews: {},
+      speaksForSubject: true,
+    },
+    { state: "dismissed review", rows: [breach("x", "ExtraCorp")], reviews: { x: "dismissed" }, speaksForSubject: false },
+    { state: "wrong review", rows: [breach("x", "ExtraCorp")], reviews: { x: "wrong" }, speaksForSubject: false },
+    {
+      state: "legacy false_positive",
+      rows: [breach("x", "ExtraCorp", { false_positive: true })],
+      reviews: {},
+      speaksForSubject: false,
+    },
+    {
+      state: "released but rejected",
+      rows: [breach("x", "ExtraCorp", { ...UNLINKED, linkage_confirmed: true })],
+      reviews: { x: "wrong" },
+      speaksForSubject: false,
+    },
+    {
+      state: "derived from a rejected selector",
+      rows: [
+        rejectedEmail,
+        art({
+          id: "x",
+          value: "other.person@example.com - ExtraCorp",
+          metadata: { breach_name: "ExtraCorp", breach_date: "2020-01-01", parent_selector: "other.person@example.com" },
+        }),
+      ],
+      reviews: { "rej-email": "wrong" },
+      speaksForSubject: false,
+    },
+  ];
+
+  it.each(STATES)("$state", ({ rows, reviews, speaksForSubject }) => {
+    const c = renderReport([...base, ...rows], reviews);
+    const text = c.textContent ?? "";
+    const n = speaksForSubject ? 4 : 3;
+    const other = speaksForSubject ? 3 : 4;
+    // Table
+    if (speaksForSubject) expect(tableOf(c)).toContain("ExtraCorp");
+    else expect(tableOf(c)).not.toContain("ExtraCorp");
+    // Hunter's Note
+    expect(text).toContain(`Subject appears in ${n} distinct breach corpora`);
+    expect(text).not.toContain(`Subject appears in ${other} distinct breach corpora`);
+    // Key risks
+    expect(text).toContain(`Subject appears in ${n} breach corpora — assume broad credential exposure.`);
+    expect(text).not.toContain(`Subject appears in ${other} breach corpora — assume broad credential exposure.`);
   });
 });
 
