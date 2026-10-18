@@ -97,6 +97,9 @@ export default function CasesPage() {
   // The last read's counts failed: the list is not current (new cases held back,
   // or an error shown). Keeps the timed re-read below running until counts load.
   const [countsStale, setCountsStale] = useState(false);
+  // Reads overlap (realtime, the timer, a retry). Only the latest may publish, or
+  // an older read finishing late would overwrite newer rows and flags.
+  const loadSeqRef = useRef(0);
   const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState("");
 
@@ -104,6 +107,7 @@ export default function CasesPage() {
   // list in place (silent) so a live scan doesn't flash back to skeleton.
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!user) return;
+    const seq = ++loadSeqRef.current;
     if (!opts?.silent) setLoading(true);
     try {
       // Counts are aggregated in Postgres (get_case_metrics). Tallying fetched
@@ -123,6 +127,7 @@ export default function CasesPage() {
           (failure: unknown) => ({ failure }),
         ),
       ]);
+      if (seq !== loadSeqRef.current) return; // superseded by a newer read
       // A failed threads read leaves the flag as it was: the list is no more current.
       if (threadsRes.error) throw threadsRes.error;
       setCountsStale("failure" in metricsRes);
@@ -151,11 +156,11 @@ export default function CasesPage() {
       // Surface the failure instead of silently rendering the "no cases" empty
       // state — but only for a foreground load; a failed background realtime
       // refresh should keep the list we're already showing, not flash an error.
-      if (!opts?.silent) {
+      if (!opts?.silent && seq === loadSeqRef.current) {
         setError(e instanceof Error ? e.message : "Could not load your cases.");
       }
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, [user]);
 

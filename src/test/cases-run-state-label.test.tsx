@@ -306,6 +306,32 @@ describe("Cases list labels a run the way the workspace header does", () => {
     }
   });
 
+  it("an older read that finishes after a newer one does not overwrite it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      m.threadRows = [DONE];
+      renderCases();
+      expect(await chipFor("Done case")).toBe("Finished");
+      // Read A starts: its counts call is slow (it will succeed, with A's older rows).
+      m.metricsDelayMs = 5_000;
+      for (const cb of m.realtime) cb();
+      await vi.advanceTimersByTimeAsync(700);
+      // Read B starts later: a new case, and its counts call fails at once.
+      m.threadRows = [row("fresh", "Case created elsewhere", { updated_at: ago(1_000) }), DONE];
+      m.metricsDelayMs = 0;
+      m.metricsFail = true;
+      for (const cb of m.realtime) cb();
+      await vi.advanceTimersByTimeAsync(700);
+      // A finishes after B. It must not publish over B (nor clear B's stale flag).
+      await vi.advanceTimersByTimeAsync(5_000);
+      m.metricsFail = false;
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(await screen.findByText("Case created elsewhere")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("when counts have never loaded, a background refresh keeps the error instead of showing zero counts", async () => {
     m.metricsFail = true;
     m.threadRows = [LIVE];
