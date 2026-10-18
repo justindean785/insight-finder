@@ -97,9 +97,12 @@ export default function CasesPage() {
   // The last read's counts failed: the list is not current (new cases held back,
   // or an error shown). Keeps the timed re-read below running until counts load.
   const [countsStale, setCountsStale] = useState(false);
-  // Reads overlap (realtime, the timer, a retry). Only the latest may publish, or
-  // an older read finishing late would overwrite newer rows and flags.
+  // Reads overlap (realtime, the timer, a retry). A read publishes unless a NEWER
+  // read already has: an older read finishing late must not overwrite newer rows,
+  // yet a read must not be dropped just because a newer one STARTED (that one may
+  // fail, or be superseded in turn), or the list would never publish.
   const loadSeqRef = useRef(0);
+  const publishedSeqRef = useRef(0);
   const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState("");
 
@@ -127,7 +130,7 @@ export default function CasesPage() {
           (failure: unknown) => ({ failure }),
         ),
       ]);
-      if (seq !== loadSeqRef.current) return; // superseded by a newer read
+      if (seq <= publishedSeqRef.current) return; // a newer read already published
       // A failed threads read leaves the flag as it was: the list is no more current.
       if (threadsRes.error) throw threadsRes.error;
       setCountsStale("failure" in metricsRes);
@@ -139,6 +142,7 @@ export default function CasesPage() {
         captureError(metricsRes.failure, "cases.metrics");
       }
       const rows = (threadsRes.data ?? []) as CaseRow[];
+      publishedSeqRef.current = seq;
       setError(null);
       if ("map" in metricsRes) {
         metricsLoadedRef.current = true;
@@ -154,13 +158,14 @@ export default function CasesPage() {
     } catch (e) {
       captureError(e, "cases.load");
       // Surface the failure instead of silently rendering the "no cases" empty
-      // state — but only for a foreground load; a failed background realtime
-      // refresh should keep the list we're already showing, not flash an error.
-      if (!opts?.silent && seq === loadSeqRef.current) {
+      // state — for a foreground load, or for any read while nothing has published
+      // yet; a failed background refresh keeps the list already shown, no flash.
+      // Never over a newer read's result.
+      if (seq > publishedSeqRef.current && (!opts?.silent || publishedSeqRef.current === 0)) {
         setError(e instanceof Error ? e.message : "Could not load your cases.");
       }
     } finally {
-      if (seq === loadSeqRef.current) setLoading(false);
+      setLoading(false);
     }
   }, [user]);
 

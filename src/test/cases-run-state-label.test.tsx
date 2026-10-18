@@ -332,6 +332,61 @@ describe("Cases list labels a run the way the workspace header does", () => {
     }
   });
 
+  it("a background read that starts during the first load does not hide the first load's error", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      m.threadRows = [LIVE, DONE];
+      m.metricsFail = true;
+      m.metricsDelayMs = 1_000;
+      renderCases();
+      await vi.advanceTimersByTimeAsync(50);
+      for (const cb of m.realtime) cb();
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(screen.getByText(/get_case_metrics unavailable/)).toBeTruthy();
+      expect(screen.queryByText(/No cases yet/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a background read that fails after the first load does not throw the first load's rows away", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      m.threadRows = [LIVE, DONE];
+      m.metricsDelayMs = 1_000;
+      renderCases();
+      await vi.advanceTimersByTimeAsync(50);
+      for (const cb of m.realtime) cb();
+      await vi.advanceTimersByTimeAsync(560);
+      m.threadsFail = true;
+      await vi.advanceTimersByTimeAsync(100);
+      m.threadsFail = false;
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(screen.getByText("Live run case")).toBeTruthy();
+      expect(screen.queryByText(/No cases yet/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the list publishes even while realtime events keep arriving faster than a read completes", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      m.threadRows = [LIVE, DONE];
+      m.metricsDelayMs = 1_000;
+      renderCases();
+      for (let i = 0; i < 6; i++) {
+        await vi.advanceTimersByTimeAsync(50);
+        for (const cb of m.realtime) cb();
+        await vi.advanceTimersByTimeAsync(750);
+      }
+      // Events are still arriving, yet a finished read has published.
+      expect(screen.getByText("Live run case")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("when counts have never loaded, a background refresh keeps the error instead of showing zero counts", async () => {
     m.metricsFail = true;
     m.threadRows = [LIVE];
