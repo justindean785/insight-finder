@@ -376,7 +376,7 @@ These need JD's authorization. Nothing here auto-merges or auto-deploys, and a m
 1. **F8: money.** Recharge or auto-recharge Z.AI, and decide the Anthropic budget before the **10-23** credit expiry. **OathNet:** JD is resolving it with OathNet's owner (2026-10-18). Once fixed, confirm with a `tool_usage_log` query that `oathnet_lookup` returns `ok` again. **DeepFind:** check the key or plan (F23).
 2. *(F1 breach reveal: settled by JD, leave as is, no action.)*
 3. **F3 + F2: close the reopened quarantine boundaries.** Two small edge PRs, each with tests and a kill switch: the dispatch selector extractor (F3), then the Serus keyword name check (F2). Ship them one at a time through the normal stamp → sync → gate → deploy → `/health` cycle.
-4. **F6 + F10 + F13: frontend integrity fixes.** These are small and frontend-only, so they can go in parallel. Run e2e by hand before merging.
+4. **F6 + F10 + F13: frontend integrity fixes. Built 2026-10-18 as draft PRs, awaiting JD:** F6 → **#794**, F10 → **#795**, F13 → **#796**. Each is frontend-only, test-first, and was e2e-checked by hand (52/2). They touch disjoint files and merge cleanly with each other.
 5. **F4: rebase #741 and get sign-off**, extending it to `source_quote`/`ownership_proof` and server-derived custody classification. Then F5's quarantine inheritance.
 6. **F9: gate `/health`.** Cache the GLM probe, and run sweeps only with a secret header.
 7. **F7 + F12b/e: per-request run state; the Stop race; billing gaps.**
