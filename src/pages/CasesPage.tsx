@@ -103,20 +103,30 @@ export default function CasesPage() {
       // Counts are aggregated in Postgres (get_case_metrics). Tallying fetched
       // ROWS in the browser silently under-reported once an account passed the
       // row cap — see src/lib/case-metrics.ts for the measured production case.
-      const [threadsRes, metricsMap] = await Promise.all([
+      const [threadsRes, metricsRes] = await Promise.all([
         supabase
           .from("threads")
           .select("id,title,updated_at,created_at,status,seed_type,seed_value,run_started_at,last_heartbeat_at,recovered_at,recovery_reason")
           .eq("user_id", user.id)
           .order("updated_at", { ascending: false })
           .limit(200),
-        loadCaseMetrics(supabase),
+        loadCaseMetrics(supabase).then(
+          (map) => ({ map }),
+          (failure: unknown) => ({ failure }),
+        ),
       ]);
       if (threadsRes.error) throw threadsRes.error;
+      if ("failure" in metricsRes) {
+        // A first load with no counts is an error: zeros would mislead. A background
+        // re-read keeps the last good counts but still applies the thread rows, so a
+        // dead run's label does not wait on an unrelated RPC.
+        if (!opts?.silent) throw metricsRes.failure;
+        captureError(metricsRes.failure, "cases.metrics");
+      }
       setError(null);
       setCases((threadsRes.data ?? []) as CaseRow[]);
       setCasesReadAt(Date.now());
-      setMetrics(metricsMap);
+      if ("map" in metricsRes) setMetrics(metricsRes.map);
     } catch (e) {
       captureError(e, "cases.load");
       // Surface the failure instead of silently rendering the "no cases" empty

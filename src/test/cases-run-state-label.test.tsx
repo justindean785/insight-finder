@@ -24,6 +24,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const m = vi.hoisted(() => ({
   threadRows: [] as Array<Record<string, unknown>>,
+  metricsFail: false,
   auth: { user: { id: "user-1", email: "analyst@test.local" }, session: { access_token: "t" }, loading: false, error: null },
 }));
 
@@ -67,7 +68,8 @@ vi.mock("@/integrations/supabase/client", () => {
   return {
     supabase: {
       from: (table: string) => makeChain(table),
-      rpc: () => Promise.resolve({ data: [], error: null }),
+      rpc: () =>
+        Promise.resolve(m.metricsFail ? { data: null, error: { message: "get_case_metrics unavailable" } } : { data: [], error: null }),
       auth: {
         getUser: () => Promise.resolve({ data: { user: { id: "user-1" } }, error: null }),
         getSession: () => Promise.resolve({ data: { session: null }, error: null }),
@@ -118,6 +120,7 @@ const STOPPED = row("stopped", "Stopped case", { status: "stopped", run_started_
 afterEach(() => {
   cleanup();
   m.threadRows = [];
+  m.metricsFail = false;
 });
 
 async function chipFor(title: string): Promise<string> {
@@ -185,6 +188,22 @@ describe("Cases list labels a run the way the workspace header does", () => {
       vi.setSystemTime(NOW + 5 * 60_000);
       await vi.advanceTimersByTimeAsync(31_000);
       await waitFor(async () => expect(await chipFor("Live run case")).toBe("Interrupted"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the re-read still applies fresh thread rows when the unrelated counts RPC fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      m.threadRows = [LIVE];
+      renderCases();
+      expect(await chipFor("Live run case")).toBe("Running");
+      m.metricsFail = true;
+      vi.setSystemTime(NOW + 5 * 60_000);
+      await vi.advanceTimersByTimeAsync(31_000);
+      await waitFor(async () => expect(await chipFor("Live run case")).toBe("Interrupted"));
+      expect(screen.queryByText(/get_case_metrics unavailable/)).toBeNull();
     } finally {
       vi.useRealTimers();
     }
