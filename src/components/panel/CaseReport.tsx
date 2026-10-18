@@ -78,10 +78,22 @@ type Reviews = Record<string, ReviewAdjustment> | undefined;
 const revOf = (reviews: Reviews, a: Artifact): ReviewAdjustment => reviews?.[a.id];
 /** May this row speak for the subject? See `isSubjectAuthorityEligible`. */
 const forSubject = (reviews: Reviews, a: Artifact): boolean => isSubjectAuthorityEligible(a, revOf(reviews, a));
+/** Rows DERIVED from an analyst-rejected selector. The markdown export's
+ *  provenance rule (`buildReportMarkdown`): rejection follows provenance, so a
+ *  breach pulled from a rejected email leaves the subject's sections with it. */
+function rejectedDerivedIds(artifacts: Artifact[], reviews: Reviews): Set<string> {
+  const rejectedIds = new Set(artifacts.filter((a) => isRejectedArtifactRow(a, revOf(reviews, a))).map((a) => a.id));
+  return buildRejectedDerivationIds(artifacts, rejectedIds, normalizeTarget);
+}
 /** Breach rows that actually put the SUBJECT in a corpus: authority-eligible,
- *  and not a "no breach hits" negative. Feeds counts that assert exposure. */
-const subjectBreaches = (artifacts: Artifact[], reviews: Reviews): Artifact[] =>
-  artifacts.filter((a) => isBreachKind(a.kind) && forSubject(reviews, a) && !isNullResultValue(a.value, a.source));
+ *  not derived from a rejected selector, and not a "no breach hits" negative.
+ *  Feeds counts that assert exposure, so they agree with the Breach Exposure
+ *  table, which applies the same gates. */
+const subjectBreaches = (artifacts: Artifact[], reviews: Reviews): Artifact[] => {
+  const derived = rejectedDerivedIds(artifacts, reviews);
+  return artifacts.filter((a) =>
+    isBreachKind(a.kind) && forSubject(reviews, a) && !derived.has(a.id) && !isNullResultValue(a.value, a.source));
+};
 // THE report's number, and it is now the same number as every other surface's.
 // This used to be `review ? adjustedConfidence(a, review) : a.confidence`, so the
 // report agreed with the Evidence BOARD on an unreviewed row and with the
@@ -898,12 +910,11 @@ function concreteListFields(m: Record<string, unknown>, key: string): RevealFiel
  * subject here. Masking and reveal are untouched.
  */
 function buildBreachExposure(artifacts: Artifact[], reviews: Reviews): BreachRow[] {
-  const rejectedIds = new Set(artifacts.filter((a) => isRejectedArtifactRow(a, revOf(reviews, a))).map((a) => a.id));
-  const rejectedDerivedIds = buildRejectedDerivationIds(artifacts, rejectedIds, normalizeTarget);
+  const derived = rejectedDerivedIds(artifacts, reviews);
   const byKey = new Map<string, BreachRow>();
   for (const a of artifacts) {
     if (String(a.kind ?? "").toLowerCase() !== "breach_exposure") continue;
-    if (!forSubject(reviews, a) || rejectedDerivedIds.has(a.id)) continue;
+    if (!forSubject(reviews, a) || derived.has(a.id)) continue;
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     // Prefer the explicit breach name; else strip the "<selector> - " prefix off value.
     const site = (metaStr(m, "breach_name") || String(a.value ?? "").replace(/^.*?\s-\s/, "")).trim()

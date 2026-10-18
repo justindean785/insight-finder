@@ -114,3 +114,104 @@ describe("CaseReport Breach Exposure table honours subject authority", () => {
     expect(breachTableText(true)).toContain("Canva");
   });
 });
+
+/**
+ * The remaining authority states, each through the canonical predicates
+ * (`isSubjectAuthorityEligible` → `isQuarantined` / `isRejectedArtifact`), plus
+ * the same breach reported for the subject and for a quarantined namesake, and
+ * the narrative count that sits beside the table.
+ */
+function renderReport(artifacts: ReturnType<typeof art>[], reviews: Record<string, string> = {}) {
+  return render(
+    <CaseReport
+      seedValue="quietfalcon77@example.com"
+      seedType="email"
+      artifacts={artifacts as never}
+      reviews={reviews as never}
+      messages={[]}
+      reportType="full"
+    />,
+  ).container;
+}
+function tableOf(container: HTMLElement): string {
+  const table = Array.from(container.querySelectorAll("table")).find((t) =>
+    (t.querySelector("thead")?.textContent ?? "").includes("Exposed fields"),
+  );
+  return table?.textContent ?? "";
+}
+const breach = (id: string, name: string, extra: Record<string, unknown> = {}) =>
+  art({
+    id,
+    value: `quietfalcon77@example.com - ${name}`,
+    metadata: { breach_name: name, breach_date: "2020-01-01", exposed_fields: ["email"], ...extra },
+  });
+
+describe("Breach Exposure: every authority state through the canonical predicates", () => {
+  it("a 'wrong' review excludes the row", () => {
+    const c = renderReport([breach("ok", "Canva"), breach("w", "WrongCorp")], { w: "wrong" });
+    expect(tableOf(c)).toContain("Canva");
+    expect(tableOf(c)).not.toContain("WrongCorp");
+  });
+
+  it("legacy metadata.false_positive excludes the row with no review row", () => {
+    const c = renderReport([breach("ok", "Canva"), breach("fp", "LegacyFpCorp", { false_positive: true })]);
+    expect(tableOf(c)).not.toContain("LegacyFpCorp");
+  });
+
+  it("an explicitly released quarantine (linkage_confirmed) speaks for the subject again", () => {
+    const c = renderReport([breach("rel", "ReleasedCorp", { ...UNLINKED, linkage_confirmed: true })]);
+    expect(tableOf(c)).toContain("ReleasedCorp");
+  });
+
+  it("release does not override an independent analyst rejection", () => {
+    const c = renderReport(
+      [breach("ok", "Canva"), breach("rel-rej", "ReleasedRejectedCorp", { ...UNLINKED, linkage_confirmed: true })],
+      { "rel-rej": "dismissed" },
+    );
+    expect(tableOf(c)).not.toContain("ReleasedRejectedCorp");
+  });
+
+  it("the same breach seen for the subject and for a quarantined namesake keeps only the subject's values", () => {
+    const c = renderReport([
+      breach("subj", "Canva", { password_hash: "subjecthash000" }),
+      art({
+        id: "namesake",
+        value: "Jordan Vale - Canva",
+        metadata: {
+          breach_name: "Canva",
+          breach_date: "2020-01-01",
+          exposed_fields: ["email", "password"],
+          password_hash: "strangerhash999",
+          ...UNLINKED,
+        },
+      }),
+    ]);
+    const text = tableOf(c);
+    expect(text).toContain("Canva");
+    expect(text).toContain("subjecthash000");
+    expect(text).not.toContain("strangerhash999");
+  });
+});
+
+describe("Breach narrative count agrees with the filtered table", () => {
+  it("'Subject appears in N breach corpora' does not count a breach derived from a rejected selector", () => {
+    const c = renderReport(
+      [
+        breach("b1", "Canva"),
+        breach("b2", "Wattpad"),
+        breach("b3", "Dropbox"),
+        art({ id: "rej-email", kind: "email", value: "other.person@example.com", confidence: 55 }),
+        art({
+          id: "derived",
+          value: "other.person@example.com - DerivedCorp",
+          metadata: { breach_name: "DerivedCorp", breach_date: "2022-03-03", parent_selector: "other.person@example.com" },
+        }),
+      ],
+      { "rej-email": "wrong" },
+    );
+    const text = c.textContent ?? "";
+    expect(tableOf(c)).not.toContain("DerivedCorp");
+    expect(text).toContain("Subject appears in 3 distinct breach corpora");
+    expect(text).not.toContain("Subject appears in 4 distinct breach corpora");
+  });
+});
