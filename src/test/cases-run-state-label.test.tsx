@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -160,6 +160,20 @@ describe("Cases list labels a run the way the workspace header does", () => {
     expect(await chipFor("Done case")).toBe("Finished");
     expect(await chipFor("Stopped case")).toBe("Stopped");
   });
+
+  it("a live run stays Running when the list re-renders long after it was fetched (typing in search)", async () => {
+    m.threadRows = [LIVE];
+    renderCases();
+    expect(await chipFor("Live run case")).toBe("Running");
+    // Five minutes on, nothing re-fetched: the rows still describe the moment they were read.
+    const spy = vi.spyOn(Date, "now").mockReturnValue(NOW + 5 * 60_000);
+    try {
+      fireEvent.change(screen.getByPlaceholderText("Search by title or seed…"), { target: { value: "Live" } });
+      expect(await chipFor("Live run case")).toBe("Running");
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 function renderCaseView(id: string) {
@@ -177,6 +191,8 @@ describe("Read-only case page does not call a dead run live", () => {
     m.threadRows = [DEAD_ACTIVE];
     renderCaseView("dead");
     expect(await screen.findByRole("link", { name: /Continue in chat/ })).toBeTruthy();
+    // Let the case snapshot hydrate before judging the badge.
+    await new Promise((r) => setTimeout(r, 100));
     expect(screen.queryByText("Running")).toBeNull();
     expect(screen.queryByRole("link", { name: /Open live chat/ })).toBeNull();
   });
@@ -186,5 +202,27 @@ describe("Read-only case page does not call a dead run live", () => {
     renderCaseView("live");
     expect(await screen.findByRole("link", { name: /Open live chat/ })).toBeTruthy();
     expect(screen.getByText("Running")).toBeTruthy();
+  });
+
+  it("a live run keeps Running when the page re-renders long after its metadata was fetched", async () => {
+    m.threadRows = [LIVE];
+    const view = renderCaseView("live");
+    expect(await screen.findByRole("link", { name: /Open live chat/ })).toBeTruthy();
+    // Five minutes on, the page re-renders (a tab change, an artifact arriving). The live run
+    // keeps pulsing its heartbeat server-side; only a stale one-time read would call it dead.
+    const spy = vi.spyOn(Date, "now").mockReturnValue(NOW + 5 * 60_000);
+    try {
+      view.rerender(
+        <MemoryRouter initialEntries={["/cases/live"]}>
+          <Routes>
+            <Route path="/cases/:threadId" element={<CaseViewPage />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+      expect(screen.getByRole("link", { name: /Open live chat/ })).toBeTruthy();
+      expect(screen.getByText("Running")).toBeTruthy();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

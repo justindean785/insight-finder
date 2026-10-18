@@ -12,7 +12,6 @@ import { FullPageLoader } from "@/components/ui/full-page-loader";
 import { supabase } from "@/integrations/supabase/client";
 import { MessageSquare, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { deriveRunState } from "@/lib/case-snapshot";
 import { extractDisplaySeed } from "@/lib/seed";
 import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
 import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
@@ -37,10 +36,6 @@ type ThreadMeta = {
   seed_type: string | null;
   seed_value: string | null;
   updated_at: string;
-  run_started_at: string | null;
-  last_heartbeat_at: string | null;
-  recovered_at: string | null;
-  recovery_reason: string | null;
 };
 
 export default function CaseViewPage() {
@@ -66,7 +61,7 @@ export default function CaseViewPage() {
     (async () => {
       const { data, error } = await supabase
         .from("threads")
-        .select("id,title,status,seed_type,seed_value,updated_at,run_started_at,last_heartbeat_at,recovered_at,recovery_reason")
+        .select("id,title,status,seed_type,seed_value,updated_at,run_started_at,last_heartbeat_at")
         .eq("id", threadId)
         .eq("user_id", user.id)
         .maybeSingle();
@@ -113,10 +108,6 @@ export default function CaseViewPage() {
   }
 
 
-  // Live only on a fresh heartbeat, as in the workspace header (deriveRunState):
-  // a never-started thread (I-1) and a killed run whose row is still `active`
-  // are both "active" in the status column, and neither is running.
-  const running = deriveRunState({ thread: meta ?? null, chatRunning: false, nowMs: Date.now() }) === "running";
   // The stored title / seed_value can be the whole pasted run-prompt, which
   // overran the header and truncated mid-word. Pull the clean selector out of
   // the blob (same helper the report cover uses) for the heading, and keep the
@@ -144,19 +135,7 @@ export default function CaseViewPage() {
               <p className="text-xs text-muted-foreground font-mono truncate mt-0.5">{caseSubtitle}</p>
             )}
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {running && (
-              <span className="text-eyebrow font-mono uppercase tracking-wider px-2 py-1 rounded-full border border-[hsl(var(--intel-blue)/0.35)] bg-[hsl(var(--intel-blue)/0.08)] text-[hsl(var(--intel-blue))]">
-                Running
-              </span>
-            )}
-            <Button asChild variant="cta" size="sm" className="rounded-lg gap-1.5">
-              <Link to={`/chat/${threadId}`}>
-                <MessageSquare className="w-3.5 h-3.5" />
-                {running ? "Open live chat" : "Continue in chat"}
-              </Link>
-            </Button>
-          </div>
+          <CaseRunControls threadId={threadId} />
         </div>
       </div>
 
@@ -192,6 +171,33 @@ export default function CaseViewPage() {
       </main>
     </div>
     </CaseSnapshotProvider>
+  );
+}
+
+/**
+ * "Running" and the chat link, from the live case snapshot: the run state the
+ * workspace header shows. The snapshot re-reads the thread (realtime + poll) and
+ * judges liveness on a fresh heartbeat, so a never-started thread (I-1) and a
+ * killed run whose row is still `active` are not running, while a live run does
+ * not lose the badge because this page's own one-time read has aged.
+ */
+function CaseRunControls({ threadId }: { threadId: string }) {
+  const { snapshot } = useCaseSnapshot();
+  const running = snapshot?.run.state === "running";
+  return (
+    <div className="flex items-center gap-2 shrink-0">
+      {running && (
+        <span className="text-eyebrow font-mono uppercase tracking-wider px-2 py-1 rounded-full border border-[hsl(var(--intel-blue)/0.35)] bg-[hsl(var(--intel-blue)/0.08)] text-[hsl(var(--intel-blue))]">
+          Running
+        </span>
+      )}
+      <Button asChild variant="cta" size="sm" className="rounded-lg gap-1.5">
+        <Link to={`/chat/${threadId}`}>
+          <MessageSquare className="w-3.5 h-3.5" />
+          {running ? "Open live chat" : "Continue in chat"}
+        </Link>
+      </Button>
+    </div>
   );
 }
 

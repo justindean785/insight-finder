@@ -70,8 +70,12 @@ const STATUS_CHIP: Record<CaseRunState, { text: string; tone: string }> = {
  * nor from a run whose isolate was killed (still `active`, heartbeat lapsed:
  * Interrupted). A `finished` row carrying a recovery marker is Interrupted too,
  * never Finished (I-2).
+ *
+ * `nowMs` is when the rows were READ, not render time: a heartbeat is only as
+ * fresh as the read that returned it, so judging old rows against a later clock
+ * would turn a live run Interrupted on any re-render (typing in search).
  */
-function statusLabel(row: CaseRow, nowMs: number = Date.now()): { text: string; tone: string } {
+function statusLabel(row: CaseRow, nowMs: number): { text: string; tone: string } {
   return STATUS_CHIP[deriveRunState({ thread: row, chatRunning: false, nowMs })];
 }
 
@@ -79,6 +83,8 @@ export default function CasesPage() {
   const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const [cases, setCases] = useState<CaseRow[]>([]);
+  // When `cases` was read: the clock its run states are judged against.
+  const [casesReadAt, setCasesReadAt] = useState(() => Date.now());
   const [metrics, setMetrics] = useState<Map<string, CaseMetrics>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -106,6 +112,7 @@ export default function CasesPage() {
       if (threadsRes.error) throw threadsRes.error;
       setError(null);
       setCases((threadsRes.data ?? []) as CaseRow[]);
+      setCasesReadAt(Date.now());
       setMetrics(metricsMap);
     } catch (e) {
       captureError(e, "cases.load");
@@ -239,7 +246,7 @@ export default function CasesPage() {
             <ul className="divide-y divide-border-subtle/60">
               {filtered.map((c) => {
                 const m = metrics.get(c.id) ?? { artifacts: 0, toolCalls: 0 };
-                const st = statusLabel(c);
+                const st = statusLabel(c, casesReadAt);
                 return (
                   <li key={c.id}>
                     <Link
