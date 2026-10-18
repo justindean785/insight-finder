@@ -158,6 +158,8 @@ Corpus totals: 322 threads · 16,764 artifacts · 25 `kind='finding'` · 20,480 
 | #516 account deletion (dark) | canonical | frontend + migration | yes | CONFLICT | 289 | rebase or close |
 | #117 sync package-lock | mirror | CI | yes | — | — | correct lock, but CI stays red on lint, edge and vitest underneath (F21) |
 
+*Re-measured the same evening (`docs/AUDIT_2026-10-18-evening_state-pr-queue-next-tasks.md` §6): #593 is now **clean** (merge commit `4afe07a`) and #797 is ready for review; this table is the morning measurement.*
+
 **7 of the 9 canonical drafts now conflict with `main`.** CLAUDE.md says "The bottleneck is the MERGE", and that is visible again here.
 
 ## 7 · Findings & action-list delta
@@ -183,7 +185,7 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 - (a) An **analyst-rejected** email or phone still reaches paid Serus (2500) and Indicia (2000–3000) calls.
 - (b) A **quarantined** selector is sent **without the `unproven_linkage` taint**, so its results persist at full subject authority. This is exactly the hazard CLAUDE.md's #581 section warns about.
 - `auto-persist` already has the correct key list (`BREACH_SUBJECT_INPUT_KEYS`); the two lists have drifted.
-- Fix: a dispatch-only extractor, so the cache and circuit keys don't change, plus Serus and Indicia tests. **Built as draft #797** (edge; not merged, not deployed). It reads Serus `identifierValue`/`identifierType`, a `query`/`q` only when the whole value is one exact selector, and `discord_id`. It applies only when the central selector is empty, has kill switch `DISPATCH_SELECTOR_ALIASES_DISABLED`, and adds `/health` key `checks.dispatch_selector_aliases`.
+- Fix: a dispatch-only extractor, so the cache and circuit keys don't change, plus Serus and Indicia tests. **Built as #797** (edge; ready for review since 10-18, CI green, Codex-clean; not merged, not deployed). It reads Serus `identifierValue`/`identifierType`, a `query`/`q` only when the whole value is one exact selector, and `discord_id`. It applies only when the central selector is empty, has kill switch `DISPATCH_SELECTOR_ALIASES_DISABLED`, and adds `/health` key `checks.dispatch_selector_aliases`.
 
 **F4 — The model can write authority directly.** *Still open (#741 unmerged) plus new angles.* **Confirmed** in code; **0 production rows** with model-written `reviewed:true`.
 - (a) `record_artifacts` spreads model metadata unchanged (`tool-registry.ts:5713`, `:6183`): `reviewed:true` renders as Attested, and `false_positive:true` excludes the row.
@@ -407,7 +409,7 @@ These need JD's authorization. Nothing here auto-merges or auto-deploys, and a m
 
 1. **F8: money.** Recharge or auto-recharge Z.AI, and decide the Anthropic budget before the **10-23** credit expiry. **OathNet:** JD is resolving it with OathNet's owner (2026-10-18). Once fixed, confirm with a `tool_usage_log` query that `oathnet_lookup` returns `ok` again. **DeepFind:** check the key or plan (F23).
 2. *(F1 breach reveal: settled by JD, leave as is, no action.)*
-3. **F3 + F2: close the reopened quarantine boundaries.** Two small edge PRs, each with tests and a kill switch: the dispatch selector extractor (F3, **built as draft #797**, CI green, not deployed), then the Serus keyword name check (F2, not started). Ship them one at a time through the normal stamp → sync → gate → deploy → `/health` cycle.
+3. **F3 + F2: close the reopened quarantine boundaries.** Two small edge PRs, each with tests and a kill switch: the dispatch selector extractor (F3, **built as #797**: ready, CI green, Codex-clean, not merged or deployed), then the Serus keyword name check (F2, not started). Ship them one at a time through the normal stamp → sync → gate → deploy → `/health` cycle.
 4. **F6 + F10 + F13: frontend integrity fixes. Merged 2026-10-18 on JD's authorization**, in order and squash-merged, each verified on `main` (CI including e2e, Vercel production READY) before the next: F6 → **#794** (`940d793`), F10 → **#795** (`14f26fe`), F13 → **#796** (`91bfefb`).
    - Before the merges, a local integration of all three on `main` passed on a clean `npm ci`: vitest 2634/1/209, typecheck, lint, build and e2e 52/2.
    - Limits that still hold: #593 is still needed (F6 is not fully resolved); #795 does not schedule recovery; #796 is not atomic.
