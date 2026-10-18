@@ -20,6 +20,7 @@ import { clearRuntime } from "../../functions/osint-agent/runtime-policy.ts";
 import * as circuit from "../../functions/osint-agent/circuit.ts";
 import { REJECTED_DISPATCH_REFUSAL_MARKER } from "../../functions/osint-agent/lib/dispatch-rejection.ts";
 import { UNPROVEN_LINKAGE_KEY } from "../../functions/osint-agent/lib/unproven-linkage.ts";
+import { buildRefusedKeys } from "../../functions/osint-agent/lib/dispatch-quarantine.ts";
 
 type SupabaseClient = ReturnType<typeof createClient>;
 type Exec = { execute: (i: unknown, o: unknown) => Promise<unknown> };
@@ -32,6 +33,9 @@ const REJECTED_DOMAIN = "example.com";
 const REJECTED_DISCORD = "123456789012345678";
 const QUARANTINED_EMAIL = "namesake@example.test";
 const QUARANTINED_PHONE = "+15550109999";
+// Auto-persist writes handles under raw kinds (`handle`, `social_account`), not `username`.
+const QUARANTINED_HANDLE = "ghost.handle";
+const QUARANTINED_SOCIAL = "ghostsocial";
 const CLEAN_EMAIL = "real@example.test";
 
 function makeChain(resolveValue: { data: unknown; error: unknown }): Record<string, unknown> {
@@ -60,6 +64,14 @@ function fakeSupabase(cacheWrites: Array<Record<string, unknown>> = []): Supabas
     { id: "r5", kind: "domain", value: REJECTED_DOMAIN, confidence: 60, source: "crtsh", metadata: {} },
     {
       id: "q2", kind: "phone", value: QUARANTINED_PHONE, confidence: 55, source: "minimax_web_search",
+      metadata: { subject_unlinked: true, subject_unlinked_reason: "name-only echo" },
+    },
+    {
+      id: "q3", kind: "handle", value: QUARANTINED_HANDLE, confidence: 50, source: "sherlock",
+      metadata: { subject_unlinked: true, subject_unlinked_reason: "name-only echo" },
+    },
+    {
+      id: "q4", kind: "social_account", value: QUARANTINED_SOCIAL, confidence: 50, source: "socialfetch",
       metadata: { subject_unlinked: true, subject_unlinked_reason: "name-only echo" },
     },
     { id: "c1", kind: "email", value: CLEAN_EMAIL, confidence: 90, source: "hibp", metadata: {} },
@@ -115,6 +127,8 @@ function wrap(calls: { n: number }, db: SupabaseClient = fakeSupabase()) {
     indicia_hudsonrock: tool,
     // Any tool whose phone sits in the central `phone` field.
     phone_lookup: tool,
+    // Any tool whose handle sits in the central `username` field.
+    username_lookup: tool,
   }, { investigationId, userId: "u1", supabase: db });
 }
 
@@ -203,6 +217,35 @@ Deno.test("a QUARANTINED phone stored as +1… taints the same number spelled wi
   assert(taintOf(out), "the lookup on a quarantined number must carry the unproven-linkage taint");
 });
 
+Deno.test("a QUARANTINED handle stored under kind `handle` / `social_account` taints a username lookup (alias and central)", async () => {
+  const calls = { n: 0 };
+  const tools = wrap(calls);
+  const outs = [
+    await (tools.serus_darkweb_scan as Exec).execute({ identifierValue: QUARANTINED_HANDLE, identifierType: "username" }, {}),
+    await (tools.indicia_web_dbs as Exec).execute({ query: `@${QUARANTINED_HANDLE}` }, {}),
+    await (tools.username_lookup as Exec).execute({ username: QUARANTINED_HANDLE }, {}),
+    await (tools.serus_darkweb_scan as Exec).execute({ identifierValue: QUARANTINED_SOCIAL, identifierType: "username" }, {}),
+  ];
+  assertEquals(calls.n, 4, "promotion quarantine: lookups run");
+  for (const out of outs) {
+    const taint = taintOf(out);
+    assert(taint, "a lookup on a quarantined handle must carry the unproven-linkage taint");
+    assertEquals(taint.parent_reason, "name-only echo", "the taint keeps the row's quarantine reason");
+  }
+});
+
+Deno.test("buildRefusedKeys: kind aliases are opt-in, and add the canonical key beside the raw one", () => {
+  const rows = [
+    { kind: "handle", value: "@Ghost.Handle", metadata: { subject_unlinked: true } },
+    { kind: "social_account", value: "GhostSocial", metadata: { subject_unlinked: true } },
+  ];
+  const plain = buildRefusedKeys(rows, circuit.normalizeSelector);
+  assert(plain.has("handle:ghost.handle") && !plain.has("username:ghost.handle"));
+  const aliased = buildRefusedKeys(rows, circuit.normalizeSelector, { kindAliases: true });
+  assert(aliased.has("handle:ghost.handle") && aliased.has("username:ghost.handle"));
+  assert(aliased.has("username:ghostsocial"));
+});
+
 // ── what must NOT change ──────────────────────────────────────────────────────
 Deno.test("a clean Serus email still dispatches, untainted", async () => {
   const calls = { n: 0 };
@@ -244,4 +287,10 @@ Deno.test("KILL SWITCH: DISPATCH_SELECTOR_ALIASES_DISABLED=true restores the pre
     await (tools.phone_lookup as Exec).execute({ phone: "5550100000" }, {});
   });
   assertEquals(calls.n, 2, "with the switch on, the old dispatch is restored: no aliases, no phone spellings");
+});
+
+Deno.test("KILL SWITCH: with the switch on, a quarantined `handle` row is keyed under its raw kind only (previous behaviour)", async () => {
+  const out = await withSwitch("true", () =>
+    (wrap({ n: 0 }).username_lookup as Exec).execute({ username: QUARANTINED_HANDLE }, {}));
+  assertEquals(taintOf(out), null);
 });

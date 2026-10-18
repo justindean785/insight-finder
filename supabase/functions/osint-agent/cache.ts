@@ -852,6 +852,8 @@ export function wrapToolsWithCache(
             }
           },
           circuit.normalizeSelector,
+          // Key `handle` / `social_account` rows under `username` too (kind-alias.ts).
+          { kindAliases: !dispatchSelectorAliasesDisabled() },
         );
         if (!res.complete) {
           // DO NOT CACHE AN INCOMPLETE READ. The keys in hand are still sound —
