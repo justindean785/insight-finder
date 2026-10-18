@@ -183,7 +183,7 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 - (a) An **analyst-rejected** email or phone still reaches paid Serus (2500) and Indicia (2000–3000) calls.
 - (b) A **quarantined** selector is sent **without the `unproven_linkage` taint**, so its results persist at full subject authority. This is exactly the hazard CLAUDE.md's #581 section warns about.
 - `auto-persist` already has the correct key list (`BREACH_SUBJECT_INPUT_KEYS`); the two lists have drifted.
-- Fix: a dispatch-only extractor, so the cache and circuit keys don't change, plus Serus and Indicia tests.
+- Fix: a dispatch-only extractor, so the cache and circuit keys don't change, plus Serus and Indicia tests. **Built as draft #797** (edge; not merged, not deployed). It reads Serus `identifierValue`/`identifierType`, a `query`/`q` only when the whole value is one exact selector, and `discord_id`. It applies only when the central selector is empty, has kill switch `DISPATCH_SELECTOR_ALIASES_DISABLED`, and adds `/health` key `checks.dispatch_selector_aliases`.
 
 **F4 — The model can write authority directly.** *Still open (#741 unmerged) plus new angles.* **Confirmed** in code; **0 production rows** with model-written `reviewed:true`.
 - (a) `record_artifacts` spreads model metadata unchanged (`tool-registry.ts:5713`, `:6183`): `reviewed:true` renders as Attested, and `false_positive:true` excludes the row.
@@ -203,7 +203,7 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 - `CaseReport.tsx:1006` calls `buildBreachExposure(artifacts)`, which takes no reviews and applies no `forSubject`, unlike every sibling builder in the same file (`:44-48`, `:82`).
 - Rows from quarantined namesakes, analyst-dismissed rows, and rows derived from rejected ones render as the subject's breaches, with revealable values.
 - Production (SELECT only): of 1,883 `breach_exposure` rows, 70 are under active quarantine across 38 threads and 65 carry a `dismissed`/`wrong` review. The two groups can overlap, so don't add them. That measures affected data, not what was rendered.
-- Fix: filter on `forSubject(reviews, a)` plus the rejected-derivation set. Frontend-only. **Built as #794**, which also aligns the breach-corpora note and Key risks. Remaining dependency: frontend dedupe (#593). In mixed duplicate groups it can still hide a clean twin or miss a review on a non-surviving id, with 0 such groups in production (see #794).
+- Fix: filter on `forSubject(reviews, a)` plus the rejected-derivation set. Frontend-only. **Built as #794**, which also aligns the breach-corpora note and Key risks. Remaining dependency: frontend dedupe (#593). In mixed duplicate groups it can still hide a clean twin or miss a review on a non-surviving id, with 0 such groups in production (see #794). **Merged 2026-10-18 as `940d793`.** A post-merge review found that the rejection cascade #794 reuses can also hide a valid row across selector kinds; see **F33**.
 
 **F7 — Concurrent runs on one warm isolate reset each other's per-run state.** *New.* **Likely**.
 - `index.ts:161-182` resets the module globals `guard`, `triageState`, `routingGuard`, `degradedTools` and `deadHosts` on every request, and the code elsewhere assumes concurrent runs can share an isolate.
@@ -230,7 +230,8 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 **F10 — The sidebar marks dead runs "finished", so they show as Complete with no report.** *New.* Path **Confirmed**; 0 instances in production now.
 - `ThreadSidebar.tsx:173-182` writes `{status:'finished'}` with no `recovery_reason` once `updated_at` is more than 3 minutes old. `deriveRunState` (`case-snapshot.ts:114-115`) turns that into **completed**, which breaks I-2. Server recovery only selects `status='active'` rows, so this write also stops the recovered report from being written.
 - pg_cron is not live, so server recovery happens only when a run starts or `/health` is called.
-- Fix: delete the write. The UI already derives Interrupted from a dead heartbeat. **Built as #795.** That PR removes the browser write that prevented recovery. It does not schedule recovery or guarantee it happens promptly, because with no pg_cron, recovery runs only when some run starts or `/health` is called.
+- Fix: delete the write. The UI already derives Interrupted from a dead heartbeat. **Built as #795.** That PR removes the browser write that prevented recovery. It does not schedule recovery or guarantee it happens promptly, because with no pg_cron, recovery runs only when some run starts or `/health` is called. **Merged 2026-10-18 as `14f26fe`.**
+- Follow-up (Codex P2 after merge, confirmed on `91bfefb`): with the write gone, the row stays `active` until recovery runs. The Cases list (`CasesPage.statusLabel`) and the case page (`CaseViewPage`) used `isRunningThread`, which never checks the heartbeat, so they showed that dead run as **Running**. The Cases list also showed a recovered run as **Finished** (I-2). **Draft #798** moves both pages onto `deriveRunState`, the workspace header's own function. Display only.
 
 **F11 — Cross-tenant write paths in RLS.** *New.* **Confirmed** (live `pg_policies`); 0 exploited rows; requires knowing the victim's UUIDs.
 - The INSERT/UPDATE `WITH CHECK` on `messages`, `artifacts`, `artifact_reviews` and `investigator_notes` is only `auth.uid() = user_id`, with no check that the parent thread or artifact belongs to the caller.
@@ -256,7 +257,7 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 - With the lease disabled, a second tab or a stale Retry card starts an overlapping paid run.
 - Also, `onRunPivot` (`:2197/2203`) toasts "sent" and then the send is silently dropped.
 - Production: 4 overlapping invocation pairs on the same thread in the last 7 days.
-- Fix: pass `serverRunActiveRef.current` on every path. **Built as #796** for Retry and Re-run. It blocks only when the client already knows a server run is live. It is **not** atomic server-side serialization: two tabs can still race while the lease is disabled.
+- Fix: pass `serverRunActiveRef.current` on every path. **Built as #796** for Retry and Re-run. It blocks only when the client already knows a server run is live. It is **not** atomic server-side serialization: two tabs can still race while the lease is disabled. **Merged 2026-10-18 as `91bfefb`.**
 
 **F14 — OPSEC: chat markdown loads remote images automatically.** *New.* **Likely**.
 - `chatMarkdownComponents` (`ChatWindow.tsx:974-1004`) has no `img` override, and the CSP allows `img-src https:`.
@@ -361,6 +362,16 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
   - Vitest still passed on that tree, but it is not a clean npm install, which is the duplicate-React hazard CLAUDE.md warns about.
   - Locally, run edge tests only through `npm run test:edge` (its `--config` points at the function's `deno.json`, which sets `nodeModulesDir: "none"`), and re-run `npm ci` after any other Deno use. All PR validation in §8 was re-run on a clean `rm -rf node_modules && npm ci`.
 - **F32 — Context size may exceed the prompt ceiling.** *Unverified lead.* `orchestrator_step_metrics.context_chars` peaked at 275,719 in the last 7 days, above the 220,000-char hard ceiling that `/health` reports. How that column relates to the SDK's message and system composition and to the live budget flag is not reconciled. The `prompt_size_step` term breakdown is logged only to the console, so the database can't settle it. Treat it as a measurement-reconciliation lead, not proof that the ceiling failed.
+- **F33 — An analyst rejection can hide a valid row of a different selector kind.** *New* (Codex P2 on #794 after merge). **Confirmed** in code on `91bfefb`. **Needs JD's decision: evidence-integrity logic.**
+  - `buildRejectedDerivationIds` (`src/lib/analyst-decisions.ts:234`) cascades a rejection by **normalized value only**. The provenance it reads (`metadata.parent_selector` / `queried_selector`) records no selector type, so it can't tell kinds apart.
+  - `normalizeTarget` maps the name `Jordan Vale` and the username `jordan.vale` to the same `jordan vale`. Rejecting the namesake name therefore also hides every row derived from the valid username: breaches, their count in the Hunter's Note and Key risks.
+  - This fails **closed**: it hides, it never shows a rejected row. It is also older than #794: the report markdown builder already did it (`src/lib/intel.ts:1465`). #794 extended the same cascade to the Breach Exposure table and the breach counts.
+  - It is the value-only keying hazard CLAUDE.md warns about for the dispatch guard ("key by `type:normalizedValue`, never by value alone"), here in the hiding direction.
+  - Options, each changing analyst-decision behaviour in both the table and the report:
+    - (a) don't cascade a normalized value that a non-rejected, subject-eligible row of another kind also holds;
+    - (b) record the parent's selector type in provenance at write time (edge), then key the cascade on `type:value`;
+    - (c) leave as is: fail-closed, and tracked here.
+  - Not built: JD chose to record it as a decision (2026-10-18).
 
 ### Disproven / closed this pass
 
@@ -396,11 +407,11 @@ These need JD's authorization. Nothing here auto-merges or auto-deploys, and a m
 
 1. **F8: money.** Recharge or auto-recharge Z.AI, and decide the Anthropic budget before the **10-23** credit expiry. **OathNet:** JD is resolving it with OathNet's owner (2026-10-18). Once fixed, confirm with a `tool_usage_log` query that `oathnet_lookup` returns `ok` again. **DeepFind:** check the key or plan (F23).
 2. *(F1 breach reveal: settled by JD, leave as is, no action.)*
-3. **F3 + F2: close the reopened quarantine boundaries.** Two small edge PRs, each with tests and a kill switch: the dispatch selector extractor (F3), then the Serus keyword name check (F2). Ship them one at a time through the normal stamp → sync → gate → deploy → `/health` cycle.
-4. **F6 + F10 + F13: frontend integrity fixes. Built 2026-10-18 as draft PRs, awaiting JD:** F6 → **#794**, F10 → **#795**, F13 → **#796**.
-   - Each is frontend-only and test-first, with CI green on its current head.
-   - On a clean `npm ci`, a local integration of all three on `main` passed: vitest 2634/1/209, typecheck, lint, build and e2e 52/2.
-   - Suggested merge order: #794, then #795, then #796, reviewing the checks after each.
+3. **F3 + F2: close the reopened quarantine boundaries.** Two small edge PRs, each with tests and a kill switch: the dispatch selector extractor (F3, **built as draft #797**, CI green, not deployed), then the Serus keyword name check (F2, not started). Ship them one at a time through the normal stamp → sync → gate → deploy → `/health` cycle.
+4. **F6 + F10 + F13: frontend integrity fixes. Merged 2026-10-18 on JD's authorization**, in order and squash-merged, each verified on `main` (CI including e2e, Vercel production READY) before the next: F6 → **#794** (`940d793`), F10 → **#795** (`14f26fe`), F13 → **#796** (`91bfefb`).
+   - Before the merges, a local integration of all three on `main` passed on a clean `npm ci`: vitest 2634/1/209, typecheck, lint, build and e2e 52/2.
+   - Limits that still hold: #593 is still needed (F6 is not fully resolved); #795 does not schedule recovery; #796 is not atomic.
+   - Post-merge follow-ups: **#798** (draft) for the F10 Cases-page labels; **F33** recorded for JD's decision.
 5. **F4: rebase #741 and get sign-off**, extending it to `source_quote`/`ownership_proof` and server-derived custody classification. Then F5's quarantine inheritance.
 6. **F9: gate `/health`.** Cache the GLM probe, and run sweeps only with a secret header.
 7. **F7 + F12b/e: per-request run state; the Stop race; billing gaps.**
