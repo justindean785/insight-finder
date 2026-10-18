@@ -237,6 +237,27 @@ describe("Cases list labels a run the way the workspace header does", () => {
     }
   });
 
+  it("a case held back during a counts outage appears once counts recover, even with nothing running", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      m.threadRows = [DONE];
+      renderCases();
+      expect(await chipFor("Done case")).toBe("Finished");
+      // Counts go down; a case is created elsewhere and its realtime event fires.
+      m.metricsFail = true;
+      m.threadRows = [row("fresh", "Case created elsewhere", { updated_at: ago(1_000) }), DONE];
+      for (const cb of m.realtime) cb();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(screen.queryByText("Case created elsewhere")).toBeNull();
+      // Counts recover. No further write happens; the list must still pick the case up.
+      m.metricsFail = false;
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(await screen.findByText("Case created elsewhere")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("when counts have never loaded, a background refresh keeps the error instead of showing zero counts", async () => {
     m.metricsFail = true;
     m.threadRows = [LIVE];

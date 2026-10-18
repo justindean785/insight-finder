@@ -94,6 +94,9 @@ export default function CasesPage() {
   // Whether `metrics` has ever held real counts. Until it has, a counts failure is
   // an error even on a background refresh: rows with 0/0 counts would mislead.
   const metricsLoadedRef = useRef(false);
+  // The last read's counts failed: the list is not current (new cases held back,
+  // or an error shown). Keeps the timed re-read below running until counts load.
+  const [countsStale, setCountsStale] = useState(false);
   const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState("");
 
@@ -118,6 +121,7 @@ export default function CasesPage() {
           (failure: unknown) => ({ failure }),
         ),
       ]);
+      setCountsStale("failure" in metricsRes);
       if (threadsRes.error) throw threadsRes.error;
       if ("failure" in metricsRes) {
         // No counts yet is an error: zeros would mislead. Once counts have loaded, a
@@ -188,18 +192,19 @@ export default function CasesPage() {
   // A run that dies stops writing, so no realtime event will ever re-read its
   // row, and the label above is judged as of the last read. While any row shows
   // Running, re-read on a timer so a dead run turns Interrupted once its
-  // heartbeat lapses. Stops by itself when nothing is running.
+  // heartbeat lapses. Also while counts are stale, so whatever a counts outage
+  // held back appears once they load. Stops by itself when neither holds.
   const anyRunning = useMemo(
     () => cases.some((c) => deriveRunState({ thread: c, chatRunning: false, nowMs: casesReadAt }) === "running"),
     [cases, casesReadAt],
   );
   useEffect(() => {
-    if (!user || !anyRunning) return;
+    if (!user || !(anyRunning || countsStale)) return;
     const id = setInterval(() => {
       if (document.visibilityState !== "hidden") void load({ silent: true });
     }, RUNNING_REREAD_MS);
     return () => clearInterval(id);
-  }, [user, anyRunning, load]);
+  }, [user, anyRunning, countsStale, load]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
