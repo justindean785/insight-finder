@@ -53,6 +53,9 @@ function relativeTime(iso: string | null): string {
   return `${d}d ago`;
 }
 
+/** While a row shows Running, re-read this often: the case snapshot's own live-poll interval. */
+const RUNNING_REREAD_MS = 30_000;
+
 const STATUS_CHIP: Record<CaseRunState, { text: string; tone: string }> = {
   running: { text: "Running", tone: "text-[hsl(var(--intel-blue))] border-[hsl(var(--intel-blue)/0.35)] bg-[hsl(var(--intel-blue)/0.08)]" },
   draft: { text: "Draft", tone: "text-muted-foreground border-white/10 bg-white/[0.03]" },
@@ -159,6 +162,22 @@ export default function CasesPage() {
       void supabase.removeChannel(channel);
     };
   }, [user, load]);
+
+  // A run that dies stops writing, so no realtime event will ever re-read its
+  // row, and the label above is judged as of the last read. While any row shows
+  // Running, re-read on a timer so a dead run turns Interrupted once its
+  // heartbeat lapses. Stops by itself when nothing is running.
+  const anyRunning = useMemo(
+    () => cases.some((c) => deriveRunState({ thread: c, chatRunning: false, nowMs: casesReadAt }) === "running"),
+    [cases, casesReadAt],
+  );
+  useEffect(() => {
+    if (!user || !anyRunning) return;
+    const id = setInterval(() => {
+      if (document.visibilityState !== "hidden") void load({ silent: true });
+    }, RUNNING_REREAD_MS);
+    return () => clearInterval(id);
+  }, [user, anyRunning, load]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

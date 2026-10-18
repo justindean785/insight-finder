@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -172,6 +172,21 @@ describe("Cases list labels a run the way the workspace header does", () => {
       expect(await chipFor("Live run case")).toBe("Running");
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it("a run that dies while the list is open turns Interrupted on the next re-read, with no other write", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      m.threadRows = [LIVE];
+      renderCases();
+      expect(await chipFor("Live run case")).toBe("Running");
+      // The run dies: its heartbeat stops, so no row changes and no realtime event fires.
+      vi.setSystemTime(NOW + 5 * 60_000);
+      await vi.advanceTimersByTimeAsync(31_000);
+      await waitFor(async () => expect(await chipFor("Live run case")).toBe("Interrupted"));
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
