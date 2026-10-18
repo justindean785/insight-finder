@@ -121,8 +121,9 @@ export default function CasesPage() {
           (failure: unknown) => ({ failure }),
         ),
       ]);
-      setCountsStale("failure" in metricsRes);
+      // A failed threads read leaves the flag as it was: the list is no more current.
       if (threadsRes.error) throw threadsRes.error;
+      setCountsStale("failure" in metricsRes);
       if ("failure" in metricsRes) {
         // No counts yet is an error: zeros would mislead. Once counts have loaded, a
         // background re-read keeps the last good counts but still applies the thread

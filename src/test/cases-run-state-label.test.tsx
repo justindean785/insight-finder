@@ -25,6 +25,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const m = vi.hoisted(() => ({
   threadRows: [] as Array<Record<string, unknown>>,
   metricsFail: false,
+  threadsFail: false,
   realtime: [] as Array<() => void>,
   auth: { user: { id: "user-1", email: "analyst@test.local" }, session: { access_token: "t" }, loading: false, error: null },
 }));
@@ -56,8 +57,11 @@ vi.mock("@/integrations/supabase/client", () => {
           return () => Promise.resolve({ data: rows()[0] ?? null, error: null });
         }
         if (key === "then") {
+          const result = table === "threads" && m.threadsFail
+            ? { data: null, error: { message: "threads read failed" }, count: null }
+            : { data: rows(), error: null, count: rows().length };
           return (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
-            Promise.resolve({ data: rows(), error: null, count: rows().length }).then(resolve, reject);
+            Promise.resolve(result).then(resolve, reject);
         }
         if (key in target) return target[key];
         return () => proxy;
@@ -130,6 +134,7 @@ afterEach(() => {
   cleanup();
   m.threadRows = [];
   m.metricsFail = false;
+  m.threadsFail = false;
   m.realtime = [];
 });
 
@@ -251,6 +256,30 @@ describe("Cases list labels a run the way the workspace header does", () => {
       expect(screen.queryByText("Case created elsewhere")).toBeNull();
       // Counts recover. No further write happens; the list must still pick the case up.
       m.metricsFail = false;
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(await screen.findByText("Case created elsewhere")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the stale-counts retry survives a read where counts recover but the threads query fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      m.threadRows = [DONE];
+      renderCases();
+      expect(await chipFor("Done case")).toBe("Finished");
+      m.metricsFail = true;
+      m.threadRows = [row("fresh", "Case created elsewhere", { updated_at: ago(1_000) }), DONE];
+      for (const cb of m.realtime) cb();
+      await vi.advanceTimersByTimeAsync(1_000);
+      // Next retry: counts are back, but the threads read fails.
+      m.metricsFail = false;
+      m.threadsFail = true;
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(screen.queryByText("Case created elsewhere")).toBeNull();
+      // The retry must still be scheduled; the next one succeeds.
+      m.threadsFail = false;
       await vi.advanceTimersByTimeAsync(31_000);
       expect(await screen.findByText("Case created elsewhere")).toBeTruthy();
     } finally {
