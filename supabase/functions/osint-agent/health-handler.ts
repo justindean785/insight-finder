@@ -32,6 +32,8 @@ import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-c
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
 import { negativeLookupSelfTest } from "./lib/negative-lookup.ts";
+import { waybackCdxBudgetSelfTest } from "./lib/wayback-cdx.ts";
+import { toolTimeoutMs } from "./cache.ts";
 import { toolInputFailureSelfTest } from "./lib/tool-input-failure.ts";
 import { runEndSelfTest } from "./lib/run-end.ts";
 import { PERSIST_ON_CLIENT_CANCEL_ENV, clientCancelIsolationCheck } from "./lib/client-cancel.ts";
@@ -412,6 +414,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // with versioned cache keys is the one running (see lib/tool-cache-version.ts).
   r.checks.tool_cache_version = describeToolCacheVersions();
   r.checks.negative_lookup_semantics = negativeLookupSelfTest();
+  // Does wayback_cdx_search's slowest archive.org query clear its wrapper cap, with the
+  // queries in parallel? Pure, no DB; presence proves the build (lib/wayback-cdx.ts).
+  r.checks.wayback_cdx_budget = waybackCdxBudgetSelfTest(toolTimeoutMs("wayback_cdx_search"));
   r.checks.tool_input_failure_log = toolInputFailureSelfTest();
   // Why a run's persistence/finish handler fired (lib/run-end.ts). Pure, no DB; presence proves the build.
   r.checks.run_end_log = runEndSelfTest();
