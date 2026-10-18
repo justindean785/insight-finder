@@ -103,6 +103,9 @@ export default function CasesPage() {
   // fail, or be superseded in turn), or the list would never publish.
   const loadSeqRef = useRef(0);
   const publishedSeqRef = useRef(0);
+  // The newest read that has set `countsStale`. An older read may still publish its
+  // rows, but must not clear a newer read's stale flag (that stops the retry).
+  const countsSeqRef = useRef(0);
   const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState("");
 
@@ -133,7 +136,10 @@ export default function CasesPage() {
       if (seq <= publishedSeqRef.current) return; // a newer read already published
       // A failed threads read leaves the flag as it was: the list is no more current.
       if (threadsRes.error) throw threadsRes.error;
-      setCountsStale("failure" in metricsRes);
+      if (seq > countsSeqRef.current) {
+        countsSeqRef.current = seq;
+        setCountsStale("failure" in metricsRes);
+      }
       if ("failure" in metricsRes) {
         // No counts yet is an error: zeros would mislead. Once counts have loaded, a
         // background re-read keeps the last good counts but still applies the thread

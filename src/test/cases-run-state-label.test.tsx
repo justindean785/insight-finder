@@ -387,6 +387,30 @@ describe("Cases list labels a run the way the workspace header does", () => {
     }
   });
 
+  it("an older read that succeeds does not clear a newer read's stale-counts retry", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      // Read 1 (first load): slow counts that will succeed; it never sees the new case.
+      m.threadRows = [DONE];
+      m.metricsDelayMs = 2_000;
+      renderCases();
+      await vi.advanceTimersByTimeAsync(50);
+      // Read 2: sees the new case, but its counts call fails, so it holds the case back.
+      m.threadRows = [row("fresh", "Case created elsewhere", { updated_at: ago(1_000) }), DONE];
+      m.metricsDelayMs = 0;
+      m.metricsFail = true;
+      for (const cb of m.realtime) cb();
+      await vi.advanceTimersByTimeAsync(700);
+      m.metricsFail = false;
+      // Read 1 finishes and publishes its older rows; read 2's retry must survive.
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(await screen.findByText("Case created elsewhere")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("when counts have never loaded, a background refresh keeps the error instead of showing zero counts", async () => {
     m.metricsFail = true;
     m.threadRows = [LIVE];
