@@ -122,6 +122,11 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   opsis_results: 0,
   opsis_balance: 0,
   opsis_status: 0,
+  // Apify one-api/skip-trace (apify.com/one-api/skip-trace/pricing, 2026-10-14): pay-per-event,
+  // $7.00 per 1,000 result ROWS (~$0.007/row) from the account's usage-credit pool. Priced flat
+  // at ONE row — the tool's default and the common case; max_results is capped at 3 in
+  // lib/apify-skip-trace.ts, so a call can under-report by at most 2 rows (see results_returned).
+  apify_skip_trace: 7_000,
 
   // ---- CordCat (Discord OSINT) ----
   // Free plan: 60 req/hour. Treat each successful call as ~$0.002.

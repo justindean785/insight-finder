@@ -77,7 +77,7 @@ import {
   MINIMAX_API_KEY, LOVABLE_API_KEY,
   OATHNET_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY,
-  HIBP_API_KEY, OPSIS_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,
+  HIBP_API_KEY, OPSIS_API_KEY, APIFY_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
   RAPIDAPI_KEY, INDICIA_API_KEY, PEOPLEDATALABS_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
@@ -88,6 +88,7 @@ import {
 } from "./env.ts";
 import { buildLeakcheckUrl, buildOathnetUrl } from "./breach-request.ts";
 import { opsisAccount, opsisDepsFromEnv, opsisKillSwitchOn, opsisResults, opsisSearch } from "./lib/opsis.ts";
+import { apifySkipTrace, apifySkipTraceDepsFromEnv, apifySkipTraceKillSwitchOn, APIFY_SKIP_TRACE_MAX_RESULTS_CAP } from "./lib/apify-skip-trace.ts";
 import {
   oathnetBreachSearchUrl, oathnetStealerSearchUrl, oathnetVictimsSearchUrl,
   oathnetVictimManifestUrl, oathnetVictimFileUrl, oathnetVictimArchiveUrl,
@@ -770,6 +771,9 @@ export function buildTools(ctx: ToolContext) {
           for (const n of ["opsis_search", "opsis_results", "opsis_balance", "opsis_status"]) {
             disabled.push({ name: n, reason: "Opsis is not configured or is switched off — use username_sweep for account enumeration." });
           }
+        }
+        if (!APIFY_API_KEY || apifySkipTraceKillSwitchOn()) {
+          disabled.push({ name: "apify_skip_trace", reason: "Apify skip-trace is not configured or is switched off — use indicia_person / pdl_person_enrich for people-search records." });
         }
         // Config-disabled providers (`disabled: true` in capabilities.ts's
         // PROVIDER_REQUIREMENTS) were NEVER gated here — only the key-presence
@@ -3248,6 +3252,25 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: memoSchema("opsis_status", () => z.object({})),
       execute: async (_input, opts) =>
         await opsisAccount("status", opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
+    }),
+    // Apify `one-api/skip-trace` through the Lovable connector gateway
+    // (lib/apify-skip-trace.ts): US people-search aggregator rows for a name,
+    // address, phone or email. PAID per result row (~$0.007) from a small monthly
+    // pool, so ONE query entry per call and max_results capped. Removed from the
+    // schema when APIFY_API_KEY is unset (capabilities.ts); APIFY_SKIP_TRACE_DISABLED=true
+    // stops every call at call time. Rows are data_broker leads, never identity proof.
+    apify_skip_trace: tool({
+      description:
+        "Apify skip-trace (one-api/skip-trace): US people-search aggregator (TruePeopleSearch, FastPeopleSearch, Spokeo, BeenVerified…) rows for ONE name, street address, phone or email. PAID per result row from a small monthly pool: pass exactly one query entry per call and leave max_results at 1 unless a specific person must be disambiguated (cap " + String(APIFY_SKIP_TRACE_MAX_RESULTS_CAP) + "). Add ' | Full Name' to an address/phone/email entry to pick one person; a row with name_match:\"fallback\" is NOT that person. Returns name, age, current/previous addresses, up to 5 phones (type/provider/first reported), up to 5 emails, relative/associate COUNTS and the source person_link. Every row is an association LEAD (data_broker class, capped) — corroborate before relying on it. Bounded at ~60s.",
+      inputSchema: memoSchema("apify_skip_trace", () => z.object({
+        name: z.array(z.string().min(1)).max(1).optional(),
+        street_citystatezip: z.array(z.string().min(1)).max(1).optional(),
+        phone_number: z.array(z.string().min(1)).max(1).optional(),
+        email: z.array(z.string().min(1)).max(1).optional(),
+        max_results: z.number().int().min(1).max(APIFY_SKIP_TRACE_MAX_RESULTS_CAP).optional(),
+      })),
+      execute: async (input, opts) =>
+        await apifySkipTrace(input, apifySkipTraceDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
     }),
     crtsh_subdomains: tool({
       description: "Enumerate subdomains for a domain via crt.sh certificate transparency logs.",

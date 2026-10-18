@@ -67,6 +67,8 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   opsis_results: { requiresKey: "OPSIS_API_KEY" },
   opsis_balance: { requiresKey: "OPSIS_API_KEY" },
   opsis_status: { requiresKey: "OPSIS_API_KEY" },
+  // Apify skip-trace Actor through the Lovable connector gateway (lib/apify-skip-trace.ts).
+  apify_skip_trace: { requiresKey: "APIFY_API_KEY" },
   cordcat_discord_lookup: { requiresKey: "CORDCAT_API_KEY" },
   bosint_email_lookup: { requiresKey: "OSINTNOVA_API_KEY" },
   leakcheck_lookup: { requiresKey: "LEAKCHECK_API_KEY" },

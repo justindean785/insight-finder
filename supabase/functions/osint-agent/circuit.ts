@@ -337,6 +337,9 @@ export const PREMIUM_TOOLS = new Set<string>([
   // never by searching again (lib/opsis.ts). The tool description asks for this;
   // this is what enforces it.
   "opsis_search",
+  // One Apify skip-trace run per entity per investigation: every result row is a
+  // billed event against a small monthly pool (lib/apify-skip-trace.ts).
+  "apify_skip_trace",
 ]);
 
 export function isPremiumTool(tool: string): boolean {

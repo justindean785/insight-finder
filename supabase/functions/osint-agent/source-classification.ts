@@ -129,6 +129,12 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   // People Data Labs — data-broker person aggregator (profiles/employment/emails).
   // Now has a class that says so; weight is unchanged (same cap as breach).
   pdl_person_enrich: "data_broker",
+  // Apify one-api/skip-trace — people-search aggregator rows through the Lovable
+  // connector gateway (lib/apify-skip-trace.ts). Same posture as Indicia person:
+  // a broker association is a lead, never identity proof. The second key is the
+  // `source` string the tool stamps on its own result.
+  apify_skip_trace: "data_broker",
+  "apify:one-api/skip-trace": "data_broker",
   leakcheck: "breach", // bare alias of leakcheck_lookup seen in compound source strings
   // ── Threat-intel / ransomware-victim exposure ──
   // ransomware.live and the dead deepfind_ransomware_exposure report that an

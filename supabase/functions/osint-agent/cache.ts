@@ -126,6 +126,12 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   indicia_address: 32_000,
   indicia_web_dbs: 32_000,
   indicia_hudsonrock: 32_000,
+  // Apify skip-trace: ONE synchronous Actor run (run-sync-get-dataset-items) that
+  // Apify itself bounds at 60s (`timeout` query param) and the tool at 66s client-side
+  // (lib/apify-skip-trace.ts). The wrapper cap stays ABOVE both so the tool fails
+  // cleanly first and the wrapper never orphans an un-signalled run. 60s is the
+  // precedent set by minimax_correlate; the Actor typically answers in 20–40s.
+  apify_skip_trace: 75_000,
   // SocialFetch server-side web read (/v1/web/markdown) fetches + renders +
   // converts a full page upstream, which legitimately exceeds the 12s default.
   //

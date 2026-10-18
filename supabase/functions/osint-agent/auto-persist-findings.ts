@@ -1043,6 +1043,32 @@ export function extractFindings(
     }
   }
 
+  // 8b) apify_skip_trace — people-search aggregator rows (lib/apify-skip-trace.ts),
+  //     same posture as indicia above: the subject's resolved contact/address
+  //     history as LEADS (data_broker class caps them), relatives/associates never
+  //     surfaced (third-party PII). A `name_match:"fallback"` row is the Actor's
+  //     default first result, NOT the person asked for — nothing from it persists.
+  if (toolName === "apify_skip_trace") {
+    const rows = Array.isArray(o.results) ? o.results : [];
+    for (const row of rows.slice(0, MAX_AUTO_PERSIST_PER_TOOL_CALL)) {
+      if (!row || typeof row !== "object") continue;
+      const r = row as Record<string, unknown>;
+      if (r.name_match === "fallback") continue;
+      const ctx = { via: "apify_skip_trace", person_link: typeof r.person_link === "string" ? r.person_link : undefined };
+      push("name", r.full_name, ctx, 45);
+      if (Array.isArray(r.emails)) for (const e of r.emails.slice(0, 5)) push("email", e, ctx, 50);
+      if (Array.isArray(r.phones)) for (const p of r.phones.slice(0, 5)) push("phone", (p as { number?: unknown } | null)?.number, ctx, 50);
+      push("address", r.lives_in, { ...ctx, via: "apify_skip_trace_current" }, 50);
+      if (Array.isArray(r.previous_addresses)) {
+        for (const a of r.previous_addresses.slice(0, 5)) {
+          const ad = a as Record<string, unknown> | null;
+          const line = [ad?.street, ad?.locality, ad?.region, ad?.postal_code].filter((x) => typeof x === "string" && x).join(" ");
+          push("address", line, { ...ctx, via: "apify_skip_trace_past" }, 40);
+        }
+      }
+    }
+  }
+
   // 9) serus_darkweb_scan — extractedData holds Serus's PARSED leak fields;
   //    breaches[] the breach names. Its parser is not trusted on `names`: it
   //    has labelled a password as a name (see serusNameAdmissible).
