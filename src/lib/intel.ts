@@ -17,6 +17,7 @@ import { isSubjectUnlinked, isQuarantined } from "@/lib/quarantine";
 import { isRejectedArtifact as isRejectedArtifactRow, buildRejectedDerivationIds } from "@/lib/analyst-decisions";
 import { normalizeTarget } from "@/lib/next-step-cards";
 import { distinctSelectorCount, selectorKey } from "@/lib/selector-group";
+import { detectNameConflict, formatNameConflict } from "@/lib/name-conflict";
 // Derived models built here (timeline entries, pivot candidates) carry a
 // per-artifact confidence that is later RENDERED, so they must carry the
 // effective value — otherwise a surface displays a raw number without ever
@@ -444,6 +445,63 @@ const NON_CORROBORATING_CLASSES = new Set<string>([
   "threat_intel",
 ]);
 
+/** Metadata counters a lookup writes for "how many records matched". */
+const NEGATIVE_COUNT_KEYS = [
+  "total_breaches", "breaches_found", "breach_hits", "found", "total", "total_pastes",
+  "stealer_rows", "victim_logs", "results_count",
+] as const;
+const NEGATIVE_LOOKUP_STATUSES = new Set(["not_found", "restricted", "blocked", "denied", "error"]);
+/** Kinds whose row IS a lookup's answer, so a zero counter describes the row itself. */
+const LOOKUP_RESULT_KINDS = new Set(["breach_exposure", "weak_lead"]);
+/** Tools whose output is a match count against a leak corpus. */
+const LEAK_LOOKUP_TOOL_RE = /breach|leak|stealer|paste|darkweb|oathnet|intelbase|snusbase|stolen\.tax|osintcat|dehashed|hibp/i;
+const ANALYST_SUPPLIED_RE = /user[-_ ]?(?:provided|supplied)|analyst[-_ ]?(?:provided|supplied)|\bseed\b/i;
+
+/**
+ * True when every tool named in the row's OWN `source` is a leak-corpus lookup:
+ * the row exists only because a breach check was asked about it. A selector that
+ * anything else produced (a people-search record, a page, a profile lookup) was
+ * observed, and a zero counter on it is one sub-lookup's answer, not the row's.
+ *
+ * Reads `source`, not `source_category`: the latter is the union of every class
+ * merged onto the row, and in production an analyst-supplied phone reads
+ * `["breach"]` there. Measured 2026-10-14: 13 observed selector rows across 8
+ * threads carried a zero breach counter and lost every merge key without this.
+ */
+function producedOnlyByLeakLookups(a: Artifact): boolean {
+  const src = typeof a.source === "string" ? a.source.replace(/\([^)]*\)/g, " ") : "";
+  const tools = src.split(/\s*[+;,|]\s*/).map((t) => t.trim()).filter(Boolean);
+  return tools.length > 0 && tools.every((t) => LEAK_LOOKUP_TOOL_RE.test(t));
+}
+
+/**
+ * A row that records a lookup finding NOTHING: zero breach hits, a 404 profile,
+ * `lookupStatus: not_found`. It is a coverage fact ("we checked X"), not an
+ * observation about the subject — so it must never link a selector to a cluster
+ * or count as a corroborating source class. Live case 2026-09-25: zero-hit
+ * breach checks on GUESSED `<handle>@outlook/yahoo` emails merged into the
+ * subject's cluster on the local-part and supplied its `breach` class, and the
+ * report printed "3 independent source classes" for one profile lookup.
+ *
+ * Structured metadata only: a not-found/blocked lookup status, a 4xx HTTP
+ * status, or every present match counter at 0 (and none positive) on a row
+ * that a lookup produced — a lookup-result kind, or a selector no source but a
+ * leak lookup ever reported. A value the analyst supplied is never negative.
+ */
+export function isNegativeResultArtifact(a: Artifact): boolean {
+  if (typeof a.source === "string" && ANALYST_SUPPLIED_RE.test(a.source)) return false;
+  const meta = (a.metadata ?? {}) as Record<string, unknown>;
+  const status = typeof meta.lookup_status === "string" ? meta.lookup_status.trim().toLowerCase() : "";
+  if (NEGATIVE_LOOKUP_STATUSES.has(status)) return true;
+  const http = Number(meta.http_status);
+  if (Number.isFinite(http) && http >= 400 && http < 500) return true;
+  const counts = NEGATIVE_COUNT_KEYS
+    .map((k) => meta[k])
+    .filter((v) => typeof v === "number" && Number.isFinite(v)) as number[];
+  if (counts.length === 0 || counts.some((v) => v !== 0)) return false;
+  return LOOKUP_RESULT_KINDS.has(String(a.kind ?? "").toLowerCase()) || producedOnlyByLeakLookups(a);
+}
+
 /**
  * Distinct source CLASSES backing an artifact. Prefers the backend's
  * authoritative `metadata.source_category` (written by the source-classification
@@ -499,8 +557,24 @@ function independentSourceClassCount(a: Artifact): number {
  * counting raw sources would over-report corroboration by ~3.2x.
  */
 function clusterIndependentSourceClasses(c: IdentityCluster): string[] {
+  // A CO_RECORD join is grouping, not corroboration: judge the strongest
+  // pre-link piece on its own, so the join can never add a source class.
+  if (c.preLinkComponents && c.preLinkComponents.length > 1) {
+    let best: string[] = [];
+    for (const piece of c.preLinkComponents) {
+      const classes = artifactsIndependentSourceClasses(piece);
+      if (classes.length > best.length) best = classes;
+    }
+    return best;
+  }
+  return artifactsIndependentSourceClasses(c.artifacts);
+}
+
+function artifactsIndependentSourceClasses(artifacts: Artifact[]): string[] {
   const out = new Set<string>();
-  for (const a of c.artifacts) {
+  for (const a of artifacts) {
+    // A zero-hit row observed nothing, so it corroborates nothing.
+    if (isNegativeResultArtifact(a)) continue;
     for (const cls of artifactSourceClasses(a)) {
       if (!NON_CORROBORATING_CLASSES.has(cls)) out.add(cls);
     }
@@ -951,6 +1025,8 @@ export type ToolAuditEntry = {
   variants: string[];
   totalResults: number;
   highConf: number;
+  /** Analyst-confirmed (ATTESTED): a decision, not evidence strength — counted apart from highConf. */
+  attested: number;
   lowConf: number;
   cached: number;
   failed: number;
@@ -992,11 +1068,12 @@ export function buildToolAudit(
     if (failed) failedCount++;
 
     const entry = map.get(tool) ?? {
-      tool, variants: [], totalResults: 0, highConf: 0, lowConf: 0, cached: 0, failed: 0, kinds: [],
+      tool, variants: [], totalResults: 0, highConf: 0, attested: 0, lowConf: 0, cached: 0, failed: 0, kinds: [],
     };
     if (!entry.variants.includes(rawSource)) entry.variants.push(rawSource);
     entry.totalResults++;
-    if (label === "CONFIRMED" || label === "ATTESTED" || label === "INFERRED") entry.highConf++;
+    if (label === "CONFIRMED" || label === "INFERRED") entry.highConf++;
+    if (label === "ATTESTED") entry.attested++;
     if (label === "LOW" || label === "VERIFY") entry.lowConf++;
     if (cached) entry.cached++;
     if (failed) entry.failed++;
@@ -1181,15 +1258,21 @@ const TIMELINE_MAX_EVENTS = 40;
 export function buildInvestigationSummary(input: ReportInput): string {
   const { seedValue, seedType, artifacts } = input;
   const audit = buildToolAudit(artifacts);
-  const confirmed = artifacts.filter((a) => { const l = labelForArtifact(a); return l === "CONFIRMED" || l === "ATTESTED"; }).length;
-  const verify = artifacts.filter((a) => labelForArtifact(a) === "VERIFY").length;
-  const low = artifacts.filter((a) => labelForArtifact(a) === "LOW").length;
-  const failed = artifacts.filter((a) => labelForArtifact(a) === "FAILED").length;
+  // Same label the report and the Evidence view use: the analyst's review decides ATTESTED. CONFIRMED is
+  // evidence-derived (2+ independent source classes); ATTESTED is a decision, not a second source, so the
+  // two are counted APART (the Tool Coverage split from #743, and the report's own corroborated / analyst-
+  // confirmed lines) instead of one inflated "Confirmed" figure.
+  const lbl = (a: Artifact): ConfLabel => labelForArtifact(a, input.reviews?.[a.id]);
+  const confirmed = artifacts.filter((a) => lbl(a) === "CONFIRMED").length;
+  const attested = artifacts.filter((a) => lbl(a) === "ATTESTED").length;
+  const verify = artifacts.filter((a) => lbl(a) === "VERIFY").length;
+  const low = artifacts.filter((a) => lbl(a) === "LOW").length;
+  const failed = artifacts.filter((a) => lbl(a) === "FAILED").length;
   return [
     `Investigation summary`,
     `  Seed: ${seedValue ?? "—"} (${seedType ?? "unknown"})`,
     `  Artifacts: ${artifacts.length} across ${audit.tools.length} tool(s)`,
-    `  Confirmed: ${confirmed}  Verify: ${verify}  Low: ${low}  Failed: ${failed}`,
+    `  Confirmed: ${confirmed}  Analyst-confirmed: ${attested}  Verify: ${verify}  Low: ${low}  Failed: ${failed}`,
     `  Cached results: ${audit.cachedCount}`,
   ].join("\n");
 }
@@ -1728,7 +1811,7 @@ export function buildReportMarkdown(input: ReportInput): string {
   const toolCoverage = audit.tools.length === 0
     ? "_No tools produced artifacts._"
     : audit.tools.map((t) =>
-        `- ${toolActionLabel(auditEntryToolName(t))} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
+        `- ${toolActionLabel(auditEntryToolName(t))} — ${t.totalResults} result${t.totalResults === 1 ? "" : "s"}, ${t.highConf} high-confidence, ${t.attested ? `${t.attested} analyst-confirmed, ` : ""}${t.lowConf} need verification${t.cached ? `, ${t.cached} cached` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
       ).join("\n");
 
   const weakAreas = (() => {
@@ -1953,6 +2036,12 @@ const US_STATE_TOKENS: Record<string, string> = {
   wy: "WY", dc: "DC",
 };
 
+/** Words that make an adjacent "id" mean "identifier" rather than Idaho. */
+const ACCOUNT_ID_CONTEXT_TOKENS = new Set([
+  "discord", "steam", "roblox", "telegram", "twitter", "tiktok", "instagram", "snapchat",
+  "twitch", "reddit", "github", "facebook", "xbox", "psn", "epic", "user", "account", "player", "uid",
+]);
+
 function tokenize(s: string): string[] {
   return s.toLowerCase().replace(/[^a-z0-9\s-]/g, " ").split(/\s+/).filter(Boolean);
 }
@@ -1977,6 +2066,25 @@ function extractStateFromText(s: string | null | undefined): string | null {
     if (st) return st;
   }
   return null;
+}
+
+/**
+ * Do two CLUSTERS carry area codes that share none?
+ *
+ * The check used to union the codes of every cluster and warn "likely different people" whenever the
+ * union held more than one — so a SINGLE cluster holding two phones from different area codes (one
+ * person who moved, or who carries a number from their old city) tripped it, and the warning also
+ * raised the same-name-collision banner. A conflict needs two clusters that each have a code and
+ * have no code in common; one cluster's own mix of codes is not a disagreement with anyone.
+ */
+export function areaCodesDisagreeAcrossClusters(codesPerCluster: ReadonlyArray<ReadonlyArray<string>>): boolean {
+  const withCodes = codesPerCluster.filter((codes) => codes.length > 0);
+  for (let i = 0; i < withCodes.length; i++) {
+    for (let j = i + 1; j < withCodes.length; j++) {
+      if (!withCodes[i].some((c) => withCodes[j].includes(c))) return true;
+    }
+  }
+  return false;
 }
 
 function extractAreaCode(phone: string): string | null {
@@ -2021,7 +2129,15 @@ export function detectNameLocationSeed(seedValue: string | null): { name: string
   // object) keeps `isNameSearch` false for URL/link seeds, so no phantom subject
   // is emitted and clusters fall back to their own names, not a URL fragment.
   if (toks.length < 2) return null;
-  const state = extractStateFromText(cleaned);
+  // A long digit run is an account identifier (Discord snowflake, Steam64, user
+  // ID), never part of a person's name — ZIPs are 5 digits. Live case 2026-09-25:
+  // "<19-digit id> discord ID" became subject "<id> discord", location "ID"
+  // (Idaho), and a fabricated Seed-Location section.
+  if (toks.some((t) => /^\d{6,}$/.test(t))) return null;
+  // Beside a platform/account word, "id" is the word ID, not Idaho.
+  const state = toks.includes("id") && toks.some((t) => ACCOUNT_ID_CONTEXT_TOKENS.has(t))
+    ? extractStateFromText(toks.filter((t) => t !== "id").join(" "))
+    : extractStateFromText(cleaned);
   const nameToks = toks.filter((t) => !US_STATE_TOKENS[t]);
   const name = nameToks.length ? nameToks.slice(0, 3).join(" ") : null;
   return { name, state };
@@ -2049,6 +2165,13 @@ export type IdentityCluster = {
   warnings: string[];
   mergeReasons: string[];    // why these artifacts were merged (auditable)
   matchesSeedLocation: boolean | null;
+  /**
+   * Present only when CO_RECORD links are LOAD-BEARING for this cluster: the
+   * pieces it falls into without them. Corroboration is judged per piece (the
+   * strongest one), never across a CO_RECORD join — a record naming two
+   * selectors groups them, it does not corroborate either.
+   */
+  preLinkComponents?: Artifact[][];
 };
 
 export type ClusterReport = {
@@ -2231,6 +2354,160 @@ export function recordMateKey(raw: string): string | null {
   return h ? `parent:${h}` : null;
 }
 
+// ---------------------------------------------------------------------------
+// CO_RECORD linkage (2026-10-15)
+// ---------------------------------------------------------------------------
+
+/**
+ * Kill switch for CO_RECORD linkage. Default ON; a build with
+ * `VITE_CO_RECORD_LINKAGE_DISABLED=true` restores the pre-CO_RECORD clusters and
+ * graph exactly (no `CO_RECORD` key is ever emitted, so every union, reason and
+ * confidence is computed as before). Callers may also pass
+ * `{ coRecordLinkage: false }` to `buildIdentityClusters` / `buildEntityGraph`.
+ */
+export const CO_RECORD_LINKAGE_ENABLED: boolean =
+  String((import.meta as { env?: Record<string, unknown> }).env?.VITE_CO_RECORD_LINKAGE_DISABLED ?? "")
+    .trim()
+    .toLowerCase() !== "true";
+
+type CoRecordClass = "email" | "phone" | "handle";
+
+/**
+ * The DECLARED linking fields: metadata keys whose value a record states is
+ * another selector OF THE SAME RECORD (one breach row, one profile). Enumerated
+ * from production rows (thread 7dc299df, 2026-10): breach-derived usernames,
+ * phones and account ids carry `email_associated`; an account id carries
+ * `phone_associated`; a breach_exposure row carries `email_in_breach` /
+ * `phone_in_breach` / `instagram_username`; an email row carries
+ * `username_in_breach`; a VSCO profile carries `linked_email`.
+ *
+ * ⛔ DELIBERATELY ABSENT, and they must stay absent: every password field
+ * (`password_in_breach`, `passwords`), every IP field (`ip_in_breach`), address,
+ * DOB (`dob_in_breach`), device, breach NAME, and `name_in_breach`. Those values
+ * are shared by construction (a reused password, a NAT exit, a household, a
+ * birthday, a namesake) and say nothing about which selectors are one person's.
+ *
+ * The keys already read by the older metadata cross-link path (`email`,
+ * `phone`, `username`, `instagram_handle`, `associated_email`, …) are NOT
+ * repeated here; that path is unchanged.
+ */
+export const CO_RECORD_FIELDS: Readonly<Record<string, CoRecordClass>> = {
+  email_associated: "email",
+  linked_email: "email",
+  email_in_breach: "email",
+  phone_associated: "phone",
+  linked_phone: "phone",
+  phone_in_breach: "phone",
+  instagram_username: "handle",
+  username_in_breach: "handle",
+  linked_username: "handle",
+};
+
+/**
+ * Source kinds that may NEVER originate a CO_RECORD link, whatever their
+ * metadata says. An IP / address / wallet / password / device row that "names"
+ * an email is infrastructure that was seen in the same dump; letting it link
+ * would let two different emails seen behind one NAT exit union through it.
+ */
+const CO_RECORD_SOURCE_DENY_KINDS: ReadonlySet<string> = new Set([
+  "ip", "ip_address", "address", "wallet", "crypto_wallet", "crypto", "password",
+  "device", "device_id", "dob", "date_of_birth",
+]);
+
+/** A source naming more than this many DISTINCT selectors of one class is a
+ *  dump/combolist row, not one person's record — none of its links of that
+ *  class are used. */
+const CO_RECORD_MAX_TARGETS_PER_CLASS = 3;
+
+export type CoRecordLink = {
+  /** The row whose metadata names the other selector. */
+  sourceId: string;
+  /** The live artifact whose own value is the named selector. */
+  targetId: string;
+  /** The declared linking field (`email_associated`, …). */
+  field: string;
+  targetKind: string;
+  targetValue: string;
+};
+
+function coRecordKey(cls: CoRecordClass, raw: string): string | null {
+  const t = raw.trim();
+  if (!t) return null;
+  if (cls === "email") {
+    if (!t.includes("@")) return null;
+    const lower = t.toLowerCase();
+    // A role mailbox is shared by everyone in an organisation.
+    if (GENERIC_EMAIL_LOCAL_PARTS.has(lower.slice(0, lower.indexOf("@")))) return null;
+    return `email:${lower}`;
+  }
+  if (cls === "phone") return phoneMergeKey(t);
+  const h = normalizeHandle(t);
+  return h.length >= 3 ? `handle:${h}` : null;
+}
+
+function coRecordOwnKey(a: Artifact): string | null {
+  const kind = a.kind.toLowerCase();
+  if (kind === "email") return coRecordKey("email", a.value);
+  if (kind === "phone") return coRecordKey("phone", a.value);
+  if (kind === "username" || kind === "handle") return coRecordKey("handle", a.value);
+  return null;
+}
+
+/**
+ * CO_RECORD links among `eligible`. Two artifacts are linked when one's metadata
+ * names the other's value in a declared linking field (`CO_RECORD_FIELDS`) AND
+ * the named value exists as an artifact of the matching kind in `eligible`.
+ *
+ * ⚠️ THE CALLER DECIDES ELIGIBILITY and must pass only rows that may carry
+ * authority — never a quarantined / excluded / `subject_unlinked` /
+ * analyst-rejected row. Filtering happens once, at the caller, with the
+ * existing predicates; this function invents none. Because both ends are drawn
+ * from `eligible`, an ineligible row can be neither source nor target.
+ *
+ * Grouping only. A link says "one record names both", not "independently
+ * corroborated": it never touches confidence, labels or `linkage_confirmed`.
+ * Pure and deterministic (output sorted by source, field, target).
+ */
+export function coRecordLinks(eligible: Artifact[]): CoRecordLink[] {
+  const byKey = new Map<string, Artifact[]>();
+  for (const a of eligible) {
+    const k = coRecordOwnKey(a);
+    if (!k) continue;
+    const list = byKey.get(k);
+    if (list) list.push(a);
+    else byKey.set(k, [a]);
+  }
+  const out: CoRecordLink[] = [];
+  for (const src of eligible) {
+    if (CO_RECORD_SOURCE_DENY_KINDS.has(src.kind.toLowerCase())) continue;
+    const meta = (src.metadata ?? {}) as Record<string, unknown>;
+    const named = new Map<CoRecordClass, Map<string, string>>(); // class → key → field
+    for (const [field, cls] of Object.entries(CO_RECORD_FIELDS)) {
+      for (const raw of collectStrings(meta[field])) {
+        const key = coRecordKey(cls, raw);
+        if (!key) continue;
+        const m = named.get(cls) ?? new Map<string, string>();
+        if (!m.has(key)) m.set(key, field);
+        named.set(cls, m);
+      }
+    }
+    for (const keys of named.values()) {
+      if (keys.size > CO_RECORD_MAX_TARGETS_PER_CLASS) continue;
+      for (const [key, field] of keys) {
+        for (const target of byKey.get(key) ?? []) {
+          if (target.id === src.id) continue;
+          out.push({ sourceId: src.id, targetId: target.id, field, targetKind: target.kind, targetValue: target.value.trim() });
+        }
+      }
+    }
+  }
+  out.sort((x, y) =>
+    x.sourceId < y.sourceId ? -1 : x.sourceId > y.sourceId ? 1
+    : x.field < y.field ? -1 : x.field > y.field ? 1
+    : x.targetId < y.targetId ? -1 : x.targetId > y.targetId ? 1 : 0);
+  return out;
+}
+
 /**
  * Metadata keys that describe HOW a row was obtained, not what it contains.
  * They are excluded from the corroboration scan below — `queried_selector` is
@@ -2329,7 +2606,9 @@ export function buildIdentityClusters(
   artifacts: Artifact[],
   seedValue: string | null,
   reviews?: Record<string, ReviewAdjustment>,
+  opts?: { coRecordLinkage?: boolean },
 ): ClusterReport {
+  const coRecordOn = opts?.coRecordLinkage ?? CO_RECORD_LINKAGE_ENABLED;
   const seedHint = detectNameLocationSeed(seedValue);
   const seedState = seedHint?.state ?? null;
   const seedName = seedHint?.name ?? null;
@@ -2351,9 +2630,24 @@ export function buildIdentityClusters(
   // implies from its own local-part (see emailHandleKey). It unions like any
   // other key, but it is a restatement of the email's own string, not a second
   // observation — so the cap logic below has to be able to tell the two apart.
-  type SignalHit = { key: string; signal: MergeSignal; raw: string; platform: string | null; derived?: true };
-  const signalsFor = (a: Artifact): SignalHit[] => {
+  // `coRecord` marks a CO_RECORD hit (see coRecordLinks). Its key lives in its
+  // own `corec:<targetArtifactId>` namespace, so dropping these hits restores the
+  // pre-CO_RECORD unions exactly. Populated below, once `live` is known.
+  type SignalHit = {
+    key: string;
+    signal: MergeSignal | "CO_RECORD";
+    raw: string;
+    platform: string | null;
+    derived?: true;
+    coRecord?: true;
+  };
+  const coRecordBySource = new Map<string, CoRecordLink[]>();
+  const coRecordTargets = new Set<string>();
+  const signalsFor = (a: Artifact, withCoRecord = true): SignalHit[] => {
     const hits: SignalHit[] = [];
+    // A lookup that found nothing links nothing: the selector it names (often a
+    // guessed email permutation) was probed, not observed. See isNegativeResultArtifact.
+    if (isNegativeResultArtifact(a)) return hits;
     const kind = a.kind.toLowerCase();
     const v = a.value.trim();
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
@@ -2452,6 +2746,14 @@ export function buildIdentityClusters(
     for (const ad of collectStrings(meta.address, meta.current_address)) {
       if (ad.length >= 6) hits.push({ key: `address:${ad.toLowerCase()}`, signal: "SHARED_INFRASTRUCTURE", raw: ad, platform });
     }
+    if (withCoRecord) {
+      for (const link of coRecordBySource.get(a.id) ?? []) {
+        hits.push({ key: `corec:${link.targetId}`, signal: "CO_RECORD", raw: link.field, platform, coRecord: true });
+      }
+      if (coRecordTargets.has(a.id)) {
+        hits.push({ key: `corec:${a.id}`, signal: "CO_RECORD", raw: "target", platform, coRecord: true });
+      }
+    }
     return hits;
   };
   const strongKeysFor = (a: Artifact): string[] => signalsFor(a).map((h) => h.key);
@@ -2479,6 +2781,19 @@ export function buildIdentityClusters(
     if (isClusterIneligible(a)) return false;
     return true;
   });
+
+  // CO_RECORD links are drawn ONLY among `live` rows — the set the existing
+  // predicates above already cleared (no false_positive, no analyst rejection,
+  // no active quarantine / collision). A zero-hit lookup observed nothing, so it
+  // can neither name nor be named.
+  if (coRecordOn) {
+    for (const link of coRecordLinks(live.filter((a) => !isNegativeResultArtifact(a)))) {
+      const list = coRecordBySource.get(link.sourceId);
+      if (list) list.push(link);
+      else coRecordBySource.set(link.sourceId, [link]);
+      coRecordTargets.add(link.targetId);
+    }
+  }
 
   // Infrastructure and parent-seed selectors can fan out to unrelated people
   // (shared IPs, households, wallets, breach rows, or collection batches).
@@ -2563,12 +2878,17 @@ export function buildIdentityClusters(
    * `> 1` means the derived key is LOAD-BEARING: the only thing joining those
    * pieces is that an email's local-part spells the same string as a handle.
    */
-  const componentsWithoutDerivedKeys = (group: Artifact[]): number => {
-    const comps: { keys: Set<string>; n: number }[] = [];
+  const componentsWithoutDerivedKeys = (group: Artifact[], withCoRecord = true): number =>
+    componentsOf(group, (h) => !h.derived, withCoRecord).length;
+
+  /** The pieces `group` falls into using only the hits `keep` admits. Same
+   *  union-find as the bucket pass, run over a subset of keys. */
+  function componentsOf(group: Artifact[], keep: (h: SignalHit) => boolean, withCoRecord: boolean): Artifact[][] {
+    const comps: { keys: Set<string>; members: Artifact[] }[] = [];
     const keyOwner = new Map<string, number>();
     for (const a of group) {
-      const keys = signalsFor(a)
-        .filter((h) => !h.derived)
+      const keys = signalsFor(a, withCoRecord)
+        .filter(keep)
         .map((h) => h.key)
         .filter((k) => !sharedInfraKeys.has(k));
       const hits = new Set<number>();
@@ -2577,28 +2897,28 @@ export function buildIdentityClusters(
         if (i !== undefined) hits.add(i);
       }
       if (hits.size === 0) {
-        const idx = comps.push({ keys: new Set(keys), n: 1 }) - 1;
+        const idx = comps.push({ keys: new Set(keys), members: [a] }) - 1;
         for (const k of keys) keyOwner.set(k, idx);
         continue;
       }
       const indices = Array.from(hits).sort((x, y) => x - y);
       const target = indices[0];
-      comps[target].n += 1;
+      comps[target].members.push(a);
       keys.forEach((k) => comps[target].keys.add(k));
       for (let i = 1; i < indices.length; i++) {
         const src = comps[indices[i]];
-        comps[target].n += src.n;
-        src.n = 0;
+        comps[target].members.push(...src.members);
+        src.members = [];
         src.keys.forEach((k) => comps[target].keys.add(k));
         src.keys.clear();
       }
       for (const k of comps[target].keys) keyOwner.set(k, target);
     }
-    return comps.filter((c) => c.n > 0).length;
-  };
+    return comps.filter((c) => c.members.length > 0).map((c) => c.members);
+  }
 
   // Build descriptive clusters and split by geographic conflict.
-  const summarize = (group: Artifact[]): Omit<IdentityCluster, "id" | "label" | "matchesSeedLocation"> => {
+  const summarize = (group: Artifact[], withCoRecord = coRecordOn): Omit<IdentityCluster, "id" | "label" | "matchesSeedLocation"> => {
     const pick = (kind: string) =>
       Array.from(new Set(group.filter((a) => a.kind.toLowerCase() === kind).map((a) => a.value.trim()))).filter(Boolean);
     const emails = pick("email");
@@ -2649,11 +2969,15 @@ export function buildIdentityClusters(
       const holder = selectorKey(a.kind, a.value);
       const rowClasses = artifactSourceClasses(a).filter((c) => !NON_CORROBORATING_CLASSES.has(c));
       const countedHere = new Set<string>();
-      for (const h of signalsFor(a)) {
+      for (const h of signalsFor(a, withCoRecord)) {
         if (sharedInfraKeys.has(h.key)) continue;
+        // CO_RECORD is explained separately below and carries NO weight: it is
+        // grouping, never a merge signal that can add confidence.
+        if (h.coRecord || h.signal === "CO_RECORD") continue;
+        const signal: MergeSignal = h.signal;
         let entry = agg.get(h.key);
         if (!entry) {
-          agg.set(h.key, (entry = { signal: h.signal, holders: new Set(), classes: new Map(), rows: new Map(), raws: new Set(), platforms: new Set() }));
+          agg.set(h.key, (entry = { signal, holders: new Set(), classes: new Map(), rows: new Map(), raws: new Set(), platforms: new Set() }));
         }
         if (!countedHere.has(h.key)) {
           entry.holders.add(holder);
@@ -2696,6 +3020,21 @@ export function buildIdentityClusters(
         ranked.push({ rank: 2, sub: 0, text: `PHONE_MATCH: ${value}` });
       } else {
         ranked.push({ rank: 3, sub: 0, text: `SHARED_INFRASTRUCTURE: ${key}` });
+      }
+    }
+    // CO_RECORD reasons: one per link whose BOTH ends are in this group, naming
+    // the declared field and the source artifact id so the join is auditable.
+    if (withCoRecord) {
+      const inGroup = new Set(group.map((a) => a.id));
+      for (const a of group) {
+        for (const link of coRecordBySource.get(a.id) ?? []) {
+          if (!inGroup.has(link.targetId)) continue;
+          ranked.push({
+            rank: 4,
+            sub: 0,
+            text: `CO_RECORD: ${link.field} (${link.sourceId} -> ${link.targetKind.toLowerCase()} ${link.targetValue})`,
+          });
+        }
       }
     }
     ranked.sort((x, y) => x.rank - y.rank || x.sub - y.sub || x.text.localeCompare(y.text));
@@ -2771,7 +3110,7 @@ export function buildIdentityClusters(
     // link was added, so a group that was ever connected without them stays at
     // one component and is untouched. This can only reach clusters that link
     // itself created.
-    const derivedLinkIsLoadBearing = componentsWithoutDerivedKeys(group) > 1;
+    const derivedLinkIsLoadBearing = componentsWithoutDerivedKeys(group, withCoRecord) > 1;
     const hasIdentityCorroboration =
       (!derivedLinkIsLoadBearing && (emails.length > 0 || signalsPresent.has("EMAIL_MATCH"))) ||
       phones.length > 0 || signalsPresent.has("PHONE_MATCH") ||
@@ -2784,7 +3123,25 @@ export function buildIdentityClusters(
       confidence = HANDLE_ONLY_CLUSTER_CAP;
     }
 
-    return { artifacts: group, emails, usernames, phones, addresses, ips, names, states, areaCodes, sources, confidence, warnings: [], mergeReasons };
+    // ⛔ CO_RECORD IS GROUPING, NOT CONFIRMATION. When the group only holds
+    // together through CO_RECORD links, its headline may not exceed what its
+    // strongest pre-link piece would have scored on its own — so the join can
+    // never lift the handle-only cap, add a bonus, or raise the mean. The pieces
+    // ride along so corroboration is judged per piece too.
+    let preLinkComponents: Artifact[][] | undefined;
+    if (withCoRecord && group.some((a) => coRecordBySource.has(a.id) || coRecordTargets.has(a.id))) {
+      const pieces = componentsOf(group, () => true, false);
+      if (pieces.length > 1) {
+        preLinkComponents = pieces;
+        const ceiling = Math.max(...pieces.map((p) => summarize(p, false).confidence));
+        if (confidence > ceiling) confidence = ceiling;
+      }
+    }
+
+    return {
+      artifacts: group, emails, usernames, phones, addresses, ips, names, states, areaCodes, sources, confidence, warnings: [], mergeReasons,
+      ...(preLinkComponents ? { preLinkComponents } : {}),
+    };
   };
 
   const out: IdentityCluster[] = [];
@@ -2836,7 +3193,7 @@ export function buildIdentityClusters(
     const states = new Set(withEmail.map((c) => c.states[0]));
     return withEmail.length > 1 && states.size > 1;
   })();
-  const conflictingAreaCodes = new Set(out.flatMap((c) => c.areaCodes)).size > 1;
+  const conflictingAreaCodes = areaCodesDisagreeAcrossClusters(out.map((c) => c.areaCodes));
   const collision = dupeName || conflictingStates || conflictingEmailRegions || conflictingAreaCodes;
 
   const warnings: string[] = [];
@@ -2857,12 +3214,20 @@ export function buildIdentityClusters(
       "Potential same-name collision detected. The following artifacts may belong to different people and should not be merged without additional corroboration.",
     );
   }
+  // An analyst-supplied name that record-derived names contradict is an OPEN QUESTION,
+  // not something the model's prose gets to resolve. See name-conflict.ts.
+  const nameConflict = detectNameConflict(artifacts);
+  if (nameConflict) warnings.push(formatNameConflict(nameConflict));
   if (seedState && !out.some((c) => c.matchesSeedLocation)) {
     warnings.push(
       `No direct ${seedState} corroboration found in this run. Out-of-area same-name candidates are shown separately — do not conclude the subject is "not from ${seedState}".`,
     );
   }
-  if (conflictingAreaCodes) warnings.push("Phone area codes across clusters disagree — likely different people.");
+  if (conflictingAreaCodes) {
+    warnings.push(
+      "Phone area codes differ between clusters. An area code shows where a number was issued, not where its holder lives — treat the difference as a lead for separating identities, not as proof of it.",
+    );
+  }
 
   // Minor-safety: surface a hard warning if any artifact carries a minor flag.
   const minorArtifacts = artifacts.filter((a) => {

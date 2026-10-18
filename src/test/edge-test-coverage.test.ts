@@ -3,7 +3,8 @@ import * as fs from "fs";
 import * as path from "path";
 
 /**
- * Every Deno test file under `supabase/functions/` must be reached by `npm run test:edge`.
+ * Every Deno test file under `supabase/tests/` (and, should one ever creep back,
+ * `supabase/functions/`) must be reached by `npm run test:edge`.
  *
  * Until 2026-09-14 the script globbed `*_test.ts` at the osint-agent top level only, so
  * `lib/cluster_test.ts` — the suite guarding against false identity merges — plus
@@ -17,7 +18,11 @@ import * as path from "path";
  */
 
 const ROOT = process.cwd();
-const FUNCTIONS_DIR = path.join(ROOT, "supabase/functions");
+// Edge tests live in supabase/tests/<fn>/ since 2026-10-15 (they were moved out of the
+// deployed function folders to stay under the 4.5 MB upload limit). Both trees are walked so
+// a test added back under supabase/functions/ is still checked for coverage here — and is
+// refused outright by edge-deploy-bundle.test.ts.
+const EDGE_TEST_DIRS = [path.join(ROOT, "supabase/tests"), path.join(ROOT, "supabase/functions")];
 
 // deno test's default discovery pattern: {*_,*.,}test.{js,mjs,ts,mts,jsx,tsx}
 const DENO_TEST_FILE = /^(?:.*[._])?test\.(?:js|mjs|ts|mts|jsx|tsx)$/;
@@ -31,7 +36,7 @@ function walk(dir: string): string[] {
 }
 
 function discoverEdgeTestFiles(): string[] {
-  return walk(FUNCTIONS_DIR).filter((f) => DENO_TEST_FILE.test(path.basename(f)));
+  return EDGE_TEST_DIRS.flatMap((dir) => walk(dir)).filter((f) => DENO_TEST_FILE.test(path.basename(f)));
 }
 
 /** Returns the discovered test files that `script` would NOT execute. */
@@ -65,8 +70,8 @@ describe("test:edge reaches every edge-function test file", () => {
 
   it("discovers the nested suites (a discovery bug must not pass vacuously)", () => {
     const rel = files.map((f) => path.relative(ROOT, f));
-    expect(rel).toContain("supabase/functions/osint-agent/lib/cluster_test.ts");
-    expect(rel).toContain("supabase/functions/evidence-export/text-sanitize_test.ts");
+    expect(rel).toContain("supabase/tests/osint-agent/lib/cluster_test.ts");
+    expect(rel).toContain("supabase/tests/evidence-export/text-sanitize_test.ts");
   });
 
   it("leaves no test file outside the script's paths", () => {
@@ -74,11 +79,11 @@ describe("test:edge reaches every edge-function test file", () => {
   });
 
   it("would have caught the old top-level-only glob", () => {
-    const old = "cd supabase/functions/osint-agent && deno test --no-check --allow-read *_test.ts";
+    const old = "cd supabase/tests/osint-agent && deno test --no-check --allow-read *_test.ts";
     expect(uncoveredBy(old, files)).toEqual(
       expect.arrayContaining([
-        "supabase/functions/osint-agent/lib/cluster_test.ts",
-        "supabase/functions/evidence-export/text-sanitize_test.ts",
+        "supabase/tests/osint-agent/lib/cluster_test.ts",
+        "supabase/tests/evidence-export/text-sanitize_test.ts",
       ]),
     );
   });

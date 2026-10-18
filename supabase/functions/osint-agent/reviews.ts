@@ -45,6 +45,10 @@
  *   also enforced on a normalized kind|value key.
  */
 import { canonicalKind } from "./lib/kind-alias.ts";
+import {
+  applyCrossCaseIndex, crossCaseKey, crossCaseReviewsDisabled, getCrossCaseIndex,
+  type CrossCaseApplied, type CrossCaseDb,
+} from "./lib/cross-case-reviews.ts";
 
 
 /** Verdicts that mean "the analyst rejected this — do not use it." */
@@ -102,6 +106,11 @@ export interface ReviewLoad {
    *  rejected), for the ANALYST DECISIONS block. */
   reviewedRows: ReviewedRow[];
   error: string | null;
+  /** E4 — the user's verdicts from OTHER cases, already resolved against this
+   *  thread (in-thread verdicts removed). Absent/null = in-thread behaviour only
+   *  (kill switch, no user id, or the cross-case read failed). It is NEVER
+   *  folded into `byId`, so it can never tag `review_state` onto a row. */
+  crossCase?: CrossCaseApplied | null;
 }
 
 export function emptyReviewLoad(ok: boolean, error: string | null = null): ReviewLoad {
@@ -203,11 +212,76 @@ export async function loadReviewsForThread(
         console.warn("[reviews] reviewed-row lookup threw:", errText(e));
       }
     }
-    return { ok: true, byId, noteById, rejectedKeys, rejectedRows, reviewedRows, error: null };
+    const crossCase = userId ? await loadCrossCaseForThread(db, threadId, userId, reviewedRows) : null;
+    return { ok: true, byId, noteById, rejectedKeys, rejectedRows, reviewedRows, error: null, crossCase };
   } catch (e) {
     console.warn("[reviews] loadReviewsForThread failed:", errText(e));
     return emptyReviewLoad(false, errText(e));
   }
+}
+
+/**
+ * E4: merge the user's cross-case verdict index (lib/cross-case-reviews.ts) into
+ * THIS thread's load. FAIL-SAFE: any problem yields null — today's in-thread
+ * behaviour — and never touches the in-thread load's own fail-closed `ok`.
+ * Kill switch read at call time.
+ */
+async function loadCrossCaseForThread(
+  db: ReviewDb,
+  threadId: string,
+  userId: string,
+  inThreadRows: readonly ReviewedRow[],
+): Promise<CrossCaseApplied | null> {
+  if (crossCaseReviewsDisabled()) return null;
+  try {
+    const idx = await getCrossCaseIndex(db as unknown as CrossCaseDb, userId, threadId);
+    if (!idx.ok) return null;
+    // Every verdict recorded IN this thread, any state, overrides the cross-case one.
+    const inThreadKeys = new Set(inThreadRows.map((r) => crossCaseKey(r.kind, r.value)));
+    return applyCrossCaseIndex(idx.index, inThreadKeys, idx.threadKeys, {
+      caseOnlySkipped: idx.caseOnlySkipped, complete: idx.complete,
+    });
+  } catch (e) {
+    console.warn(JSON.stringify({
+      event: "cross_case_reviews_unavailable", thread_id: threadId, error: errText(e).slice(0, 200),
+      note: "continuing with in-thread analyst decisions only",
+    }));
+    return null;
+  }
+}
+
+/**
+ * Is this row rejected by a verdict the analyst recorded in ANOTHER case? A row
+ * that carries its own in-thread verdict (by id) is decided in-thread — never by
+ * the cross-case index.
+ */
+function isCrossCaseRejectedRow(review: ReviewLoad, r: Record<string, unknown>): boolean {
+  const cc = review.crossCase;
+  if (!cc || cc.rejectedKeys.size === 0) return false;
+  const id = typeof r?.id === "string" ? r.id : null;
+  if (id && review.byId.has(id)) return false;
+  return cc.rejectedKeys.has(crossCaseKey(r.kind, r.value));
+}
+
+/**
+ * Value-level rejection test for a bare (kind, value) — e.g. a selector list the
+ * MODEL supplied. In-thread key OR (E4) a cross-case rejection.
+ */
+export function isRejectedByReview(review: ReviewLoad, kind: unknown, value: unknown): boolean {
+  if (review.rejectedKeys.has(normalizeArtifactKey(kind, value))) return true;
+  return !!review.crossCase && review.crossCase.rejectedKeys.has(crossCaseKey(kind, value));
+}
+
+/**
+ * Every rejected SELECTOR row this load enforces — in-thread rows plus (E4) the
+ * values rejected in the user's other cases. For enforcement consumers only
+ * (memory supersession, memory-write refusal). Never render this list into a
+ * prompt: cross-case rejected values are disclosed to the model as a COUNT.
+ */
+export function enforcedRejectedRows(review: ReviewLoad): RejectedRow[] {
+  if (!review.ok) return [];
+  const cross = (review.crossCase?.rejected ?? []).map((v) => ({ id: "", kind: v.kind, value: v.value }));
+  return cross.length ? [...review.rejectedRows, ...cross] : review.rejectedRows;
 }
 
 /**
@@ -229,7 +303,7 @@ export function dropRejectedArtifacts<T extends Record<string, unknown>>(
 ): T[] {
   if (!Array.isArray(rows)) return [];
   if (!review.ok) return [];           // unavailable → surface nothing rather than everything
-  if (review.byId.size === 0 && review.rejectedKeys.size === 0) return rows;
+  if (review.byId.size === 0 && review.rejectedKeys.size === 0 && !review.crossCase?.rejectedKeys.size) return rows;
 
   // Union of the DB-resolved rejected keys and the keys of rejected rows present
   // in THIS batch, so a re-record of the same finding under a new id is excluded
@@ -252,7 +326,9 @@ export function dropRejectedArtifacts<T extends Record<string, unknown>>(
     // the analyst called false gets republished as "authoritative", that is a
     // single point of failure worth not having. Do not "simplify" it away.
     if (state && REJECTED_REVIEW_STATES.has(state)) return false;
-    return !rejectedKeys.has(normalizeArtifactKey(r.kind, r.value)); // same value, new id
+    if (rejectedKeys.has(normalizeArtifactKey(r.kind, r.value))) return false; // same value, new id
+    // E4: rejected by the analyst in another of their cases (latest verdict).
+    return !isCrossCaseRejectedRow(review, r);
   });
 }
 
@@ -283,7 +359,12 @@ export function dropRejectedArtifacts<T extends Record<string, unknown>>(
  * preserve the row under "Excluded by analyst" and say WHY rather than deleting
  * it. Chain of custody is never served by making a row disappear.
  */
-export type ExclusionReason = "analyst_rejected" | "duplicate_of_rejected" | "derived_from_rejected";
+export type ExclusionReason =
+  | "analyst_rejected"
+  | "duplicate_of_rejected"
+  | "derived_from_rejected"
+  /** E4: the analyst rejected this value in another of their cases. */
+  | "rejected_in_other_case";
 
 const MAX_PROVENANCE_SELECTOR_LEN = 120;
 const MAX_PROVENANCE_ROUNDS = 5;
@@ -323,6 +404,7 @@ export function buildExclusionMap<T extends Record<string, unknown>>(
     const id = typeof r?.id === "string" ? r.id : null;
     if (!id || out.has(id)) continue;
     if (rejectedKeys.has(normalizeArtifactKey(r.kind, r.value))) out.set(id, "duplicate_of_rejected");
+    else if (isCrossCaseRejectedRow(review, r)) out.set(id, "rejected_in_other_case");
   }
 
   // Selector VALUES currently out of the working set, grown as descendants join.
@@ -415,11 +497,11 @@ export function rejectedArtifacts<T extends Record<string, unknown>>(
   review: ReviewLoad,
 ): T[] {
   if (!Array.isArray(rows) || !review.ok) return [];
-  if (review.byId.size === 0 && review.rejectedKeys.size === 0) return [];
+  if (review.byId.size === 0 && review.rejectedKeys.size === 0 && !review.crossCase?.rejectedKeys.size) return [];
   return rows.filter((r) => {
     const id = typeof r?.id === "string" ? r.id : null;
     if (id && REJECTED_REVIEW_STATES.has(review.byId.get(id) ?? "")) return true;
-    return review.rejectedKeys.has(normalizeArtifactKey(r.kind, r.value));
+    return review.rejectedKeys.has(normalizeArtifactKey(r.kind, r.value)) || isCrossCaseRejectedRow(review, r);
   });
 }
 
@@ -481,7 +563,8 @@ export function renderAnalystRejectionBlock<T extends { kind?: unknown; value?: 
 export function renderAnalystDecisionsBlock(review: ReviewLoad): string {
   if (!review.ok) return "";
   const rows = review.reviewedRows;
-  if (rows.length === 0 && review.rejectedRows.length === 0) return "";
+  const crossBlock = renderCrossCaseDecisions(review.crossCase);
+  if (rows.length === 0 && review.rejectedRows.length === 0) return crossBlock;
   const confirmed = rows.filter((r) => r.state === "confirmed");
   const key = rows.filter((r) => r.state === "key");
   const recheck = rows.filter((r) => r.state === "recheck");
@@ -534,6 +617,62 @@ export function renderAnalystDecisionsBlock(review: ReviewLoad): string {
   }
   if (rejected.length) {
     out.push(renderAnalystRejectionBlock(rejected).trimEnd());
+  }
+  if (crossBlock) out.push(crossBlock.trimEnd());
+  out.push("");
+  return out.join("\n");
+}
+
+const CROSS_CASE_LINE_CAP = 25;
+
+function crossCaseLines(rows: CrossCaseApplied["confirmed"]): string[] {
+  const lines = rows.slice(0, CROSS_CASE_LINE_CAP).map((r) =>
+    `  - [${String(r.kind || "artifact")}] ${String(r.value ?? "").slice(0, 160)} (analyst ${r.state} in case ${r.threadId})`
+  );
+  if (rows.length > CROSS_CASE_LINE_CAP) lines.push(`  …and ${rows.length - CROSS_CASE_LINE_CAP} more.`);
+  return lines;
+}
+
+/**
+ * E4 — the analyst's verdicts from their OTHER cases, as this thread sees them.
+ *
+ * Rejections are disclosed as a COUNT only — never the values (they are enforced
+ * by the runtime, not by the model remembering a list). Confirmed / Key / Recheck
+ * are PIVOT PRIORITY for values that also occur in THIS case, and the header says
+ * in so many words that they are not a source, not a label and not a confidence:
+ * the analyst confirmed them about a DIFFERENT investigation's subject.
+ * Returns "" when there is nothing to say.
+ */
+export function renderCrossCaseDecisions(cc: CrossCaseApplied | null | undefined): string {
+  if (!cc) return "";
+  const priority = [...cc.key, ...cc.confirmed];
+  if (cc.rejectedKeys.size === 0 && priority.length === 0 && cc.recheck.length === 0) return "";
+  const out: string[] = ["", "## ANALYST DECISIONS FROM YOUR OTHER CASES (context only)"];
+  if (cc.rejectedKeys.size > 0) {
+    out.push(
+      `${cc.hiddenInCase} values hidden by your earlier reviews in other cases.`,
+      "Values the analyst marked FALSE / unrelated in another case are excluded here too and the runtime refuses tool calls on them.",
+    );
+  }
+  if (priority.length) {
+    out.push(
+      "",
+      "### Analyst-confirmed (or Key) in another case — pivot PRIORITY only",
+      "These values also appear in THIS case. Rank pivots on them above comparable selectors.",
+      "That is ALL it means: the confirmation was about another investigation's subject. It is NOT a",
+      "source, NOT corroboration, NOT a reason to label anything CONFIRMED or Verified, and it does not",
+      "change any recorded confidence or release linkage quarantine. Establish it here on this case's evidence.",
+      ...crossCaseLines(priority),
+    );
+  }
+  if (cc.recheck.length) {
+    out.push(
+      "",
+      "### Recheck requested in another case — priority pivots",
+      "The analyst asked for another look at these in another case and they occur here. Pivot on them",
+      "early with fresh, independent tools. This is a task, not evidence.",
+      ...crossCaseLines(cc.recheck),
+    );
   }
   out.push("");
   return out.join("\n");

@@ -164,19 +164,15 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
       const threadRows = (data as Thread[] | null) ?? [];
       setThreads(threadRows);
 
-      // Reconcile runs the backend never finalized. If the edge function is
-      // hard-killed on the CPU-time limit mid-run, its onFinish/onError never
-      // fire, so the thread stays "active" forever and shows as perpetually
-      // running. A live run writes every few seconds; one silent past the
-      // staleness window is dead — flip it to "finished" (guarded on it still
-      // being "active" so a concurrently-finishing run isn't clobbered).
+      // A run the backend never finalized (isolate hard-killed mid-run) stays
+      // "active". Show it as not running HERE ONLY — this is display state, never
+      // a DB write. Writing `finished` from the browser broke I-2: with no
+      // `recovery_reason` the row read as COMPLETE (green, no report), and server
+      // recovery, which only claims `status='active'` rows, could no longer stamp
+      // `recovery_reason` and post the recovered report. That row belongs to
+      // `recoverStaleActiveThreads`.
       const staleIds = selectStaleActiveIds(threadRows);
       if (staleIds.length > 0) {
-        void supabase
-          .from("threads")
-          .update({ status: "finished" })
-          .in("id", staleIds)
-          .eq("status", "active");
         setThreads((prev) =>
           prev.map((t) => (staleIds.includes(t.id) ? { ...t, status: "finished" } : t)),
         );

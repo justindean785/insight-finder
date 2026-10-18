@@ -4,7 +4,7 @@ This document is a **runbook** for hitting the deployed `osint-agent` edge
 function with real third-party APIs (Upstash Redis, Serus darkweb scan, MiniMax
 LLM) to verify the live service is healthy. It does NOT cover the
 Deno-based unit tests for the HTTP transport — those run on every commit
-via `npm run test:edge` (see `supabase/functions/osint-agent/ratelimit_test.ts`
+via `npm run test:edge` (see `supabase/tests/osint-agent/ratelimit_test.ts`
 and `serus_test.ts`).
 
 Use this runbook when:

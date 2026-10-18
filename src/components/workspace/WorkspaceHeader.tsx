@@ -5,6 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useCaseSnapshot, type CaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { Lock, ShieldAlert, Plus, Copy, Link2, Mail, Phone, Globe, Network, User, Hash, FileSearch, MapPin } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { verifiedHint, verifiedLabel } from "@/lib/authority";
 import { toast } from "sonner";
 import { extractDisplaySeed, type SeedKind } from "@/lib/seed";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -123,24 +124,39 @@ export function CaseFigures({
   const toolHint = tools.available
     ? `${tools.total} tool calls across all runs of this case (cached, skipped and failed included) — ${tools.failed} failed, ${tools.degraded} degraded, ${tools.skipped + tools.gated} skipped. A run group shows one message\u2019s calls only.`
     : "The tool-call ledger could not be read. Refresh to try again.";
+  // Each separator travels WITH the figure after it (one unbreakable unit), so a
+  // figure that does not fit moves as a whole — never a trailing "·" and never
+  // half a word. In the dense (phone) strip the line is one row tall and wraps:
+  // whatever does not fit wraps onto a clipped second row and drops out
+  // entirely, lowest priority (spend, last) first. It used to be `flex-nowrap
+  // overflow-hidden`, which hard-clipped the last figure mid-word ("15 verifie").
+  const unit = "inline-flex items-center gap-x-2 whitespace-nowrap";
   return (
-    <span className={cn("inline-flex min-w-0 items-center gap-x-2 gap-y-0.5 text-data", dense ? "flex-nowrap overflow-hidden whitespace-nowrap" : "flex-wrap")}>
+    <span
+      className={cn(
+        "inline-flex min-w-0 items-center gap-x-2 text-data",
+        dense ? "h-5 max-w-full flex-wrap overflow-hidden leading-5" : "flex-wrap gap-y-0.5",
+      )}
+      data-case-figures={dense ? "dense" : undefined}
+    >
       <Figure value={evidence.available ? evidence.text.replace(/ evidence$/, "") : "—"} label={evidence.text.endsWith(" evidence") ? "evidence" : ""} hint={evidence.hint} />
-      <Sep />
-      <Figure value={tools.available ? tools.total : "—"} label={tools.total === 1 ? "tool" : "tools"} hint={toolHint} />
+      <span className={unit}>
+        <Sep />
+        <Figure value={tools.available ? tools.total : "—"} label={tools.total === 1 ? "tool" : "tools"} hint={toolHint} />
+      </span>
       {authority.verified > 0 && (
-        <>
+        <span className={unit}>
           <Sep />
           <Figure
             value={authority.verified}
-            label="verified"
+            label={verifiedLabel(authority.verified, snapshot.verifiedByAnalyst, dense)}
             tone="text-[hsl(var(--authority-verified))]"
-            hint={`${authority.verified} corroborated across two or more independent source classes, or analyst-confirmed.`}
+            hint={verifiedHint(authority.verified, snapshot.verifiedByAnalyst)}
           />
-        </>
+        </span>
       )}
       {!dense && authority.conflict > 0 && (
-        <>
+        <span className={unit}>
           <Sep />
           <Figure
             value={authority.conflict}
@@ -148,10 +164,10 @@ export function CaseFigures({
             tone="text-[hsl(var(--authority-conflict))]"
             hint={`${authority.conflict} artifact${authority.conflict === 1 ? "" : "s"} marked as contradicting the seed or another identity cluster (the Conflict authority state).`}
           />
-        </>
+        </span>
       )}
       {!dense && authority.quarantined > 0 && (
-        <>
+        <span className={unit}>
           <Sep />
           <Figure
             value={authority.quarantined}
@@ -159,10 +175,10 @@ export function CaseFigures({
             tone="text-[hsl(var(--authority-quarantine))]"
             hint={`${authority.quarantined} recorded and disclosed, but withheld from identity — linkage to the subject is unproven, or the row is a flagged name collision.`}
           />
-        </>
+        </span>
       )}
       {(spend.microUsd ?? 0) > 0 && (
-        <span className={cn("inline-flex items-center gap-2", spendClassName)}>
+        <span className={cn(unit, spendClassName)}>
           <Sep />
           <Figure
             value={spend.text}
@@ -315,7 +331,9 @@ export function MobileCaseStrip() {
             : <FigureSkeleton width="w-32" />}
           <CaseStatusPill snapshot={snapshot} />
         </div>
-        <div className="mt-0.5 min-w-0 truncate">
+        {/* Not `truncate`: CaseFigures drops whole figures that do not fit,
+            and an ellipsis clip here would cut the last one mid-word again. */}
+        <div className="mt-0.5 flex min-w-0">
           <CaseFigures snapshot={snapshot} dense />
         </div>
       </div>
@@ -323,4 +341,3 @@ export function MobileCaseStrip() {
     </div>
   );
 }
-

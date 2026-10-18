@@ -200,3 +200,81 @@ describe("seed detection and the thread title are unchanged for an export (serve
     expect(formatThreadTitle(EXPORT)).toBe(formatThreadTitleServer(EXPORT));
   });
 });
+
+/**
+ * A provider profile exported as a PDF and pasted as the seed (live case 2026-10-06).
+ *
+ * Two independent defects produced `<file>.pdf (domain)` as the case subject:
+ *  1. Every field line began with U+FFFC (OBJECT REPLACEMENT CHARACTER — an icon glyph the PDF
+ *     conversion left behind). KV_LINE anchors on a letter after optional WHITESPACE, and U+FFFC is
+ *     not whitespace, so NO field parsed: the labelled name was never read.
+ *  2. With no field and no email/phone, the blob fallback took the first `word.tld` it met —
+ *     `Source File: <name>.pdf` — as a domain.
+ *
+ * The stored seed is the composer's 200-character truncation, so the block can end mid-word.
+ * Every value below is fictitious.
+ */
+const PDF_EXPORT = [
+  "Person profile: Jordan Vale",
+  "Source File: vale-profile.pdf",
+  "Generated: 2026-10-06 14:02 UTC",
+  "Overview",
+  "\uFFFC Name: Jordan Vale",
+  "\uFFFC Email: j***@example.test",
+  "\uFFFC Username: jvale-sample",
+  "\uFFFC Locatio",
+].join("\n");
+
+describe("a PDF-converted provider export names its real subject, not its file", () => {
+  it("reads the labelled field through the object-replacement glyph", () => {
+    expect(readProviderExport(PDF_EXPORT)?.pick).toMatchObject({ value: "jvale-sample", kind: "username" });
+    const d = extractDisplaySeed(PDF_EXPORT, null);
+    expect(d.selector).toBe("jvale-sample");
+    expect(d.kind).toBe("username");
+    expect(d.selector).not.toMatch(/\.pdf$/i);
+  });
+
+  it("does the same through any invisible/format prefix, not just U+FFFC", () => {
+    for (const prefix of ["​", "‎", "﻿", "⁠", "­"]) {
+      const text = PDF_EXPORT.split("\uFFFC").join(prefix);
+      expect(extractDisplaySeed(text, null).selector, JSON.stringify(prefix)).toBe("jvale-sample");
+    }
+  });
+
+  it("with no username field, the labelled NAME is the subject", () => {
+    const text = PDF_EXPORT.replace("\uFFFC Username: jvale-sample\n", "");
+    expect(extractDisplaySeed(text, null)).toMatchObject({ selector: "Jordan Vale", kind: "other" });
+  });
+
+  it("a file-name line is attribution: never the subject, and scrubbed from the free-text scan", () => {
+    const noFields = ["Source File: vale-profile.pdf", "Overview", "nothing selector-shaped here"].join("\n");
+    expect(extractDisplaySeed(noFields, null).selector).not.toMatch(/\.pdf$/i);
+    for (const key of ["Source File", "File", "File name", "Filename", "Document", "Attachment"]) {
+      const scrubbed = readProviderExport(`${key}: vale-profile.pdf\nfull name: Jordan Vale`)?.scrubbed ?? "";
+      expect(scrubbed, key).not.toContain("vale-profile.pdf");
+    }
+  });
+
+  it("a document extension is not a TLD in the free-text fallback — but real TLDs still are", () => {
+    for (const ext of ["pdf", "docx", "xlsx", "txt", "csv", "png", "jpg", "json"]) {
+      const d = extractDisplaySeed(`Overview\nsee attached scan-report.${ext}\nno other selector`, null);
+      expect(d.kind, ext).not.toBe("domain");
+    }
+    // `.zip` and `.mov` are real TLDs and must keep working as domains.
+    expect(extractDisplaySeed("Overview\nsee seed-example.zip\nno other selector", null)).toMatchObject({ kind: "domain", selector: "seed-example.zip" });
+    expect(extractDisplaySeed("Overview\nsee seed-example.mov\nno other selector", null)).toMatchObject({ kind: "domain", selector: "seed-example.mov" });
+    // …and a real domain AFTER a document name is still found.
+    expect(extractDisplaySeed("Overview\nsee scan-report.pdf and example.org\nno other selector", null)).toMatchObject({ kind: "domain", selector: "example.org" });
+  });
+
+  it("controls: a bare document name typed ALONE is classified exactly as before (detectSeed untouched)", () => {
+    // detectSeed mirrors the server's cache key; this PR must not move it.
+    expect(extractDisplaySeed("report.pdf", null)).toMatchObject({ selector: "report.pdf", kind: "domain" });
+    expect(detectSeed("report.pdf")?.kind).toBe(detectSeedServer("report.pdf")?.kind);
+  });
+
+  it("controls: a plain selector, and an export without the glyph, behave exactly as before", () => {
+    expect(extractDisplaySeed("jane.example@example.test", null)).toMatchObject({ kind: "email" });
+    expect(extractDisplaySeed(EXPORT, null).selector).toBe(extractDisplaySeed(EXPORT.split("\uFFFC").join(""), null).selector);
+  });
+});

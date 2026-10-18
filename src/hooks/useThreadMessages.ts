@@ -83,6 +83,8 @@ function resultSummaryFor(output: unknown, errored: boolean, errorText?: unknown
   const { status } = classifyActivityRow(outcome, ok, errorMsg);
   switch (status) {
     case "succeeded": return "completed";
+    // Ran, and the target has no record — Health's "No record". Not a fault.
+    case "empty": return "returned no record";
     case "gated": return "gated";
     case "degraded": return "degraded";
     case "skipped": return "skipped";

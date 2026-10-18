@@ -1,5 +1,5 @@
 import { useThreadToolHealth, type ToolHealthRow } from "@/hooks/useThreadToolHealth";
-import { CANONICAL_OUTCOME_META, type CanonicalOutcome } from "@/lib/tool-outcome";
+import { CANONICAL_OUTCOME_META, groupOutcomeCounts, type CanonicalOutcome } from "@/lib/tool-outcome";
 import { CheckCircle2, XCircle, MinusCircle, CircleSlash, Activity, Clock, ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -23,10 +23,6 @@ const TONE_CLS = {
   degraded: "text-amber-400",
   failed: "text-destructive",
 } as const;
-
-function sum(counts: Record<CanonicalOutcome, number>, cats: CanonicalOutcome[]): number {
-  return cats.reduce((n, c) => n + counts[c], 0);
-}
 
 function StatCount({ icon: Icon, label, value, tone, hint }: {
   icon: typeof CheckCircle2; label: string; value: number;
@@ -78,7 +74,13 @@ function HealthRow({ row }: { row: ToolHealthRow }) {
         </span>
       </div>
       {row.lastIssue && (
-        <div className="mt-1.5 rounded-md border border-destructive/20 bg-black/30 px-2 py-1 font-mono text-micro leading-snug text-destructive/90 break-words [overflow-wrap:anywhere]">
+        <div
+          className={cn(
+            "mt-1.5 rounded-md border bg-black/30 px-2 py-1 font-mono text-micro leading-snug break-words [overflow-wrap:anywhere]",
+            // An explanation on a row that does not need attention (LeakCheck 403) is information, not a fault.
+            row.lastIssue.informational ? "border-amber-400/20 text-amber-400/90" : "border-destructive/20 text-destructive/90",
+          )}
+        >
           {row.lastIssue.statusCode != null && <span className="mr-1 opacity-70">HTTP {row.lastIssue.statusCode}</span>}
           {row.lastIssue.message}
         </div>
@@ -114,8 +116,12 @@ export function ToolHealthPanel({ threadId }: { threadId: string }) {
     );
   }
 
-  const degraded = sum(totals, ["timeout", "rate_limited", "http_denied", "blocked"]);
-  const skipped = sum(totals, ["skipped", "cancelled"]);
+  // The five tiles are `groupOutcomeCounts` — the SAME grouping the Activity
+  // tally uses (useThreadToolActivity → tallyToolEvents), so the two panels
+  // print the same numbers for the same rows. Define a group there, never here.
+  const groups = groupOutcomeCounts(totals);
+  const degraded = groups.degraded;
+  const skipped = groups.skipped;
   // CALLS whose category is a hard fault. Deliberately NOT the same number as
   // the "Needs attention" section below, which counts TOOLS and also escalates
   // on repetition (REPEAT_FAILURE_FLOOR) — a tool denied 3× has zero faulted
@@ -125,13 +131,13 @@ export function ToolHealthPanel({ threadId }: { threadId: string }) {
   // questions; they now say which. Keep this one a member of the five-tile
   // partition (success + empty + skipped + degraded + faulted == totals.total)
   // — swapping in the tool count silently breaks that sum.
-  const faultedCalls = sum(totals, ["config_error", "failed", "unknown"]);
+  const faultedCalls = groups.faulted;
 
   return (
     <div className="p-3 space-y-3">
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-        <StatCount icon={CheckCircle2} label="Succeeded" value={totals.success} tone="ok" hint="Genuine successes" />
-        <StatCount icon={MinusCircle} label="No record" value={totals.empty} tone="empty" hint="Ran fine, target has no data (expected)" />
+        <StatCount icon={CheckCircle2} label="Succeeded" value={groups.succeeded} tone="ok" hint="Genuine successes" />
+        <StatCount icon={MinusCircle} label="No record" value={groups.no_record} tone="empty" hint="Ran fine, target has no data (expected)" />
         <StatCount icon={CircleSlash} label="Skipped" value={skipped} tone="skipped" hint="Governance / dedup / cancelled — intentionally not run" />
         <StatCount icon={Clock} label="Degraded" value={degraded} tone="degraded" hint="Timed out / rate-limited / denied / blocked — transient, not breakage" />
         <StatCount

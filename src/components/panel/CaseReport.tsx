@@ -47,6 +47,8 @@ import { isRejectedReview, type ReviewState } from "@/lib/review";
 import { extractDisplaySeed } from "@/lib/seed";
 import type { MessageSummary } from "@/hooks/useThreadMessages";
 import { isBreachKind } from "@/lib/breach-kinds";
+import { isRejectedArtifact as isRejectedArtifactRow, buildRejectedDerivationIds } from "@/lib/analyst-decisions";
+import { normalizeTarget } from "@/lib/next-step-cards";
 
 export type ReportType = "full" | "brief";
 
@@ -77,10 +79,22 @@ type Reviews = Record<string, ReviewAdjustment> | undefined;
 const revOf = (reviews: Reviews, a: Artifact): ReviewAdjustment => reviews?.[a.id];
 /** May this row speak for the subject? See `isSubjectAuthorityEligible`. */
 const forSubject = (reviews: Reviews, a: Artifact): boolean => isSubjectAuthorityEligible(a, revOf(reviews, a));
+/** Rows DERIVED from an analyst-rejected selector. The markdown export's
+ *  provenance rule (`buildReportMarkdown`): rejection follows provenance, so a
+ *  breach pulled from a rejected email leaves the subject's sections with it. */
+function rejectedDerivedIds(artifacts: Artifact[], reviews: Reviews): Set<string> {
+  const rejectedIds = new Set(artifacts.filter((a) => isRejectedArtifactRow(a, revOf(reviews, a))).map((a) => a.id));
+  return buildRejectedDerivationIds(artifacts, rejectedIds, normalizeTarget);
+}
 /** Breach rows that actually put the SUBJECT in a corpus: authority-eligible,
- *  and not a "no breach hits" negative. Feeds counts that assert exposure. */
-const subjectBreaches = (artifacts: Artifact[], reviews: Reviews): Artifact[] =>
-  artifacts.filter((a) => isBreachKind(a.kind) && forSubject(reviews, a) && !isNullResultValue(a.value, a.source));
+ *  not derived from a rejected selector, and not a "no breach hits" negative.
+ *  Feeds counts that assert exposure, so they agree with the Breach Exposure
+ *  table, which applies the same gates. */
+const subjectBreaches = (artifacts: Artifact[], reviews: Reviews): Artifact[] => {
+  const derived = rejectedDerivedIds(artifacts, reviews);
+  return artifacts.filter((a) =>
+    isBreachKind(a.kind) && forSubject(reviews, a) && !derived.has(a.id) && !isNullResultValue(a.value, a.source));
+};
 // THE report's number, and it is now the same number as every other surface's.
 // This used to be `review ? adjustedConfidence(a, review) : a.confidence`, so the
 // report agreed with the Evidence BOARD on an unreviewed row and with the
@@ -898,11 +912,20 @@ function concreteListFields(m: Record<string, unknown>, key: string): RevealFiel
  * classes and any concrete value (e.g. the one tool that returned the hash).
  * Concrete values are collected for masked, click-to-reveal display; anything
  * flagged minor-related is marked non-revealable (minor-safety hard stop).
+ *
+ * Every row here is presented as a breach the SUBJECT appears in, so it takes the
+ * same gate as the sibling subject surfaces (`forSubject`: not quarantined, not
+ * rejected) plus the markdown export's provenance rule (`buildReportMarkdown`):
+ * a row DERIVED from an analyst-rejected selector leaves with it. The rows are
+ * not deleted — they stay in the Evidence tab; they just stop speaking for the
+ * subject here. Masking and reveal are untouched.
  */
-function buildBreachExposure(artifacts: Artifact[]): BreachRow[] {
+function buildBreachExposure(artifacts: Artifact[], reviews: Reviews): BreachRow[] {
+  const derived = rejectedDerivedIds(artifacts, reviews);
   const byKey = new Map<string, BreachRow>();
   for (const a of artifacts) {
     if (String(a.kind ?? "").toLowerCase() !== "breach_exposure") continue;
+    if (!forSubject(reviews, a) || derived.has(a.id)) continue;
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     // Prefer the explicit breach name; else strip the "<selector> - " prefix off value.
     const site = (metaStr(m, "breach_name") || String(a.value ?? "").replace(/^.*?\s-\s/, "")).trim()
@@ -1014,7 +1037,7 @@ export function CaseReport({
   const subjectProfile = useMemo(() => buildSubjectProfile(artifacts, reviews), [artifacts, reviews]);
   const profileLinks = useMemo(() => buildProfileLinks(artifacts, reviews), [artifacts, reviews]);
   const aliases = useMemo(() => buildAliases(artifacts, reviews), [artifacts, reviews]);
-  const breachRows = useMemo(() => buildBreachExposure(artifacts), [artifacts]);
+  const breachRows = useMemo(() => buildBreachExposure(artifacts, reviews), [artifacts, reviews]);
   const analystConf = useMemo(() => analystConfidence(artifacts, reviews), [artifacts, reviews]);
   const narrative = useMemo(() => {
     const last = (messages ?? []).filter((m) => m.role === "assistant" && m.summary?.trim()).slice(-1)[0];

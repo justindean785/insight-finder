@@ -20,6 +20,11 @@
 // and the caller records the result. It changes no persistence, finalize or termination
 // behaviour (that area owns this project's worst incidents; see CLAUDE.md).
 //
+// 2026-10-14: the mechanism above is FIXED in lib/client-cancel.ts — the browser-facing response
+// stream no longer carries the persistence onFinish, so a dropped connection cannot end the run.
+// `premature_client_cancel` can now only be recorded under the PERSIST_ON_CLIENT_CANCEL legacy
+// switch; seeing it on a build without that switch is a bug, not weather.
+//
 // KILL SWITCH, read at CALL TIME: RUN_END_LOG_DISABLED=true  (no log event, no note).
 // /health proof key: checks.run_end_log.
 

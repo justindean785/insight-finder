@@ -48,7 +48,7 @@ import { scrollBehavior } from "@/lib/motion";
 import { fetchWithRetry } from "@/lib/fetch-retry";
 import {
   deriveToolCharge, deriveToolPreview, deriveToolRuntime, deriveToolTone, describeTransportError,
-  isNetworkDropError, parseHttpStatusFromError, withHttpStatusInErrorBody,
+  isNetworkDropError, isTransportAuthFailure, withHttpStatusInErrorBody,
 } from "@/lib/tool-run";
 import { isRunHeartbeatAlive } from "@/lib/stale-thread";
 import { shouldFollowChatScroll, shouldAdoptInitialMessages, CHAT_REENGAGE_THRESHOLD_PX } from "@/lib/chat-scroll";
@@ -61,6 +61,7 @@ import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy a
 import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
 import { humanizeSelector } from "@/lib/humanize-selector";
+import { measureRequestBody, reportRequestBodySize } from "@/lib/request-size";
 import {
   isTerminalThreadUpdate,
   mergePersistedChatMessages,
@@ -1552,6 +1553,11 @@ function ChatWindowInner({
     api: FUNCTIONS_URL,
     body: { threadId },
     fetch: async (url: RequestInfo | URL, init?: RequestInit) => {
+      // Measure what the PHONE uploads, before anything server-side trims it.
+      // `useChat` sends the whole messages array every turn and that array is
+      // unbounded — the edge function's budget applies after upload, so no
+      // existing meter can see this. Measurement only; never alters the request.
+      reportRequestBodySize(measureRequestBody(init?.body), threadId);
       const { data } = await supabase.auth.getSession();
       const headers = new Headers(init?.headers);
       if (data.session) headers.set("Authorization", `Bearer ${data.session.access_token}`);
@@ -1596,8 +1602,10 @@ function ChatWindowInner({
       failSavedRef.current = true;
       const reason = (e?.message ?? "stream failed").slice(0, 500);
       const friendly = describeTransportError(e);
-      // 401 → session expired — route to auth immediately
-      if (parseHttpStatusFromError(e) === 401) {
+      // The backend's OWN 401 (pre-stream, `HTTP 401 …`) → session expired → route to auth.
+      // A provider's 401 surfaced mid-stream ("…rejected the API key (401)…") is NOT the
+      // analyst's session and must never sign them out (lib/tool-run.ts isTransportAuthFailure).
+      if (isTransportAuthFailure(e)) {
         toast.error(friendly);
         navigate("/auth");
         return;
@@ -2338,6 +2346,13 @@ function ChatWindowInner({
       toast.error("Wait for the current run to finish");
       return;
     }
+    // This tab is idle but the SERVER still reports a live run (second tab,
+    // dropped stream). Re-running here deletes the cache replay and starts a
+    // second billed run on top of it; the server rejects no overlaps.
+    if (serverRunActiveRef.current) {
+      toast.info(submitRefusalMessage("server_running"));
+      return;
+    }
     const firstUser = messages.find((m) => m.role === "user") as UIMessage | undefined;
     if (!firstUser) return;
     const text = (firstUser.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("").trim();
@@ -2391,8 +2406,10 @@ function ChatWindowInner({
   const retryLastUser = async () => {
     // The same synchronous lock the composer and the pivot rail hold. Retry used
     // to skip it, so a double-click on "Retry investigation" started two billed
-    // runs: the server has no idempotency key and does not reject overlaps.
-    const retryRefusal = submitRefusal(status, submitLockRef.current);
+    // runs: the server has no idempotency key and does not reject overlaps. The
+    // server-run check matters for the same reason: a stale failure card in this
+    // tab must not start a run on top of one that is still live on the server.
+    const retryRefusal = submitRefusal(status, submitLockRef.current, serverRunActiveRef.current);
     if (retryRefusal) {
       toast.info(submitRefusalMessage(retryRefusal));
       return;

@@ -4,6 +4,7 @@
  * All 77 tools flow through wrapToolsWithCache().
  */
 
+import { awaitProviderTurn, providerBusyQueueDisabled } from "./lib/provider-busy-queue.ts";
 import { redactErrorMessage } from "./lib/redact-error.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import type { Tool } from "npm:ai@6";
@@ -24,7 +25,8 @@ import { dispatchTypeCandidates, isDispatchRefused, loadRefusedArtifacts, quaran
 import { unprovenLinkageMarker, UNPROVEN_LINKAGE_KEY, type UnprovenLinkage } from "./lib/unproven-linkage.ts";
 import { promotionQuarantineEnabled } from "./env.ts";
 import type { QuarantineRow } from "./lib/dispatch-quarantine.ts";
-import { buildRejectedDispatchKeys, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
+import { buildRejectedDispatchKeys, crossCaseDispatchRows, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
+import { dispatchSpellings } from "./lib/cross-case-reviews.ts";
 import {
   buildDeadTargets, deadTargetMemoryEnabled, deadTargetCount, deadTargetRefusal,
   DEAD_TARGET_FLOOR, DEAD_TARGET_REFUSAL_ERROR,
@@ -37,6 +39,7 @@ import {
 } from "./guard.ts";
 import { reserveToolCall } from "./orchestrator-budget.ts";
 import { cacheVersionFor } from "./lib/tool-cache-version.ts";
+import { takeInputCoercions } from "./lib/tool-input-coercion.ts";
 import { isFinalizeWindowLiveLookupExempt } from "./orchestrator-finalize.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
@@ -899,19 +902,30 @@ export function wrapToolsWithCache(
   // call leave after the analyst clicks Wrong. The promise is shared only while
   // a read is in flight (parallel sibling calls use one snapshot), then cleared
   // so the next sequential dispatch observes the latest decision.
-  let rejectedKeysPromise: Promise<Set<string>> | null = null;
+  //
+  // E4: `crossCase` holds the keys of values the analyst rejected in ANOTHER of
+  // their cases (latest verdict, in-thread verdicts already removed by the
+  // loader). Kept as a separate set only so the refusal can say where the verdict
+  // came from; the refusal path, shape and marker are identical.
+  type RejectedKeySets = { inThread: Set<string>; crossCase: Set<string> };
+  const noRejectedKeys = (): RejectedKeySets => ({ inThread: new Set<string>(), crossCase: new Set<string>() });
+  let rejectedKeysPromise: Promise<RejectedKeySets> | null = null;
   const loadRejectedKeys = () => {
     if (!rejectedKeysPromise) {
-      const request = (async () => {
+      const request = (async (): Promise<RejectedKeySets> => {
         try {
           const reviews = await loadReviewsForThread(
             adminDb as unknown as ReviewDb, ctx.investigationId, ctx.userId,
           );
           if (!reviews.ok) {
             console.warn("[rejected-dispatch] review load failed (boundary open this run):", reviews.error);
-            return new Set<string>();
+            return noRejectedKeys();
           }
           const keys = buildRejectedDispatchKeys(reviews.rejectedRows, circuit.normalizeSelector);
+          const crossKeys = buildRejectedDispatchKeys(
+            crossCaseDispatchRows(reviews.crossCase?.rejected, dispatchSpellings),
+            circuit.normalizeSelector,
+          );
           // Counts only — never a selector value.
           console.log(JSON.stringify({
             event: "analyst_decisions_applied",
@@ -921,11 +935,12 @@ export function wrapToolsWithCache(
             decisions: reviews.byId.size,
             rejected_rows: reviews.rejectedRows.length,
             rejected_dispatch_keys: keys.size,
+            cross_case_dispatch_keys: crossKeys.size,
           }));
-          return keys;
+          return { inThread: keys, crossCase: crossKeys };
         } catch (e) {
           console.warn("[rejected-dispatch] review load threw (boundary open this run):", e);
-          return new Set<string>();
+          return noRejectedKeys();
         }
       })();
       rejectedKeysPromise = request;
@@ -1176,10 +1191,16 @@ export function wrapToolsWithCache(
           // does not override it either: the analyst clears a rejection by
           // resetting the review, not by re-running the call.
           const rejectedKeys = await loadRejectedKeys();
-          const rejectedAs = isRejectedDispatch(rejectedKeys, candidateTypes, sel);
+          const rejectedAs = isRejectedDispatch(rejectedKeys.inThread, candidateTypes, sel);
           if (rejectedAs) {
             const refusal = rejectionRefusal(name, rejectedAs, sel);
             console.warn(`[rejected-dispatch] refused ${name} on ${rejectedAs}:${sel} (analyst rejected)`);
+            return refusal;
+          }
+          const crossRejectedAs = isRejectedDispatch(rejectedKeys.crossCase, candidateTypes, sel);
+          if (crossRejectedAs) {
+            const refusal = rejectionRefusal(name, crossRejectedAs, sel, "other_case");
+            console.warn(`[rejected-dispatch] refused ${name} on ${crossRejectedAs} (analyst rejected in another case)`);
             return refusal;
           }
         }
@@ -1221,6 +1242,9 @@ export function wrapToolsWithCache(
         // Result-interpretation version for this tool (lib/tool-cache-version.ts), read at call
         // time so its kill switch binds without a deploy. null ⇒ legacy, unversioned keys.
         const cacheVersion = cacheVersionFor(name);
+        // Near-miss input coercions the schema applied to THIS call (lib/tool-input-coercion.ts): field + coercion kind
+        // only, never a value. Claimed by matching the coerced values against `inp`. Never part of any hash or key.
+        const inputCoercion = takeInputCoercions(name, inp);
         const runtimeMetaBase = {
           selector: sel,
           selector_type: selectorType,
@@ -1239,6 +1263,8 @@ export function wrapToolsWithCache(
           // Rides the base meta so every tool_usage_log row — live or replayed — records
           // which interpretation served it. Omitted for unversioned tools.
           ...(cacheVersion == null ? {} : { cache_version: cacheVersion }),
+          // Rides the base meta so every logged path (live, replay, refusal) carries it. Omitted when nothing was coerced.
+          ...(inputCoercion ? { input_coercion: inputCoercion } : {}),
         };
         let hash: string | null = null;
         let paramsHash: string | null = null;
@@ -1552,7 +1578,44 @@ export function wrapToolsWithCache(
           });
         }
 
-        const decision = circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force });
+        // E3: a call refused ONLY because its provider is busy waits its turn and
+        // re-checks the gate instead of being dropped (lib/provider-busy-queue.ts).
+        const turn = await awaitProviderTurn({
+          initial: circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force }),
+          recheck: () => circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force }),
+          shouldStop: () =>
+            (!!ctx.shouldStopLiveLookups?.() && !ALWAYS_ALLOW_TOOLS.has(name) && !correlateExempt) ||
+            !!(opts as { abortSignal?: AbortSignal } | null | undefined)?.abortSignal?.aborted,
+          onTick: () => ctx.onHeartbeat?.(),
+          disabled: providerBusyQueueDisabled(),
+        });
+        const decision = turn.decision;
+        if (turn.waitedMs > 0) {
+          console.log(JSON.stringify({
+            event: "provider_busy_wait",
+            tool: name,
+            waited_ms: turn.waitedMs,
+            outcome: turn.stopped ? "stopped" : decision.allow ? "ran" : turn.timedOut ? "timed_out" : "refused_after_wait",
+          }));
+        }
+        if (turn.stopped) {
+          // The finalize window opened (or the step was aborted) while this call waited for its
+          // provider: it never ran and consumed no budget.
+          const aborted = !!(opts as { abortSignal?: AbortSignal } | null | undefined)?.abortSignal?.aborted;
+          const why = aborted ? "step aborted while waiting for a busy provider; live lookup skipped" : "finalize window open; live lookup skipped";
+          const reasonKey = aborted ? "aborted_while_queued" : "finalize_window";
+          await logUsage(false, false, Date.now() - t0, why, null, true, {
+            input: inputJson,
+            runtime: { ...runtimeMetaBase, rejection_reason: reasonKey, rejection_source: "deadline", stale_cache: !!staleRecord },
+          });
+          return attachRuntimeMeta({ ok: false, skipped: true, finalizing: !aborted, error: why }, {
+            ...runtimeMetaBase,
+            rejection_reason: reasonKey,
+            stage: "REPORT",
+            cache_layer: "miss",
+            stale_cache: !!staleRecord,
+          });
+        }
         if (!decision.allow) {
           noteRejectedCall(ctx.investigationId, {
             tool_name: name,

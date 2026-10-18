@@ -5,8 +5,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
 import { CaseSnapshotContext, type CaseSnapshot, type CaseSnapshotApi } from "@/hooks/useCaseSnapshot";
-import { useReviewStates, type ReviewState } from "@/lib/review";
-import { tallyAuthority } from "@/lib/authority";
+import { reloadReviews, useReviewStates, type ReviewState } from "@/lib/review";
+import { countVerifiedByAnalyst, tallyAuthority } from "@/lib/authority";
 import { buildConfidenceProfile } from "@/lib/confidence-dimensions";
 import { withReviewGate } from "@/lib/report-export-gate";
 import {
@@ -111,6 +111,7 @@ function sameCore(a: CaseSnapshotCore, b: CaseSnapshotCore): boolean {
     a.evidence.available === b.evidence.available &&
     a.evidence.ledger === b.evidence.ledger &&
     a.authority === b.authority &&
+    a.verifiedByAnalyst === b.verifiedByAnalyst &&
     a.spend.microUsd === b.spend.microUsd &&
     a.readiness?.pct === b.readiness?.pct &&
     a.readiness?.reportReady === b.readiness?.reportReady &&
@@ -201,6 +202,11 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
         fetchIntegrity(),
         sourcesRef.current.reloadTools(),
         sourcesRef.current.reloadArtifacts(),
+        // Verdicts used to load once per page, so a second tab (or a verdict
+        // written elsewhere) kept a stale "verified" figure forever. Re-read
+        // them with every other source. Not part of the "synced" claim below:
+        // a failed review read keeps the cached verdicts and says so itself.
+        reloadReviews(threadId).catch(() => undefined),
       ]);
       if (!aliveRef.current || reconcileSeq.current !== token) return;
       // Batched with setReconciling(false) below: one render, one version.
@@ -231,7 +237,7 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
         setShowSyncing(false);
       }
     }
-  }, [fetchThread, fetchIntegrity]);
+  }, [fetchThread, fetchIntegrity, threadId]);
 
   // Hydration: the shared stores load themselves on first subscribe; this reads
   // the thread row and the custody chain alongside them.
@@ -316,6 +322,7 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
   // dismissed row Verified because its tally was memoised on the rows alone.
   const reviewGet = review.get;
   const authority = useMemo(() => tallyAuthority(artifacts.items, reviewGet), [artifacts.items, reviewGet]);
+  const verifiedByAnalyst = useMemo(() => countVerifiedByAnalyst(artifacts.items, reviewGet), [artifacts.items, reviewGet]);
   const reviewMap = useMemo(() => {
     const m: Record<string, ReviewState> = {};
     for (const a of artifacts.items) {
@@ -353,11 +360,13 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
         skipped: tools.skipped,
         gated: tools.gated,
         ok: tools.ok,
+        noRecord: tools.noRecord,
         loading: tools.loading,
         error: tools.error,
         loadedAt: tools.loadedAt,
       },
       authority,
+      verifiedByAnalyst,
       integrity,
       readiness,
       chatRunning,
@@ -366,9 +375,9 @@ export function CaseSnapshotProvider({ threadId, children }: { threadId: string;
     [
       threadId, authLoading, accountId, thread, threadLoaded,
       artifacts.items, artifacts.loading, artifacts.error,
-      tools.events, tools.persistedTotal, tools.failed, tools.degraded, tools.skipped, tools.gated, tools.ok,
+      tools.events, tools.persistedTotal, tools.failed, tools.degraded, tools.skipped, tools.gated, tools.ok, tools.noRecord,
       tools.loading, tools.error, tools.loadedAt,
-      authority, integrity, readiness, chatRunning, nowMs,
+      authority, verifiedByAnalyst, integrity, readiness, chatRunning, nowMs,
     ],
   );
 

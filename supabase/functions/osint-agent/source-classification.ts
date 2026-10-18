@@ -576,6 +576,8 @@ const NEWS_HOSTS: readonly string[] = [
   "star-telegram.com", "charlotteobserver.com", "newsobserver.com", "nola.com",
   "al.com", "mlive.com", "masslive.com", "pennlive.com", "stltoday.com",
   // broadcast
+  // Measured 2026-10-15 (Caraotta): six rows cited this Placerville outlet.
+  "mtdemocrat.com",
   "kcra.com", "kron4.com", "ktvu.com", "abc7news.com", "nbcbayarea.com",
   "abc7.com", "nbclosangeles.com", "ktla.com", "abc7ny.com", "nbcnewyork.com",
   "abc7chicago.com", "nbcchicago.com", "6abc.com", "fox5ny.com", "wral.com",
@@ -653,6 +655,48 @@ export function breachOriginCapSelfTest(): { ok: boolean; detail: string } {
     : { ok: true, detail: "breach-material qualifier (pdf/file/dump/export…) -> breach class; cap 60 applies" };
 }
 
+// ── Archived pages read by a page-fetch tool ────────────────────────────────
+//
+// Measured 2026-10-15 (Caraotta): "socialfetch_web_read (INEDC/Placerville NewsWire
+// archived)" and "socialfetch_web_read (Wayback Machine archived copy)" classified as
+// `social_profile_active` — the generic web reader's slug class — so an archived news
+// article counted as a live social-profile observation, including toward the
+// cross-platform social-cluster rule. It is archive evidence: a captured copy of a
+// page at a past date. `archive` caps at 70, the same number, so no confidence rises;
+// only the KIND of evidence is corrected. Scoped to page-fetch tools (they read the
+// page the qualifier names) and to an explicit archive qualifier — the word
+// archived/Wayback or a web.archive.org / archive.today / archive.ph URL.
+// Kill switch ARCHIVE_ORIGIN_RULE_DISABLED=true restores the slug class.
+const ARCHIVE_QUALIFIER_RE = /\b(archiv(?:ed|e)|wayback)\b|web\.archive\.org|archive\.(?:today|ph|is|org)/i;
+
+export function archiveOriginRuleDisabled(env: (k: string) => string | undefined = readEnvSafe): boolean {
+  return (env("ARCHIVE_ORIGIN_RULE_DISABLED") ?? "").trim().toLowerCase() === "true";
+}
+
+export function isArchivedPageFetch(label: string): boolean {
+  if (archiveOriginRuleDisabled()) return false;
+  const m = label.match(/^\s*([a-z0-9_]+)\s*\(([^)]*)\)\s*$/i);
+  if (!m) return false;
+  return PAGE_FETCH_TOOLS.has(m[1].toLowerCase()) && ARCHIVE_QUALIFIER_RE.test(m[2]);
+}
+
+/** /health → checks.archive_origin_rule. Pure; presence proves this build. */
+export function archiveOriginRuleSelfTest(): { ok: boolean; switch: string; detail: string } {
+  const sw = "ARCHIVE_ORIGIN_RULE_DISABLED";
+  if (archiveOriginRuleDisabled()) return { ok: true, switch: `${sw}=true`, detail: "LEGACY: archived page reads keep the tool's slug class" };
+  const cases: Array<[string, SourceClass]> = [
+    ["socialfetch_web_read (Wayback Machine archived copy)", "archive"],
+    ["socialfetch_web_read (web.archive.org/web/2025/https://inedc.com/x)", "archive"],
+    ["socialfetch_web_read (instagram.com/someone)", "social_profile_active"],
+    ["exa_search (archived)", "ai_summary"],
+    ["jina_reader_scrape (mtdemocrat.com/news/x)", "news"],
+  ];
+  const wrong = cases.filter(([l, want]) => classifySource(l) !== want).map(([l, want]) => `${l} -> ${classifySource(l)} (want ${want})`);
+  return wrong.length
+    ? { ok: false, switch: `${sw}=false`, detail: wrong.join("; ") }
+    : { ok: true, switch: `${sw}=false`, detail: "an archived copy read by a page-fetch tool is archive evidence (cap 70, unchanged), never a live social-profile view" };
+}
+
 export function sourceOriginRulesDisabled(env: (k: string) => string | undefined = readEnvSafe): boolean {
   return (env("SOURCE_ORIGIN_RULES_DISABLED") ?? "").trim().toLowerCase() === "true";
 }
@@ -700,6 +744,10 @@ function classifySourceByLabel(toolOrSource: string | null | undefined): SourceC
 
   // E1: a breach-material qualifier is provenance, not decoration.
   if (isBreachOriginLabel(toolOrSource)) return "breach";
+
+  // An ARCHIVED copy read by a page-fetch tool is archive evidence, not a live
+  // social-profile view (lib note at isArchivedPageFetch).
+  if (isArchivedPageFetch(toolOrSource)) return "archive";
 
   // Internal-slug fast path: strip a trailing parenthetical qualifier
   // ("socialfetch_lookup (instagram)" → "socialfetch_lookup") so the slug lookup

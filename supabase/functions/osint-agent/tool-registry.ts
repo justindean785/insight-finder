@@ -1,4 +1,6 @@
+import { BREACH_EXPOSURE_KINDS, breachExposureGuardDisabled, checkBreachExposureRow, loadRanBreachTools } from "./lib/breach-exposure-guard.ts";
 import { guardUserSuppliedStatus } from "./lib/user-supplied-status.ts";
+import { leakcheckGuard, readLeakcheckQuota, resolveLeakcheckLimits } from "./lib/leakcheck-guard.ts";
 import { applyMemoryContext } from "./lib/memory-context.ts";
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
@@ -43,7 +45,7 @@ import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
 import { inferEdges, clusterGraph } from "./graph_reasoning.ts";
 import { selectPivots, proposedCallToCandidate, type PivotCandidate, type ProposedCall } from "./graph_pivots.ts";
 import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
-import { loadReviewsForThread, dropRejectedAndDerived, dropRejectedArtifacts, normalizeArtifactKey, type ReviewDb } from "./reviews.ts";
+import { loadReviewsForThread, dropRejectedAndDerived, dropRejectedArtifacts, enforcedRejectedRows, isRejectedByReview, type ReviewDb } from "./reviews.ts";
 import { applyMemorySupersession, refuseConflictingMemoryWrites, rejectedSelectorsFromRows, type MemoryRow } from "./lib/memory-supersession.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
 
@@ -68,7 +70,7 @@ export const TOOL_NAME_ALIASES: Record<string, string> = {
   fetch_url: "jina_reader_scrape",
 };
 import type { QueryType } from "./query-type-router.ts";
-import { buildAddressDorks, canonicalizeDorks, resolveDorkKind, type Dork } from "./dork-queries.ts";
+import { buildAddressDorks, canonicalizeDorks, harvestQueryFamily, resolveDorkKind, type Dork } from "./dork-queries.ts";
 import { DNS_TYPES, VIRTUAL_TYPE_MAP, isVirtualType, resolveVirtualHost, filterTxtByPrefix } from "./tools/dns-virtual.ts";
 
 import {
@@ -103,7 +105,7 @@ import { geoseer_geolocate } from "./tools/geoseer.ts";
 
 import {
   validateArtifact, TTL_24H_MS, TOOL_TTL_MS, NO_CACHE_TOOLS,
-  coerceArtifactsInput,
+  coerceArtifactsInput, detectSeedServer,
 } from "./validation.ts";
 
 import type { NavigatorQueryResponse, NavigatorSearchResponse, NavigatorTool, GitHubCodeSearchResponse, GitHubCodeMatch } from "./api_types.ts";
@@ -119,6 +121,8 @@ import {
   triageState, bumpArtifacts, skipStub, takeCorrelateHint, resetCorrelateCycle,
 } from "./guard.ts";
 import { reviewMemoryBatch, type MemoryEntry } from "./lib/memory_consolidate.ts";
+import { normalizeMemoryEntry, parseStringArtifactElements, wrapFlatMemoryEntry } from "./lib/memory-input-normalization.ts";
+import { applyInputCoercion, inferSelectorKind, inputCoercionDisabled, type InputCoercionSpec } from "./lib/tool-input-coercion.ts";
 import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
@@ -580,6 +584,50 @@ function memoSchema<T>(key: string, build: () => T): T {
   return cached as T;
 }
 
+// Near-miss input coercion (lib/tool-input-coercion.ts). Wraps an UNCHANGED object schema in a root z.preprocess — the
+// same shape memory_save already uses — so the model-facing JSON schema is the inner object's. The coerced value is
+// re-validated against `inner`; if it would still fail, the RAW input goes through and is rejected exactly as before.
+// Kill switch INPUT_COERCION_DISABLED=true, read at call time inside applyInputCoercion.
+function coercedSchema<T extends z.ZodTypeAny>(tool: string, spec: InputCoercionSpec, inner: T) {
+  return z.preprocess((raw) => applyInputCoercion(tool, raw, spec, (v) => inner.safeParse(v).success), inner);
+}
+
+// "address" was added to gemini_deep_dork / dork_harvest kind enums together with input coercion; under the kill switch
+// it is refused again so INPUT_COERCION_DISABLED=true restores the pre-change strict schema in full.
+const ADDRESS_KIND_GATE = (k: string) => k !== "address" || !inputCoercionDisabled();
+const ADDRESS_KIND_GATE_MSG = { message: "kind \"address\" is not accepted while INPUT_COERCION_DISABLED=true" };
+const QUERY_TO_SEED = [{ to: "seed", from: "query", coercion: "seed_from_query" as const }];
+// A missing google_dorks `kind` is read off the seed's SHAPE (free tool, so a bare token may read as a username).
+const DORK_KIND_FROM_SEED = {
+  kind: {
+    from: "seed",
+    infer: (v: string) => {
+      const k = inferSelectorKind(v, detectSeedServer, { allowUsername: true });
+      return k === "crypto" ? "crypto_wallet" : k;
+    },
+  },
+};
+// serus_darkweb_scan is PAID: only unambiguous shapes are inferred, never a bare-token username.
+export const SERUS_INPUT_SPEC: InputCoercionSpec = {
+  enumFields: { identifierType: ["email", "phone", "username", "domain", "keyword", "origin", "password"] },
+  renames: [
+    { to: "identifierValue", from: "identifier", coercion: "field_alias" },
+    { to: "identifierValue", from: "value", coercion: "field_alias" },
+    { to: "identifierType", from: "type", coercion: "field_alias" },
+  ],
+  stringFields: ["identifierValue"],
+  trimFields: ["identifierValue"],
+  infer: {
+    identifierType: {
+      from: "identifierValue",
+      infer: (v: string) => {
+        const k = inferSelectorKind(v, detectSeedServer);
+        return k === "ip" ? "origin" : k === "crypto" ? null : k;
+      },
+    },
+  },
+};
+
 /**
  * Canonicalize a SocialFetch platform argument.
  *
@@ -617,6 +665,11 @@ export function normalizeSocialPlatform(platform: unknown): string {
   };
   return ALIASES[raw] ?? raw;
 }
+
+/** The most recent `quota` LeakCheck reported, shared by every investigation on this isolate: the
+ *  quota belongs to the ACCOUNT, so any run's last reading is valid for all of them. Null = unknown,
+ *  which the guard treats as "allow" (see lib/leakcheck-guard.ts). */
+let lastLeakcheckQuota: number | null = null;
 
 export function buildTools(ctx: ToolContext) {
   const { supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector } = ctx;
@@ -985,19 +1038,20 @@ export function buildTools(ctx: ToolContext) {
     minimax_correlate: tool({
       description:
         "Have MiniMax correlate and rescore a batch of artifacts. Pass the relevant artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after at least three meaningful new artifacts or before final verification. A repeat call after a successful pass is skipped (no cost) if fewer than three new artifacts have been recorded since — keep gathering evidence first.",
-      inputSchema: memoSchema("minimax_correlate", () => z.object({
+      inputSchema: memoSchema("minimax_correlate", () => coercedSchema("minimax_correlate", { stringFields: ["seed"] }, z.object({
         seed: z.string().describe("Original seed identifier"),
         // Models frequently pass `artifacts` as a JSON STRING; coerce to an
         // array before validating (same as record_artifacts) so a stringified
         // batch doesn't fail correlation and lose the run's findings.
-        artifacts: z.preprocess(coerceArtifactsInput, z.array(z.object({
+        // …and an array whose ELEMENTS are JSON strings parses element by element (lib/memory-input-normalization.ts).
+        artifacts: z.preprocess((raw) => parseStringArtifactElements(coerceArtifactsInput(raw)), z.array(z.object({
           kind: z.string(),
           value: z.string(),
           source: z.string().optional(),
           confidence: z.number().optional(),
           metadata: z.unknown().optional(),
         })).max(200)),
-      })),
+      }))),
       execute: async ({ seed, artifacts }, opts) => {
         // Input guard: never spend a paid MiniMax call on an empty/invalid
         // payload. The counter check below tracks how many NEW artifacts were
@@ -1212,13 +1266,12 @@ export function buildTools(ctx: ToolContext) {
           // published unfiltered. Same posture `dropRejectedArtifacts` already
           // takes, for the same reason.
           const reviewLoad = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
-          const rejectedInputKeys = new Set(reviewLoad.rejectedKeys);
           // The thin {kind,value} list is supplied by the MODEL, so it can name a
           // rejected selector even when the table read is clean. Keyed on
           // kind|value like every other rejection check — never on value alone.
           const plannerArtifacts = reviewLoad.ok
             ? (artifacts as Array<{ kind: string; value: string }>).filter(
-              (a) => !rejectedInputKeys.has(normalizeArtifactKey(a?.kind, a?.value)),
+              (a) => !isRejectedByReview(reviewLoad, a?.kind, a?.value),
             )
             : [];
           console.log(JSON.stringify({
@@ -1273,7 +1326,7 @@ export function buildTools(ctx: ToolContext) {
               // here, not deleted; they remain in agent_memory for audit.
               const { active, superseded } = applyMemorySupersession(
                 (mem ?? []) as MemoryRow[],
-                reviewLoad.ok ? reviewLoad.rejectedRows : [],
+                enforcedRejectedRows(reviewLoad),
               );
               if (superseded.length) {
                 console.log(JSON.stringify({
@@ -1522,12 +1575,16 @@ export function buildTools(ctx: ToolContext) {
     oathnet_lookup: tool({
      description:
        "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain/NAME, or geo+ASN on an IP. For a person's full NAME pass type:'name' (searched as a free-text query across the breach corpus — expect same-name collisions, so treat name-only hits as [VERIFY] until a selector overlaps). A first-class breach source: run it on the seed AND on high-value selectors/names discovered mid-investigation.",
-      inputSchema: memoSchema("oathnet_lookup", () => z.object({
+      inputSchema: memoSchema("oathnet_lookup", () => coercedSchema("oathnet_lookup", {
+        enumFields: { type: ["email", "username", "phone", "ip", "domain", "name"] },
+        stringFields: ["value"],
+        trimFields: ["value"],
+      }, z.object({
         type: z.enum(["email", "username", "phone", "ip", "domain", "name"]),
         value: z.string(),
         dbnames: z.array(z.string()).max(20).optional().describe("Optional v2 breach DB scoping (names from oathnet_breach_dbnames) to narrow the corpus."),
         filter_id: z.string().optional().describe("Optional 24-char AI/manual filter context from oathnet_ai_filter to reuse."),
-      })),
+      }))),
       execute: async ({ type, value, dbnames, filter_id }, opts) => {
         if (!OATHNET_API_KEY) return { error: "OATHNET_API_KEY not configured" };
         if (oathnetExhausted()) return skipStub("oathnet_lookup", `OathNet pooled daily quota exhausted (${oathnetQuotaLeft()} left today) — the oathnet_* family is soft-disabled for this run.`, { quota_left: oathnetQuotaLeft() });
@@ -2274,7 +2331,7 @@ export function buildTools(ctx: ToolContext) {
     }),
     leakcheck_lookup: tool({
       description:
-        "LeakCheck Pro v2 breach lookup (https://leakcheck.io/api/v2). SECONDARY breach source — 200 calls/day. Returns leak sources, breach dates, and (where present) passwords/usernames for an email, username, phone, hash, or domain. Pass a phone in any format (E.164 ok — it's normalized to digits). For a person's full NAME, use oathnet_lookup type:'name' instead — LeakCheck v2 /query does not support keyword/name search and 400s on it. Use to corroborate breach_check and to surface password/source detail. Do NOT spam on low-value handles.",
+        "LeakCheck Pro v2 breach lookup (https://leakcheck.io/api/v2). SECONDARY breach source — the account holds a FIXED POOL of queries (200 in total, NOT per day); every lookup spends one and nothing refills it, and at most 3 run per investigation. Returns leak sources, breach dates, and (where present) passwords/usernames for an email, username, phone, hash, or domain. Pass a phone in any format (E.164 ok — it's normalized to digits). For a person's full NAME, use oathnet_lookup type:'name' instead — LeakCheck v2 /query does not support keyword/name search and 400s on it. Use to corroborate breach_check on confirmed emails and high-value handles, and to surface password/source detail. Do NOT spend it on low-value handles.",
       inputSchema: memoSchema("leakcheck_lookup", () => z.object({
         value: z.string().min(1),
         // NOTE: no 'keyword' — LeakCheck v2 /query 400s on keyword/name searches
@@ -2291,6 +2348,35 @@ export function buildTools(ctx: ToolContext) {
         // and route the caller to the tool that DOES support name search.
         if (!q.includes("@") && /\s/.test(q) && (type === "auto" || type === "username")) {
           return { ok: false, skipped: true, source: "leakcheck.v2", reason: "name/keyword not supported by LeakCheck v2 — use oathnet_lookup type:'name'", value: q };
+        }
+        // Quota guard (lib/leakcheck-guard.ts): the account has a fixed pool of queries, not a daily
+        // allowance. Count the quota-spending calls this investigation already made (cached replays and
+        // skips spend nothing) and read the provider's last-reported `quota`. Every read fails OPEN.
+        {
+          const limits = resolveLeakcheckLimits(
+            Deno.env.get("LEAKCHECK_MAX_PER_INVESTIGATION"),
+            Deno.env.get("LEAKCHECK_QUOTA_RESERVE"),
+          );
+          let priorCalls: number | null = null;
+          try {
+            const { count, error } = await supabaseAdmin
+              .from("tool_usage_log")
+              .select("id", { count: "exact", head: true })
+              .eq("thread_id", threadId)
+              .eq("tool_name", "leakcheck_lookup")
+              .eq("cached", false)
+              .in("outcome", ["ok", "empty", "failed"]);
+            priorCalls = error || typeof count !== "number" ? null : count;
+          } catch { priorCalls = null; }
+          const decision = leakcheckGuard(priorCalls, lastLeakcheckQuota, limits);
+          if (!decision.allow) {
+            console.log(JSON.stringify({
+              event: "leakcheck_guard_skip", thread_id: threadId, code: decision.code,
+              prior_calls: priorCalls, last_quota: lastLeakcheckQuota,
+              max_per_investigation: limits.maxPerInvestigation, quota_reserve: limits.quotaReserve,
+            }));
+            return { ok: false, skipped: true, provider_attempted: false, source: "leakcheck.v2", reason: decision.reason, value: q };
+          }
         }
         try {
           const url = buildLeakcheckUrl(q, type);
@@ -2312,6 +2398,8 @@ export function buildTools(ctx: ToolContext) {
           const d = data as LeakCheckResponse;
           const found = (typeof d?.found === "number" ? d.found : Array.isArray(d?.result) ? d.result.length : 0);
           const quota = typeof d?.quota === "number" ? d.quota : undefined;
+          const seenQuota = readLeakcheckQuota(d);
+          if (seenQuota != null) lastLeakcheckQuota = seenQuota; // feeds the guard on the next call
           const sources = Array.isArray(d?.result)
             ? Array.from(new Set(d.result.map((x: LeakCheckResult) => x?.source?.name).filter(Boolean))).slice(0, 50)
             : [];
@@ -2371,7 +2459,7 @@ export function buildTools(ctx: ToolContext) {
     rapidapi_breach_search: tool({
       description:
         "PRIMARY + MANDATORY breach source — RapidAPI Email Breach Search (~8000 lookups/month, broadest corpus). MUST be the FIRST breach call on ANY email — the seed OR any email discovered mid-investigation (pivot/contact/breach-derived) — BEFORE breach_check / leakcheck_lookup / oathnet_lookup. For an email, returns the breach corpus it appears in: per-breach id/name, breach date, and the exposed field set (email, password, etc.) with per-field `sensitive` flags. Then corroborate hits with leakcheck_lookup / hibp_lookup / breach_check (independent corpora). A breach hit is an EXPOSURE association — record it as observed/needs_corroboration, never as confirmed identity on its own. Requires RAPIDAPI_KEY in Supabase secrets (host/path overridable via RAPIDAPI_BREACH_HOST/PATH); self-skips when the key is absent.",
-      inputSchema: memoSchema("rapidapi_breach_search", () => z.object({ email: z.string().email() })),
+      inputSchema: memoSchema("rapidapi_breach_search", () => coercedSchema("rapidapi_breach_search", { trimFields: ["email"] }, z.object({ email: z.string().email() }))),
       execute: async ({ email }) => {
         const RAPIDAPI_KEY = Deno.env.get("RAPIDAPI_KEY");
         if (!RAPIDAPI_KEY) return { error: "RAPIDAPI_KEY not configured", skipped: true };
@@ -3887,11 +3975,17 @@ export function buildTools(ctx: ToolContext) {
         "Generate copy-paste Google/Bing/DuckDuckGo/Yandex dork queries for a seed identifier. NO external API cost. Use once for the original seed or a corroborated high-value selector when the resulting query set supports a defined verification goal. " +
         "PICK THE KIND FROM THE SELECTOR, not from convenience: a street address is kind:\"address\" (exact-address, parcel/assessor/recorder, deed/ownership, address+person, address+business, public records, documents, archives, real estate). " +
         "kind:\"domain\" is ONLY for a valid hostname such as example.com — it emits site:, wildcard-subdomain, certificate and secret-exposure templates that are meaningless for anything else. A non-hostname seed sent as kind:\"domain\" is refused with error:'kind_mismatch' (or re-routed to the address family when it is recognisably an address); it does NOT silently return domain queries.",
-      inputSchema: memoSchema("google_dorks", () => z.object({
+      inputSchema: memoSchema("google_dorks", () => coercedSchema("google_dorks", {
+        enumFields: { kind: ["email", "username", "phone", "name", "person", "address", "domain", "ip", "hash", "crypto_wallet"] },
+        renames: QUERY_TO_SEED,
+        infer: DORK_KIND_FROM_SEED,
+        stringFields: ["seed"],
+        trimFields: ["seed"],
+      }, z.object({
         seed: z.string(),
         // Accept legacy/alias "person" → mapped to "name" in execute().
         kind: z.enum(["email", "username", "phone", "name", "person", "address", "domain", "ip", "hash", "crypto_wallet"]),
-      })),
+      }))),
       execute: async ({ seed, kind: rawKind }) => {
         const aliasedKind = rawKind === "person" ? "name" : rawKind;
         // The model-supplied `kind` is UNTRUSTED input, not a routing decision.
@@ -4228,11 +4322,20 @@ export function buildTools(ctx: ToolContext) {
     dork_harvest: tool({
       description:
         "Execute the highest-yield document/leak dorks for a seed and record the RELEVANT PDFs, Office docs, CSV/SQL/log/env dumps, pastebin entries, and stealer-log URLs as artifacts (kind='document' / 'leak_paste'). A URL is recorded ONLY if the seed appears in its path OR a bounded Gemini read (top few docs) finds the seed in the document text — irrelevant hits (resume templates, unrelated court/SEC/FEC filings) are held in `candidate_links_unread`, NOT recorded, so the evidence table stays clean. Runs N targeted Perplexity Sonar queries (Exa keyword fallback honors site: domains). Costs 1 Perplexity call per query plus up to 3 Gemini reads.",
-      inputSchema: memoSchema("dork_harvest", () => z.object({
+      inputSchema: memoSchema("dork_harvest", () => coercedSchema("dork_harvest", {
+        enumFields: { kind: ["email", "username", "phone", "name", "person", "address", "domain", "ip", "hash", "crypto_wallet"] },
+        renames: QUERY_TO_SEED,
+        stringFields: ["seed"],
+        trimFields: ["seed"],
+        numberFields: ["max_queries"],
+      }, z.object({
         seed: z.string(),
-        kind: z.enum(["email", "username", "phone", "name", "person", "domain", "ip", "hash", "crypto_wallet"]),
+        // "address" runs the NAME query family (dork-queries.ts harvestQueryFamily — this tool has no address family of
+        // its own); provenance keeps seed_kind "address". Refused again under INPUT_COERCION_DISABLED.
+        kind: z.enum(["email", "username", "phone", "name", "person", "address", "domain", "ip", "hash", "crypto_wallet"])
+          .refine(ADDRESS_KIND_GATE, ADDRESS_KIND_GATE_MSG),
         max_queries: z.number().int().min(1).max(12).default(5),
-      })),
+      }))),
       execute: async ({ seed, kind: rawKind, max_queries }) => {
         const kind = rawKind === "person" ? "name" : rawKind;
         // Targeted dork queries per kind, ordered by document/leak yield.
@@ -4303,7 +4406,7 @@ export function buildTools(ctx: ToolContext) {
         // `"<seed>" filetype:pdf` — the #1 source of the 78-100% dork false-positive
         // rate. (Per-URL content-relevance scoring via scoreDorkRelevance is the
         // remaining lever; it needs a fetch per hit + subject name/city plumbing.)
-        const queries = (QUERIES[kind] ?? []).slice(0, max_queries).map(augmentDorkQuery);
+        const queries = (QUERIES[harvestQueryFamily(kind)] ?? []).slice(0, max_queries).map(augmentDorkQuery);
         if (queries.length === 0) return { ok: false, error: `no dork_harvest queries for kind=${kind}` };
 
         const DOC_EXT_RE = /\.(pdf|docx?|pptx?|xlsx?|csv|txt|log|sql|bak|env|json|xml|ya?ml|zip|tar|gz|7z|rar|pcap|map|dump|sqlite|db)(?:[?#]|$)/i;
@@ -4569,11 +4672,21 @@ export function buildTools(ctx: ToolContext) {
     gemini_deep_dork: tool({
       description:
         "FALLBACK deep-dork via Gemini 2.5 Flash with native Google Search grounding. Use AFTER google_dorks + dork_harvest — ~46% success rate in production telemetry; do not lead with this. Gemini reasons about the seed, formulates targeted Google dork queries internally, executes them against real Google, and returns a synthesized writeup PLUS source URLs as grounding citations. Use when dork_harvest misses something or you need LLM-driven dork generation (tricky disambiguation, niche forum surfacing). AUTO-RECORDS every cited URL as an artifact (kind='url' or classified by extension as 'document'/'leak_paste'). Template/sample document URLs are dropped. 1 Gemini call ≈ $0.002.",
-      inputSchema: memoSchema("gemini_deep_dork", () => z.object({
+      inputSchema: memoSchema("gemini_deep_dork", () => coercedSchema("gemini_deep_dork", {
+        enumFields: { kind: ["email","username","phone","name","person","address","domain","ip","hash","crypto_wallet","url","other"] },
+        // A missing kind is the catch-all "other" the enum already offered; an UNKNOWN kind is not (it stays rejected).
+        defaults: { kind: "other" },
+        renames: QUERY_TO_SEED,
+        stringFields: ["seed"],
+        trimFields: ["seed"],
+      }, z.object({
         seed: z.string(),
-        kind: z.enum(["email","username","phone","name","person","domain","ip","hash","crypto_wallet","url","other"]),
+        // "address": Gemini drafts its own dorks from `Seed (<kind>): <seed>`, so an address needs no tool-side query
+        // family — the kind is only the label in the prompt. Refused again under INPUT_COERCION_DISABLED.
+        kind: z.enum(["email","username","phone","name","person","address","domain","ip","hash","crypto_wallet","url","other"])
+          .refine(ADDRESS_KIND_GATE, ADDRESS_KIND_GATE_MSG),
         focus: z.string().optional().describe("Optional angle, e.g. 'breach exposure', 'resume/CV leaks', 'social handles', 'pastebin dumps', 'forum posts', 'court records'."),
-      })),
+      }))),
       execute: async ({ seed, kind, focus }, opts) => {
         if (!GEMINI_API_KEY) return { ok: false, error: "GEMINI_API_KEY not configured" };
         const system =
@@ -4680,10 +4793,13 @@ export function buildTools(ctx: ToolContext) {
     jina_reader_scrape: tool({
       description:
         "#1 PRIMARY scraper for ANY URL — free, unlimited, returns clean LLM-ready markdown. Always prefer this over firecrawl/exa_contents for single-page extraction. Use https://r.jina.ai/{url} under the hood. Works on articles, profile pages, forums, leak listings, dorks hits, Discord/Telegram links, PDFs (best-effort), etc. Pass a fully-qualified http(s) URL — do NOT pass relative paths or text snippets.",
-      inputSchema: memoSchema("jina_reader_scrape", () => z.object({
+      inputSchema: memoSchema("jina_reader_scrape", () => coercedSchema("jina_reader_scrape", {
+        numberFields: ["maxChars"],
+        trimFields: ["url"],
+      }, z.object({
         url: z.string().url(),
         maxChars: z.number().int().min(500).max(40000).default(18000),
-      })),
+      }))),
       // opts carries the per-tool timeout AbortSignal (Phase B3): forwarding it to
       // fetchRetry makes the 8s cap truly cancel the scrape mid-flight rather than
       // abandon the promise while r.jina.ai keeps streaming.
@@ -5467,6 +5583,11 @@ export function buildTools(ctx: ToolContext) {
           recorded_confidence: number;
           attempted_confidence: number;
         }> = [];
+        // breach_exposure source guard (lib/breach-exposure-guard.ts): loaded once, only when
+        // the batch carries a breach row. null = read failed → guard fails open for this batch.
+        const breachGuardOn = !breachExposureGuardDisabled() &&
+          artifacts.some((x) => /breach/i.test(String(x?.kind ?? "")));
+        const ranBreachTools = breachGuardOn ? await loadRanBreachTools(supabase, threadId) : null;
         artifacts.forEach((aRaw, i) => {
           // E3: recalled memory is context, never a source (lib/memory-context.ts).
           const memCtx = applyMemoryContext(aRaw.source, aRaw.metadata as Record<string, unknown> | undefined);
@@ -5504,6 +5625,19 @@ export function buildTools(ctx: ToolContext) {
           if (!v.ok) {
             rejected.push({ index: i, reason: v.reason, kind: a.kind, value: a.value });
             return;
+          }
+          if (ranBreachTools && BREACH_EXPOSURE_KINDS.has(v.kind)) {
+            const verdict = checkBreachExposureRow({
+              value: v.value,
+              sourceLabels: disclosedSourceLabels(a.source, a.metadata ?? null),
+              metadata: (a.metadata ?? null) as Record<string, unknown> | null,
+              ranTools: ranBreachTools,
+            });
+            if (!verdict.ok) {
+              console.log(JSON.stringify({ event: "breach_exposure_rejected", code: verdict.code, source: a.source ?? null }));
+              rejected.push({ index: i, reason: verdict.reason, kind: a.kind, value: a.value });
+              return;
+            }
           }
           // Apply conservative confidence caps based on source class.
           const disclosedSources = disclosedSourceLabels(a.source, a.metadata ?? null);
@@ -5830,7 +5964,7 @@ export function buildTools(ctx: ToolContext) {
             let autoRecallRejected: Array<{ value?: unknown }> = [];
             try {
               const rl = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
-              if (rl.ok) autoRecallRejected = rl.rejectedRows;
+              if (rl.ok) autoRecallRejected = enforcedRejectedRows(rl);
             } catch { /* analyst lessons among the rows still supersede */ }
             const recalled = await Promise.all(
               recallSubjects.map(async (subj) => {
@@ -6231,6 +6365,13 @@ export function buildTools(ctx: ToolContext) {
 
   // Serus darkweb scan — imported from tools/serus.ts (was missing from inline tools).
   (tools as ToolRegistry).serus_darkweb_scan = serus_darkweb_scan;
+  // Then its schema is wrapped in input coercion (SERUS_INPUT_SPEC): `{identifier, identifierType}` was rejected in
+  // production. A fresh object — the imported tool is never mutated. (The plain assignment above stays: the timeout
+  // contract test reads it to attach serus's measured budget.)
+  (tools as ToolRegistry).serus_darkweb_scan = {
+    ...serus_darkweb_scan,
+    inputSchema: memoSchema("serus_darkweb_scan", () => coercedSchema("serus_darkweb_scan", SERUS_INPUT_SPEC, serus_darkweb_scan.inputSchema as z.ZodTypeAny)),
+  } as typeof serus_darkweb_scan;
 
   // Indicia (api.indicia.app) — 6 person/phone/email/address + web-DB breach tools,
   // imported from tools/indicia.ts. Gated on INDICIA_API_KEY via capabilities.ts;
@@ -6316,7 +6457,7 @@ export function buildTools(ctx: ToolContext) {
       let threadRejected: Array<{ value?: unknown }> = [];
       try {
         const rl = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
-        if (rl.ok) threadRejected = rl.rejectedRows;
+        if (rl.ok) threadRejected = enforcedRejectedRows(rl);
         else console.warn("[memory_recall] review state unavailable; superseding by analyst lessons only:", rl.error);
       } catch (e) {
         console.warn("[memory_recall] review load threw; superseding by analyst lessons only:", String(e));
@@ -6351,7 +6492,9 @@ export function buildTools(ctx: ToolContext) {
   (tools as ToolRegistry).memory_save = tool({
     description:
       "Persist a durable cross-investigation memory: a learned pattern, a confirmed connection between artifacts, an analyst lesson, or an identity cluster. Call AT THE END of an investigation with the strongest connections + any lessons (e.g. \"this domain is always parked\", \"this handle resolves to person X\", \"breach DB Y has stale phones\"). Idempotent: calling with the same kind+subject+content updates the existing entry.",
-    inputSchema: memoSchema("memory_save", () => z.object({
+    // Root preprocess: entry fields sent at the TOP LEVEL (no `entries`) are wrapped into `entries` — only when that is
+    // unambiguous (lib/memory-input-normalization.ts). Valid input is returned untouched.
+    inputSchema: memoSchema("memory_save", () => z.preprocess(wrapFlatMemoryEntry, z.object({
       // Tolerant input: some models emit `entries` as a JSON string, or as
       // an array containing stringified objects. Normalize both shapes.
       entries: z.preprocess((raw) => {
@@ -6370,6 +6513,8 @@ export function buildTools(ctx: ToolContext) {
         if (Array.isArray(v)) {
           v = v
             .map(parseMaybe)
+            // Field-name aliases / a sentence list for `content`, only when unambiguous (lib/memory-input-normalization.ts).
+            .map(normalizeMemoryEntry)
             .filter((x: unknown): x is Record<string, unknown> => !!x && typeof x === "object")
             // Drop entries with missing/blank subject — the LLM occasionally
             // emits one. Better to save the rest than reject the whole batch.
@@ -6387,7 +6532,7 @@ export function buildTools(ctx: ToolContext) {
       scope: z.enum(["global", "case"]).optional().default("global").describe(
         "global = reusable cross-case knowledge (default). case = facts/decisions tied to THIS investigation only (dismissed leads, analyst confirmations, false positives).",
       ),
-    })),
+    }))),
     execute: async ({ entries, scope }) => {
       // C-2: gate every entry through the deterministic C-1-subject consolidation
       // check BEFORE it can reach agent_memory. agent_memory's own upsert ratchets
@@ -6407,7 +6552,7 @@ export function buildTools(ctx: ToolContext) {
       try {
         const rl = await loadReviewsForThread(supabaseAdmin as unknown as ReviewDb, threadId, userId);
         if (rl.ok) {
-          const gate = refuseConflictingMemoryWrites(toPersist, rejectedSelectorsFromRows(rl.rejectedRows));
+          const gate = refuseConflictingMemoryWrites(toPersist, rejectedSelectorsFromRows(enforcedRejectedRows(rl)));
           toPersist = gate.toPersist;
           for (const r of gate.refused) {
             candidates.push({ entry: r.entry, reason: r.reason, subjectIds: [], verdict: "blocked" });

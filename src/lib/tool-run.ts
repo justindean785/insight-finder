@@ -96,10 +96,29 @@ export function formatHttpFailure(status: number, statusText: string, body: stri
   return `HTTP ${status}${label ? ` ${label}` : ""}${code ? ` (${code})` : ""}${detail ? `: ${detail}` : ""}`;
 }
 
+/**
+ * Is this the scan backend's OWN 401 — the analyst's session is invalid?
+ *
+ * WHY a separate, strict test. `parseHttpStatusFromError` falls back to ANY bare three-digit
+ * number in a message, and mid-stream provider errors carry one: the Anthropic classifier's
+ * fixed text reads "Anthropic rejected the API key (401)…". Measured 2026-10-14: every scan
+ * on a revoked provider key read as the ANALYST's session expiring, and the app signed the
+ * operator out on each attempt. A provider's 401 is not the analyst's 401.
+ *
+ * Only a pre-stream failure of the edge function itself is an auth failure, and
+ * `withHttpStatusInErrorBody` always formats that as `HTTP 401 …` at the START of the message.
+ */
+export function isTransportAuthFailure(err: unknown): boolean {
+  const msg = String((err as { message?: unknown })?.message ?? err ?? "").trimStart();
+  return /^HTTP\s+401\b/i.test(msg);
+}
+
 export function describeTransportError(err: unknown): string {
   const msg = String((err as { message?: unknown })?.message ?? err ?? "").toLowerCase();
   const status = parseHttpStatusFromError(err);
-  if (status === 401) return "Session expired — your login has timed out. Sign in again to continue.";
+  if (isTransportAuthFailure(err)) return "Session expired — your login has timed out. Sign in again to continue.";
+  // A 401 that is NOT the backend's own (a provider rejecting its key mid-stream): the analyst's login is fine.
+  if (status === 401) return "The model provider rejected its API key (HTTP 401 from the provider, not your login) — an operator needs to check the provider key in the backend secrets.";
   if (status === 402 || msg.includes("insufficient_credits") || msg.includes("out of credits"))
     return "Out of beta credits — you've used your investigation allowance for now. Contact us to top up your account.";
   if (status === 400) return "Bad request — the scan backend rejected the request as malformed. Reload the case and try again.";
@@ -192,8 +211,10 @@ export function deriveToolTone(part: {
  *  a *gated* call was blocked by a triage/policy/budget gate (an intentional
  *  decision, not a fault), and a *degraded* call returned a partial/stale result
  *  or hit a temporarily-disabled provider (worth a second look, but not a hard
- *  failure). Only a real provider/runtime error counts as *failed*. */
-export type ToolStatus = "succeeded" | "failed" | "skipped" | "gated" | "degraded" | "pending";
+ *  failure). Only a real provider/runtime error counts as *failed*. *empty*
+ *  ("No record") is produced only by `classifyActivityRow` for a log row whose
+ *  canonical outcome is `empty`; `deriveToolStatus` below never returns it. */
+export type ToolStatus = "succeeded" | "empty" | "failed" | "skipped" | "gated" | "degraded" | "pending";
 
 // Budget / policy / quota / triage / orchestration stops — an intentional
 // control decision, not a fault. These must read as "Gated", never red

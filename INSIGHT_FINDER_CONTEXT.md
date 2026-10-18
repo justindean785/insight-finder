@@ -32,7 +32,7 @@ step, and the only proof of deploy is a moved `/health` build SHA. See CLAUDE.md
 |---|---|
 | Runtime tool definitions (`buildTools`) | `supabase/functions/osint-agent/tool-registry.ts` (5533 lines) |
 | Tool catalog the model reads via `list_tools` | `supabase/functions/osint-agent/catalog.ts` (107 entries) |
-| Catalog↔runtime contract test | `supabase/functions/osint-agent/catalog_contract_test.ts` |
+| Catalog↔runtime contract test | `supabase/tests/osint-agent/catalog_contract_test.ts` |
 
 Four tools are defined in `tools/*.ts` and imported into the registry:
 `tools/dns-virtual.ts` (:51), `tools/peopledatalabs.ts` (:78),

@@ -1,0 +1,303 @@
+// oathnet_test.ts — wire-shape + POOLED-quota + REDACTION proofs for the OathNet v2
+// surface. The redaction tests are integrity-critical: they assert no plaintext
+// credential/cookie/token can survive a trimmer into model context or an artifact.
+import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@^1";
+import {
+  oathnetBreachSearchUrl,
+  oathnetStealerSearchUrl,
+  oathnetVictimsSearchUrl,
+  oathnetVictimManifestUrl,
+  oathnetVictimFileUrl,
+  oathnetSubdomainUrl,
+  oathnetDbnamesUrl,
+  noteOathnetQuota,
+  oathnetQuotaLeft,
+  oathnetExhausted,
+  resetOathnetQuota,
+  stripSecrets,
+  trimStealerItems,
+  trimVictimItems,
+  summarizeManifest,
+  maskSecrets,
+  safeVictimFile,
+  SECRET_REDACTION,
+} from "../../functions/osint-agent/oathnet.ts";
+
+// ---- URL builders -------------------------------------------------------------
+
+Deno.test("breach search: q + limit + dbname[] + filter_id", () => {
+  const u = oathnetBreachSearchUrl("user@example.com", { dbnames: ["linkedin_2012", "canva"], filter_id: "flt_1" });
+  assertStringIncludes(u, "/service/v2/breach/search?");
+  assertStringIncludes(u, "q=user%40example.com");
+  assertStringIncludes(u, "dbname%5B%5D=linkedin_2012");
+  assertStringIncludes(u, "dbname%5B%5D=canva");
+  assertStringIncludes(u, "filter_id=flt_1");
+  assertStringIncludes(u, "limit=50");
+});
+
+Deno.test("stealer search: has_log_id + domain[] repeat", () => {
+  const u = oathnetStealerSearchUrl("user@example.com", { hasLogId: true, domains: ["google.com", "roblox.com"] });
+  assertStringIncludes(u, "/service/v2/stealer/search?");
+  assertStringIncludes(u, "has_log_id=true");
+  assertStringIncludes(u, "domain%5B%5D=google.com");
+  assertStringIncludes(u, "domain%5B%5D=roblox.com");
+});
+
+Deno.test("victims search: total_docs_min", () => {
+  const u = oathnetVictimsSearchUrl("user@example.com", { totalDocsMin: 10 });
+  assertStringIncludes(u, "/service/v2/victims/search?");
+  assertStringIncludes(u, "total_docs_min=10");
+});
+
+Deno.test("victim manifest + file + subdomain + dbnames encode path/query safely", () => {
+  assertStringIncludes(oathnetVictimManifestUrl("vic_1/abc"), "/victims/vic_1%2Fabc");
+  const f = oathnetVictimFileUrl("vic 1", "creds passwords");
+  assertStringIncludes(f, "/victims/vic%201/files/creds%20passwords");
+  assertStringIncludes(oathnetSubdomainUrl("example.com"), "/stealer/subdomain?domain=example.com");
+  assertStringIncludes(oathnetDbnamesUrl("link"), "/breach/autocomplete/dbnames?q=link");
+});
+
+// ---- Pooled quota -------------------------------------------------------------
+
+Deno.test("pooled quota: reads _meta.lookups.left_today; exhausted at 0", () => {
+  resetOathnetQuota();
+  assertEquals(oathnetQuotaLeft(), null);
+  assertEquals(oathnetExhausted(), false, "null pool must not read as exhausted");
+  noteOathnetQuota({ data: { items: [] }, _meta: { lookups: { left_today: 9995 } } });
+  assertEquals(oathnetQuotaLeft(), 9995);
+  assertEquals(oathnetExhausted(), false);
+  noteOathnetQuota({ _meta: { lookups: { left_today: 0 } } });
+  assertEquals(oathnetExhausted(), true, "0 remaining must exhaust the pool");
+  // A payload without the field must NOT clobber the last known value.
+  noteOathnetQuota({ data: { items: [] } });
+  assertEquals(oathnetQuotaLeft(), 0);
+  resetOathnetQuota();
+});
+
+Deno.test("pooled quota: reads the per-family field name variants", () => {
+  resetOathnetQuota();
+  // OSINT lookups echo a top-level lookups_left.
+  noteOathnetQuota({ success: true, data: {}, lookups_left: 812 });
+  assertEquals(oathnetQuotaLeft(), 812);
+  // search-session init nests it under data.user.daily_lookups.remaining.
+  noteOathnetQuota({ data: { user: { daily_lookups: { remaining: 550, limit: 1000 } } } });
+  assertEquals(oathnetQuotaLeft(), 550);
+  resetOathnetQuota();
+});
+
+// ---- Redaction: the integrity-critical proofs ---------------------------------
+
+Deno.test("stripSecrets masks secret-keyed fields, keeps identity fields, caps arrays", () => {
+  const out = stripSecrets({
+    username: "victim@gmail.com",
+    password: "SuperSecret123!",
+    auth_token: "eyJhbGciOi...",
+    cookies: "sessionid=abc; csrftoken=def",
+    domain: ["a.com"],
+    big: Array.from({ length: 100 }, (_, i) => i),
+  }) as Record<string, unknown>;
+  assertEquals(out.username, "victim@gmail.com");
+  assertEquals(out.password, SECRET_REDACTION);
+  assertEquals(out.auth_token, SECRET_REDACTION);
+  assertEquals(out.cookies, SECRET_REDACTION);
+  assertEquals((out.big as unknown[]).length, 40, "arrays capped");
+});
+
+Deno.test("trimStealerItems NEVER emits a raw password; exposes credential_present bool", () => {
+  const items = [{
+    id: "doc_1", log_id: "vic_1", url_str: "https://accounts.google.com/signin",
+    domain: ["google.com"], subdomain: ["accounts.google.com"], path: ["/signin"],
+    username: "user@gmail.com", password: "SecretPass123", email: ["user@gmail.com"],
+    pwned_at: "2024-03-15T10:30:00Z", indexed_at: "2024-03-20T12:00:00Z",
+  }];
+  const trimmed = trimStealerItems(items);
+  const blob = JSON.stringify(trimmed);
+  assert(!blob.includes("SecretPass123"), "raw password must not survive trimming");
+  assertEquals(trimmed[0].credential_present, true);
+  assertEquals(trimmed[0].log_id, "vic_1");
+  assertEquals(trimmed[0].username, "user@gmail.com");
+});
+
+Deno.test("REVEAL policy: trimStealerItems(reveal=true) SURFACES the raw password", () => {
+  const items = [{
+    id: "doc_1", log_id: "vic_1", url_str: "https://accounts.google.com/signin",
+    username: "user@gmail.com", password: "SecretPass123",
+    pwned_at: "2024-03-15T10:30:00Z",
+  }];
+  const revealed = trimStealerItems(items, 25, true);
+  const blob = JSON.stringify(revealed);
+  assert(blob.includes("SecretPass123"), "reveal=true must surface the raw password");
+  assertEquals(revealed[0].password, "SecretPass123");
+  assertEquals(revealed[0].credential_present, true);
+  assertEquals(revealed[0].username, "user@gmail.com");
+});
+
+Deno.test("REVEAL policy: stripSecrets(reveal=true) keeps secret values verbatim", () => {
+  const out = stripSecrets({ username: "u", password: "hunter2", session: "abc.def" }, 40, 0, true) as Record<string, unknown>;
+  assertEquals(out.password, "hunter2");
+  assertEquals(out.session, "abc.def");
+});
+
+Deno.test("REVEAL policy: maskSecrets(reveal=true) returns the raw line unmasked", () => {
+  const raw = "user@example.com:hunter2\npassword: topsecret";
+  assertEquals(maskSecrets(raw, true), raw);
+});
+
+Deno.test("trimVictimItems keeps device metadata, no creds", () => {
+  const items = [{
+    log_id: "vic_2", device_user_str: ["Tyler"], hwids_str: ["HWID-9999"],
+    device_ips: ["73.45.123.89"], device_emails_str: ["progamer@gmail.com"],
+    discord_ids: ["396488966779392318"], total_docs: 54,
+    pwned_at: "2024-03-15T10:30:00Z", indexed_at: "2024-11-24T12:00:00Z",
+    password: "leaked", cookies: "sessionid=x",
+  }];
+  const trimmed = trimVictimItems(items);
+  const blob = JSON.stringify(trimmed);
+  assert(!blob.includes("leaked") && !blob.includes("sessionid=x"), "no creds in victim metadata");
+  assertEquals(trimmed[0].discord_ids, ["396488966779392318"]);
+  assertEquals(trimmed[0].total_docs, 54);
+});
+
+// ---------------------------------------------------------------------------
+// VICTIM-REVEAL PARITY. trimStealerItems has taken a `reveal` argument since the
+// account-level reveal policy landed; trimVictimItems never did. It had no such
+// parameter at all, so its hard-coded keep-list dropped every credential the
+// victim row carried and REVEAL_BREACH_DATA was structurally incapable of
+// affecting that path — the flag could be ON, the provider could return the
+// password, and it was discarded inside our own trimmer before anything
+// downstream saw it. The two functions sit twenty lines apart and only one of
+// them honoured the policy; that asymmetry WAS the bug.
+// ---------------------------------------------------------------------------
+
+Deno.test("REVEAL policy: trimVictimItems(reveal=true) SURFACES secret-bearing victim fields", () => {
+  const items = [{
+    log_id: "vic_2", device_user_str: ["Tyler"], device_ips: ["73.45.123.89"],
+    total_docs: 54, password: "leaked", cookies: "sessionid=x",
+  }];
+  const revealed = trimVictimItems(items, 25, true);
+  assert(JSON.stringify(revealed).includes("leaked"), "reveal=true must surface raw victim credentials");
+  assertEquals(revealed[0].password, "leaked");
+  assertEquals(revealed[0].cookies, "sessionid=x");
+  // The metadata keep-list is unaffected by revealing.
+  assertEquals(revealed[0].log_id, "vic_2");
+  assertEquals(revealed[0].total_docs, 54);
+});
+
+Deno.test("REVEAL policy: default stays masked — reveal is OPT-IN, never implicit", () => {
+  // Guards the inverse mistake. Omitting the argument, and passing false
+  // explicitly, must both behave exactly as before this change.
+  const items = [{ log_id: "vic_3", total_docs: 1, password: "leaked", cookies: "sessionid=x" }];
+  for (const trimmed of [trimVictimItems(items), trimVictimItems(items, 25, false)]) {
+    const blob = JSON.stringify(trimmed);
+    assert(!blob.includes("leaked"), "default must not surface credentials");
+    assert(!blob.includes("sessionid=x"), "default must not surface cookies");
+    assertEquals(trimmed[0].log_id, "vic_3");
+  }
+});
+
+Deno.test("REVEAL parity: the victim and stealer trimmers agree on the policy contract", () => {
+  // The contract, not the keep-lists: both take a reveal flag, both mask by
+  // default, and both surface credentials when it is set. Pinned so a future
+  // refactor cannot silently drop the argument from one of them again.
+  const row = { log_id: "L", total_docs: 1, password: "leaked" };
+  for (const [name, fn] of [
+    ["trimVictimItems", trimVictimItems],
+    ["trimStealerItems", trimStealerItems],
+  ] as const) {
+    // Asserted BEHAVIOURALLY, not by arity: Function.length counts only the
+    // parameters before the first default, so both trimmers report 1 and an
+    // arity check would be vacuous.
+    assert(!JSON.stringify(fn([row], 25, false)).includes("leaked"), `${name} must mask by default`);
+    assert(JSON.stringify(fn([row], 25, true)).includes("leaked"), `${name} must reveal when asked`);
+  }
+});
+
+Deno.test("the victim call site threads REVEAL_BREACH_DATA, not a bare call", () => {
+  // Source-level, because the defect was at the CALL SITE as much as in the
+  // function: `trimVictimItems(items)` with no third argument silently took the
+  // masked default while the sibling line two hundred above passed the policy.
+  const src = Deno.readTextFileSync(new URL("../../functions/osint-agent/tool-registry.ts", import.meta.url));
+  assert(
+    /trimVictimItems\(items,\s*25,\s*REVEAL_BREACH_DATA\)/.test(src),
+    "tool-registry.ts must pass REVEAL_BREACH_DATA into trimVictimItems",
+  );
+  assert(
+    !/trimVictimItems\(items\)/.test(src),
+    "a bare trimVictimItems(items) call has come back — it ignores the reveal policy",
+  );
+});
+
+Deno.test("summarizeManifest keeps tree structure only, no file contents", () => {
+  const m = {
+    log_id: "vic_2", log_name: "xX_DragonSlayer_Xx",
+    victim_tree: { id: "root", name: "StealerLog", type: "directory", children: [
+      { id: "creds", name: "passwords.txt", type: "file", size_bytes: 4521, content: "u:p" },
+    ] },
+  };
+  const s = summarizeManifest(m);
+  const blob = JSON.stringify(s);
+  assert(!blob.includes("u:p"), "manifest summary must not carry file content");
+  assertEquals(s.log_id, "vic_2");
+  assertStringIncludes(blob, "passwords.txt");
+});
+
+Deno.test("maskSecrets masks combolists + key:value secrets, keeps identity", () => {
+  const raw = [
+    "https://accounts.google.com/signin:user@gmail.com:HunterPass99",
+    "user@gmail.com:MyPassw0rd",
+    "password: TopSecret1",
+    "cookie=sessionid=abc123def",
+    "just a normal note line",
+  ].join("\n");
+  const masked = maskSecrets(raw);
+  assert(!masked.includes("HunterPass99"), "combolist trailing password masked");
+  assert(!masked.includes("MyPassw0rd"), "user:pass password masked");
+  assert(!masked.includes("TopSecret1"), "key:value secret masked");
+  assert(!masked.includes("abc123def"), "cookie value masked");
+  assertStringIncludes(masked, "user@gmail.com", "identity pivot kept");
+  assertStringIncludes(masked, "just a normal note line", "non-secret line untouched");
+});
+
+Deno.test("safeVictimFile returns masked preview + metadata, never raw creds", () => {
+  const text = "url:user@x.com:RawPassword1\napi_key=sk-live-9999\nfootprint line\n";
+  const r = safeVictimFile({ logId: "vic_1", fileId: "creds", text, sha256: "deadbeef" });
+  const blob = JSON.stringify(r);
+  assert(!blob.includes("RawPassword1"), "no raw password in file result");
+  assert(!blob.includes("sk-live-9999"), "no raw api key in file result");
+  assertEquals(r.sha256, "deadbeef");
+  assertEquals(r.line_count, 4);
+  assert(typeof r.redacted_preview === "string");
+});
+
+Deno.test("victim GUIDANCE tracks the reveal policy, not just the payload", () => {
+  // Bugbot's catch on #442, and it is the writer-side half of the same bug.
+  // trimVictimItems can now hand back raw credentials, but the tool's `note` and
+  // `description` still told the model "No raw credentials" and never asked it to
+  // record them. The model would have received the values and written down only
+  // device metadata — which is exactly the symptom the reveal fix exists to end.
+  // The stealer handler already switches its note on the policy; the victim
+  // handler must too, or the guidance contradicts the payload.
+  const src = Deno.readTextFileSync(new URL("../../functions/osint-agent/tool-registry.ts", import.meta.url));
+  const victim = src.slice(src.indexOf("oathnet_victims_search: tool({"));
+  const handler = victim.slice(0, victim.indexOf("oathnet_victim_manifest: tool({"));
+  assert(
+    /note: REVEAL_BREACH_DATA\s*\?/.test(handler),
+    "the victim note must switch on REVEAL_BREACH_DATA, as the stealer note does",
+  );
+  assert(
+    /record every concrete (credential )?value found/i.test(handler),
+    "the reveal-ON note must instruct the model to record concrete values",
+  );
+  assert(
+    !/device emails, linked discord_ids, doc counts, dates\. No raw credentials\./.test(handler),
+    "the description still claims 'No raw credentials' unconditionally",
+  );
+  // Bugbot's second catch: with reveal ON the description pointed the model at
+  // oathnet_victim_file labelled "(redacted content)", but that tool passes
+  // reveal: REVEAL_BREACH_DATA into safeVictimFile and returns UNMASKED content.
+  // The pivot line steered the model away from where the credentials actually are.
+  assert(
+    /UNMASKED file content/.test(handler),
+    "the reveal-ON description must not describe oathnet_victim_file as redacted",
+  );
+});

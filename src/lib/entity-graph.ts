@@ -1,6 +1,9 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import {
   buildIdentityClusters,
+  coRecordLinks,
+  CO_RECORD_LINKAGE_ENABLED,
+  isNegativeResultArtifact,
   groupForKind,
   normalizeHandle,
   GROUP_ORDER,
@@ -41,7 +44,13 @@ import { selectorKey } from "@/lib/selector-group";
 
 export const SEED_ID = "__seed__";
 
-export type EdgeType = "identity" | "shared-infra" | "seed-discovery";
+/**
+ * `co-record`: one record's metadata NAMES the other entity's selector in a
+ * declared linking field (see `coRecordLinks` in intel.ts) — e.g. a breach row's
+ * `email_associated`. It groups; it does not confirm, and is drawn as its own
+ * class so it is never mistaken for an identity proof.
+ */
+export type EdgeType = "identity" | "co-record" | "shared-infra" | "seed-discovery";
 
 export interface GraphNode {
   id: string;
@@ -83,7 +92,7 @@ export interface EntityGraph {
   stats: {
     nodeCount: number; // excludes the synthetic seed
     edgeCount: number;
-    realEdgeCount: number; // identity + shared-infra (excludes seed-discovery fallback)
+    realEdgeCount: number; // identity + co-record + shared-infra (excludes seed-discovery fallback)
     clusterCount: number;
     bridgeCount: number;
     isolatedCount: number; // nodes only tied to the seed by the discovery fallback
@@ -197,7 +206,10 @@ const CX = 500;
 const CY = 360;
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
-const EDGE_PRIORITY: Record<EdgeType, number> = { identity: 3, "shared-infra": 2, "seed-discovery": 1 };
+const EDGE_PRIORITY: Record<EdgeType, number> = { identity: 4, "co-record": 3, "shared-infra": 2, "seed-discovery": 1 };
+
+/** Edge strength for a CO_RECORD link — below a shared email/phone (0.7), above infra. */
+const CO_RECORD_STRENGTH = 0.5;
 
 /**
  * Build the deterministic entity-connection graph for a case.
@@ -215,7 +227,10 @@ export function buildEntityGraph(
    *  its cluster membership and its identity edges, matching every other
    *  authority surface. */
   reviews?: Record<string, ReviewAdjustment>,
+  /** `coRecordLinkage: false` restores the pre-CO_RECORD graph exactly. */
+  opts?: { coRecordLinkage?: boolean },
 ): EntityGraph {
+  const coRecordOn = opts?.coRecordLinkage ?? CO_RECORD_LINKAGE_ENABLED;
   // Stable ordering: everything downstream (selector heroes, layout angles)
   // derives from this sort, so the same case always produces the same frame.
   const sorted = [...artifacts].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -224,7 +239,7 @@ export function buildEntityGraph(
   // Cluster from the SORTED set so cluster ids / order / bridge flags are
   // deterministic w.r.t. our declared ordering (the input array order is not
   // guaranteed stable across loads). Same artifacts, read-only — no logic change.
-  const clusterReport = buildIdentityClusters(sorted, seedValue, reviews);
+  const clusterReport = buildIdentityClusters(sorted, seedValue, reviews, { coRecordLinkage: coRecordOn });
   const clusterOf = new Map<string, string>();
   for (const c of clusterReport.clusters) {
     for (const a of c.artifacts) clusterOf.set(a.id, c.id);
@@ -357,6 +372,23 @@ export function buildEntityGraph(
         reason = `Shares ${bucket.kind} ${bucket.raw}`;
       }
       upsertEdge(from, id, type, reason, SELECTOR_STRENGTH[bucket.kind]);
+    }
+  }
+
+  // CO_RECORD edges. Both ends must clear the SAME gate the selector index uses
+  // (`isConflict`: analyst rejection, active quarantine / collision, breach and
+  // conflict rows), so a quarantined or rejected row is never an endpoint. A
+  // zero-hit lookup observed nothing and names nothing.
+  if (coRecordOn) {
+    const eligible = sorted.filter((a) => !isConflict(a, reviews?.[a.id]) && !isNegativeResultArtifact(a));
+    for (const link of coRecordLinks(eligible)) {
+      upsertEdge(
+        link.sourceId,
+        link.targetId,
+        "co-record",
+        `CO_RECORD: ${link.field} (${link.sourceId} -> ${link.targetKind.toLowerCase()} ${link.targetValue}) — named in the same record; groups, does not confirm`,
+        CO_RECORD_STRENGTH,
+      );
     }
   }
 
