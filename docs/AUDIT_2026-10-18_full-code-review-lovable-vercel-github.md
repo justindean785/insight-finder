@@ -11,9 +11,9 @@
 
 Every test gate was re-run from a clean `npm ci`. Five parallel review agents read the code. I then re-checked their headline claims against code and production data, and the confidence labels below come from that second check, not from the agents alone.
 
-**Verdict: deploy pipeline healthy, product at risk.**
+**Verdict: deploy channels in sync, release instruments and evidence authority at risk.** (Reworded after an independent re-check: "healthy" overstated it. Source parity and the production frontend are confirmed, but mirror CI and the `verify:deploy` gate have real defects (F20, F21), and deployed bytes remain unproven.)
 
-**Deploy pipeline.** All channels are in sync:
+**Deploy channels.** All are in sync:
 - Live `osint-agent` = `cabfeb9` = `deploy/live` = the newest functional commit on `main`.
 - Vercel production = `719b057` = the tip of `main`.
 - The mirror tree equals canonical byte-for-byte.
@@ -115,12 +115,14 @@ Corpus totals: 322 threads · 16,764 artifacts · 25 `kind='finding'` · 20,480 
 - 5 threads are `active` with no run marker. These are blank drafts from September, and leaving them alone is correct per I-1.
 
 **Tool failures, last 7 days** (`outcome='failed'`):
-- **OathNet: 7 of 7 calls failed with HTTP 401 on 10-18.** It had 8 successful calls on 10-15. JD is working the cause out with OathNet's owner (2026-10-18).
+- **OathNet on 10-18: 7 calls failed with HTTP 401, and 1 was skipped.** It had 8 successful calls on 10-15. JD is working the cause out with OathNet's owner (2026-10-18).
 - `github_code_search` is intermittent, not dead: 9 ok and 3 failed (401) in 30 days, last ok 10-13.
-- **DeepFind (`deepfind_*`, 4 tools): effectively down.** 32 failed (403) and 2 ok in 30 days; last ok 10-10.
+- **DeepFind: effectively down.** Over 30 days, 32 calls failed with 403 across **8** `deepfind_*` tool names, against 2 ok; the last ok was 10-10. **4** tool names failed in the 7-day window.
 - `nominatim_geocode`: 403 since 09-23, its last success (upstream usage policy, which typically wants an identifying User-Agent).
 - `fofa_search`: 3 of 3 failed with a plan error.
-- `reddit_user`: 403, the datacenter-IP block.
+- `reddit_user`: 403, the datacenter-IP block. There is no `ok` outcome anywhere in `tool_usage_log`, which starts 2026-06-08.
+- **`ok:true` is not success.** 129 rows in 7 days have `ok=true` with `outcome='skipped'` (some at status 402). Read `outcome`, never the boolean alone.
+- **Spend concentration:** `opsis_search` took 72.3% of 7-day logged tool charges. That is concentration, not proof of bad value; its reviewed yield can't be measured without call-to-artifact lineage.
 - `jina_reader_scrape`: 13 failures, mostly 403s from target sites.
 - Schema rejections still waste steps after #747/#790 shipped:
   - `memory_save` sent `{memories:[…]}` or `{memory_items:"…"}` (the normaliser doesn't treat either as `entries`).
@@ -186,13 +188,13 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 **F4 — The model can write authority directly.** *Still open (#741 unmerged) plus new angles.* **Confirmed** in code; **0 production rows** with model-written `reviewed:true`.
 - (a) `record_artifacts` spreads model metadata unchanged (`tool-registry.ts:5713`, `:6183`): `reviewed:true` renders as Attested, and `false_positive:true` excludes the row.
 - (b) The free-text source `"court records and news"` persisted a `name` at confidence 90 and `verified`, with no tool having run (probed). Only breach has a "did this tool run" check; court and government classes do not.
-- (c) `record_evidence` (`:6315-6340`) writes the model's `classification` and uncapped `confidence` into `evidence_log`. Separately, `meta.classification` overrides the derived one (`:6001-6006`). `evidence-export` prints the result as "HARD · 95%".
+- (c) `record_evidence` (`:6315-6340`) writes the model's `classification` and its own `confidence` into `evidence_log`. The confidence is model-chosen but schema-bounded to 0–100, not numerically uncapped. The defect is that nothing validates the classification or authority. Separately, `meta.classification` overrides the derived one (`:6001-6006`). `evidence-export` prints the result as "HARD · 95%".
 - (d) `isVerifiedSelfAdmission` (`lib/cluster.ts:280`) accepts a model-written `source_quote`/`ownership_proof` and promotes to 90. That feeds the identity-memory ceilings, which carry across cases.
 - Tool output reaches the model without untrusted-content framing, so a scraped page can trigger any of these.
 - Fix: rebase #741 and extend its strip list to the (d) keys. Derive custody classification server-side. Let a source class count only when it maps to a tool slug that ran in this thread or to a URL host. **Evidence-integrity sign-off required.**
 
 **F5 — The model can re-record a quarantined value under a new source label and drop the quarantine.** *New.* Code path **Confirmed**; whether runs do it is **Likely**.
-- Quarantine is inherited only by `name`/`person`/`source_person` rows (`tool-registry.ts:708`).
+- The quarantine-inheritance loader loads only person-name parent rows (`name`/`person`/`source_person`; `tool-registry.ts:708`, `record-name-quarantine.ts`). The inherited taint can still reach other output kinds that contain those names. The precise gap is a **non-name** quarantined parent (email, username, profile): it is never loaded, so re-recording it under another source drops the taint.
 - The dedup key includes `source` (`artifact-hygiene.ts:55-59`).
 - So a tainted email, username or profile that the model `record_artifacts` again under another label becomes a second, full-authority row. Since #581, this is the main way taint can be lost.
 - Fix: inherit for any kind that has an active `subject_unlinked` row for the same canonical value.
@@ -200,7 +202,8 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 **F6 — The Breach Exposure table in the on-screen report ignores quarantine and reviews.** *New.* **Confirmed**.
 - `CaseReport.tsx:1006` calls `buildBreachExposure(artifacts)`, which takes no reviews and applies no `forSubject`, unlike every sibling builder in the same file (`:44-48`, `:82`).
 - Rows from quarantined namesakes, analyst-dismissed rows, and rows derived from rejected ones render as the subject's breaches, with revealable values.
-- Fix: filter on `forSubject(reviews, a)` plus the rejected-derivation set. Frontend-only.
+- Production (SELECT only): of 1,883 `breach_exposure` rows, 70 are under active quarantine across 38 threads and 65 carry a `dismissed`/`wrong` review. The two groups can overlap, so don't add them. That measures affected data, not what was rendered.
+- Fix: filter on `forSubject(reviews, a)` plus the rejected-derivation set. Frontend-only. **Built as #794**, which also aligns the breach-corpora note and Key risks. Remaining dependency: frontend dedupe (#593). In mixed duplicate groups it can still hide a clean twin or miss a review on a non-surviving id, with 0 such groups in production (see #794).
 
 **F7 — Concurrent runs on one warm isolate reset each other's per-run state.** *New.* **Likely**.
 - `index.ts:161-182` resets the module globals `guard`, `triageState`, `routingGuard`, `degradedTools` and `deadHosts` on every request, and the code elsewhere assumes concurrent runs can share an isolate.
@@ -221,13 +224,13 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 - `health-handler.ts:380` makes a real `chat/completions` call (`max_tokens:4`) to Z.AI on every request, with no cache.
 - Lines 657-765 recover up to 20 threads (with writes), run the rejected-cluster sweep, and do a 7-day `tool_usage_log` read with `limit(5000)`.
 - The frontend also calls it on thread open and **every 30 s during a run** (`ChatWindow.tsx:2571-2599`).
-- I hit it 3 times during this audit without auth.
+- I hit it several times during this audit without auth. **Each probe was a paid GLM call plus recovery and sweep writes, so `/health` is not a passive read.** Future audits should rely on the deploy record and source, and label any health probe explicitly.
 - Fix: cache the GLM probe for about 60 s; run the sweeps only when a secret header is present; return just `{ok, build}` to anonymous callers. Lovable's 09-24 bounded-query change (reverted) is a starting point.
 
 **F10 — The sidebar marks dead runs "finished", so they show as Complete with no report.** *New.* Path **Confirmed**; 0 instances in production now.
 - `ThreadSidebar.tsx:173-182` writes `{status:'finished'}` with no `recovery_reason` once `updated_at` is more than 3 minutes old. `deriveRunState` (`case-snapshot.ts:114-115`) turns that into **completed**, which breaks I-2. Server recovery only selects `status='active'` rows, so this write also stops the recovered report from being written.
 - pg_cron is not live, so server recovery happens only when a run starts or `/health` is called.
-- Fix: delete the write. The UI already derives Interrupted from a dead heartbeat.
+- Fix: delete the write. The UI already derives Interrupted from a dead heartbeat. **Built as #795.** That PR removes the browser write that prevented recovery. It does not schedule recovery or guarantee it happens promptly, because with no pg_cron, recovery runs only when some run starts or `/health` is called.
 
 **F11 — Cross-tenant write paths in RLS.** *New.* **Confirmed** (live `pg_policies`); 0 exploited rows; requires knowing the victim's UUIDs.
 - The INSERT/UPDATE `WITH CHECK` on `messages`, `artifacts`, `artifact_reviews` and `investigator_notes` is only `auth.uid() = user_id`, with no check that the parent thread or artifact belongs to the caller.
@@ -252,7 +255,8 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 - `rerunInvestigation` (`:2341-2346`) checks only the local stream status.
 - With the lease disabled, a second tab or a stale Retry card starts an overlapping paid run.
 - Also, `onRunPivot` (`:2197/2203`) toasts "sent" and then the send is silently dropped.
-- Fix: pass `serverRunActiveRef.current` on every path.
+- Production: 4 overlapping invocation pairs on the same thread in the last 7 days.
+- Fix: pass `serverRunActiveRef.current` on every path. **Built as #796** for Retry and Re-run. It blocks only when the client already knows a server run is live. It is **not** atomic server-side serialization: two tabs can still race while the lease is disabled.
 
 **F14 — OPSEC: chat markdown loads remote images automatically.** *New.* **Likely**.
 - `chatMarkdownComponents` (`ChatWindow.tsx:974-1004`) has no `img` override, and the CSP allows `img-src https:`.
@@ -278,6 +282,8 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 - `append_evidence` can be executed by `authenticated`.
 - `verify_evidence_chain` checks hash linkage only and never recomputes `content_hash` from the row.
 - There is no immutability trigger on `evidence_log`.
+- **Coverage measured:** 15,761 `evidence_log` rows, **0** with a linked `artifact_id`, **0** with an `archive_sha256`, and no `artifact_tool_lineage` table. A custody-entry count is not a count of preserved sources or of artifacts joined to the exact calls that produced them.
+- Cryptographic chaining proves linkage of stored hashes. It does not prove a model's claim is true.
 - **Live** storage policies give owners UPDATE and DELETE on `evidence-archive` (re-created by mirror-only migration `20260624173943`, which reverses the 06-13 append-only drop). The bucket currently holds 0 objects.
 
 **F19 — The deprecated Lovable frontend is still public.** *New.* **Confirmed**.
@@ -314,10 +320,10 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
 
 **F23 — Credentials.** *Operational.* **Confirmed**.
 - OathNet (`oathnet_lookup`, `oathnet_subdomains`) has returned 401 on every call today (new). **JD is resolving it with OathNet's owner (2026-10-18); no code change is planned.**
-- **DeepFind's 4 tools return 403**: 32 failed and 2 ok in 30 days, last ok 10-10. Check the key or plan.
+- **DeepFind returns 403.** Over 30 days, 32 calls failed across 8 `deepfind_*` tool names, against 2 ok (last ok 10-10). 4 names failed in the 7-day window. Check the key or plan.
 - `nominatim_geocode` has returned 403 since 09-23.
 - `github_code_search` is intermittent (9 ok and 3 failed in 30 days), not dead as 09-13 reported.
-- `reddit_user` is blocked by datacenter IPs and has never worked; consider disabling it.
+- `reddit_user` is blocked by datacenter IPs. It has no `ok` outcome anywhere in `tool_usage_log`, which starts 2026-06-08; consider disabling it.
 - `fofa_search` fails on plan limits.
 
 **F24 — Frontend data correctness.** *New.* Mostly **Confirmed**.
@@ -350,9 +356,24 @@ Severity runs P0 to P3. Confidence is **Confirmed** (exact path traced and/or re
   - `cancel-in-progress: true` on `main` cancelled 43 of 100 October `main` runs, including the runs for every deployed marker commit (`cabfeb9`, `66cf1c3`, …). No functional change escaped e2e (each burst ended in a green run), but the deployed SHA itself never has a completed run.
   - Each `main` push costs about 14 billed minutes, including docs, stamp and ledger pushes (roughly 42 minutes per edge release). Fix: `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` and `paths-ignore` for docs and ledger.
 - **F30 — CLAUDE.md drift.** The live-build line, the baselines (two different edge figures), the "unmerged #758/#756" line, "3 functions share `_shared`", and "marker_offset_mismatch BEFORE the deploy is expected" (F20) are stale or wrong. This report doesn't edit CLAUDE.md (it rides separately, per the small-PR rule).
+- **F31 — A Deno run at the repo root rewrites the npm install.** *New.* **Confirmed** in this sandbox.
+  - The root `deno.json` sets `nodeModulesDir: "auto"`. A Deno invocation that resolved it during this audit replaced `node_modules/react` and `react-dom` with symlinks into `node_modules/.deno/`, and rewrote the root `deno.lock`. The lockfile change was reverted, not committed.
+  - Vitest still passed on that tree, but it is not a clean npm install, which is the duplicate-React hazard CLAUDE.md warns about.
+  - Locally, run edge tests only through `npm run test:edge` (its `--config` points at the function's `deno.json`, which sets `nodeModulesDir: "none"`), and re-run `npm ci` after any other Deno use. All PR validation in §8 was re-run on a clean `rm -rf node_modules && npm ci`.
+- **F32 — Context size may exceed the prompt ceiling.** *Unverified lead.* `orchestrator_step_metrics.context_chars` peaked at 275,719 in the last 7 days, above the 220,000-char hard ceiling that `/health` reports. How that column relates to the SDK's message and system composition and to the live budget flag is not reconciled. The `prompt_size_step` term breakdown is logged only to the console, so the database can't settle it. Treat it as a measurement-reconciliation lead, not proof that the ceiling failed.
 
 ### Disproven / closed this pass
 
+- **Wording corrections after an independent re-check (2026-10-18, verified against production):**
+  - `record_evidence` confidence is schema-bounded to 0–100, not "uncapped".
+  - OathNet on 10-18 was 7 failed plus 1 skipped.
+  - DeepFind's 32 failures span 8 tool names (4 in the 7-day window).
+  - For Reddit, "never worked" means "no ok since the log began on 2026-06-08".
+  - `ok:true` can mean skipped.
+  - F5's gap is the non-name parent.
+  - The verdict line now reads "in sync" rather than "healthy".
+  - `/health` probes have effects.
+  - Merging this docs-only PR still runs CI and triggers an automatic Vercel production rebuild of unchanged runtime code.
 - **`thread_metrics` view leaks thread ids across tenants:** disproven. Live, it is `security_invoker=true`, and the anon key gets `[]`. The migration that creates it is still missing from both repos (F22).
 - **GLM is down:** disproven. The health check timeout at 09:12Z cleared on re-probe, and live runs on 10-18 succeeded.
 - **Mirror drift:** none. Tree hashes are identical and `diff -rq` is empty. Lovable's 09-24 runtime edits were reverted the same day (mirror #90).
@@ -376,7 +397,10 @@ These need JD's authorization. Nothing here auto-merges or auto-deploys, and a m
 1. **F8: money.** Recharge or auto-recharge Z.AI, and decide the Anthropic budget before the **10-23** credit expiry. **OathNet:** JD is resolving it with OathNet's owner (2026-10-18). Once fixed, confirm with a `tool_usage_log` query that `oathnet_lookup` returns `ok` again. **DeepFind:** check the key or plan (F23).
 2. *(F1 breach reveal: settled by JD, leave as is, no action.)*
 3. **F3 + F2: close the reopened quarantine boundaries.** Two small edge PRs, each with tests and a kill switch: the dispatch selector extractor (F3), then the Serus keyword name check (F2). Ship them one at a time through the normal stamp → sync → gate → deploy → `/health` cycle.
-4. **F6 + F10 + F13: frontend integrity fixes. Built 2026-10-18 as draft PRs, awaiting JD:** F6 → **#794**, F10 → **#795**, F13 → **#796**. Each is frontend-only, test-first, and was e2e-checked by hand (52/2). They touch disjoint files and merge cleanly with each other.
+4. **F6 + F10 + F13: frontend integrity fixes. Built 2026-10-18 as draft PRs, awaiting JD:** F6 → **#794**, F10 → **#795**, F13 → **#796**.
+   - Each is frontend-only and test-first, with CI green on its current head.
+   - On a clean `npm ci`, a local integration of all three on `main` passed: vitest 2634/1/209, typecheck, lint, build and e2e 52/2.
+   - Suggested merge order: #794, then #795, then #796, reviewing the checks after each.
 5. **F4: rebase #741 and get sign-off**, extending it to `source_quote`/`ownership_proof` and server-derived custody classification. Then F5's quarantine inheritance.
 6. **F9: gate `/health`.** Cache the GLM probe, and run sweeps only with a secret header.
 7. **F7 + F12b/e: per-request run state; the Stop race; billing gaps.**
@@ -384,7 +408,7 @@ These need JD's authorization. Nothing here auto-merges or auto-deploys, and a m
 9. **Release tooling:** fix `verify:deploy` (F20); cut down or delete mirror CI (F21); `cancel-in-progress` and `paths-ignore` (F29).
 10. **Queue hygiene:** close #701 (recommended since 10-14); check #764 against #765/#769 and close if superseded; rebase or close #516; unpublish the Lovable frontend (F19); delete the export bucket (F28); refresh CLAUDE.md's dated lines (F30).
 
-Standing constraints: no auto-merge and no auto-deploy; JD authorizes each merge, Lovable deploy, secret change and closure. `REVEAL_BREACH_DATA` stays ON. `RUN_LEASE_DISABLED` stays `true`. Any evidence-ranking, cap or custody change needs explicit sign-off.
+Standing constraints: no auto-merge and no auto-deploy; JD authorizes each merge, Lovable deploy, secret change and closure. `REVEAL_BREACH_DATA` stays ON. `RUN_LEASE_DISABLED` stays `true`. Any evidence-ranking, cap or custody change needs explicit sign-off. An analyst review is analyst authority, not an independent source: it must never be counted as corroboration or used to raise confidence.
 
 ## 9 · Gaps in this audit
 
