@@ -51,34 +51,34 @@ All colors MUST be HSL.
        register used 0% lightness with a warm surface ramp above it; the cast
        is now cold, which is what makes cream anywhere on screen read as a bug
        rather than as a choice. */
-    --background: 0 0% 4%;
-    --foreground: 0 0% 93%;       /* #EDF1F8 — cold platinum ink */
+    --background: 0 0% 0%;        /* ground — true black, so a pane reads as an object (DESIGN.md) */
+    --foreground: 210 38% 95%;    /* #EDF2F7 — ink 1, cold platinum */
 
-    --card: 0 0% 5%;
-    --popover: 0 0% 8%;
-    --card-foreground: 0 0% 93%;
-    --popover-foreground: 0 0% 93%;
+    --card: 221 55% 7%;           /* surface-1 #080E1B */
+    --popover: 220 50% 9%;        /* surface-2 #0C1424 */
+    --card-foreground: 210 38% 95%;
+    --popover-foreground: 210 38% 95%;
 
     /* Primary — near-white CTAs / active state, cooled into the ink family.
        Deliberately NOT the signal blue: a full-bleed saturated button is the
        cheapest-looking object on a dark UI, and the blue is worth more spent
        on state than on a rectangle. Rule 3. */
-    --primary: 0 0% 93%;
-    --primary-foreground: 0 0% 4%;
+    --primary: 210 38% 95%;
+    --primary-foreground: 0 0% 0%;
     /* The glow IS blue. Halos, the scan sweep, live dots — the light the room
        is lit by. Was cream, which is why nothing ever looked electric. */
-    --primary-glow: 183 49% 58%;
+    --primary-glow: 245 92% 66%;
 
-    --secondary: 0 0% 12%;
-    --secondary-foreground: 0 0% 93%;
+    --secondary: 221 45% 14%;     /* surface-3 #131D32 */
+    --secondary-foreground: 210 38% 95%;
 
-    --muted: 0 0% 7%;
+    --muted: 221 55% 7%;
     /* Lightness RAISED from 79% to 81% and re-hued cold. ~40 call sites render
        this at /0.7 and /0.6, and those composites only clear WCAG AA because
        the base is this light — the old file warned never to tidy it downward.
        Moving to a blue ground lowered the composite ratio slightly, so it went
        UP, not down. At /0.6 on --surface-2 it measures 4.8:1. Do not lower it. */
-    --muted-foreground: 0 0% 80%;
+    --muted-foreground: 214 22% 80%;   /* ink 2 — cold, same lightness (AA-measured) */
 
     /* ── Ink ramp, levels 3 and 4 ──────────────────────────────────────────
        The system shipped with exactly TWO named ink levels, and the product
@@ -91,16 +91,16 @@ All colors MUST be HSL.
        neither is a trap: ink 3 reads 7.54 on black and 6.92 on surface-1;
        ink 4 reads 5.02 and 4.61. A token that quietly fails AA is worse than
        no token, because someone will reach for it in good faith. */
-    --subtle-foreground: 0 0% 54%;   /* ink 3 — tertiary: source labels, timestamps */
-    --faint-foreground: 0 0% 51%;    /* ink 4 — reference: counts, units, inert chrome */
+    --subtle-foreground: 215 16% 62%;   /* ink 3 #909CAD — tertiary: source labels, timestamps */
+    --faint-foreground: 214 12% 51%;    /* ink 4 — reference: counts, units, inert chrome (51%, AA on surface-3) */
 
     /* Accent — an ELEVATED SLATE, not a hue.
        This is the shadcn menu/hover ground (`hover:bg-accent`), used only by
        the ui/ primitives. It used to be near-white, so every dropdown row and
        ghost-button hover flashed a bright cream rectangle. A quiet lifted
        plane is both calmer and more expensive, and it keeps the blue scarce. */
-    --accent: 0 0% 11%;
-    --accent-foreground: 0 0% 93%;
+    --accent: 221 45% 14%;
+    --accent-foreground: 210 38% 95%;
 
     /* ── The one alarm ─────────────────────────────────────────────────────
        ONE crimson hue (352°) at TWO intensities, because the two roles have
@@ -131,7 +131,7 @@ All colors MUST be HSL.
        cream reads muddy beside platinum, and a slate-blue "info" is
        indistinguishable from the new signal blue. Each is now separated from
        its neighbours by at least 30° of hue. */
-    --info: 0 0% 64%;             /* system / agent state — cyan */
+    --info: 245 92% 66%;          /* system / agent state — the indigo signal */
     --success: 152 62% 46%;          /* emerald — corroborated */
     --warning: 38 92% 58%;           /* amber — needs review */
     --danger: 358 75% 59%;           /* crimson — contested */
@@ -209,21 +209,21 @@ All colors MUST be HSL.
        reads recessed if it is not lighter than what surrounds it. The recess
        comes from the inner shadow and the film above it.
        Strictly monotonic in lightness: 4 → 6 → 8.5 → 12.5 → 17.5. */
-    --surface-0: 0 0% 4%;
-    --surface-1: 0 0% 5%;
-    --surface-2: 0 0% 7.5%;
-    --surface-3: 0 0% 10%;   /* selected / hover */
-    --surface-4: 0 0% 14%;
+    --surface-0: 0 0% 0%;
+    --surface-1: 221 55% 7%;    /* #080E1B */
+    --surface-2: 220 50% 9%;    /* #0C1424 */
+    --surface-3: 221 45% 14%;   /* #131D32 — selected / hover */
+    --surface-4: 220 41% 19%;   /* #1C2943 */
 
     /* Border ramp, strictly monotonic: 11 → 18 → 29. */
-    --border: 0 0% 15%;
-    --border-subtle: 0 0% 11%;
-    --border-strong: 0 0% 20%;
-    --input: 0 0% 8%;
+    --border: 219 33% 20%;        /* hairline #222E44 */
+    --border-subtle: 221 37% 13%; /* hairline-subtle #151D2E */
+    --border-strong: 217 32% 31%; /* hairline-strong #364968 */
+    --input: 220 50% 9%;
     /* Focus is the signal blue at full strength. A focus ring is the single
        most "is this a real product" detail on a dark UI, and it was a warm
        grey that disappeared into every border it landed next to. */
-    --ring: 183 49% 58%;
+    --ring: 245 92% 66%;
 
     /* ── Film ──────────────────────────────────────────────────────────────
        THE single most load-bearing token in this file.
@@ -256,8 +256,8 @@ All colors MUST be HSL.
 
        Spend it as a rim, an edge, a bloom or an active state. Never as a
        large fill (rule 3). */
-    --brand: 183 49% 58%;
-    --brand-deep: 183 45% 42%;
+    --brand: 245 92% 66%;
+    --brand-deep: 248 80% 46%;
 
     /* Intel tokens — ~79 var() uses across the app.
        These were BOTH literally `39 26% 88%` — two differently-named tokens
@@ -265,8 +265,8 @@ All colors MUST be HSL.
        rendered as sand. They are now genuinely distinct and named honestly:
        blue is the evidence axis (what a source asserts), violet the inference
        axis (what the system concluded). */
-    --intel-blue: 0 0% 64%;
-    --intel-violet: 0 0% 64%;
+    --intel-blue: 245 92% 66%;    /* evidence axis — Indigo Signal #6859F8 */
+    --intel-violet: 282 89% 72%;  /* inference axis — Inference Violet #C879F6 */
 
     /* ── Entity-kind palette (Graph tab) ───────────────────────────────────
        The documented EXCEPTION to "hue belongs to authority".
@@ -296,10 +296,10 @@ All colors MUST be HSL.
        on the app's primary tab. The analyst is ink; the agent speaks in the
        product's own signal; a tool is machine cyan. */
     --speaker-analyst: 210 60% 93%;
-    --speaker-agent: 0 0% 64%;
-    --speaker-tool: 0 0% 54%;
-    --speaker-system: 0 0% 54%;
-    --speaker-failed: 0 0% 54%;
+    --speaker-agent: 245 92% 66%;   /* the product's own signal */
+    --speaker-tool: 192 70% 56%;    /* machine cyan */
+    --speaker-system: 215 16% 62%;  /* ink 3 */
+    --speaker-failed: 352 78% 48%;  /* destructive — the one speaker allowed to raise its voice */
 
     /* Brain (Global Brain tab) palette — cooled to match the register. */
     --brain-surface-base: 222 42% 5%;
@@ -319,12 +319,12 @@ All colors MUST be HSL.
        therefore holds the same triple as --background, deliberately. */
     --sidebar-background: 0 0% 4%;
     --sidebar-foreground: 214 19% 74%;
-    --sidebar-primary: 183 49% 58%;
+    --sidebar-primary: 245 92% 66%;
     --sidebar-primary-foreground: 222 55% 6%;
     --sidebar-accent: 220 45% 13.5%;
     --sidebar-accent-foreground: 212 40% 95%;
     --sidebar-border: 220 38% 13%;
-    --sidebar-ring: 183 49% 58%;
+    --sidebar-ring: 245 92% 66%;
   }
 }
 
@@ -1951,6 +1951,232 @@ All colors MUST be HSL.
   min-height: 32px;
   padding: 0 14px 8px;
   border-top: 1px solid hsl(var(--film) / 0.05);
+}
+
+/* ── Run timeline (Investigate transcript) ─────────────────────────────────
+   One flat list on a spine, not nine identical boxes. A cycle is a STEP: a
+   phase glyph on the spine, the phase word, the cycle id on the data face, the
+   call count, an outcome word with its icon, the time; beneath it the purpose
+   line and the selectors it touched. Only an EXPANDED step frames its calls.
+   Phase and outcome spend no hue (an outcome is not an authority verdict); the
+   one accent is the indigo rim on the LIVE step. */
+.run-timeline {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 12px;
+  background: hsl(var(--card) / 0.7);
+  box-shadow: inset 0 0 0 1px hsl(var(--film) / 0.06), inset 0 1px 0 hsl(var(--film) / 0.04);
+}
+.run-step {
+  position: relative;
+  border-radius: 10px;
+}
+.run-step--open {
+  background: hsl(var(--film) / 0.025);
+  box-shadow: inset 0 0 0 1px hsl(var(--film) / 0.06);
+}
+.run-step__row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0 10px;
+  width: 100%;
+  min-height: 44px;              /* touch target */
+  padding: 9px 10px 9px 8px;
+  text-align: left;
+  border-radius: 10px;
+  color: hsl(var(--muted-foreground));
+  transition: background-color 150ms ease-out;
+}
+.run-step__row:hover { background: hsl(var(--film) / 0.035); }
+.run-step__row:focus-visible { outline: none; box-shadow: 0 0 0 2px hsl(var(--ring)); }
+/* The spine: a hairline through every node, so the phases read as one run. */
+.run-step__node {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-top: -1px;
+  border-radius: 8px;
+  color: hsl(var(--subtle-foreground));
+  background: hsl(var(--surface-2));
+  box-shadow: inset 0 0 0 1px hsl(var(--film) / 0.08), inset 0 1px 0 hsl(var(--film) / 0.06);
+}
+.run-step + .run-step .run-step__node::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  width: 1px;
+  height: 14px;              /* row padding + gap */
+  background: hsl(var(--border));
+}
+.run-step[data-outcome="completed"] .run-step__node { color: hsl(var(--foreground)); }
+.run-step[data-outcome="running"] .run-step__node {
+  color: hsl(var(--brand));
+  box-shadow: inset 0 0 0 1px hsl(var(--brand) / 0.55), 0 0 14px -2px hsl(var(--brand) / 0.45);
+}
+.run-step__main { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.run-step__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  min-height: 20px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.run-step__phase { font-weight: 600; color: hsl(var(--foreground)); }
+.run-step__cycle {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: hsl(var(--subtle-foreground));
+  background: hsl(var(--film) / 0.05);
+  box-shadow: inset 0 0 0 1px hsl(var(--film) / 0.07);
+}
+.run-step__calls { font-size: 12px; color: hsl(var(--subtle-foreground)); }
+.run-step__time {
+  margin-left: auto;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: hsl(var(--subtle-foreground));
+}
+.run-step__detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 2px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: hsl(var(--muted-foreground));
+}
+.run-step__purpose { color: hsl(var(--muted-foreground)); }
+/* A selector is compared character by character: data face, never truncated. */
+.run-step__selector {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  color: hsl(var(--foreground) / 0.9);
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.run-step__more { font-size: 11px; color: hsl(var(--faint-foreground)); }
+.run-step__bits {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  color: hsl(var(--faint-foreground));
+}
+.run-step__chevron { width: 14px; height: 14px; margin-top: 3px; color: hsl(var(--faint-foreground)); }
+.run-step__reason {
+  padding: 0 10px 8px 44px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: hsl(var(--subtle-foreground));
+}
+.run-step__calls-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 8px 10px;
+}
+@media (min-width: 640px) {
+  .run-step__calls-list { padding-left: 44px; }
+}
+
+/* Outcome chip: a word plus an icon, ink ramp only. */
+.outcome-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  color: hsl(var(--subtle-foreground));
+  background: hsl(var(--film) / 0.04);
+  box-shadow: inset 0 0 0 1px hsl(var(--film) / 0.07);
+}
+.outcome-chip--completed { color: hsl(var(--foreground) / 0.88); }
+.outcome-chip--running { color: hsl(var(--brand)); box-shadow: inset 0 0 0 1px hsl(var(--brand) / 0.4); }
+.outcome-chip--failed { color: hsl(var(--destructive)); box-shadow: inset 0 0 0 1px hsl(var(--destructive) / 0.4); }
+.outcome-chip--skipped, .outcome-chip--cached, .outcome-chip--partial { color: hsl(var(--subtle-foreground)); }
+
+/* Run flow rail: the run at a glance, one chip per cycle. */
+.run-flow {
+  position: relative;
+  overflow: hidden;
+  padding: 10px 12px 11px;
+  border-radius: 10px;
+  background: hsl(var(--film) / 0.025);
+  box-shadow: inset 0 0 0 1px hsl(var(--film) / 0.06), inset 0 1px 0 hsl(var(--film) / 0.05);
+}
+.run-flow__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+}
+.run-flow__stats { margin-left: auto; font-weight: 400; color: hsl(var(--faint-foreground)); }
+.run-flow__rail {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+.flow-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px 4px 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1;
+  color: hsl(var(--subtle-foreground));
+  background: hsl(var(--surface-2));
+  box-shadow: inset 0 0 0 1px hsl(var(--film) / 0.08);
+  white-space: nowrap;
+}
+.flow-chip__phase { font-weight: 600; color: hsl(var(--muted-foreground)); }
+.flow-chip__cycle { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 10px; }
+.flow-chip__count {
+  min-width: 16px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  text-align: center;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  color: hsl(var(--faint-foreground));
+  background: hsl(var(--film) / 0.06);
+}
+.flow-chip--completed { color: hsl(var(--foreground)); }
+.flow-chip--completed .flow-chip__phase { color: hsl(var(--foreground)); }
+.flow-chip--skipped, .flow-chip--partial { color: hsl(var(--faint-foreground)); }
+.flow-chip--skipped .flow-chip__phase, .flow-chip--partial .flow-chip__phase { color: hsl(var(--subtle-foreground)); }
+.flow-chip--running {
+  color: hsl(var(--brand));
+  box-shadow: inset 0 0 0 1px hsl(var(--brand) / 0.55), 0 0 14px -2px hsl(var(--brand) / 0.4);
+}
+.flow-chip--running .flow-chip__phase { color: hsl(var(--brand)); }
+.flow-chip__link { width: 14px; height: 1px; background: hsl(var(--border-strong)); }
+@media (prefers-reduced-motion: reduce) {
+  .run-step__row { transition: none; }
 }
 
 /* Main chat stage — subtle inset so the column doesn't float in void */

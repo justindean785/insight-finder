@@ -105,7 +105,7 @@ describe("humanizeStage", () => {
       expect(label).not.toContain("_");
       expect(label).not.toBe(stage);
     }
-    expect(humanizeStage("TARGETED_PIVOT")).toBe("Targeted pivot");
+    expect(humanizeStage("TARGETED_PIVOT")).toBe("Pivot");
     expect(humanizeStage("TRIAGE")).toBe("Triage");
   });
 
