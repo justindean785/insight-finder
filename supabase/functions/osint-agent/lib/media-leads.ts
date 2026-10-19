@@ -151,8 +151,14 @@ interface Candidate {
 const isRec = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const cleanText = (v: unknown, max: number): string | undefined => {
   if (typeof v !== "string") return undefined;
-  // deno-lint-ignore no-control-regex
-  const t = v.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+  // Control characters become spaces. Done by char code, not a regex: both Deno's and the
+  // repo's ESLint `no-control-regex` rule reject a control-character class.
+  let spaced = "";
+  for (const ch of v) {
+    const c = ch.charCodeAt(0);
+    spaced += c < 32 || c === 127 ? " " : ch;
+  }
+  const t = spaced.replace(/\s+/g, " ").trim().slice(0, max);
   return t || undefined;
 };
 const finiteNum = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);

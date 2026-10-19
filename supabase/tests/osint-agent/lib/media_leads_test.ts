@@ -168,7 +168,7 @@ Deno.test("post context: coordinates alone are a tag; junk timestamps and contro
   });
   assertEquals(bad[0].post?.taken_at, undefined, "epoch 12 is not a plausible capture date");
   assertEquals(bad[0].post?.has_location_tag, true);
-  assert(!/[\u0000-\u001f]/.test(bad[0].post?.place ?? ""), "no control characters reach the model");
+  assert(![...(bad[0].post?.place ?? "")].some((ch) => ch.charCodeAt(0) < 32), "no control characters reach the model");
   assertEquals((bad[0].post?.place ?? "").length, 80);
   const ms = extractMediaLeads("socialfetch_lookup", { posts: [{ image_url: cdn("c"), created_at: "2026-02-03T10:00:00Z" }] });
   assertEquals(ms[0].post, { has_location_tag: false, taken_at: "2026-02-03" });
