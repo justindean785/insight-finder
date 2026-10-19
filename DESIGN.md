@@ -8,7 +8,7 @@ colors:
   surface-3: "#141417"
   surface-4: "#1B1B1F"
   ink: "#E9EAED"
-  ink-muted: "#BFC1C7"
+  ink-muted: "#D1D2D7"
   ink-subtle: "#8E9098"
   ink-faint: "#84868E"
   film: "#FFFFFF"
@@ -157,10 +157,11 @@ Black and graphite, where every hue is spoken for and none is decorative.
   | Ink | Hex | ground | plate | plate-2 | raised | surface-4 |
   |---|---|---|---|---|---|---|
   | 1 Primary — values, headings | #E9EAED | 17.1 | 16.3 | 15.8 | 15.3 | 14.3 |
-  | 2 Secondary — supporting copy | #BFC1C7 | 11.5 | 10.9 | 10.6 | 10.2 | 9.5 |
+  | 2 Secondary — supporting copy | #D1D2D7 | 13.7 | 13.0 | 12.6 | 12.2 | 11.4 |
   | 3 Tertiary — source labels, timestamps | #8E9098 | 6.5 | 6.2 | 6.0 | 5.8 | 5.4 |
   | 4 Reference — counts, units, inert chrome | #84868E | 5.7 | 5.4 | 5.2 | 5.1 | 4.7 |
 
+- **Ink 2 is held at 83% lightness on purpose.** About 80 call sites still draw it at reduced opacity (`/0.6`, `/0.55`); at 83% those composites are at least as legible as they were before this register (0.6 → 5.2:1 on the ground). Do not lower it, and replace opacity modifiers with ink 3 or ink 4 when touching those files.
 - **Hairline / Subtle / Strong** (#25262C, #1C1D22, #33343B): the border ramp, strictly monotonic.
 
 ### The Authority Ladder

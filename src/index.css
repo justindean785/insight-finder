@@ -84,7 +84,7 @@ All colors MUST be HSL.
        the base is this light — the old file warned never to tidy it downward.
        Moving to a blue ground lowered the composite ratio slightly, so it went
        UP, not down. At /0.6 on --surface-2 it measures 4.8:1. Do not lower it. */
-    --muted-foreground: 225 7% 76.5%;  /* ink 2 #BFC1C7 */
+    --muted-foreground: 225 7% 83%;  /* ink 2 #D1D2D7 — kept ≥ 80% lightness: ~80 call sites render it at /0.6 and /0.55, and those composites must not fall below main's */
 
     /* ── Ink ramp, levels 3 and 4 ──────────────────────────────────────────
        The system shipped with exactly TWO named ink levels, and the product
@@ -144,7 +144,7 @@ All colors MUST be HSL.
     --evidence: 228 5% 66%;  /* immutable / custody marker — neutral */
 
     /* Muted semantic backgrounds — for soft chips, row tints, alerts */
-    --info-muted: 191 58% 13%;
+    --info-muted: 240 9% 9%;  /* selected-chip ground — neutral; the indigo border carries the state */
     --success-muted: 154 46% 11%;
     --warning-muted: 36 52% 13%;
     --danger-muted: 351 48% 15%;
@@ -163,7 +163,7 @@ All colors MUST be HSL.
     --confidence-high-glow: 228 8% 93%;
     --confidence-mid: 228 5% 66%;
     --confidence-low: 228 4% 48%;
-    --highconf: 212 30% 86%;
+    --highconf: 228 6% 86%;
 
     --conf-confirmed: 228 6% 88%;
     --conf-confirmed-glow: 228 8% 94%;
