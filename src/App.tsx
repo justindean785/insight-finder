@@ -10,7 +10,9 @@ import { FullPageLoader } from "@/components/ui/full-page-loader";
 import IndexRedirect from "./pages/IndexRedirect";
 import Auth from "./pages/Auth";
 import NotFound from "./pages/NotFound";
-// Heavy routes are code-split out of the main bundle.
+// Heavy routes are code-split out of the main bundle. The signed-in shell is
+// too: the marketing Landing and /auth never need the cases rail.
+const AppShell = lazy(() => import("./components/shell/AppShell").then((m) => ({ default: m.AppShell })));
 const ChatPage = lazy(() => import("./pages/ChatPage"));
 const ChatResume = lazy(() => import("./pages/ChatResume"));
 const AdminSecurity = lazy(() => import("./pages/AdminSecurity"));
@@ -48,19 +50,23 @@ const App = () => (
             <Route path="/" element={<IndexRedirect />} />
             <Route path="/auth" element={<Auth />} />
             <Route path="/chat" element={<ChatResume />} />
-            <Route path="/chat/:threadId" element={<ChatPage />} />
-            <Route path="/cases" element={<CasesPage />} />
-            <Route path="/cases/:threadId" element={<CaseViewPage />} />
+            {/* Every signed-in workspace screen shares one frame: the cases
+                rail, ⌘K and the safe-area insets live in AppShell. */}
+            <Route element={<AppShell />}>
+              <Route path="/chat/:threadId" element={<ChatPage />} />
+              <Route path="/cases" element={<CasesPage />} />
+              <Route path="/cases/:threadId" element={<CaseViewPage />} />
+              <Route path="/brain" element={<BrainGlobalPage />} />
+              <Route path="/settings" element={<Settings />} />
+            </Route>
             {/* Insights merged into the Intelligence section as its Overview
                 tab. The old path stays a permanent redirect so existing links,
                 bookmarks and the mobile nav keep resolving. */}
             <Route path="/insights" element={<Navigate to="/brain?tab=overview" replace />} />
-            <Route path="/brain" element={<BrainGlobalPage />} />
             {import.meta.env.DEV && ReportPreview && (
               <Route path="/report-preview" element={<ReportPreview />} />
             )}
             <Route path="/admin/security" element={<AdminSecurity />} />
-            <Route path="/settings" element={<Settings />} />
             <Route path="/terms" element={<Terms />} />
             <Route path="/privacy" element={<Privacy />} />
             <Route path="*" element={<NotFound />} />

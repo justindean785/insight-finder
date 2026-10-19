@@ -47,8 +47,32 @@ async function blockExternalOrigins(page: Page) {
   });
 }
 
-async function openWorkspace(page: Page) {
+/**
+ * Since Stage A the shell collapses the cases rail to a 56px icon strip below
+ * 1280px, so at 894x617 the six tabs now FIT (684px of tabs in an 838px page
+ * area) — the reported clipping is gone structurally, which the test
+ * "fits at 894px once the rail collapses" pins. The strip still scrolls as a
+ * safety net (long count badges, larger type), and that path is what this
+ * suite exists to keep honest. So on the 894 project the page area is narrowed
+ * to 560px, beside the real rail, to keep every reachability test below
+ * exercising overflow; `the 894px case still exercises overflow` still refuses
+ * a vacuous pass.
+ */
+const OVERFLOW_PAGE_WIDTH = 560;
+
+async function openWorkspace(page: Page, { constrain = true }: { constrain?: boolean } = {}) {
   await blockExternalOrigins(page);
+  if (constrain && test.info().project.name === "894x617") {
+    await page.addInitScript((w) => {
+      const apply = () => {
+        const style = document.createElement("style");
+        style.textContent = `#shell-main{max-width:${w}px}`;
+        document.head.appendChild(style);
+      };
+      if (document.head) apply();
+      else document.addEventListener("DOMContentLoaded", apply);
+    }, OVERFLOW_PAGE_WIDTH);
+  }
   await page.goto(THREAD);
   // The strip is the gate for every assertion here; wait on it rather than on a
   // blanket networkidle, which the harness's mocked client never settles into
@@ -110,6 +134,19 @@ test.describe("workspace tab strip", () => {
       maxScrollLeft,
       "the six tabs now fit at 894px, so the reachability tests no longer exercise the overflow path this suite exists for",
     ).toBeGreaterThan(0);
+  });
+
+  test("fits at 894px once the rail collapses", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "894x617", "the reported viewport");
+    await openWorkspace(page, { constrain: false });
+    const g = await page.evaluate(() => {
+      const list = document.querySelector('[role="tab"]')!.closest('[role="tablist"]')!;
+      const scroller = list.parentElement as HTMLElement;
+      const rail = document.querySelector('aside[aria-label="Cases"]')!.getBoundingClientRect().width;
+      return { overflow: scroller.scrollWidth - scroller.clientWidth, rail };
+    });
+    expect(g.rail, "tablet widths start with the icon rail").toBe(56);
+    expect(g.overflow, "all six tabs are visible without scrolling").toBeLessThanOrEqual(0);
   });
 
   test("every tab lies within the scroller's reachable range", async ({ page }) => {

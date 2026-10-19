@@ -133,7 +133,7 @@ This is a forensic instrument panel, not a hacker movie prop. What is restrained
 - Two materials only: Plate (default) and Lens (Black Glass, budgeted)
 - One indigo accent, spent as an edge, focus outline or live mark, never a fill
 - An eight-state authority ladder carrying colour plus icon plus word
-- Density without strain: an 11px floor, tabular numerals, mono only for data
+- Density without strain: an 11px floor for nonessential metadata only (body 14px, supporting labels 12–13px), tabular numerals, mono only for data
 - Machined corners: 4px on plates, 12px on the Lens, never consumer rounding
 
 ## 2. Colors
@@ -264,6 +264,11 @@ Three, and the difference is what a surface IS, not how it is decorated.
 - **Border:** the hairline plus the engraved inner black line.
 
 ### Shell (dossier header + icon rail)
+- One frame, `AppShell` (`src/components/shell/AppShell.tsx`), a layout route around every signed-in workspace screen: the live case, the case viewer, Cases, Intelligence and Settings. It owns the cases rail, the command palette (⌘K on every one of those screens) and the left/right safe-area insets. Pages own their header and their scroll container. There is no second global nav: `AppNav` and the viewer's own tab strip are gone, and both case screens use `WorkspaceTabs` (the viewer through `sections`).
+- Rail by width: wide (≥1280) the rail pushes the page and its expanded/collapsed state is remembered; tablet (768–1279) it starts as the 56px icon rail every time, and expanding it overlays the page (scrim, Esc or a click outside closes it) instead of squeezing the workspace; phone (<768) there is no rail, and a top bar (`ShellTopBar`, padded by the top inset) opens the cases drawer, which closes on navigation.
+- The page slot keeps one position and key at every width: the live case's transcript must never remount, or an in-flight run is lost.
+- Touch: on a coarse pointer every shell control (rail, drawer, top bar, tab bar) is at least 44px (`coarse:` variant in `tailwind.config.ts`); desktop density is unchanged. Shell type: 14px for body and navigation text, 12–13px for supporting interface labels (tab labels, section labels, status pills, buttons), and 11px only as the floor for nonessential metadata (a case row's type, age and cost). 11px is a floor, never a target. Icon-only rail controls carry an aria-label, `aria-current` when active, and a tooltip that appears on hover and keyboard focus. Focus moves into the phone drawer and the tablet overlay when they open and returns to the control that opened them when they close.
+- The command palette offers screens ("Go to") and recent cases everywhere; the case-only quick actions and section jumps appear only inside a live case, where something handles them.
 - 56px icon rail; the active item carries a 1px indigo tick, not a fill.
 - The dossier header is the ground itself, separated by a hairline: case identity on the left (seed kind, status word, the seed on the data face, the case title), readouts on the right as mono figures with word labels and visible denominators.
 - On a phone: an identity bar (the seed wraps and is never truncated) with four readouts, and a bottom tab bar.
@@ -282,7 +287,7 @@ Three, and the difference is what a surface IS, not how it is decorated.
 - Per provider, from `tool_usage_log` through the canonical outcome taxonomy, with separate counts for succeeded, no record, skipped, degraded and faulted. Captioned: "execution outcomes, not evidence reliability". Never a phase-level breakdown presented as provider performance.
 
 ### Bottom dock (phones)
-- The composer and the tab bar share one dock. Every scroll container reserves the measured dock height plus `env(safe-area-inset-bottom)`. Nothing fixed may cover report text, ledger rows or controls.
+- The composer and the tab bar share one dock, and the dock is in normal flow below the scroll area, never `position: fixed` over it, so no scroll container needs a guessed reserve. The tab bar pads itself by `env(safe-area-inset-bottom)`; scroll-only pages (Cases, Settings) end with the same inset. Anything that ever does become fixed over scrolling content must reserve its measured height plus the inset. Nothing may cover report text, ledger rows or controls: the Stage A check scrolls the 390px report to its end and asserts its last line sits above the tab bar.
 
 ### Transcript Cards
 - **Character:** the same material as a panel. The transcript is not a separate screen.

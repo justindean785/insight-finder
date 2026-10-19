@@ -5,11 +5,10 @@ import { InsightsOverview } from "@/pages/Insights";
 import { AnalysisTab } from "@/components/panel/AnalysisTab";
 import { useAuth } from "@/hooks/useAuth";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { ThreadSidebar } from "@/components/ThreadSidebar";
-import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { ShellTopBar, ShellTopBarTitle } from "@/components/shell/AppShell";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
 import {
-  Brain, Sparkles, Lightbulb, Star, Network, Zap, PanelLeftOpen,
+  Brain, Sparkles, Lightbulb, Star, Network, Zap,
   Target, ThumbsUp, CreditCard, TrendingUp,
   Search, X, EyeOff, Trash2, HelpCircle, ArrowUp, User, Building2,
   ArrowRight, Wrench, UserCheck,
@@ -104,7 +103,6 @@ export default function BrainGlobalPage() {
   const { user, loading } = useAuth();
   const isMobile = useIsMobile();
   const navigate = useNavigate();
-  const [mLeft, setMLeft] = useState(false);
   const [memories, setMemories] = useState<Memory[]>([]);
   const [memLoading, setMemLoading] = useState(true);
   const [sinceVisit, setSinceVisit] = useState<string | null>(null);
@@ -270,7 +268,7 @@ export default function BrainGlobalPage() {
           <Link
             to="/"
             aria-label="Home"
-            className="relative shrink-0 focus:outline-none focus:ring-2 focus:ring-primary/40 rounded-xl"
+            className="relative shrink-0 rounded-xl"
           >
             <div className="w-10 h-10 rounded-xl glass-strong grid place-items-center ring-1 ring-primary/40 shadow-[0_0_24px_-6px_hsl(var(--primary)/0.7)] hover:bg-white/[0.04] transition-colors">
               <Brain className="w-5 h-5 text-primary" strokeWidth={1.5} />
@@ -372,47 +370,16 @@ export default function BrainGlobalPage() {
     </div>
   );
 
-  if (isMobile) {
-    return (
-      <div className="flex flex-col h-[100dvh] w-full bg-background overflow-hidden">
-        <header className="sticky top-0 z-30 h-12 px-3 flex items-center justify-between gap-2 glass-card border-b border-border-subtle">
-          <button
-            onClick={() => setMLeft(true)}
-            className="w-9 h-9 rounded-xl grid place-items-center glass-interactive"
-            aria-label="Open threads"
-          >
-            <PanelLeftOpen className="w-4 h-4 text-foreground/80" />
-          </button>
-          <Link
-            to="/"
-            aria-label="Home"
-            className="font-display font-semibold text-sm tracking-tight gradient-text select-none hover:opacity-80 transition-opacity"
-          >
-            Brain
-          </Link>
-          <div className="w-9" />
-        </header>
-        <main className="flex-1 min-h-0 flex w-full overflow-hidden">
-          {content}
-        </main>
-        <Sheet open={mLeft} onOpenChange={setMLeft}>
-          <SheetContent
-            side="left"
-            className="p-0 w-[86vw] max-w-[320px] sm:max-w-[320px] border-r border-white/5 bg-[hsl(230_14%_4%)] [&>button]:hidden overflow-hidden"
-          >
-            <ThreadSidebar />
-          </SheetContent>
-        </Sheet>
-      </div>
-    );
-  }
-
+  // The cases rail / phone drawer belong to AppShell. On a phone this page
+  // adds the shell's top bar so the drawer stays one tap away.
   return (
-    <div className="flex min-h-screen w-full bg-background overflow-x-hidden">
-      <aside className="shrink-0 h-screen border-r border-border-subtle glass-card w-72">
-        <ThreadSidebar />
-      </aside>
-      <main className="flex-1 min-h-0 flex flex-col">{content}</main>
+    <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
+      {isMobile && (
+        <ShellTopBar>
+          <ShellTopBarTitle>Intelligence</ShellTopBarTitle>
+        </ShellTopBar>
+      )}
+      <main className="flex min-h-0 w-full flex-1 flex-col">{content}</main>
     </div>
   );
 }

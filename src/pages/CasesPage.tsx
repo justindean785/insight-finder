@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
-import { AppNav } from "@/components/AppNav";
+import { ShellTopBar, ShellTopBarTitle } from "@/components/shell/AppShell";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
@@ -85,6 +86,7 @@ function statusLabel(row: CaseRow, nowMs: number): { text: string; tone: string 
 export default function CasesPage() {
   const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [cases, setCases] = useState<CaseRow[]>([]);
   // When `cases` was read: the clock its run states are judged against.
   const [casesReadAt, setCasesReadAt] = useState(() => Date.now());
@@ -258,9 +260,14 @@ export default function CasesPage() {
   if (!user) return <Navigate to="/auth" replace />;
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <AppNav />
-      <main className="mx-auto max-w-6xl px-4 sm:px-8 py-8 pb-16">
+    <div className="flex min-h-0 flex-1 flex-col text-foreground">
+      {isMobile && (
+        <ShellTopBar>
+          <ShellTopBarTitle>Cases</ShellTopBarTitle>
+        </ShellTopBar>
+      )}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+      <main className="mx-auto max-w-6xl px-4 sm:px-8 py-8 pb-[calc(4rem+env(safe-area-inset-bottom))]">
         <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
           <div>
             <div className="text-eyebrow uppercase tracking-[0.26em] text-primary/80">Cases</div>
@@ -352,6 +359,7 @@ export default function CasesPage() {
           </Link>
         </p>
       </main>
+      </div>
     </div>
   );
 }

@@ -1,7 +1,6 @@
 import { useEffect, useState, lazy, Suspense, type ReactNode } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import { ThreadSidebar } from "@/components/ThreadSidebar";
 import { ChatWindow } from "@/components/ChatWindow";
 import { WorkspaceHeader, MobileCaseStrip } from "@/components/workspace/WorkspaceHeader";
 import { WorkspaceTabs, type WorkspaceTab } from "@/components/workspace/WorkspaceTabs";
@@ -9,6 +8,7 @@ import { CaseSnapshotProvider } from "@/components/workspace/CaseSnapshotProvide
 import { RecoveryBanner } from "@/components/workspace/RecoveryBanner";
 import { CaseSheet } from "@/components/workspace/CaseSheet";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
+import { ShellTopBar } from "@/components/shell/AppShell";
 // Non-default tabs are code-split: Chat (default) loads eagerly; the heavier
 // Evidence/Report/Graph/Tools panels (and their markdown/graph libs) only load
 // when first opened, shrinking the initial ChatPage chunk and first paint.
@@ -18,12 +18,11 @@ const ToolsTab = lazy(() => import("@/components/workspace/ToolsTab").then((m) =
 const GraphTab = lazy(() => import("@/components/workspace/GraphTab").then((m) => ({ default: m.GraphTab })));
 const ReportTab = lazy(() => import("@/components/panel/ReportTab").then((m) => ({ default: m.ReportTab })));
 import { useIsMobile } from "@/hooks/use-mobile";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
-import { PanelLeftOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
 import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
-import { CommandPalette } from "@/components/CommandPalette";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
 import { supabase } from "@/integrations/supabase/client";
@@ -59,16 +58,6 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
   const isMobile = useIsMobile();
   const { snapshot } = useCaseSnapshot();
   const [tab, setTab] = useState<WorkspaceTab>("chat");
-  // Persist the sidebar collapse across reloads — re-collapsing every session is
-  // a common annoyance for a workspace tool.
-  const [leftCollapsed, setLeftCollapsed] = useState(() => {
-    try { return localStorage.getItem("if:leftCollapsed") === "1"; } catch { return false; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem("if:leftCollapsed", leftCollapsed ? "1" : "0"); } catch { /* ignore */ }
-  }, [leftCollapsed]);
-  const [mLeft, setMLeft] = useState(false);
-
   // "New investigation" must CREATE a fresh thread, never route through "/"
   // (IndexRedirect resumes the most-recent EXISTING thread, so navigate("/")
   // reopens the latest old case instead of starting new).
@@ -140,7 +129,18 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
   // two panels it sits beside only gain a right inset, so no existing child
   // moves or remounts: the ChatWindow's in-flight stream is untouched by it.
   const showSheet = !isMobile && (tab === "chat" || tab === "report");
-  const besideSheet = (key: WorkspaceTab) => showSheet && (key === "chat" || key === "report") && "xl:right-[380px]";
+  // The analyst can fold the sheet down to a 44px strip, like the cases rail;
+  // the strip keeps the "Needs your call" count so open decisions never vanish.
+  // Remembered across reloads.
+  const [sheetCollapsed, setSheetCollapsed] = useState(() => {
+    try { return localStorage.getItem("if:caseSheetCollapsed") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("if:caseSheetCollapsed", sheetCollapsed ? "1" : "0"); } catch { /* ignore */ }
+  }, [sheetCollapsed]);
+  const besideSheet = (key: WorkspaceTab) =>
+    showSheet && (key === "chat" || key === "report") && (sheetCollapsed ? "xl:right-11" : "xl:right-[380px]");
+  const queueCount = sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null;
 
   const panel = (key: Exclude<WorkspaceTab, "chat">, body: ReactNode, scroll = false) =>
     visited.has(key) || tab === key ? (
@@ -184,12 +184,64 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
       {showSheet && (
         <aside
           key="case-sheet"
+          id="case-sheet"
           aria-label="Case sheet"
-          className="absolute inset-y-0 right-0 hidden w-[380px] border-l border-border-subtle bg-card xl:block"
+          className={cn(
+            "absolute inset-y-0 right-0 hidden border-l border-border-subtle bg-card xl:block",
+            sheetCollapsed ? "w-11" : "w-[380px]",
+          )}
         >
-          <ErrorBoundary>
-            <CaseSheet threadId={threadId} />
-          </ErrorBoundary>
+          {sheetCollapsed ? (
+            <div className="flex h-full flex-col items-center gap-2 py-2">
+              <Tooltip delayDuration={150}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setSheetCollapsed(false)}
+                    aria-label="Show case sheet"
+                    aria-expanded={false}
+                    aria-controls="case-sheet"
+                    className="grid h-8 w-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground"
+                  >
+                    <PanelRightOpen className="h-4 w-4" aria-hidden />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="left" className="text-xs">Show case sheet</TooltipContent>
+              </Tooltip>
+              {queueCount != null && queueCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSheetCollapsed(false)}
+                  aria-label={`${queueCount} need${queueCount === 1 ? "s" : ""} your call — open case sheet`}
+                  title={`${queueCount} need${queueCount === 1 ? "s" : ""} your call`}
+                  className="grid min-h-8 min-w-8 place-items-center rounded-full border border-warning/40 bg-warning/10 px-1.5 font-mono text-data tabular-nums text-warning transition-colors hover:bg-warning/15"
+                >
+                  {queueCount > 99 ? "99+" : queueCount}
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              <Tooltip delayDuration={150}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setSheetCollapsed(true)}
+                    aria-label="Hide case sheet"
+                    aria-expanded
+                    aria-controls="case-sheet"
+                    className="absolute right-2 top-2 z-10 grid h-8 w-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground"
+                  >
+                    <PanelRightClose className="h-4 w-4" aria-hidden />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="left" className="text-xs">Hide case sheet</TooltipContent>
+              </Tooltip>
+              <ErrorBoundary>
+                <CaseSheet threadId={threadId} />
+              </ErrorBoundary>
+            </>
+          )}
         </aside>
       )}
     </div>
@@ -201,69 +253,38 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
   // {content} keeps a stable position (last child of <main>) and a stable key
   // across the flip, so React preserves the ChatWindow fiber and the live run
   // survives. The chrome slot is the SAME element type on both breakpoints for
-  // the same reason, one level up.
+  // the same reason, one level up. The cases rail, the phone drawer and the
+  // command palette belong to AppShell, which wraps this page.
   return (
-    <div className="relative flex h-[100dvh] w-full overflow-hidden bg-background">
-      <CommandPalette />
-
-      {/* Desktop: persistent sidebar rail. Mobile uses the off-canvas Sheet below. */}
-      {!isMobile && (
-        <aside className={cn(
-          "rail-surface relative z-10 flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-white/8 shadow-[8px_0_38px_-30px_rgba(0,0,0,0.95)] transition-[width] duration-200 ease-out",
-          leftCollapsed ? "w-14" : "w-72",
-        )}>
-          <ThreadSidebar collapsed={leftCollapsed} onToggleCollapse={() => setLeftCollapsed((c) => !c)} />
-        </aside>
-      )}
-
-      <main className="relative z-10 flex h-full min-w-0 flex-1 flex-col">
-        <div key="chrome" className="shrink-0">
-          {isMobile ? (
-            // Phone: ONE header row — the cases drawer, then which case this is
-            // and its state. Section navigation lives in the bottom tab bar
-            // (below the content), where the thumb is; "New investigation"
-            // lives in the cases drawer, not as the loudest control on a case.
-            <header className="flex items-center gap-0.5 border-b border-border-subtle bg-card pl-1 pt-[env(safe-area-inset-top)]">
-              <button onClick={() => setMLeft(true)} className="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors duration-fast hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Open cases">
-                <PanelLeftOpen className="h-[18px] w-[18px] text-foreground/80" aria-hidden />
-              </button>
-              <MobileCaseStrip />
-            </header>
-          ) : (
-            <>
-              <WorkspaceHeader threadId={threadId} />
-              <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} loading={!hydrated} />
-            </>
-          )}
-          <RecoveryBanner snapshot={snapshot} onViewFailedTools={viewFailedTools} onStartNew={createNew} />
-        </div>
-
-        {content}
-
-        {/* Phone: section navigation at the bottom. Rendered AFTER {content}
-            and keyed, so {content} keeps its key and the ChatWindow inside it
-            is never remounted when the breakpoint flips. */}
-        {isMobile && (
-          <div key="bottom-nav" className="shrink-0">
-            <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} loading={!hydrated} variant="inline" />
-          </div>
+    <main className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col">
+      <div key="chrome" className="shrink-0">
+        {isMobile ? (
+          // Phone: ONE header row — the cases drawer, then which case this is
+          // and its state. Section navigation lives in the bottom tab bar
+          // (below the content), where the thumb is; "New investigation"
+          // lives in the cases drawer, not as the loudest control on a case.
+          <ShellTopBar>
+            <MobileCaseStrip />
+          </ShellTopBar>
+        ) : (
+          <>
+            <WorkspaceHeader threadId={threadId} />
+            <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} loading={!hydrated} />
+          </>
         )}
-      </main>
+        <RecoveryBanner snapshot={snapshot} onViewFailedTools={viewFailedTools} onStartNew={createNew} />
+      </div>
 
-      {/* Mobile: cases live in an off-canvas overlay (does not affect layout flow). */}
+      {content}
+
+      {/* Phone: section navigation at the bottom. Rendered AFTER {content}
+          and keyed, so {content} keeps its key and the ChatWindow inside it
+          is never remounted when the breakpoint flips. */}
       {isMobile && (
-        <Sheet open={mLeft} onOpenChange={setMLeft}>
-          <SheetContent side="left" className="rail-surface p-0 w-[82vw] max-w-[300px] sm:max-w-[300px] border-r border-white/8 [&>button]:hidden overflow-hidden">
-            {/* Radix requires an accessible name + description on every dialog
-                surface. Visually hidden — the drawer's own content is self-evident. */}
-            <SheetHeader className="sr-only">
-              <SheetTitle>Investigations</SheetTitle>
-              <SheetDescription>Switch between your cases, or start a new investigation.</SheetDescription>
-            </SheetHeader>
-            <ThreadSidebar />
-          </SheetContent>
-        </Sheet>
+        <div key="bottom-nav" className="shrink-0">
+          <WorkspaceTabs active={tab} onChange={setTab} counts={tabCounts} loading={!hydrated} variant="inline" />
+        </div>
       )}
-    </div>
+    </main>
   );
 }

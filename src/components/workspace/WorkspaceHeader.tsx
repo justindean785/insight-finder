@@ -251,6 +251,8 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2">
               {display.title ? (
+                // The case's name is the page heading; the copy control sits inside it.
+                <h1 className="flex min-w-0">
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
@@ -270,6 +272,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
                   </TooltipTrigger>
                   {snapshot?.seed.value && <TooltipContent side="bottom" className="text-xs">Copy selector</TooltipContent>}
                 </Tooltip>
+                </h1>
               ) : (
                 <FigureSkeleton width="w-40" />
               )}
@@ -299,7 +302,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
           <button
             onClick={createInvestigation}
             disabled={creating}
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white px-2.5 text-micro font-semibold text-black shadow-cta transition-colors hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white px-2.5 text-meta font-semibold text-black shadow-cta transition-colors hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50"
             aria-label="Start a new investigation"
           >
             <Plus className="h-3.5 w-3.5" aria-hidden />
@@ -327,7 +330,7 @@ export function MobileCaseStrip() {
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
           {display.title
-            ? <span className="min-w-0 truncate font-mono text-[14px] font-medium text-foreground">{display.title}</span>
+            ? <h1 className="min-w-0 truncate font-mono text-[14px] font-medium text-foreground">{display.title}</h1>
             : <FigureSkeleton width="w-32" />}
           <CaseStatusPill snapshot={snapshot} />
         </div>

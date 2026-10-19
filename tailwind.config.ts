@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss";
+import plugin from "tailwindcss/plugin";
 import tailwindcssAnimate from "tailwindcss-animate";
 
 export default {
@@ -220,5 +221,12 @@ export default {
       },
     },
   },
-  plugins: [tailwindcssAnimate],
+  plugins: [
+    tailwindcssAnimate,
+    // `coarse:` — touch screens, where controls grow to a 44px target and
+    // desktop density is untouched. A variant, NOT a `screens` entry: a raw
+    // media query in `screens` silently disables every `max-*` variant
+    // (`max-sm:hidden` and friends), which broke the phone composer.
+    plugin(({ addVariant }) => addVariant("coarse", "@media (pointer: coarse)")),
+  ],
 } satisfies Config;
