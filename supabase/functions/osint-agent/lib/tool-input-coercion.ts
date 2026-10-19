@@ -145,6 +145,9 @@ export interface InputCoercionSpec {
   stringFields?: readonly string[];
   /** String fields whose surrounding whitespace — and one pair of enclosing quotes — is removed. */
   trimFields?: readonly string[];
+  /** String fields whose surrounding whitespace is removed but whose quotes are KEPT (a search `query`:
+   *  quotes are exact-phrase semantics, not spelling). */
+  trimOnlyFields?: readonly string[];
   /** Fields the schema types as an object or array: a JSON string that parses to one becomes it. */
   jsonFields?: readonly string[];
   /** A bare top-level ARRAY is wrapped as `{ [wrapArrayAs]: array }` (memory_save sent `[{…}]` for `{entries:[{…}]}`). */
@@ -160,7 +163,8 @@ export interface InputCoercionSpec {
  */
 export const GENERIC_SELECTOR_SPEC: InputCoercionSpec = {
   stringFields: ["seed", "value", "email", "phone", "domain", "username", "handle", "ip", "query", "url", "name", "subject"],
-  trimFields: ["seed", "value", "email", "phone", "domain", "username", "handle", "ip", "query", "url", "name", "subject"],
+  trimFields: ["seed", "value", "email", "phone", "domain", "username", "handle", "ip", "url", "name", "subject"],
+  trimOnlyFields: ["query"],
 };
 
 /** The tool's own spec on top of the generic rules (lists are unioned; the tool's enum/infer/defaults/renames win). */
@@ -173,6 +177,7 @@ export function mergeInputSpecs(base: InputCoercionSpec, own: InputCoercionSpec)
     trimFields: union(base.trimFields, own.trimFields),
     numberFields: union(base.numberFields, own.numberFields),
     jsonFields: union(base.jsonFields, own.jsonFields),
+    trimOnlyFields: union(base.trimOnlyFields, own.trimOnlyFields),
   };
 }
 
@@ -259,9 +264,19 @@ export function coerceToolInput(raw: unknown, spec: InputCoercionSpec): { value:
   }
   for (const f of spec.stringFields ?? []) {
     const v = out[f];
-    if (typeof v === "number" && Number.isFinite(v)) {
+    // An integer beyond Number.MAX_SAFE_INTEGER has ALREADY lost digits at JSON.parse (a 17-19 digit
+    // discord_id); stringifying it would run a live lookup on the wrong selector. Left for the schema
+    // to reject, as before.
+    if (typeof v === "number" && Number.isFinite(v) && (!Number.isInteger(v) || Number.isSafeInteger(v))) {
       out[f] = String(v);
       records.push({ field: f, coercion: "number_to_string" });
+    }
+  }
+  for (const f of spec.trimOnlyFields ?? []) {
+    const v = out[f];
+    if (typeof v === "string" && v !== v.trim() && v.trim()) {
+      out[f] = v.trim();
+      records.push({ field: f, coercion: "trimmed" });
     }
   }
   for (const f of spec.trimFields ?? []) {

@@ -96,6 +96,14 @@ Deno.test("wiring: index.ts resolves the collect phase from pending runs, counts
   assert(index.includes('finalizePhase === "collect"'), "a collect step's decision is judged by an opsis_results call");
   const cache = Deno.readTextFileSync(new URL("../../functions/osint-agent/cache.ts", import.meta.url));
   assert(cache.includes("isFinalizeCollectExempt(name)"), "the read must pass the finalize-window and tool-cap guards");
+  // Review finding 5: the exemption is scoped to the collect phase, never unconditional — a model-initiated
+  // opsis_results inside the reserve window on a path where the collect decision declined stays skipped.
+  assert(cache.includes("ctx.collectPhaseActive?.()"), "the exemption must be gated on the collect phase");
+  assert(!cache.includes("!isFinalizeCollectExempt(name)"), "no unconditional exemption may remain");
+  assert(index.includes('collectPhaseActive: () => finalizePhase === "collect"'), "index.ts must publish the phase to the wrapper");
+  // Review finding 1: the read must also pass runtime-policy's INTERNAL total run cap on the cap-triggered finalize.
+  const startCallAt = cache.indexOf("startCall({");
+  assert(startCallAt > 0 && cache.indexOf("collectExempt,", startCallAt) > startCallAt, "startCall must be told the read is collect-exempt");
   const health = Deno.readTextFileSync(new URL("../../functions/osint-agent/health-handler.ts", import.meta.url));
   assert(health.includes("r.checks.opsis_finalize_collect = opsisFinalizeCollectSelfTest()"));
   // a refusal on the read still reads as a skip for outcome classification (never a provider failure)

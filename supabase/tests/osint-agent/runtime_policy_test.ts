@@ -269,3 +269,28 @@ Deno.test("budgetCeiling: a FREE call never trips the paid cap, so carries nothi
     restoreLimits();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Finalize collect phase (2026-10-19 review finding 1): the free opsis_results
+// read is exempt from the INTERNAL total run cap when the collect phase asks
+// for it — the cap-triggered finalize is exactly where totalCalls is already
+// at the cap. The same-tool cap still applies.
+// ---------------------------------------------------------------------------
+Deno.test("startCall: a collect-exempt opsis_results passes the internal total run cap; without the flag it is refused", () => {
+  clearRuntime("t-policy-collect");
+  Object.assign(runtimeLimits, DEFAULT_LIMITS, { maxTotalToolCallsPerRun: 2, stopOnBudgetExhausted: true });
+  try {
+    for (let i = 0; i < 2; i++) {
+      const d = startCall(baseInput({ threadId: "t-policy-collect", toolName: `tool_${i}`, familyKey: `tool_${i}::email::a`, now: 1_000_000 + i }));
+      assertEquals(d.allow, true, `warm-up call ${i} must be admitted`);
+    }
+    const refused = startCall(baseInput({ threadId: "t-policy-collect", toolName: "opsis_results", costTier: "free", familyKey: "opsis_results::run::r1", now: 1_000_010 }));
+    assertEquals(refused.allow, false);
+    assertEquals(String((refused as { reason?: string }).reason ?? "").includes("internal run cap reached"), true);
+    const allowed = startCall(baseInput({ threadId: "t-policy-collect", toolName: "opsis_results", costTier: "free", familyKey: "opsis_results::run::r1", now: 1_000_020, collectExempt: true }));
+    assertEquals(allowed.allow, true, "collect-exempt read must pass the total cap");
+  } finally {
+    Object.assign(runtimeLimits, DEFAULT_LIMITS);
+    clearRuntime("t-policy-collect");
+  }
+});

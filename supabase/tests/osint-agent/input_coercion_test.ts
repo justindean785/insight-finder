@@ -459,3 +459,24 @@ Deno.test("kill switch: INPUT_COERCION_DISABLED=true rejects the quoted email an
     rejected("memory_save", [{ kind: "lesson", subject: "s", content: "abc" }]);
   });
 });
+
+// Review findings (2026-10-19): two generic rules were not spelling-only.
+Deno.test("GENERIC: `query` is whitespace-trimmed but NEVER unquoted — quotes are exact-phrase search semantics", () => {
+  const exact = coerceToolInput({ query: '"Jordan Vale"' }, GENERIC_SELECTOR_SPEC);
+  assertEquals(exact.records, []);
+  assertEquals((exact.value as Record<string, unknown>).query, '"Jordan Vale"');
+  const padded = coerceToolInput({ query: ' "Jordan Vale" ' }, GENERIC_SELECTOR_SPEC);
+  assertEquals(padded.records, [{ field: "query", coercion: "trimmed" }]);
+  assertEquals((padded.value as Record<string, unknown>).query, '"Jordan Vale"');
+  // selectors still unquote
+  assertEquals(coerceToolInput({ email: "'a@example.com'" }, GENERIC_SELECTOR_SPEC).records, [{ field: "email", coercion: "unquoted" }]);
+});
+
+Deno.test("GENERIC: a number beyond Number.MAX_SAFE_INTEGER is never stringified (a 17-19 digit discord_id would be corrupted)", () => {
+  const unsafe = coerceToolInput({ value: JSON.parse("123456789012345678") }, GENERIC_SELECTOR_SPEC);
+  assertEquals(unsafe.records, []);
+  assertStrictEquals(typeof (unsafe.value as Record<string, unknown>).value, "number");
+  const safe = coerceToolInput({ value: 6175550100, seed: 1.5 }, GENERIC_SELECTOR_SPEC).value as Record<string, unknown>;
+  assertEquals(safe.value, "6175550100");
+  assertEquals(safe.seed, "1.5");
+});

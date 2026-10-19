@@ -103,6 +103,9 @@ export interface RuntimeDecisionInput {
   staleCache: boolean;
   manualOverride?: boolean;
   force?: boolean;
+  /** The finalize COLLECT phase's free opsis_results read: exempt from the internal TOTAL run cap only
+   *  (cache.ts sets it; orchestrator-finalize.ts). The paid and same-tool caps still apply. */
+  collectExempt?: boolean;
 }
 
 export type RuntimeDecision =
@@ -449,8 +452,11 @@ export function startCall(input: RuntimeDecisionInput): RuntimeDecision {
   // the reasons say so explicitly. (Concurrency is handled below as a QUEUE,
   // never allow:false.)
   const sameToolCount = state.toolCounts.get(input.toolName) ?? 0;
+  // The collect phase fires on the cap-triggered finalize, i.e. exactly when totalCalls is
+  // already at the cap; its one free read must not be refused by the cap it exists to follow.
+  const totalCapExempt = essential || input.collectExempt === true;
   if (runtimeLimits.stopOnBudgetExhausted && !essential) {
-    if (Number.isFinite(runtimeLimits.maxTotalToolCallsPerRun) && state.totalCalls >= runtimeLimits.maxTotalToolCallsPerRun) {
+    if (!totalCapExempt && Number.isFinite(runtimeLimits.maxTotalToolCallsPerRun) && state.totalCalls >= runtimeLimits.maxTotalToolCallsPerRun) {
       return { allow: false, budgetCeiling: true, stage: state.stage, cycleId: state.cycleId, reason: `internal run cap reached (${runtimeLimits.maxTotalToolCallsPerRun} calls this investigation) — internal throttle, not a provider limit` };
     }
     if (Number.isFinite(runtimeLimits.maxPaidCallsPerRun) && input.costTier !== "free" && state.paidCalls >= runtimeLimits.maxPaidCallsPerRun) {

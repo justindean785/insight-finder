@@ -1513,6 +1513,9 @@ Deno.serve(async (req) => {
         budgetCeiling,
         shouldStopLiveLookups: () =>
           shouldForceFinalize(Date.now() - runStartedAt, 0) || anthropicBudgetStatus().exhausted,
+        // The opsis_results exemptions in cache.ts hold only while prepareStep has the run
+        // in the collect phase (orchestrator-finalize.ts) — never for a model-initiated read.
+        collectPhaseActive: () => finalizePhase === "collect",
         // See cache.ts's ctx field comment: the correlate exemption in the
         // finalize-window live-call guard is conditional on this, not automatic.
         // Recomputed live (not the stale elapsed captured at the last prepareStep)
