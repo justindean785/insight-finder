@@ -31,6 +31,30 @@ This branch is the session's audit and docs home, PR #793 (draft). It holds the 
   - **#593** (another session's) dedupe authority donation, frontend. Tested merged with `main`: vitest 2736/1/213, e2e 52/2. **Needs JD's choice: option A, B or C** (audit §10.3 C).
 - **Production at 00:53Z:** the last scan was at 19:34Z on 10-18. Nothing has run since, so the new `GITHUB_API_TOKEN` (saved 10-18 19:48Z via Lovable) is still unexercised. Lovable last reported credits exhausted at 19:55Z. That is reported only, not verified.
 
+## Done since the last save (the 2026-10-14 handoff #760 and the 2026-10-15 CLAUDE.md update #770)
+Taken from `git log origin/main` and `deploy-log.jsonl`, not from memory. Several of these came from other sessions; the ones from this session are marked.
+
+**Edge builds recorded in the ledger** (six deploy cycles; live runtime not re-probed since `cabfeb9`):
+
+| Build | Recorded (UTC) | What it shipped |
+|---|---|---|
+| `dd20ed4` | 10-14 08:25 | #758 dropped browser connection no longer ends the run; #756 LeakCheck query-pool cap |
+| `aaad5d9` | 10-15 12:17 | #774 tests moved out of the deployed folder (4.5 MB limit), plus the batch stamped as `69ec83b` (#771) and never recorded on its own: #765 object tool inputs, #769 Anthropic start-failure fallback, #766 near-miss input coercion, #768 cross-case review verdicts |
+| `3cafa81` | 10-15 13:12 | #778 wait for a busy provider (E3), #780 E3 queue stops on finalize/abort |
+| `6d36614` | 10-15 13:45 | #781 `breach_exposure` needs a breach-class tool that ran and a non-zero result |
+| `d3d3a73` | 10-15 14:05 | #786 an archived page read by a page-fetch tool is archive evidence |
+| `cabfeb9` | 10-15 14:30 | #790 infer a missing `google_dorks` kind; `serus_darkweb_scan` accepts `identifier` |
+
+**Frontend shipped on merge (Vercel):**
+- Other sessions: #757 summary counts CONFIRMED/ATTESTED apart, #759 mid-stream 401 no longer signs the analyst out, #767 one tool-outcome taxonomy, #773 CO_RECORD clusters, #777 Needs-a-decision drops breach co-tenants, #783 "verified" means analyst clicks, #787 per-case table layout.
+- This session: #794 breach table authority (F6), #795 sidebar never writes `finished` (F10), #796 Retry/Re-run guard (F13), #798 dead runs show as Interrupted.
+
+**Docs:** #770 GLM primary / Anthropic backup (other session). This session: #793 (this branch, draft) holds the full review (F1–F33), the evening re-measure (F34–F41, §8b tool plan), the outside-review corrections and integrity re-trace (§10), `tasks/todo.md` and `tasks/lessons.md` sections, this handoff, `NEXT_SESSION_PROMPT.md`, and the CLAUDE.md state block (old block archived to `docs/archive/CLAUDE_STATE_HISTORY_2026-10.md`).
+
+**Built this session, not merged:** #797 (ready), #799 and #800 (drafts). **Reviewed:** #593 made mergeable (merge commit `4afe07a`); #741, #738 and #593 traced against `main` (audit §10.3).
+
+**Measured in production this session (SELECT only):** Z.AI balance ran out mid-run at 10-18 06:31Z; no runs on 10-16 or 10-17; Anthropic last ran 10-14; Jina 257 ok / 11 raw 403 in 30 days; `wayback_cdx_search` 1 ok / 21 failed; 25 findings in the product, 0 confirmed, 1 citing a tool that never ran in its thread; model-written `reviewed` / `linkage_confirmed` keys: 0 and 0 across 11,082 artifacts.
+
 ## Open / next (recommended order: integrity before tool fleet; see audit §8 and §10)
 1. **#797:** JD merge, then the deploy cycle (stamp, surgical mirror sync, `verify:deploy` gate, Lovable message, `/health` SHA check, ledger). Blocked on a working Lovable route or credits.
 2. **#741:** rebase it onto `main`.
