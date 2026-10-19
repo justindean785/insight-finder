@@ -57,9 +57,13 @@ import {
   pivotSkipStorageKey,
   type RecommendedPivot,
 } from "@/lib/recommended-pivots";
-import { Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon, ArrowRight } from "lucide-react";
+import {
+  Sparkles, GitBranch, Paperclip, X, FileText, Image as ImageIcon, Copy as CopyIcon, ArrowRight,
+  Crosshair, ScanSearch, Route, ShieldCheck,
+} from "lucide-react";
+import { phaseKey, cycleTitle, describeCycle, outcomeWord, formatPayloadMeta, type CycleOutcome } from "@/lib/run-timeline";
 import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
-import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
+import { toolDisplayName, toolActionLabel, toolAgentRole } from "@/lib/tool-display";
 import { humanizeSelector } from "@/lib/humanize-selector";
 import { measureRequestBody, reportRequestBodySize } from "@/lib/request-size";
 import {
@@ -175,7 +179,9 @@ function CodePanel({
     : lines.slice(0, CODE_COLLAPSE_LINES).join("\n") + "\n…";
   const shownLines = shown.split("\n");
   const gutter = shownLines.map((_, i) => String(i + 1)).join("\n");
-  const meta = `${lineCount} line${lineCount === 1 ? "" : "s"} · ${(charCount / 1024).toFixed(charCount >= 1024 ? 1 : 0)}${charCount >= 1024 ? "kb" : "b"}`;
+  // Bytes stay bytes below 1 KB. The old meter divided by 1024 first and printed
+  // "40 lines · 1b" for an 800-byte payload — a meter nobody could trust.
+  const meta = formatPayloadMeta(lineCount, charCount);
 
   return (
     <div
@@ -308,6 +314,16 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
   const actionOnly = toolActionLabel(name);
   const hasInput = part.input != null;
   const hasOutput = part.output !== undefined;
+  // One word plus an icon for what came of the call, at every width. A tick with
+  // no word made a skipped call and an empty result look like success on the
+  // phone, where the duration/cached chips were hidden.
+  const callOutcome: { word: string; tone: "failed" | "skipped" | "cached" | "completed" | "running" } = failed
+    ? { word: "failed", tone: "failed" }
+    : tone === "skip"
+      ? { word: "skipped", tone: "skipped" }
+      : done
+        ? (cached ? { word: "from cache", tone: "cached" } : { word: "completed", tone: "completed" })
+        : { word: "running", tone: "running" };
 
   return (
     <div
@@ -354,17 +370,24 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
             >
               {actionOnly}
             </span>
-            {failed ? (
-              <XCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
-            ) : tone === "skip" ? (
-              <CircleSlash className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
-            ) : done ? (
-              <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[hsl(var(--confidence-high))]" />
-            ) : (
-              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
-            )}
           </span>
-          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+          {/* Outcome word + icon leads the meta line, so the title keeps its full
+              width on the phone and the word is visible at every breakpoint. */}
+          <span className="mt-1 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span className={cn("outcome-chip", `outcome-chip--${callOutcome.tone}`)}>
+              {callOutcome.tone === "failed" ? (
+                <XCircle className="h-3 w-3" aria-hidden />
+              ) : callOutcome.tone === "skipped" ? (
+                <CircleSlash className="h-3 w-3" aria-hidden />
+              ) : callOutcome.tone === "cached" ? (
+                <Clock className="h-3 w-3" aria-hidden />
+              ) : callOutcome.tone === "completed" ? (
+                <CheckCircle2 className="h-3 w-3" aria-hidden />
+              ) : (
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+              )}
+              {callOutcome.word}
+            </span>
             {artifactPreview && (
               <span className="truncate font-mono tabular-nums">{artifactPreview}</span>
             )}
@@ -378,11 +401,6 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
         </span>
 
         <span className="flex shrink-0 items-center gap-1.5">
-          {cached && (
-            <span className="hidden rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground sm:inline">
-              cached
-            </span>
-          )}
           {durationLabel && (
             <span
               className="hidden rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground sm:inline"
@@ -415,9 +433,8 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
               </span>
             )}
             {charge.label && <span title={charge.title ?? undefined}>{charge.label}</span>}
-            {displayName !== actionOnly && (
-              <span className="truncate opacity-80">{displayName}</span>
-            )}
+            {cached && <span>replayed from cache</span>}
+            {/* The role prefix ("Lead Analyst — …") used to repeat the card title here. */}
           </div>
 
           <div className="tool-io-grid">
@@ -457,7 +474,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
             <Textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              placeholder="Note saved locally on this device…"
+              placeholder="Add a working note. Kept on this device."
               rows={2}
               className="min-h-[2.5rem] text-[12px]"
             />
@@ -489,6 +506,10 @@ type ToolRunGroup = {
   cycleId: number;
   parts: ToolPartShape[];
   selectors: string[];
+  /** Tool ids in call order — what the cycle DID (run-timeline.ts describeCycle). */
+  toolNames: string[];
+  /** Only the real selectors the runtime stamped, never an action-label fallback. */
+  realSelectors: string[];
   cached: number;
   stale: number;
   skipped: number;
@@ -543,6 +564,8 @@ function computeToolGroups(parts: MessagePartShape[]): Array<ToolRunGroup | { pa
         cycleId,
         parts: [],
         selectors: [],
+        toolNames: [],
+        realSelectors: [],
         cached: 0,
         stale: 0,
         skipped: 0,
@@ -556,6 +579,8 @@ function computeToolGroups(parts: MessagePartShape[]): Array<ToolRunGroup | { pa
     }
     current.parts.push(part);
     current.selectors.push(selector);
+    current.toolNames.push(name);
+    if (typeof runtime?.selector === "string" && runtime.selector) current.realSelectors.push(humanizeSelector(runtime.selector));
     if (cached) current.cached += 1;
     if (stale) current.stale += 1;
     if (tone === "skip") current.skipped += 1;
@@ -618,49 +643,62 @@ function flowToneForGroup(group: ToolRunGroup): "completed" | "partial" | "cache
 }
 
 
-function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
+/** The phase icon beside a cycle: one glyph per phase, ink only (a phase is not a verdict). */
+function PhaseIcon({ stage, className }: { stage: string; className?: string }) {
+  const cls = cn("shrink-0", className ?? "h-3.5 w-3.5");
+  switch (phaseKey(stage)) {
+    case "triage": return <Crosshair className={cls} aria-hidden />;
+    case "review": return <ScanSearch className={cls} aria-hidden />;
+    case "pivot": return <Route className={cls} aria-hidden />;
+    case "verify": return <ShieldCheck className={cls} aria-hidden />;
+    case "report": return <FileText className={cls} aria-hidden />;
+    default: return <Square className={cls} aria-hidden />;
+  }
+}
+
+function OutcomeIcon({ outcome, className }: { outcome: CycleOutcome; className?: string }) {
+  const cls = className ?? "h-3 w-3";
+  switch (outcome) {
+    case "completed": return <CheckCircle2 className={cls} aria-hidden />;
+    case "cached": return <Clock className={cls} aria-hidden />;
+    case "skipped": return <CircleSlash className={cls} aria-hidden />;
+    case "running": return <Loader2 className={cn(cls, "animate-spin")} aria-hidden />;
+    default: return <Square className={cls} aria-hidden />;
+  }
+}
+
+/**
+ * The run at a glance: one chip per cycle, phase glyph + phase word + cycle id
+ * + call count, joined by a hairline. The old chips read "Review cycle 1 1" —
+ * the cycle number and the call count sat side by side with nothing between
+ * them. The live cycle (last chip of a running run) carries the indigo rim.
+ */
+function RunFlowRail({ groups, live = false }: { groups: ToolRunGroup[]; live?: boolean }) {
   if (groups.length <= 1) return null;
+  const calls = groups.reduce((n, g) => n + g.parts.length, 0);
   return (
-    <div className="chat-card px-4 py-3" data-speaker="system">
-      <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.04em] text-muted-foreground">
-        <GitBranch className="h-3 w-3 text-muted-foreground" />
-        Run flow
+    <div className="run-flow" data-speaker="system">
+      <div className="run-flow__head">
+        <GitBranch className="h-3 w-3" aria-hidden />
+        <span>Run flow</span>
+        <span className="run-flow__stats tabular-nums">{groups.length} cycles · {calls} calls</span>
       </div>
-      <div className="flex items-center gap-1 overflow-x-auto pb-0.5 [scrollbar-width:thin]">
+      <div className="run-flow__rail">
         {groups.map((group, index) => {
-          const tone = flowToneForGroup(group);
           const isLast = index === groups.length - 1;
-          // De-stutter: when this chip shares the previous chip's stage, drop the
-          // repeated stage word and show just "cycle N", so a constant-stage run
-          // reads "Review cycle 1 → cycle 2 → cycle 3" instead of restating
-          // "Review" on every chip.
-          const humanStage = humanizeStage(group.stage);
-          const prevStage = index > 0 ? humanizeStage(groups[index - 1].stage) : null;
-          const railLabel = prevStage === humanStage && group.cycleId > 0
-            ? `cycle ${group.cycleId}`
-            : cycleSummaryLabel(humanStage, group.cycleId);
-          const icon = tone === "completed"
-            ? <CheckCircle2 className="h-3.5 w-3.5" />
-            : tone === "cached"
-              ? <Clock className="h-3.5 w-3.5" />
-              : tone === "skipped"
-                ? <CircleSlash className="h-3.5 w-3.5" />
-                : <Square className="h-3.5 w-3.5" />;
-          const toneClass = tone === "completed"
-            ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high)/0.35)] bg-[hsl(var(--confidence-high)/0.08)]"
-            : tone === "cached"
-              ? "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid)/0.35)] bg-[hsl(var(--confidence-mid)/0.08)]"
-              : tone === "skipped"
-                ? "text-muted-foreground border-white/12 bg-white/[0.03]"
-                : "text-foreground border-white/15 bg-white/[0.05]";
+          const isLive = live && isLast;
+          const tone: CycleOutcome = isLive ? "running" : flowToneForGroup(group);
+          const { phase, cycle } = cycleTitle(group.stage, group.cycleId);
+          const title = `${phase}${cycle ? ` ${cycle}` : ""} · ${group.parts.length} call${group.parts.length === 1 ? "" : "s"} · ${outcomeWord(tone)}`;
           return (
-            <div key={`flow-${group.key}-${index}`} className="flex shrink-0 items-center gap-1">
-              <div className={cn("inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-micro", toneClass)}>
-                {icon}
-                <span className="font-mono tracking-normal">{railLabel}</span>
-                <span className="text-eyebrow opacity-80">{group.parts.length}</span>
-              </div>
-              {!isLast && <span className="h-px w-5 shrink-0 bg-gradient-to-r from-white/25 to-white/5" aria-hidden />}
+            <div key={`flow-${group.key}-${index}`} className="flex shrink-0 items-center">
+              <span className={cn("flow-chip", `flow-chip--${tone}`)} title={title}>
+                <PhaseIcon stage={group.stage} className="h-3 w-3" />
+                <span className="flow-chip__phase">{phase}</span>
+                {cycle && <span className="flow-chip__cycle">{cycle}</span>}
+                <span className="flow-chip__count" aria-label={`${group.parts.length} calls`}>{group.parts.length}</span>
+              </span>
+              {!isLast && <span className="flow-chip__link" aria-hidden />}
             </div>
           );
         })}
@@ -669,57 +707,77 @@ function RunFlowRail({ groups }: { groups: ToolRunGroup[] }) {
   );
 }
 
-function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt?: string }) {
+/**
+ * One cycle of the run as a timeline step. Collapsed, the row answers the three
+ * questions an analyst scans for — which phase, what it did, what came of it —
+ * without opening anything: a phase glyph on the spine, the phase word, the
+ * cycle id as a mono chip, the call count, an outcome word with its icon, the
+ * time; then the purpose line ("breach lookup · username sweep") and the real
+ * selectors it touched, each on the data face and never truncated. Expanded, the
+ * calls themselves sit under it as cards.
+ */
+function ToolGroupSummary({ group, createdAt, live = false }: { group: ToolRunGroup; createdAt?: string; live?: boolean }) {
   const [expanded, setExpanded] = useState(false);
-  const avgExpected = group.expectedValues.length
-    ? Math.round(group.expectedValues.reduce((sum, value) => sum + value, 0) / group.expectedValues.length)
-    : null;
   const time = createdAt ? new Date(createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
-  const selectors = Array.from(new Set(group.selectors)).slice(0, 3);
-  const extra = Math.max(0, new Set(group.selectors).size - selectors.length);
-  const summaryBits = cycleSummaryBadges(group);
+  const { phase, cycle } = cycleTitle(group.stage, group.cycleId);
+  const desc = describeCycle(group.toolNames, group.realSelectors);
+  const tone: CycleOutcome = live ? "running" : flowToneForGroup(group);
+  // When the outcome word already says "completed" the "N completed" badge is
+  // redundant; on a running, cached or skipped cycle it is the progress count.
+  const summaryBits = cycleSummaryBadges(group).filter((bit) => tone !== "completed" || !/completed$/.test(bit));
   // Beta-facing: failed tool parts are hidden from the expanded list too. The
   // underlying group.parts stays intact in state; only the rendered subset omits
   // errors, so a user who expands a cycle never sees a red "failed" card.
   const visibleParts = group.parts.filter((part) => deriveToolTone(part) !== "error");
+  const callCount = group.parts.length;
   return (
-    <div className="chat-card text-[13px] leading-relaxed text-muted-foreground" data-speaker="tool">
-      {/* One row per cycle when collapsed: stage, calls, EV, what it touched,
-          what came of it, when. The old three-line card spent ~200px per cycle
-          on a run log the analyst mostly scans past; the reason and the calls
-          themselves are one click away. */}
+    <div
+      className={cn("run-step", expanded && "run-step--open")}
+      data-phase={phaseKey(group.stage)}
+      data-outcome={tone}
+    >
       <button
         type="button"
-        className="w-full px-3.5 py-2 text-left"
+        className="run-step__row"
         aria-expanded={expanded}
         onClick={() => setExpanded((value) => !value)}
       >
-        <div className="flex min-w-0 items-center gap-2">
-          {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden />}
-          <span className="shrink-0 font-medium text-foreground/90">
-            {cycleSummaryLabel(humanizeStage(group.stage), group.cycleId)}
+        <span className="run-step__node" aria-hidden>
+          <PhaseIcon stage={group.stage} className="h-3.5 w-3.5" />
+        </span>
+        <span className="run-step__main">
+          <span className="run-step__title">
+            <span className="run-step__phase">{phase}</span>
+            {cycle && <span className="run-step__cycle">{cycle}</span>}
+            <span className="run-step__calls tabular-nums">{callCount} call{callCount === 1 ? "" : "s"}</span>
+            <span className={cn("outcome-chip", `outcome-chip--${tone}`)}>
+              <OutcomeIcon outcome={tone} />
+              {outcomeWord(tone)}
+            </span>
+            {time && <span className="run-step__time tabular-nums">{time}</span>}
           </span>
-          <span className="shrink-0 tabular-nums">{group.parts.length} call{group.parts.length === 1 ? "" : "s"}</span>
-          {avgExpected != null && <span className="hidden shrink-0 tabular-nums sm:inline">EV {avgExpected}</span>}
-          {(selectors.length > 0 || extra > 0) && (
-            <span className="min-w-0 flex-1 truncate text-foreground/70" title={Array.from(new Set(group.selectors)).join(" · ")}>
-              {selectors.join(" · ")}{extra > 0 ? ` · +${extra}` : ""}
+          {(desc.purpose || desc.selectors.length > 0) && (
+            <span className="run-step__detail">
+              {desc.purpose && <span className="run-step__purpose">{desc.purpose}</span>}
+              {desc.selectors.map((value) => (
+                <span key={value} className="run-step__selector" title={value}>{value}</span>
+              ))}
+              {desc.extraSelectors > 0 && <span className="run-step__more">+{desc.extraSelectors} more</span>}
             </span>
           )}
-          {!(selectors.length > 0 || extra > 0) && <span className="flex-1" />}
           {summaryBits.length > 0 && (
-            <span className="hidden shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground sm:inline">{summaryBits.join(" · ")}</span>
+            <span className="run-step__bits tabular-nums">{summaryBits.join(" · ")}</span>
           )}
-          {time && <span className="shrink-0 tabular-nums text-muted-foreground/80">{time}</span>}
-        </div>
-        {expanded && group.reasons[0] && (
-          <div className="mt-1 pl-5 text-[12px] text-muted-foreground/80">
-            {group.reasons[0]}
-          </div>
-        )}
+        </span>
+        {expanded
+          ? <ChevronDown className="run-step__chevron" aria-hidden />
+          : <ChevronRight className="run-step__chevron" aria-hidden />}
       </button>
+      {expanded && group.reasons[0] && (
+        <div className="run-step__reason">{group.reasons[0]}</div>
+      )}
       {expanded && visibleParts.length > 0 && (
-        <div className="space-y-2 border-t border-white/[0.06] px-4 py-3">
+        <div className="run-step__calls-list">
           {visibleParts.map((part, partIndex) => (
             <ToolPart key={`${group.key}-${partIndex}`} part={part} createdAt={createdAt} />
           ))}
@@ -1071,12 +1129,14 @@ export function LiveActivityCard({ message, elapsedLabel }: { message: UIMessage
       </summary>
       {groups.length > 0 && (
         <div className="chat-card__body flex w-full flex-col gap-2">
-          <RunFlowRail groups={cycles} />
-          {groups.map((entry, i) => "part" in entry ? (
-            <ToolPart key={`live-tool-${i}`} part={entry.part} />
-          ) : (
-            <ToolGroupSummary key={`live-${entry.key}-${i}`} group={entry} />
-          ))}
+          <RunFlowRail groups={cycles} live />
+          <div className="run-timeline">
+            {groups.map((entry, i) => "part" in entry ? (
+              <ToolPart key={`live-tool-${i}`} part={entry.part} />
+            ) : (
+              <ToolGroupSummary key={`live-${entry.key}-${i}`} group={entry} live={i === groups.length - 1} />
+            ))}
+          </div>
         </div>
       )}
     </details>
@@ -1164,11 +1224,13 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
     return (
       <div className="space-y-2">
         <RunFlowRail groups={groupedCycles} />
-        {visibleToolGroups.map((entry, i) => "part" in entry ? (
-          <ToolPart key={`failed-tool-${i}`} part={entry.part} createdAt={createdAt} />
-        ) : (
-          <ToolGroupSummary key={`failed-group-${entry.key}-${i}`} group={entry} createdAt={createdAt} />
-        ))}
+        <div className="run-timeline">
+          {visibleToolGroups.map((entry, i) => "part" in entry ? (
+            <ToolPart key={`failed-tool-${i}`} part={entry.part} createdAt={createdAt} />
+          ) : (
+            <ToolGroupSummary key={`failed-group-${entry.key}-${i}`} group={entry} createdAt={createdAt} />
+          ))}
+        </div>
         {onRetry && <FailedRunCard reason={reason} onRetry={onRetry} />}
       </div>
     );
@@ -1211,11 +1273,13 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
       {!live && visibleToolGroups.length > 0 && (
         <div className="flex w-full flex-col gap-2">
           <RunFlowRail groups={groupedCycles} />
-          {visibleToolGroups.map((entry, i) => "part" in entry ? (
-            <ToolPart key={`tool-${i}`} part={entry.part} createdAt={createdAt} />
-          ) : (
-            <ToolGroupSummary key={`${entry.key}-${i}`} group={entry} createdAt={createdAt} />
-          ))}
+          <div className="run-timeline">
+            {visibleToolGroups.map((entry, i) => "part" in entry ? (
+              <ToolPart key={`tool-${i}`} part={entry.part} createdAt={createdAt} />
+            ) : (
+              <ToolGroupSummary key={`${entry.key}-${i}`} group={entry} createdAt={createdAt} />
+            ))}
+          </div>
         </div>
       )}
       {prose && superseded && (

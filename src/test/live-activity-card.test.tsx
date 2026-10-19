@@ -111,8 +111,11 @@ describe("LiveActivityCard", () => {
     const text = body.textContent ?? "";
     expect(text).toContain("2 calls");
     expect(text).toContain("2 completed");
-    expect(text).toContain("Gathering public-source leads");
-    expect(text).toContain("Sweeping platforms for handle matches");
+    // Named by the cycle's purpose line (run-timeline.ts describeCycle): the
+    // concise label for each tool, never a raw tool id.
+    expect(text).toContain("public-source search");
+    expect(text).toContain("username sweep");
+    expect(text).not.toMatch(/minimax_web_search|username_sweep/);
   });
 
   it("keeps the live region on the one-line label, never around the body", () => {

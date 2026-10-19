@@ -117,7 +117,9 @@ export function toolDisplayName(toolName: string): string {
 const STAGE_LABELS: Record<string, string> = {
   TRIAGE: "Triage",
   REVIEW: "Review",
-  TARGETED_PIVOT: "Targeted pivot",
+  // "Pivot", not "Targeted pivot": the runtime token names an internal state;
+  // the analyst word for following a selector is the one JD's own playbooks use.
+  TARGETED_PIVOT: "Pivot",
   VERIFY: "Verify",
   REPORT: "Report",
 };
@@ -238,6 +240,59 @@ const SHORT_SOURCE: Record<string, string> = {
   ip_intel: "IP intelligence",
   multiple: "multiple sources",
 };
+
+/**
+ * Internal (non-provider) tools, as a cycle's purpose line names them. SHORT_SOURCE
+ * covers providers; these are the run's own bookkeeping steps, phrased as what
+ * the step did rather than which sub-agent "role" did it.
+ */
+const CONCISE_INTERNAL: Record<string, string> = {
+  list_tools: "capability check",
+  triage_seed: "seed triage",
+  memory_recall: "memory recall",
+  memory_save: "memory save",
+  record_artifacts: "artifacts recorded",
+  record_artifact: "artifact recorded",
+  record_finding: "finding recorded",
+  record_evidence: "evidence recorded",
+  minimax_correlate: "correlation pass",
+  coverage_audit: "coverage audit",
+  detect_contradictions: "contradiction check",
+  tool_audit: "tool audit",
+  finalize_no_findings: "no findings to record",
+  finalize_skip_memory: "memory step skipped",
+  minimax_plan_pivots: "pivot planning",
+  minimax_extract: "entity extraction",
+  minimax_web_search: "public-source search",
+  socialfetch_lookup: "profile lookup",
+  socialfetch_web_read: "page read",
+  gravatar_profile: "Gravatar lookup",
+  github_code_search: "code search",
+  exa_search: "semantic web search",
+  opsis_search: "account sweep",
+  opsis_results: "account sweep results",
+};
+
+/**
+ * A short, lower-case label for a tool, for a cycle's purpose line ("breach
+ * lookup · username sweep"). Provider tools come from SHORT_SOURCE, the run's
+ * own steps from CONCISE_INTERNAL, anything else from the action label; a raw
+ * `snake_case` id is never returned.
+ */
+export function conciseToolLabel(toolName: string): string {
+  const name = (toolName ?? "").trim();
+  if (!name) return "";
+  const known = SHORT_SOURCE[name] ?? CONCISE_INTERNAL[name];
+  if (known) return known;
+  // A registry action ("Searching semantic web index") keeps its casing after the
+  // first letter; a label title-cased from a bare id ("Hunter Verify") is
+  // lower-cased whole, or the purpose line reads "hunter Verify".
+  if (DISPLAY[name]) {
+    const action = toolActionLabel(name);
+    return action.charAt(0).toLowerCase() + action.slice(1);
+  }
+  return toolActionLabel(name).toLowerCase();
+}
 
 /**
  * Returns a concise, human-readable label for a (possibly compound) source

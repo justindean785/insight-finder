@@ -3,6 +3,7 @@
 // Mirror logic on the edge function so cache keys match.
 
 import { readProviderExport } from "@/lib/provider-export";
+import { parseUserMessage } from "@/lib/attachments";
 
 export type SeedKind = "email" | "username" | "phone" | "ip" | "domain" | "url" | "crypto" | "address" | "other";
 
@@ -210,12 +211,44 @@ const SEED_KIND_LABELS: Record<string, string> = {
   address: "Address",
 };
 
+/**
+ * Markdown and list furniture a first message may carry, flattened to the words.
+ * A case title is plain text: the sidebar showed "Here are the results for **16 M…"
+ * and "Attached files: - [IMG_5717.pn…" (2026-10-19) because the raw message was
+ * sliced as-is. Single-underscore italics are left alone on purpose — an
+ * underscore inside a handle is a character, not emphasis.
+ */
+function plainTitleText(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s*)/gm, "")
+    .replace(/(\*\*|__)(.+?)\1/g, "$2")
+    .replace(/\*([^*\n]+)\*/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function formatThreadTitle(text: string): string {
   const raw = (text ?? "").trim();
-  const detected = detectSeed(raw);
-  const label = detected ? SEED_KIND_LABELS[detected.kind] : undefined;
-  if (!label) return raw.slice(0, THREAD_TITLE_MAX);
-  return `${label}: ${detected!.raw}`.slice(0, THREAD_TITLE_MAX);
+  // The composer appends an "Attached files:" block after the analyst's words;
+  // a seed typed above an attachment is still the seed.
+  const { body, attachments } = parseUserMessage(raw);
+  // detectSeed answers `other` for any non-blank text, so "null" is not the
+  // signal: a labelled kind is.
+  const labelled = (d: DetectedSeed | null): DetectedSeed | null => (d && SEED_KIND_LABELS[d.kind] ? d : null);
+  const detected = labelled(detectSeed(raw)) ?? (body.trim() !== raw ? labelled(detectSeed(body.trim())) : null);
+  if (detected) return `${SEED_KIND_LABELS[detected.kind]}: ${detected.raw}`.slice(0, THREAD_TITLE_MAX);
+  // Unclassified: the analyst's own words, as plain text. A message that is
+  // only attachments is titled by its files.
+  const plain = plainTitleText(body);
+  if (plain) return plain.slice(0, THREAD_TITLE_MAX);
+  if (attachments.length > 0) {
+    const rest = attachments.length - 1;
+    return `Files: ${attachments[0].name}${rest > 0 ? ` +${rest}` : ""}`.slice(0, THREAD_TITLE_MAX);
+  }
+  return raw.slice(0, THREAD_TITLE_MAX);
 }
 
 export function detectSeed(input: string): DetectedSeed | null {
