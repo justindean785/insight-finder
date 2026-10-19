@@ -53,6 +53,7 @@ import { contradictionClaimSelfTest } from "./contradictions.ts";
 import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
 import { clusterBookkeepingSelfTest, legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
+import { providerAuthPriorSelfTest } from "./lib/provider-auth-prior.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 import { memoryContextSelfTest } from "./lib/memory-context.ts";
 import { crossCaseReviewsSelfTest } from "./lib/cross-case-reviews.ts";
@@ -440,6 +441,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Per-case dead-target memory (lib/dead-target.ts). Pure, no DB. Its PRESENCE is the
   // behavioural proof that the build carrying the gate is the one running.
   r.checks.dead_target_memory = describeDeadTargetMemory();
+  // Does a 401/402 from an earlier invocation of the case suppress the provider for this
+  // run (cleared by any later real answer; 403 and cache replays never carry)? Pure.
+  // PRESENCE proves the deployed bundle. Kill switch: PROVIDER_AUTH_PRIOR_DISABLED.
+  r.checks.provider_auth_prior = providerAuthPriorSelfTest();
   // Is the prompt char budget a CEILING, or only a target the recent-window tail is
   // exempt from? Pure, no DB. Its PRESENCE is the behavioural proof that the build
   // carrying the second elision pass is the one running — the BUILD_MARKER is a
