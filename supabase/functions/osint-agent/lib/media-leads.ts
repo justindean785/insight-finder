@@ -84,6 +84,12 @@ export interface MediaLead {
   source_tool: string;
   /** Only content images are worth a GeoSeer call; the geolocatability gate skips portraits. */
   geolocation_candidate: boolean;
+  /**
+   * Set when the call that produced this result was dispatched against a selector whose tie to
+   * the subject is unproven (the `_runtime.unproven_linkage` taint). Such an account may be a
+   * stranger, a fan page or a collision, so its pictures are never geolocation candidates.
+   */
+  linkage_unproven?: true;
   /** Present only when the image sits in an object that also carries a place tag or a timestamp. */
   post?: MediaLeadPost;
 }
@@ -92,7 +98,24 @@ export const MEDIA_LEADS_NOTE =
   "Heuristic list of direct image URLs found in this result: leads, not evidence. " +
   "Content image: gemini_vision (mode='image') first; only a scene with outdoor, street, landmark or signage signal goes on to geoseer_geolocate (url + scene). " +
   "post.has_location_tag=true means the platform already reported a place (post.place): read that before paying for GeoSeer. " +
-  "Avatars: reverse-image only.";
+  "Avatars: reverse-image only. " +
+  "Use content leads only for an account tied to the subject and showing the account holder's own pictures (authenticity gate in the system prompt).";
+
+/** Added to the note when the result was produced against an unproven-linkage selector. */
+export const MEDIA_LEADS_UNLINKED_NOTE =
+  " linkage_unproven: this account's tie to the subject is not established (quarantined selector), so none of these pictures is a geolocation candidate: " +
+  "do not spend gemini_vision or geoseer_geolocate on them until the account is linked to the subject by independent evidence.";
+
+/** Key under which the dispatch wrapper (cache.ts) records an unproven-linkage dispatch on `_runtime`.
+ *  Duplicated here because this module has zero imports; a test pins it to lib/unproven-linkage.ts. */
+export const UNPROVEN_LINKAGE_RUNTIME_KEY = "unproven_linkage";
+
+function linkageUnproven(r: Record<string, unknown>): boolean {
+  const rt = r._runtime;
+  if (!rt || typeof rt !== "object" || Array.isArray(rt)) return false;
+  const v = (rt as Record<string, unknown>)[UNPROVEN_LINKAGE_RUNTIME_KEY];
+  return v != null && v !== false;
+}
 
 // ── extraction ───────────────────────────────────────────────────────────────
 
@@ -326,9 +349,16 @@ export function attachMediaLeads(toolName: string, result: unknown): unknown {
     if ("media_leads" in r) return result;
     // A skipped call or a clean negative ("found: false") has no content to mine.
     if (r.skipped === true || r.found === false) return result;
-    const leads = extractMediaLeads(toolName, r);
-    if (leads.length === 0) return result;
-    return { ...r, media_leads: leads, media_leads_note: MEDIA_LEADS_NOTE };
+    const found = extractMediaLeads(toolName, r);
+    if (found.length === 0) return result;
+    // Authenticity is not guessable from a URL, but one signal is real: the dispatch wrapper already
+    // marked this call as made against a selector the run could not tie to the subject. Never hand
+    // such an account's pictures out as geolocation candidates; they stay visible as leads.
+    if (linkageUnproven(r)) {
+      const leads = found.map((l) => ({ ...l, geolocation_candidate: false, linkage_unproven: true as const }));
+      return { ...r, media_leads: leads, media_leads_note: MEDIA_LEADS_NOTE + MEDIA_LEADS_UNLINKED_NOTE };
+    }
+    return { ...r, media_leads: found, media_leads_note: MEDIA_LEADS_NOTE };
   } catch {
     return result;
   }
@@ -369,15 +399,19 @@ export function mediaLeadsSelfTest(
     avatar_url: "https://cdn.example.com/av/42",
   };
   const leads = extractMediaLeads("jina_reader_scrape", probe);
+  const tainted = attachMediaLeads("jina_reader_scrape", { ...probe, _runtime: { [UNPROVEN_LINKAGE_RUNTIME_KEY]: { parent_type: "username" } } }) as
+    { media_leads?: MediaLead[] };
+  const taintOk = (tainted.media_leads ?? []).length === 2 &&
+    (tainted.media_leads ?? []).every((l) => l.geolocation_candidate === false && l.linkage_unproven === true);
   const ok = leads.length === 2 &&
     leads[0].kind === "content" && leads[0].geolocation_candidate === true &&
-    leads[1].kind === "avatar" && leads[1].geolocation_candidate === false;
+    leads[1].kind === "avatar" && leads[1].geolocation_candidate === false && taintOk;
   return {
     ok,
     enabled: !mediaLeadsDisabled(env),
     sources: MEDIA_LEAD_SOURCE_TOOLS.size,
     detail: ok
-      ? "content images rank before avatars; icons are dropped"
-      : "SELF-TEST FAILED: media-lead extraction no longer ranks content before avatars or no longer drops icons",
+      ? "content images rank before avatars; icons are dropped; unproven-linkage accounts yield no geolocation candidates"
+      : "SELF-TEST FAILED: media-lead extraction no longer ranks content before avatars, no longer drops icons, or no longer withholds geolocation candidates from an unproven-linkage account",
   };
 }

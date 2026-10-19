@@ -11,10 +11,13 @@ import {
   MAX_MEDIA_LEADS,
   MEDIA_LEAD_SOURCE_TOOLS,
   MEDIA_LEADS_NOTE,
+  MEDIA_LEADS_UNLINKED_NOTE,
   mediaLeadsDisabled,
   mediaLeadsSelfTest,
+  UNPROVEN_LINKAGE_RUNTIME_KEY,
   wrapToolsWithMediaLeads,
 } from "../../../functions/osint-agent/lib/media-leads.ts";
+import { UNPROVEN_LINKAGE_KEY, unprovenLinkageMarker } from "../../../functions/osint-agent/lib/unproven-linkage.ts";
 import { extractFindings } from "../../../functions/osint-agent/auto-persist-findings.ts";
 
 const read = (p: string) => Deno.readTextFile(new URL(`../../../functions/osint-agent/${p}`, import.meta.url));
@@ -219,6 +222,62 @@ Deno.test("attach: a Gravatar 'not found' carries no lead, a hit carries one ava
 
 type FakeTool = { description?: string; inputSchema?: unknown; execute?: (i: unknown, o: unknown) => Promise<unknown> };
 
+Deno.test("linkage: a result from an unproven-linkage dispatch keeps its leads but none is a geolocation candidate", () => {
+  const body = {
+    content: "![a](https://cdn.example.com/p/1.jpg) ![b](https://cdn.example.com/p/2.jpg)",
+    avatar_url: "https://cdn.example.com/av/9",
+  };
+  const clean = attachMediaLeads("jina_reader_scrape", structuredClone(body)) as Record<string, unknown>;
+  const cleanLeads = clean.media_leads as Array<{ kind: string; geolocation_candidate: boolean; linkage_unproven?: boolean }>;
+  assertEquals(cleanLeads.filter((l) => l.geolocation_candidate).length, 2, "baseline: two content leads are candidates");
+  assert(cleanLeads.every((l) => !("linkage_unproven" in l)), "a linked account carries no linkage flag");
+
+  const marker = unprovenLinkageMarker("username", "harvested_handle", "name-only collision");
+  const tainted = attachMediaLeads("jina_reader_scrape", { ...structuredClone(body), _runtime: { [UNPROVEN_LINKAGE_KEY]: marker } }) as Record<string, unknown>;
+  const leads = tainted.media_leads as Array<{ kind: string; geolocation_candidate: boolean; linkage_unproven?: boolean }>;
+  assertEquals(leads.length, 3, "the leads are still visible, as leads");
+  assert(leads.every((l) => l.geolocation_candidate === false && l.linkage_unproven === true));
+  assertEquals(tainted.media_leads_note, MEDIA_LEADS_NOTE + MEDIA_LEADS_UNLINKED_NOTE);
+  assert(String(tainted.media_leads_note).includes("linkage_unproven"));
+  // The taint itself is left exactly as the dispatch wrapper wrote it.
+  assertEquals((tainted._runtime as Record<string, unknown>)[UNPROVEN_LINKAGE_KEY], marker);
+});
+
+Deno.test("linkage: the runtime key this module reads is the one the dispatch wrapper writes", () => {
+  assertEquals(UNPROVEN_LINKAGE_RUNTIME_KEY, UNPROVEN_LINKAGE_KEY);
+});
+
+Deno.test("linkage: other _runtime metadata, or a falsy/odd taint value, does not trip the guard", () => {
+  const body = { content: "![a](https://cdn.example.com/p/1.jpg)" };
+  const probes: unknown[] = [
+    { selector: "x", weak_lead: true, weak_lead_reasons: ["single-source"] },
+    { [UNPROVEN_LINKAGE_KEY]: null },
+    { [UNPROVEN_LINKAGE_KEY]: false },
+    [],
+    "unproven_linkage",
+  ];
+  for (const rt of probes) {
+    const out = attachMediaLeads("jina_reader_scrape", { ...body, _runtime: rt }) as Record<string, unknown>;
+    const leads = out.media_leads as Array<{ geolocation_candidate: boolean; linkage_unproven?: boolean }>;
+    assertEquals(leads.map((l) => l.geolocation_candidate), [true], JSON.stringify(rt));
+    assertEquals(out.media_leads_note, MEDIA_LEADS_NOTE);
+  }
+});
+
+Deno.test("linkage: through the wrapper, a tainted social result is downgraded and the original is not mutated", async () => {
+  const marker = unprovenLinkageMarker("username", "harvested_handle", null);
+  const original = { data: { recentPosts: [{ displayUrl: "https://cdn.example.com/p/1.jpg" }] }, _runtime: { [UNPROVEN_LINKAGE_KEY]: marker } };
+  const frozen = structuredClone(original);
+  const wrapped = wrapToolsWithMediaLeads(
+    { socialfetch_lookup: { execute: async () => original } },
+    () => undefined,
+  ) as { socialfetch_lookup: { execute: (i: unknown, o: unknown) => Promise<Record<string, unknown>> } };
+  const out = await wrapped.socialfetch_lookup.execute({}, {});
+  const leads = out.media_leads as Array<{ geolocation_candidate: boolean; linkage_unproven?: boolean }>;
+  assertEquals(leads.map((l) => [l.geolocation_candidate, l.linkage_unproven]), [[false, true]]);
+  assertEquals(original, frozen, "the cached/original result object is untouched");
+});
+
 Deno.test("wrapper: source tools gain media_leads; other tools and execute-less tools are the same objects", async () => {
   const seen: unknown[] = [];
   const tools: Record<string, FakeTool> = {
@@ -377,6 +436,34 @@ Deno.test("wiring: the geolocation rule is bounded, defers to a platform place t
   // The existing safety bullet this rule points at must still be there.
   assert(PROMPT.includes("Minor-safety detection:"));
   assert(MEDIA_LEADS_NOTE.includes("post.has_location_tag"));
+});
+
+Deno.test("wiring: the geolocation rule is TRIGGERED (corroborate, or other pivots done) rather than run on every photo", () => {
+  const line = PROMPT.split("\n").find((l) => l.includes("IMAGE GEOLOCATION (GEO-OSINT)")) ?? "";
+  assert(line.includes("never an opening move"), "geolocation is not an opening move");
+  assert(line.includes("(a) CORROBORATE data you already hold"), "trigger A: correlate with data already found");
+  assert(line.includes("AGREES with or CONTRADICTS"), "the result is reported against the data already held");
+  assert(/other pivots for this seed have been attempted or recorded UNAVAILABLE/.test(line), "trigger B: only once the other pivots are done");
+  assert(line.includes("cheaper, higher-yield pivots are still pending"), "no credits while better pivots remain");
+  // Same vocabulary as the EXHAUSTION / SATURATION RULE so the two cannot disagree about when pivots are done.
+  assert(PROMPT.includes("attempted, satisfied, or explicitly recorded UNAVAILABLE"));
+});
+
+Deno.test("wiring: the AUTHENTICITY GATE names what to skip and sits BEFORE the vision/GeoSeer mechanics", () => {
+  const line = PROMPT.split("\n").find((l) => l.includes("IMAGE GEOLOCATION (GEO-OSINT)")) ?? "";
+  const gate = line.indexOf("AUTHENTICITY GATE");
+  assert(gate > 0, "the gate exists");
+  assert(gate < line.indexOf("MECHANICS:"), "the gate is read before the how-to");
+  assert(gate < line.indexOf("gemini_vision"), "the gate precedes the first vision instruction");
+  assert(line.includes("durable linkage"), "the account must be tied to the subject");
+  for (const word of ["fan pages", "parody", "impersonation", "bot-", "stock", "meme", "repost", "AI-generated"]) {
+    assert(line.includes(word), `the gate must name: ${word}`);
+  }
+  assert(line.includes("linkage_unproven"), "the lead-level flag is named");
+  assert(line.includes("spend nothing on it"), "unclear authenticity costs nothing");
+  assert(line.includes("A photo the analyst attached is exempt"), "an analyst's own upload is not second-guessed");
+  assert(MEDIA_LEADS_NOTE.includes("authenticity gate"));
+  assert(MEDIA_LEADS_UNLINKED_NOTE.includes("gemini_vision") && MEDIA_LEADS_UNLINKED_NOTE.includes("geoseer_geolocate"));
 });
 
 Deno.test("wiring: every source tool is a real registered tool, and the note names real tools", () => {
