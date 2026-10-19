@@ -112,6 +112,19 @@ components:
 
 ## 1. Overview
 
+> **Status (2026-10-19).** This register was flattened to a neutral "Case desk"
+> graphite with a teal accent on 2026-09-25 and shipped that way; JD's design
+> review of 2026-10-19 scored the result as a grey template, and JD approved
+> restoring the Cold Room as direction A of the frontend revamp. `src/index.css`
+> carries these values again. One rule below is tightened, not relaxed: **a pane
+> is lit, never blurred.** The blur tiers in §4 now apply to overlays (sheets,
+> dialogs, popovers, the command palette) only; `.panel` and every alias of it
+> (`.glass*`, `.chat-card`, `.instrument-panel`) draw their depth from the film,
+> the specular cap, the refracted rim and one contained shadow, through the
+> shared `--pane-*` variables in `:root`. A pane-level backdrop blur is a
+> compositing layer under 11px type on a phone, and the discipline of the
+> graphite pass is the part worth keeping.
+
 **Creative North Star: "The Cold Room"**
 
 The product is an operations room at night. A true black ground, cold platinum ink, and one electric indigo that means LIVE, LINKED or ACTIVE. Depth never comes from lighter greys; it comes from light, as translucent films and low-alpha blooms stacked on a void. An analyst sits here for hours reading dense tables, so the room is dim and the instruments are bright.
@@ -211,7 +224,7 @@ Blur marks elevation and has a budget: one blur value per tier, never escalated 
 - **Pane** (`inset 0 1px 0 film/0.085, 0 14px 38px -22px black/0.98`): the resting surface. One inner hairline, one contained shadow.
 - **Raised** (`inset 0 1px 0 film/0.075, 0 18px 44px -26px black/0.95`): drawers, popovers, floating tiles.
 - **Refracted rim** (`inset 1px 0 0 indigo/0.05, inset -1px 0 0 violet/0.05`): the two axes read at the pane edge, where real glass bends light. Hairline only.
-- **Blur tiers**: 22 to 26px with 145 to 170% saturation on panes; 28px on overlays.
+- **Blur tiers**: overlays only (sheets, dialogs, popovers, palette) at 22 to 28px. Panes do not blur; see the status note in §1.
 
 ### Named Rules
 
