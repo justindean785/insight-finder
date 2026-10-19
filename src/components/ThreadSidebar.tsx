@@ -492,7 +492,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           </div>
           <div className="min-w-0">
             <div className="font-display text-sm font-semibold leading-none tracking-tight text-foreground">Insight Finder</div>
-            <div className="mt-0.5 text-micro leading-none text-muted-foreground">Cases</div>
+            <div className="mt-0.5 text-data leading-none text-muted-foreground">Cases</div>
           </div>
         </Link>
         {onToggleCollapse && <button
@@ -523,7 +523,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             put its marker. Low-contrast labels on purpose — navigation is not
             the content, and on black it only needs to be findable. */}
         <div className="pt-1">
-          <div className="px-1 pb-1 text-micro font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
+          <div className="px-1 pb-1 text-data font-medium text-muted-foreground">
             Workspace
           </div>
           <div className="relative pl-3">
@@ -562,7 +562,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
                 <Icon className={cn("h-3.5 w-3.5 shrink-0", active ? "text-foreground" : "text-muted-foreground/70")} strokeWidth={1.6} />
                 <span className="truncate">{label}</span>
                 {badge > 0 && (
-                  <span className="ml-auto inline-flex h-[17px] min-w-[20px] items-center justify-center rounded-full bg-white px-1.5 font-mono text-eyebrow font-bold tracking-normal text-black">
+                  <span className="ml-auto inline-flex h-[17px] min-w-[20px] items-center justify-center rounded-full bg-white px-1.5 font-mono text-micro font-bold tracking-normal text-black">
                     {badge > 99 ? "99+" : badge}
                   </span>
                 )}
@@ -604,7 +604,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2.5 pb-2 [scrollbar-width:thin]">
         {metricsSampled && (
           <div
-            className="mb-2 mx-1 inline-flex items-center gap-1 rounded border border-warning/25 bg-warning/8 px-2 py-1 text-eyebrow text-warning"
+            className="mb-2 mx-1 inline-flex items-center gap-1 rounded border border-warning/25 bg-warning/8 px-2 py-1 text-data text-warning"
             title={`Per-thread badges are aggregated from the latest ${SIDEBAR_METRICS_SAMPLE_LIMIT.toLocaleString()} artifact rows.`}
           >
             ⚠ Metrics sampled
@@ -613,7 +613,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         {(["Today", "This week", "Older"] as const).map((bucket) =>
           listGroups[bucket].length === 0 ? null : (
             <div key={bucket} className="mb-2">
-              <div className="flex items-center gap-1.5 px-2 py-1 text-micro font-medium tracking-normal text-muted-foreground">
+              <div className="flex items-center gap-1.5 px-2 py-1 text-data font-medium tracking-normal text-muted-foreground">
                 <span className="h-1 w-1 rounded-full bg-muted-foreground/50" />
                 {bucket}
                 <span className="ml-1 font-mono opacity-50">{listGroups[bucket].length}</span>
@@ -661,7 +661,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             </span>
             <a
               href={SUPPORT_MAILTO}
-              className="mt-px flex items-center gap-1 text-micro text-muted-foreground transition-colors hover:text-foreground coarse:min-h-11"
+              className="mt-px flex items-center gap-1 text-data text-muted-foreground transition-colors hover:text-foreground coarse:min-h-11"
             >
               <Mail className="h-2.5 w-2.5" strokeWidth={1.75} aria-hidden />
               Send feedback
@@ -755,7 +755,9 @@ function ThreadRow({
         "group relative flex min-h-[2.75rem] items-center gap-2 overflow-hidden rounded-lg px-2.5 py-2 text-meta transition-colors",
         "hover:bg-white/[0.04]",
         active && "bg-[hsl(var(--intel-blue)/0.12)] text-foreground ring-1 ring-[hsl(var(--intel-blue)/0.3)]",
-        dim && !active && "opacity-55",
+        // Completed runs recede, but stay readable: at 55% the 11px meta line fell
+        // under 4.5:1. The check icon carries the "finished" state as well.
+        dim && !active && "opacity-75",
       )}
     >
       {/* Status pip — in flow, not absolute (prevents bleed into next row) */}
@@ -824,7 +826,7 @@ function SpendTrend({ threads, totalCost }: { threads: Thread[]; totalCost: numb
     <div className="rounded-xl border border-white/10 bg-white/[0.035] p-1">
       <div className="rounded-lg bg-black/20 px-3 py-2.5">
         <div className="flex items-center justify-between gap-3">
-          <span className="text-micro tracking-normal text-muted-foreground">Spend</span>
+          <span className="text-data tracking-normal text-muted-foreground">Spend</span>
           <span className="font-mono text-micro text-muted-foreground">{threads.length} cases</span>
         </div>
         <div className="mt-1 flex items-end justify-between gap-3">

@@ -120,6 +120,7 @@ describe("ThreadSidebar leaves dead runs for server recovery", () => {
     ];
     renderSidebar();
     const title = await screen.findByText("Dead run case");
-    await waitFor(() => expect(title.closest("[class*='opacity-55']")).not.toBeNull());
+    // Dimmed = the finished/not-running treatment (75% since Stage A, for contrast).
+    await waitFor(() => expect(title.closest("[class*='opacity-75']")).not.toBeNull());
   });
 });

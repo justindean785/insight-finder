@@ -41,7 +41,7 @@ export function CaseStatusPill({ snapshot, className }: { snapshot: CaseSnapshot
     return (
       <span
         className={cn(
-          "inline-flex h-5 items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2 text-micro font-medium text-muted-foreground",
+          "inline-flex h-5 items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2 text-data font-medium text-muted-foreground",
           className,
         )}
       >
@@ -55,7 +55,7 @@ export function CaseStatusPill({ snapshot, className }: { snapshot: CaseSnapshot
     <span
       data-run-state={state}
       className={cn(
-        "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full border px-2 text-micro font-semibold",
+        "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full border px-2 text-data font-semibold",
         PILL_TONE[state],
         className,
       )}

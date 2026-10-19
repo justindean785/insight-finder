@@ -235,7 +235,7 @@ function CompactNav({
     tabRefs.current[next]?.focus();
   };
 
-  const item = "relative flex min-w-0 flex-1 flex-col items-center justify-center gap-1 pb-1.5 pt-2 text-[11.5px] font-medium leading-none transition-colors duration-fast ease-standard focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
+  const item = "relative flex min-w-0 flex-1 flex-col items-center justify-center gap-1 pb-1.5 pt-2 text-data font-medium leading-none transition-colors duration-fast ease-standard focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
   return (
     <nav
       aria-label="Workspace sections"
@@ -295,7 +295,7 @@ function CompactNav({
           sideOffset={6}
           className="mr-2 w-60 rounded-xl border-border bg-[hsl(var(--popover))] p-1 shadow-overlay"
         >
-          <DropdownMenuLabel className="px-2.5 pb-1 pt-1.5 text-micro font-medium text-muted-foreground">More sections</DropdownMenuLabel>
+          <DropdownMenuLabel className="px-2.5 pb-1 pt-1.5 text-data font-medium text-muted-foreground">More sections</DropdownMenuLabel>
           <DropdownMenuRadioGroup value={activeMore?.key ?? ""} onValueChange={(v) => onChange(v as WorkspaceTab)}>
             {more.map((t) => {
               const Icon = t.icon;
