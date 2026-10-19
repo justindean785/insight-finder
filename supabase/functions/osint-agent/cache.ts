@@ -40,7 +40,7 @@ import {
 import { reserveToolCall } from "./orchestrator-budget.ts";
 import { cacheVersionFor } from "./lib/tool-cache-version.ts";
 import { takeInputCoercions } from "./lib/tool-input-coercion.ts";
-import { isFinalizeWindowLiveLookupExempt } from "./orchestrator-finalize.ts";
+import { isFinalizeWindowLiveLookupExempt, isFinalizeCollectExempt } from "./orchestrator-finalize.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -1532,7 +1532,9 @@ export function wrapToolsWithCache(
         // (ALWAYS_ALLOW) are exempt via shouldSkipForToolCap, so the closing
         // record_artifacts is never starved and no collected evidence is stranded.
         // This is the hard backstop; prepareStep also forces synthesis once capped.
-        if (ctx.toolCallBudget && !reserveToolCall(ctx.toolCallBudget, ALWAYS_ALLOW_TOOLS.has(name))) {
+        // opsis_results is a FREE read of a run already paid for; it is exempt from the
+        // tool-call cap and the finalize-window guard so the collect phase can run.
+        if (ctx.toolCallBudget && !reserveToolCall(ctx.toolCallBudget, ALWAYS_ALLOW_TOOLS.has(name) || isFinalizeCollectExempt(name))) {
           // reserveToolCall already flipped `capped`. Reservation (not completed-call
           // count) is now the admission gate, so a parallel fan-out cannot overshoot.
           await logUsage(false, false, Date.now() - t0, "run tool-call cap reached", null, true, {
@@ -1563,7 +1565,8 @@ export function wrapToolsWithCache(
         if (
           ctx.shouldStopLiveLookups?.() &&
           !ALWAYS_ALLOW_TOOLS.has(name) &&
-          !correlateExempt
+          !correlateExempt &&
+          !isFinalizeCollectExempt(name)
         ) {
           await logUsage(false, false, Date.now() - t0, "finalize window open; live lookup skipped", null, true, {
             input: inputJson,
@@ -1584,7 +1587,7 @@ export function wrapToolsWithCache(
           initial: circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force }),
           recheck: () => circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force }),
           shouldStop: () =>
-            (!!ctx.shouldStopLiveLookups?.() && !ALWAYS_ALLOW_TOOLS.has(name) && !correlateExempt) ||
+            (!!ctx.shouldStopLiveLookups?.() && !ALWAYS_ALLOW_TOOLS.has(name) && !correlateExempt && !isFinalizeCollectExempt(name)) ||
             !!(opts as { abortSignal?: AbortSignal } | null | undefined)?.abortSignal?.aborted,
           onTick: () => ctx.onHeartbeat?.(),
           disabled: providerBusyQueueDisabled(),

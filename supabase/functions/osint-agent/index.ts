@@ -70,6 +70,7 @@ import {
   MAX_CORRELATE_FINALIZE_DEFERRALS, requiredCompletionMs,
   wallClockFinalizeDue, stepCapFinalizeDue,
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
+  pendingOpsisRuns, shouldCollectOpsisBeforeFinalize, opsisFinalizeCollectEnabled,
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
@@ -1039,6 +1040,9 @@ Deno.serve(async (req) => {
     let finalizeStepsRun = 0;
     let finalizePhase: FinalizePhase | null = null;
     let finalizeBoundary = countFinalizeProgress([]);
+    // Bounded Opsis collect phase (orchestrator-finalize.ts): counted on entry, so a
+    // refused/failed read is never retried and the phase can never stall finalize.
+    let finalizeCollectStepsRun = 0;
     let finalizeDecisionSucceededThisStep = false;
     // Per-run genuine-tool-call budget (MAX_TOOL_CALLS_PER_RUN). Passed into
     // wrapToolsWithCache, which increments `genuine` on each live execution and flips
@@ -1346,10 +1350,28 @@ Deno.serve(async (req) => {
               genuine_tool_calls: toolCallBudget.genuine,
             }));
           }
-          finalizePhase = resolveFinalizePhase(finalizeBoundary, progress);
-          finalizeStepsRun++;
+          const opsisPending = pendingOpsisRuns(stepMessages as Array<{ content?: unknown }>);
+          const collectNow = shouldCollectOpsisBeforeFinalize({
+            pending: opsisPending.length,
+            collectStepsRun: finalizeCollectStepsRun,
+            elapsedMs: elapsedMsNow,
+            stepCapDue,
+            capReached,
+            budgetExhausted: anthropicBudget.exhausted,
+            enabled: opsisFinalizeCollectEnabled(),
+          });
+          finalizePhase = resolveFinalizePhase(finalizeBoundary, progress, { collect: collectNow });
+          if (finalizePhase === "collect") {
+            finalizeCollectStepsRun++;
+            console.log(JSON.stringify({
+              event: "finalize_opsis_collect", thread_id: threadId, step_number: stepNumber ?? 0,
+              pending_runs: opsisPending.length, elapsed_ms: elapsedMsNow,
+            }));
+          } else {
+            finalizeStepsRun++;
+          }
           finalizeDecisionSucceededThisStep = false;
-          const finalizePlan = buildFinalizeStepPlan(finalizePhase);
+          const finalizePlan = buildFinalizeStepPlan(finalizePhase, opsisPending);
           logPromptSize(baseSystemPrompt + finalizePlan.directive, [...finalizePlan.activeTools]);
           return {
             messages: stepMessagesOut,
@@ -1592,6 +1614,8 @@ Deno.serve(async (req) => {
             ? stepProgress.recordSucceeded + stepProgress.noFindingsSucceeded > 0
             : finalizePhase === "memory"
             ? stepProgress.memorySucceeded + stepProgress.memorySkipped > 0
+            : finalizePhase === "collect"
+            ? names.includes("opsis_results") // any read counts; the attempt is bounded, not the outcome
             : true;
           console.log(JSON.stringify({
             event: "finalize_step_finished", thread_id: threadId,
