@@ -140,13 +140,16 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
     return (
       <div
         className={cn(
-          "flex flex-col items-center gap-0.5 rounded-xl border-2 px-3.5 py-2 text-center shadow-[0_12px_28px_-16px_hsl(0_0%_0%/1)]",
+          // Capped width: a seed can be a whole pasted instruction plus a URL,
+          // which at fit-view zoom became a band across the entire canvas. It
+          // wraps (never truncates — it is the selector) inside 20rem.
+          "flex max-w-[20rem] flex-col items-center gap-0.5 rounded-xl border-2 px-3.5 py-2 text-center shadow-[0_12px_28px_-16px_hsl(0_0%_0%/1)]",
           "border-[hsl(var(--info))] bg-surface-3 text-foreground",
           selected && "ring-2 ring-foreground ring-offset-2 ring-offset-background",
         )}
       >
         <Handle type="target" position={Position.Top} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
-        <span className="font-mono text-micro font-bold leading-none">{data.label}</span>
+        <span className="font-mono text-micro font-bold leading-snug [overflow-wrap:anywhere]">{data.label}</span>
         <span className="font-mono text-micro uppercase tracking-[0.16em] opacity-70">{data.kind} · seed</span>
         <Handle type="source" position={Position.Bottom} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
       </div>
@@ -227,6 +230,8 @@ function toRfNodes(graph: EntityGraph, hidden: Set<Group>, showIsolated = true):
       },
       // Seed stays put; discovered nodes are draggable for manual arrangement.
       draggable: !n.isSeed,
+      // Nodes are focusable buttons; without a name a screen reader says only "button".
+      ariaLabel: `${n.label}, ${n.kind}${n.isSeed ? ", seed" : ""}`,
     }));
 }
 
@@ -393,6 +398,12 @@ export function GraphTab({ threadId }: { threadId: string }) {
     });
   }, [graph, hidden, showIsolated, setRfNodes]);
   useEffect(() => { setRfEdges(toRfEdges(graph, hidden, selected, showDiscovery, showIsolated)); }, [graph, hidden, selected, showDiscovery, showIsolated, setRfEdges]);
+  // Selection is this component's own state (onNodeClick), so mirror it onto
+  // the nodes: EntityNode draws its selected ring from React Flow's `selected`
+  // flag, which nothing else sets. Re-applied after every node rebuild above.
+  useEffect(() => {
+    setRfNodes((prev) => prev.map((n) => (Boolean(n.selected) === (n.id === selected) ? n : { ...n, selected: n.id === selected })));
+  }, [selected, graph, hidden, showIsolated, setRfNodes]);
 
   // Fit once the (async) nodes for a case are present; re-fits when the case
   // changes. Group-filter toggles keep the same threadId so they don't re-fit.
@@ -537,7 +548,18 @@ export function GraphTab({ threadId }: { threadId: string }) {
         />
       )}
 
-      <div className={cn("relative flex-1 min-h-0", mode === "list" && "hidden")}>
+      <div
+        className={cn("relative flex-1 min-h-0", mode === "list" && "hidden")}
+        // Keyboard parity with a click: Enter/Space on a focused node opens its
+        // detail, Escape closes it. React Flow focuses nodes but does not route
+        // the key to onNodeClick, so selection never happened from the keyboard.
+        onKeyDown={(e) => {
+          const node = (e.target as HTMLElement).closest<HTMLElement>(".react-flow__node");
+          if (!node) return;
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelected(node.dataset.id ?? null); }
+          else if (e.key === "Escape") setSelected(null);
+        }}
+      >
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}

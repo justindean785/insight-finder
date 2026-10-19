@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { PanelLeftOpen } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
@@ -75,6 +75,19 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, [overlay]);
 
+  // Tablet overlay focus: opening moves focus into the expanded list (its
+  // collapse control), closing returns it to the rail's expand control, so a
+  // keyboard user is never left on a control that just disappeared.
+  const railRef = useRef<HTMLElement>(null);
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (isWide) { wasOpen.current = false; return; }
+    if (tabletOpen === wasOpen.current) return;
+    wasOpen.current = tabletOpen;
+    const label = tabletOpen ? "Collapse sidebar" : "Expand sidebar";
+    requestAnimationFrame(() => railRef.current?.querySelector<HTMLElement>(`button[aria-label="${label}"]`)?.focus());
+  }, [tabletOpen, isWide]);
+
   const openNav = useCallback(() => setDrawerOpen(true), []);
 
   if (loading) return <FullPageLoader />;
@@ -100,6 +113,7 @@ export function AppShell() {
             )}
           >
             <aside
+              ref={railRef}
               aria-label="Cases"
               className={cn(
                 "rail-surface absolute inset-y-0 left-0 flex min-h-0 flex-col overflow-hidden border-r border-border-subtle transition-[width] duration-200 ease-out motion-reduce:transition-none",
@@ -134,6 +148,12 @@ export function AppShell() {
           <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
             <SheetContent
               side="left"
+              // Opened from the page's own top-bar button, not a Radix trigger, so
+              // Radix has nowhere to return focus. Send it back to that button.
+              onCloseAutoFocus={(e) => {
+                e.preventDefault();
+                document.querySelector<HTMLElement>('#shell-main button[aria-label="Open cases"]')?.focus();
+              }}
               className="rail-surface w-[82vw] max-w-[300px] overflow-hidden border-r border-border-subtle p-0 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] sm:max-w-[300px] [&>button]:hidden"
             >
               {/* Radix requires an accessible name + description on every dialog

@@ -155,7 +155,7 @@ export function CaseSyncStatus({ className, compact = false }: { className?: str
             disabled={syncing}
             aria-label="Refresh case data"
             className={cn(
-              "grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors",
+              "grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors coarse:h-11 coarse:w-11",
               "hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               "disabled:cursor-default disabled:opacity-70",
             )}
