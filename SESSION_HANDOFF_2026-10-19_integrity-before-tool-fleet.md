@@ -108,4 +108,4 @@ Taken from `git log origin/main` and `deploy-log.jsonl`, not from memory. Severa
 - Edge: `cd supabase/tests/osint-agent && deno test --config=../../functions/osint-agent/deno.json --no-check --no-lock --allow-net --allow-env --allow-sys --allow-read . ../evidence-export`. Green on `main`: 2449/0/6.
 - e2e: `PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium-1194/chrome-linux/chrome npm run test:e2e` → 52 passed / 2 skipped.
 - Integration test for a PR: `git worktree add --detach <scratch> origin/main`, then `git merge --no-ff <pr-head>` there, then run all of the above. Never push that merge.
-- Safety-net check-in scheduled for 2026-10-19T02:14Z (trig_01XE8dyPwkkdPHFicZrQBs2r): it re-checks #797/#593/#799/#800 and re-arms quietly; at most 3 quiet runs.
+- Safety-net check-ins: the one-shot `trig_01XE8dyPwkkdPHFicZrQBs2r` fired at 2026-10-19T02:14Z and has ended. The policy is unchanged: re-check #797/#593/#799/#800, re-arm quietly about every 4 h, and stop after 3 quiet check-ins since JD's last message. Any new session starts without a pending check-in.
