@@ -4,8 +4,10 @@ import { useAuth } from "@/hooks/useAuth";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { CaseSnapshotProvider } from "@/components/workspace/CaseSnapshotProvider";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
-import { AppNav } from "@/components/AppNav";
-import { ViewWorkspaceTabs, type ViewCaseTab } from "@/components/workspace/ViewWorkspaceTabs";
+import { ShellTopBar, ShellTopBarTitle } from "@/components/shell/AppShell";
+import { WorkspaceTabs } from "@/components/workspace/WorkspaceTabs";
+import { CASE_VIEW_SECTIONS, type WorkspaceTab } from "@/lib/workspace-sections";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Button } from "@/components/ui/button";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
@@ -29,6 +31,8 @@ const ReportTab = lazy(() =>
   import("@/components/panel/ReportTab").then((m) => ({ default: m.ReportTab })),
 );
 
+type ViewCaseTab = Extract<WorkspaceTab, "evidence" | "report" | "graph" | "tools">;
+
 type ThreadMeta = {
   id: string;
   title: string | null;
@@ -42,6 +46,7 @@ export default function CaseViewPage() {
   const { threadId } = useParams();
   const { user, loading } = useAuth();
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [tab, setTab] = useState<ViewCaseTab>("report");
   const [meta, setMeta] = useState<ThreadMeta | null>(null);
   const [metaLoading, setMetaLoading] = useState(true);
@@ -82,16 +87,16 @@ export default function CaseViewPage() {
   if (!threadId) return <Navigate to="/cases" replace />;
   if (metaLoading) {
     return (
-      <div className="min-h-screen bg-background">
-        <AppNav />
+      <div className="flex min-h-0 flex-1 flex-col">
+        {isMobile && <ShellTopBar><ShellTopBarTitle>Case</ShellTopBarTitle></ShellTopBar>}
         <div className="grid place-items-center h-64 text-muted-foreground text-sm">Loading case…</div>
       </div>
     );
   }
   if (!metaLoading && meta === null) {
     return (
-      <div className="min-h-screen bg-background">
-        <AppNav />
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        {isMobile && <ShellTopBar><ShellTopBarTitle>Case</ShellTopBarTitle></ShellTopBar>}
         <main className="mx-auto max-w-lg px-6 py-16 text-center">
           <h1 className="font-display text-xl font-semibold">{metaError ? "Couldn't load this case" : "Case not found"}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
@@ -117,20 +122,26 @@ export default function CaseViewPage() {
 
   return (
     <CaseSnapshotProvider threadId={threadId}>
-    <div className="min-h-screen bg-background flex flex-col">
-      <AppNav />
-      <div className="border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.6),hsl(var(--surface-0)/0.46))] px-4 sm:px-8 py-4">
-        <div className="mx-auto max-w-6xl flex flex-col sm:flex-row sm:items-center gap-3">
+    <div className="flex min-h-0 flex-1 flex-col">
+      {isMobile && (
+        <ShellTopBar>
+          <ShellTopBarTitle asHeading>{caseTitle || "Untitled case"}</ShellTopBarTitle>
+        </ShellTopBar>
+      )}
+      <div className="border-b border-border-subtle bg-surface-0 px-4 py-3 sm:px-8 sm:py-4">
+        <div className="mx-auto flex max-w-6xl items-center gap-3">
           <Link
             to="/cases"
-            className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+            className="inline-flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="w-3.5 h-3.5" /> All cases
           </Link>
           <div className="min-w-0 flex-1">
-            <h1 className="font-display text-lg sm:text-xl font-semibold tracking-tight truncate">
-              {caseTitle || "Untitled case"}
-            </h1>
+            {!isMobile && (
+              <h1 className="font-display text-lg sm:text-xl font-semibold tracking-tight truncate">
+                {caseTitle || "Untitled case"}
+              </h1>
+            )}
             {caseSubtitle && caseSubtitle !== caseTitle && (
               <p className="text-xs text-muted-foreground font-mono truncate mt-0.5">{caseSubtitle}</p>
             )}
@@ -139,10 +150,15 @@ export default function CaseViewPage() {
         </div>
       </div>
 
-      <CaseViewTabs threadId={threadId} active={tab} onChange={setTab} />
+      {!isMobile && <CaseViewTabs threadId={threadId} active={tab} onChange={setTab} />}
 
       <main className="flex-1 min-h-0 relative mx-auto w-full max-w-6xl">
-        <div className={cn("absolute inset-0", tab === "report" ? "overflow-y-auto" : "")}>
+        <div
+          role="tabpanel"
+          id={`workspace-tabpanel-${tab}`}
+          aria-labelledby={`workspace-tab-${tab}`}
+          className={cn("absolute inset-0", tab === "report" ? "overflow-y-auto" : "")}
+        >
           <Suspense fallback={<FullPageLoader fullScreen={false} className="h-48" />}>
             {tab === "evidence" && (
               <ErrorBoundary>
@@ -169,6 +185,13 @@ export default function CaseViewPage() {
           </Suspense>
         </div>
       </main>
+
+      {/* Phone: the same bottom tab bar as the live workspace. */}
+      {isMobile && (
+        <div className="shrink-0">
+          <CaseViewTabs threadId={threadId} active={tab} onChange={setTab} variant="inline" />
+        </div>
+      )}
     </div>
     </CaseSnapshotProvider>
   );
@@ -202,7 +225,12 @@ function CaseRunControls({ threadId }: { threadId: string }) {
 }
 
 /** Tab badges from the case snapshot — the same version the Tools and Report tabs read. */
-function CaseViewTabs({ threadId, active, onChange }: { threadId: string; active: ViewCaseTab; onChange: (t: ViewCaseTab) => void }) {
+function CaseViewTabs({ threadId, active, onChange, variant = "bar" }: {
+  threadId: string;
+  active: ViewCaseTab;
+  onChange: (t: ViewCaseTab) => void;
+  variant?: "bar" | "inline";
+}) {
   const { snapshot } = useCaseSnapshot();
   // The Evidence number IS the case sheet's "Needs your call" count.
   const sheet = useCaseSheetModel(threadId);
@@ -210,5 +238,16 @@ function CaseViewTabs({ threadId, active, onChange }: { threadId: string; active
     snapshot?.tools.total ?? 0,
     sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null,
   );
-  return <ViewWorkspaceTabs active={active} onChange={onChange} counts={tabCounts} />;
+  return (
+    <WorkspaceTabs
+      sections={CASE_VIEW_SECTIONS}
+      label="Case views"
+      variant={variant}
+      active={active}
+      // CASE_VIEW_SECTIONS holds only ViewCaseTab keys.
+      onChange={(t) => onChange(t as ViewCaseTab)}
+      counts={tabCounts}
+      loading={!snapshot?.hydrated}
+    />
+  );
 }

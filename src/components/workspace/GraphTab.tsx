@@ -131,16 +131,17 @@ type EntityNodeData = {
   degree: number;
 };
 
-/** A single graph node — group-colored chip; seed is the bright hub; a
- *  breach/conflict node carries the restrained destructive accent. */
+/** A single graph node — group-colored chip; seed is the hub, marked by a
+ *  raised neutral plate with an indigo edge (indigo is a mark, never a fill);
+ *  a breach/conflict node carries the restrained destructive accent. */
 const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<EntityNodeData>) {
   const color = data.conflict ? "hsl(var(--danger))" : GROUP_COLOR[data.group];
   if (data.isSeed) {
     return (
       <div
         className={cn(
-          "flex flex-col items-center gap-0.5 rounded-xl border px-3.5 py-2 text-center shadow-[0_0_28px_-6px_hsl(var(--info)/0.8)]",
-          "border-[hsl(var(--info))] bg-[hsl(var(--info))] text-black",
+          "flex flex-col items-center gap-0.5 rounded-xl border-2 px-3.5 py-2 text-center shadow-[0_12px_28px_-16px_hsl(0_0%_0%/1)]",
+          "border-[hsl(var(--info))] bg-surface-3 text-foreground",
           selected && "ring-2 ring-foreground ring-offset-2 ring-offset-background",
         )}
       >

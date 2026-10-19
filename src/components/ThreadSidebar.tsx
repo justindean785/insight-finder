@@ -11,7 +11,7 @@ import {
 import {
   Plus, LogOut, Trash2, PanelLeftOpen, PanelLeftClose, Search, Brain, CheckCircle2,
   ShieldAlert, Database, Activity, BarChart3, Wallet, FolderOpen,
-  Mail, Phone, Globe, Network, User, Hash, FileSearch, type LucideIcon,
+  Mail, Phone, Globe, Network, User, Hash, FileSearch, Settings, type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { detectSeed } from "@/lib/seed";
@@ -140,6 +140,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   const onBrainRoute = location.pathname.startsWith("/brain");
   const onInsightsRoute = location.pathname.startsWith("/insights");
   const onCasesRoute = location.pathname.startsWith("/cases");
+  const onSettingsRoute = location.pathname.startsWith("/settings");
   const [threads, setThreads] = useState<Thread[]>([]);
   const [metrics, setMetrics] = useState<Record<string, ThreadMetrics>>({});
   const [metricsSampled, setMetricsSampled] = useState(false);
@@ -403,6 +404,21 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
 
         <div className="w-8 h-px bg-border-subtle" />
 
+        <Link
+          to="/settings"
+          className={cn(
+            "w-8 h-8 rounded-lg grid place-items-center transition-colors",
+            onSettingsRoute
+              ? "bg-primary/15 text-primary ring-1 ring-primary/40"
+              : "glass-interactive text-muted-foreground hover:text-foreground",
+          )}
+          title="Settings"
+          aria-label="Settings"
+          aria-current={onSettingsRoute ? "page" : undefined}
+        >
+          <Settings className="w-4 h-4" strokeWidth={1.5} />
+        </Link>
+
         <button
           onClick={signOut}
           className="w-8 h-8 rounded-lg grid place-items-center text-muted-foreground hover:text-foreground glass-interactive transition-colors"
@@ -456,7 +472,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         <Link
           to="/"
           aria-label="Home"
-          className="flex min-w-0 items-center gap-2 rounded-lg group focus:outline-none focus:ring-2 focus:ring-primary/40"
+          className="flex min-w-0 items-center gap-2 rounded-lg group"
         >
           {/* 3a register: a flat plate, no glow. The
               gradient fill, bloom and specular were the chrome's last glow. */}
@@ -546,14 +562,16 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
 
       {/* Search + filter */}
       <div className="shrink-0 space-y-2 px-3 pb-2">
-        <div className="flex h-9 items-center gap-2 rounded-lg border border-border-subtle bg-black/20 px-3 transition-colors focus-within:border-white/20 focus-within:bg-surface-1">
+        {/* The ring sits on the wrapper, so it frames the icon and the field
+            together; the input itself stays unstyled. */}
+        <div className="flex h-9 items-center gap-2 rounded-lg border border-border-subtle bg-black/20 px-3 transition-colors focus-within:border-transparent focus-within:bg-surface-1 focus-within:ring-2 focus-within:ring-ring">
           <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search investigations"
             aria-label="Search investigations"
-            className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+            className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:outline-none"
           />
         </div>
         <label htmlFor="case-type-filter" className="sr-only">Filter investigations</label>
@@ -561,7 +579,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           id="case-type-filter"
           value={typeFilter}
           onChange={(event) => setTypeFilter(event.target.value)}
-          className="h-9 w-full rounded-lg border border-border-subtle bg-surface-1 px-3 text-sm text-foreground outline-none transition-colors focus:border-white/25"
+          className="h-9 w-full rounded-lg border border-border-subtle bg-surface-1 px-3 text-sm text-foreground outline-none transition-colors focus-visible:border-transparent focus-visible:ring-2 focus-visible:ring-ring"
         >
           {TYPES.map((t) => (
             <option key={t.key} value={t.key}>{t.label}</option>
@@ -636,6 +654,18 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
               Send feedback
             </a>
           </span>
+          <Link
+            to="/settings"
+            aria-label="Settings"
+            aria-current={onSettingsRoute ? "page" : undefined}
+            title="Settings"
+            className={cn(
+              "shrink-0 rounded-md p-1.5 transition-colors hover:bg-white/[0.06] hover:text-foreground",
+              onSettingsRoute ? "text-foreground" : "text-muted-foreground/70",
+            )}
+          >
+            <Settings className="h-3.5 w-3.5" />
+          </Link>
           <button
             onClick={signOut}
             className="shrink-0 rounded-md p-1.5 text-muted-foreground/70 transition-colors hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
