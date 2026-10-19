@@ -99,6 +99,86 @@ Deno.test("extract: a cyclic or very deep result neither throws nor hangs", () =
   assertEquals(extractMediaLeads("github_user", deep), []);
 });
 
+// ── the real socialfetch_lookup shape (synthetic values, production key names) ─
+//
+// Measured 2026-10-18 on tool_call_cache: socialfetch_lookup rows carry
+// data.profile.{avatarUrl, avatarUrlHd} and data.recentPosts[].{displayUrl, thumbnailUrl,
+// videoUrl, location:{lat,lng,name}, takenAt}. Instagram CDN URLs end in .jpg, which is
+// what exposed two defects the synthetic fixtures above could not: an avatar URL being
+// re-scanned as free text and promoted to a "content" image, and thumbnails eating the
+// six-lead cap.
+
+const cdn = (p: string) => `https://scontent-sjc.cdninstagram.com/v/t51.2885-15/${p}.jpg?stp=dst-jpg&oe=6a1b2c3d`;
+const post = (n: number, extra: Record<string, unknown> = {}) => ({
+  id: `p${n}`,
+  caption: `post ${n}`,
+  displayUrl: cdn(`full${n}`),
+  thumbnailUrl: cdn(`thumb${n}`),
+  videoUrl: `https://scontent-sjc.cdninstagram.com/o1/v/t16/clip${n}.mp4`,
+  ...extra,
+});
+const igProfile = (posts: unknown[]) => ({
+  ok: true,
+  data: {
+    profile: { handle: "jvale", avatarUrl: cdn("av_small"), avatarUrlHd: cdn("av_hd"), profileUrl: "https://www.instagram.com/jvale/" },
+    recentPosts: posts,
+  },
+});
+
+Deno.test("real shape: an avatar URL that ends in .jpg stays an avatar", () => {
+  const leads = extractMediaLeads("socialfetch_lookup", igProfile([post(1)]));
+  const av = leads.find((l) => l.url.includes("av_hd"));
+  assert(av, "the avatar is still listed, as its large variant");
+  assertEquals(leads.filter((l) => l.kind === "avatar").length, 1, "two sizes of one avatar are one lead");
+  assertEquals([av.kind, av.geolocation_candidate], ["avatar", false]);
+  assertEquals(leads.filter((l) => l.kind === "content").map((l) => l.url), [cdn("full1")]);
+});
+
+Deno.test("real shape: a post lists its full-size picture, not its thumbnail; a lone thumbnail is kept", () => {
+  const leads = extractMediaLeads("socialfetch_lookup", igProfile([post(1), { id: "p2", thumbnailUrl: cdn("only_thumb") }]));
+  const content = leads.filter((l) => l.kind === "content").map((l) => l.url);
+  assertEquals(content, [cdn("full1"), cdn("only_thumb")]);
+  assert(!leads.some((l) => l.url.includes("thumb1")), "the thumbnail of a post that has a full-size picture is dropped");
+  assert(!leads.some((l) => l.url.endsWith(".mp4") || l.url.includes("clip")), "videos are not image leads");
+});
+
+Deno.test("real shape: twelve posts spread over the cap instead of three posts taking every slot", () => {
+  const leads = extractMediaLeads("socialfetch_lookup", igProfile(Array.from({ length: 12 }, (_, i) => post(i + 1))));
+  assertEquals(leads.length, MAX_MEDIA_LEADS);
+  assertEquals(leads.filter((l) => l.kind === "content").length, MAX_MEDIA_LEADS);
+  assertEquals(new Set(leads.map((l) => l.url)).size, MAX_MEDIA_LEADS, "six different pictures");
+  assert(leads.every((l) => l.url.includes("/full")), "all full-size");
+});
+
+Deno.test("post context: a platform place tag is carried, untagged pictures rank first, avatars stay last", () => {
+  const tagged = post(1, { takenAt: 1773140993, location: { id: "9", lat: 42.3577, lng: -71.0565, name: "Boston, Massachusetts" } });
+  const untagged = post(2, { takenAt: 1768751124 });
+  const leads = extractMediaLeads("socialfetch_lookup", igProfile([tagged, untagged]));
+  assertEquals(leads.map((l) => l.url), [cdn("full2"), cdn("full1"), cdn("av_hd")]);
+  assertEquals(leads[0].post, { has_location_tag: false, taken_at: "2026-01-18" });
+  assertEquals(leads[1].post, { has_location_tag: true, place: "Boston, Massachusetts", taken_at: "2026-03-10" });
+  assertEquals(leads[2].post, undefined, "an avatar never carries post context");
+});
+
+Deno.test("post context: coordinates alone are a tag; junk timestamps and control characters are cleaned", () => {
+  const coordsOnly = extractMediaLeads("socialfetch_lookup", { posts: [{ image_url: cdn("a"), location: { lat: 1.5, lng: 2.5 } }] });
+  assertEquals(coordsOnly[0].post, { has_location_tag: true });
+  const bad = extractMediaLeads("socialfetch_lookup", {
+    posts: [{ image_url: cdn("b"), takenAt: 12, location: { name: `Pier\u0000 9\n${"x".repeat(200)}` } }],
+  });
+  assertEquals(bad[0].post?.taken_at, undefined, "epoch 12 is not a plausible capture date");
+  assertEquals(bad[0].post?.has_location_tag, true);
+  assert(!/[\u0000-\u001f]/.test(bad[0].post?.place ?? ""), "no control characters reach the model");
+  assertEquals((bad[0].post?.place ?? "").length, 80);
+  const ms = extractMediaLeads("socialfetch_lookup", { posts: [{ image_url: cdn("c"), created_at: "2026-02-03T10:00:00Z" }] });
+  assertEquals(ms[0].post, { has_location_tag: false, taken_at: "2026-02-03" });
+});
+
+Deno.test("post context: a plain scrape or an object with no place and no time grows no `post` key", () => {
+  const leads = extractMediaLeads("jina_reader_scrape", { content: "![a](https://cdn.example.com/a.jpg)", image: "https://cdn.example.com/b.jpg" });
+  assert(leads.length === 2 && leads.every((l) => !("post" in l)));
+});
+
 // ── attach ───────────────────────────────────────────────────────────────────
 
 Deno.test("attach: every original key survives untouched; only the two new keys are added", () => {
@@ -219,6 +299,20 @@ Deno.test("evidence: extractFindings returns the same rows with and without medi
       },
     },
     {
+      // The production shape: profile + recentPosts with place tags. The profile branch of
+      // extractFindings must read exactly what it read before, whatever recentPosts holds.
+      tool: "socialfetch_lookup",
+      input: { platform: "instagram", username: "jvale" },
+      mustYield: true,
+      output: {
+        ok: true,
+        data: {
+          profile: { handle: "jvale", username: "jvale", url: "https://www.instagram.com/jvale/", avatarUrl: cdn("av") },
+          recentPosts: [post(1, { takenAt: 1773140993, location: { lat: 42.3577, lng: -71.0565, name: "Boston, Massachusetts" } }), post(2)],
+        },
+      },
+    },
+    {
       tool: "jina_reader_scrape",
       input: { url: "https://example.com/about" },
       mustYield: false,
@@ -270,6 +364,19 @@ Deno.test("wiring: /health reports checks.media_leads and the prompt tells the m
   assert(HEALTH.includes("r.checks.media_leads = mediaLeadsSelfTest();"));
   // system-prompt.ts is a template literal, so its source escapes backticks as \`.
   assert(PROMPT.includes("media_leads"));
+});
+
+Deno.test("wiring: the geolocation rule is bounded, defers to a platform place tag, and respects the minor-safety stop", () => {
+  const line = PROMPT.split("\n").find((l) => l.includes("IMAGE GEOLOCATION (GEO-OSINT)")) ?? "";
+  assert(line.length > 0, "the IMAGE GEOLOCATION bullet exists");
+  assert(line.includes("up to 3"), "vision reads per result are bounded");
+  assert(line.includes("at most 2 GeoSeer calls"), "paid geolocation per investigation is bounded");
+  assert(line.includes("post.has_location_tag"), "a platform-reported place is read before paying for GeoSeer");
+  assert(line.includes("possible-minor") && line.includes("Minor-safety"), "the workflow stops on the existing minor-safety signal");
+  assert(line.includes("never geolocation candidates"), "avatars are not geolocation candidates");
+  // The existing safety bullet this rule points at must still be there.
+  assert(PROMPT.includes("Minor-safety detection:"));
+  assert(MEDIA_LEADS_NOTE.includes("post.has_location_tag"));
 });
 
 Deno.test("wiring: every source tool is a real registered tool, and the note names real tools", () => {
