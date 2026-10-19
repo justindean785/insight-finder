@@ -30,6 +30,9 @@ import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
 import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
+import {
+  CREDENTIAL_HEALTH_SAMPLE_ROWS, CREDENTIAL_HEALTH_WINDOW_MS, MAINTENANCE_SKIPPED_DETAIL, maintenanceRequested,
+} from "./lib/credential-health.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
 import { negativeLookupSelfTest } from "./lib/negative-lookup.ts";
 import { toolInputFailureSelfTest } from "./lib/tool-input-failure.ts";
@@ -366,6 +369,17 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   });
   const u = new URL(req.url);
   const wantProbe = u.searchParams.get("probe") === "1";
+  // Maintenance gate. A plain `?health=1` is a LIVENESS probe: the browser fires one
+  // every 30s per open case (ChatWindow's sweep) and on every stream end, and until
+  // 2026-10-19 each of those ran the stale-run recovery, the rejected-cluster sweep,
+  // a 5,000-row `count: "exact"` scan of tool_usage_log, synthesis and the cache
+  // sweep — a continuous table scan billed as database compute. Those now run only
+  // when the caller asks (`?maintenance=1`, or the authenticated `?probe=1`), which is
+  // what the frontend sweep passes. The plain probe keeps the orchestrator readiness
+  // and every pure self-test, and reports `checks.maintenance` so a reader can tell
+  // which kind of probe produced the payload. Kill switch for the gate itself:
+  // HEALTH_MAINTENANCE_ALWAYS=true restores the pre-gate behaviour on every probe.
+  const wantMaintenance = wantProbe || maintenanceRequested(u);
 
   // Which provider is ACTUALLY selected at runtime (same pure selector index.ts
   // uses) + its model. This is the DeepSeek STOP-gate signal: selected_provider tells
@@ -653,8 +667,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     }
   }
 
+  if (!wantMaintenance) {
+    r.checks.maintenance = { ok: true, detail: MAINTENANCE_SKIPPED_DETAIL };
+  }
   try {
-    if (SUPABASE_URL && SERVICE_KEY) {
+    if (wantMaintenance && SUPABASE_URL && SERVICE_KEY) {
+      r.checks.maintenance = { ok: true, detail: "ran: recovery, rejected-cluster sweep, credential health, synthesis, cache sweep" };
       const admin = createClient(SUPABASE_URL, SERVICE_KEY);
       const recovered = await recoverStaleActiveThreads(admin, { limit: 20, reason: "stale heartbeat recovered by health sweep" });
       r.checks.recovery = recovered.errors
@@ -683,14 +701,20 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       // policy rather than by credential (reddit_user blocks datacenter IPs), that
       // is itself the signal to take it off the default sweep. Top-level `ok`
       // is orchestrator+core only, so this never fails the probe.
+      //
+      // Bounded on purpose: the newest CREDENTIAL_HEALTH_SAMPLE_ROWS rows inside the
+      // window, by the (created_at) index, with NO exact count — the 5,000-row
+      // `count: "exact"` read this replaced was the single largest query the function
+      // issued, and it ran on every liveness probe. A full sample means the window
+      // was cut and the counts are a floor, which describeCredentialHealth says.
       try {
-        const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-        const { data, error, count } = await admin
+        const since = new Date(Date.now() - CREDENTIAL_HEALTH_WINDOW_MS).toISOString();
+        const { data, error } = await admin
           .from("tool_usage_log")
-          .select("tool_name,status_code,outcome,created_at", { count: "exact" })
+          .select("tool_name,status_code,outcome,created_at")
           .gte("created_at", since)
           .order("created_at", { ascending: false })
-          .limit(5000);
+          .limit(CREDENTIAL_HEALTH_SAMPLE_ROWS);
         if (error) {
           // NOT ok. An unreadable instrument is not a clean bill of health, and
           // `ok:true` beside "unavailable" is the precise trap CLAUDE.md names:
@@ -707,7 +731,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
           const health = summarizeCredentialHealth(rows);
           // An unbounded or capped select returns short with NO error. Saying so
           // keeps the counts readable as a floor rather than as the whole truth.
-          const truncated = typeof count === "number" && count > rows.length;
+          const truncated = rows.length >= CREDENTIAL_HEALTH_SAMPLE_ROWS;
           r.checks.credentials = {
             ok: health.failing.length === 0,
             detail: describeCredentialHealth(health, truncated),
