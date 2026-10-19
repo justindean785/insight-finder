@@ -118,7 +118,11 @@ export type CoercionKind =
   | "field_alias" // a differently named field carried the value ("identifier" → "identifierValue")
   | "numeric_string" // "15000" → 15000
   | "number_to_string" // 6175550100 → "6175550100"
-  | "trimmed"; // surrounding whitespace removed
+  | "trimmed" // surrounding whitespace removed
+  | "unquoted" // one pair of enclosing quotes removed ("'a@b.c'" → "a@b.c")
+  | "root_json" // the WHOLE input arrived as a JSON string and parsed to an object
+  | "array_wrapped" // the whole input arrived as a bare array and was wrapped under `wrapArrayAs`
+  | "json_parsed"; // a field expecting an object/array arrived as a JSON string
 
 export type CoercionRecord = { field: string; coercion: CoercionKind };
 
@@ -139,8 +143,68 @@ export interface InputCoercionSpec {
   numberFields?: readonly string[];
   /** Fields the schema types as a string: a finite number becomes its decimal string. */
   stringFields?: readonly string[];
-  /** String fields whose surrounding whitespace is trimmed. */
+  /** String fields whose surrounding whitespace — and one pair of enclosing quotes — is removed. */
   trimFields?: readonly string[];
+  /** String fields whose surrounding whitespace is removed but whose quotes are KEPT (a search `query`:
+   *  quotes are exact-phrase semantics, not spelling). */
+  trimOnlyFields?: readonly string[];
+  /** Fields the schema types as an object or array: a JSON string that parses to one becomes it. */
+  jsonFields?: readonly string[];
+  /** A bare top-level ARRAY is wrapped as `{ [wrapArrayAs]: array }` (memory_save sent `[{…}]` for `{entries:[{…}]}`). */
+  wrapArrayAs?: string;
+}
+
+/**
+ * Rules every tool gets through memoSchema (tool-registry.ts), merged UNDER a tool's own spec. They are all
+ * spelling-only, and the coerced value is still re-validated against the unchanged schema — so a field that is
+ * actually numeric in a schema (a `limit`) is never turned into a string, because that result would not validate
+ * and the raw input goes through instead. Measured on production rejections 2026-10-18: a seed sent as a number,
+ * an email sent with enclosing quotes or whitespace, a username sent as `"@handle "`.
+ */
+export const GENERIC_SELECTOR_SPEC: InputCoercionSpec = {
+  stringFields: ["seed", "value", "email", "phone", "domain", "username", "handle", "ip", "query", "url", "name", "subject"],
+  trimFields: ["seed", "value", "email", "phone", "domain", "username", "handle", "ip", "url", "name", "subject"],
+  trimOnlyFields: ["query"],
+};
+
+/** The tool's own spec on top of the generic rules (lists are unioned; the tool's enum/infer/defaults/renames win). */
+export function mergeInputSpecs(base: InputCoercionSpec, own: InputCoercionSpec): InputCoercionSpec {
+  const union = (a?: readonly string[], b?: readonly string[]) => [...new Set([...(a ?? []), ...(b ?? [])])];
+  return {
+    ...base,
+    ...own,
+    stringFields: union(base.stringFields, own.stringFields),
+    trimFields: union(base.trimFields, own.trimFields),
+    numberFields: union(base.numberFields, own.numberFields),
+    jsonFields: union(base.jsonFields, own.jsonFields),
+    trimOnlyFields: union(base.trimOnlyFields, own.trimOnlyFields),
+  };
+}
+
+/** A JSON string → the object/array it encodes, or null. Fenced ```json blocks are unwrapped first. */
+function parseJsonContainer(v: unknown): Record<string, unknown> | unknown[] | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+  if (!t || (t[0] !== "{" && t[0] !== "[")) return null;
+  try {
+    const parsed = JSON.parse(t);
+    return isPlain(parsed) || Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Strip ONE pair of matching enclosing quotes, then trim. "'x'" → "x"; a lone quote or an inner quote is untouched. */
+function unquote(v: string): string {
+  const t = v.trim();
+  if (t.length >= 2) {
+    const a = t[0], b = t[t.length - 1];
+    if ((a === '"' && b === '"') || (a === "'" && b === "'") || (a === "`" && b === "`")) {
+      const inner = t.slice(1, -1).trim();
+      if (inner && !inner.includes(a)) return inner;
+    }
+  }
+  return t;
 }
 
 const NUMERIC_STRING = /^\s*-?\d+(?:\.\d+)?\s*$/;
@@ -167,9 +231,28 @@ export function resolveKindSpelling(raw: unknown, allowed: readonly string[]): {
 
 /** Pure: compute the coerced input and what was done. Never throws; returns the input unchanged when nothing applies. */
 export function coerceToolInput(raw: unknown, spec: InputCoercionSpec): { value: unknown; records: CoercionRecord[] } {
-  if (!isPlain(raw)) return { value: raw, records: [] };
-  const out: Record<string, unknown> = { ...raw };
   const records: CoercionRecord[] = [];
+  // The whole input as a JSON STRING (a GLM/Anthropic-replay shape: `"{\"artifacts\":[…]}"`) or as a bare ARRAY
+  // where the schema wants `{ field: array }`. Both are container-shape fixes, never a change of substance.
+  let root: unknown = raw;
+  if (typeof raw === "string") {
+    const parsed = parseJsonContainer(raw);
+    if (parsed) { root = parsed; records.push({ field: "", coercion: "root_json" }); }
+  }
+  if (Array.isArray(root) && spec.wrapArrayAs) {
+    root = { [spec.wrapArrayAs]: root };
+    records.push({ field: spec.wrapArrayAs, coercion: "array_wrapped" });
+  }
+  if (!isPlain(root)) return { value: raw, records: [] };
+  const out: Record<string, unknown> = { ...root };
+
+  for (const f of spec.jsonFields ?? []) {
+    const parsed = parseJsonContainer(out[f]);
+    if (parsed) {
+      out[f] = parsed;
+      records.push({ field: f, coercion: "json_parsed" });
+    }
+  }
 
   for (const r of spec.renames ?? []) {
     if (out[r.to] !== undefined) continue;
@@ -181,14 +264,29 @@ export function coerceToolInput(raw: unknown, spec: InputCoercionSpec): { value:
   }
   for (const f of spec.stringFields ?? []) {
     const v = out[f];
-    if (typeof v === "number" && Number.isFinite(v)) {
+    // An integer beyond Number.MAX_SAFE_INTEGER has ALREADY lost digits at JSON.parse (a 17-19 digit
+    // discord_id); stringifying it would run a live lookup on the wrong selector. Left for the schema
+    // to reject, as before.
+    if (typeof v === "number" && Number.isFinite(v) && (!Number.isInteger(v) || Number.isSafeInteger(v))) {
       out[f] = String(v);
       records.push({ field: f, coercion: "number_to_string" });
     }
   }
-  for (const f of spec.trimFields ?? []) {
+  for (const f of spec.trimOnlyFields ?? []) {
     const v = out[f];
     if (typeof v === "string" && v !== v.trim() && v.trim()) {
+      out[f] = v.trim();
+      records.push({ field: f, coercion: "trimmed" });
+    }
+  }
+  for (const f of spec.trimFields ?? []) {
+    const v = out[f];
+    if (typeof v !== "string") continue;
+    const unquoted = unquote(v);
+    if (unquoted !== v.trim() && unquoted) {
+      out[f] = unquoted;
+      records.push({ field: f, coercion: "unquoted" });
+    } else if (v !== v.trim() && v.trim()) {
       out[f] = v.trim();
       records.push({ field: f, coercion: "trimmed" });
     }
@@ -249,7 +347,7 @@ export function takeInputCoercions(tool: string, input: unknown): CoercionRecord
     const now = Date.now();
     prune(now);
     if (!isPlain(input)) return null;
-    const i = PARKED.findIndex((p) => p.tool === tool && p.fields.every((f) => input[f.field] === f.result));
+    const i = PARKED.findIndex((p) => p.tool === tool && p.fields.every((f) => f.field === "" || input[f.field] === f.result));
     if (i < 0) return null;
     const [hit] = PARKED.splice(i, 1);
     return hit.fields.map(({ field, coercion }) => ({ field, coercion }));
@@ -284,7 +382,7 @@ export function applyInputCoercion(
     const now = Date.now();
     prune(now);
     const v = value as Record<string, unknown>;
-    PARKED.push({ tool, at: now, fields: records.map((r) => ({ ...r, result: v[r.field] })) });
+    PARKED.push({ tool, at: now, fields: records.map((r) => ({ ...r, result: r.field ? v[r.field] : undefined })) });
     return value;
   } catch {
     return raw; // a coercion fault must never break the step; the SDK validates the raw input as before
@@ -359,12 +457,19 @@ export function inputCoercionSelfTest(): { ok: boolean; switch: string; detail: 
   if (b.records.length) wrong.push("an unknown kind was coerced");
   const c = coerceToolInput({ maxChars: "15000", n: "15k" }, { numberFields: ["maxChars", "n"] });
   if ((c.value as Record<string, unknown>).maxChars !== 15000 || (c.value as Record<string, unknown>).n !== "15k") wrong.push("numeric-string rule wrong");
+  const d = coerceToolInput({ email: " 'a@example.com' ", seed: 12345 }, GENERIC_SELECTOR_SPEC).value as Record<string, unknown>;
+  if (d.email !== "a@example.com" || d.seed !== "12345") wrong.push("quote/number rule wrong");
+  const e = coerceToolInput('{"artifacts":"[{\\"kind\\":\\"email\\"}]"}', { jsonFields: ["artifacts"] }).value as Record<string, unknown>;
+  if (!Array.isArray(e.artifacts) || (e.artifacts[0] as Record<string, unknown>)?.kind !== "email") wrong.push("stringified JSON not parsed");
+  const f = coerceToolInput([{ kind: "lesson" }], { wrapArrayAs: "entries" }).value as Record<string, unknown>;
+  if (!Array.isArray(f.entries)) wrong.push("bare array not wrapped");
   return wrong.length
     ? { ok: false, switch: `${sw}=false`, detail: wrong.join("; ") }
     : {
       ok: true,
       switch: `${sw}=false`,
-      detail: "near-miss tool inputs (kind aliases, query→seed, numeric strings, number→string, whitespace) are coerced " +
-        "only when the result validates; anything else is rejected as before",
+      detail: "near-miss tool inputs (kind aliases, query→seed, numeric strings, number→string, whitespace, enclosing " +
+        "quotes, a stringified-JSON root or field, a bare array for {entries}) are coerced only when the result " +
+        "validates; anything else is rejected as before",
     };
 }

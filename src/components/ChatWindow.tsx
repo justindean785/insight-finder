@@ -2583,7 +2583,12 @@ function ChatWindowInner({
       // Nothing has ever run here — there is no stuck run of ours to reap, and a
       // sweep from a blank thread is exactly what produced the ghost recoveries.
       if (!threadHasActivityRef.current) return;
-      void fetch(`${FUNCTIONS_URL}?health=1`, { method: "GET" }).catch(() => {});
+      // `maintenance=1` is what makes this a SWEEP. Since 2026-10-19 a plain
+      // `?health=1` is a liveness probe that runs no database maintenance (it was a
+      // 5,000-row scan plus two sweeps every 30s per open case); the stale-run
+      // recovery this effect exists for only runs when asked. Older edge builds
+      // ignore the extra parameter, so this is safe to ship ahead of the edge deploy.
+      void fetch(`${FUNCTIONS_URL}?health=1&maintenance=1`, { method: "GET" }).catch(() => {});
     };
     sweep(); // once on open: reap a run already stuck when this thread is loaded
     if (!isLoading) {

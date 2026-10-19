@@ -79,7 +79,138 @@ export function activeToolsOutsideFinalize(toolNames: readonly string[]): string
   return toolNames.filter((name) => !FINALIZE_INTERNAL_TOOLS.has(name));
 }
 
-export type FinalizePhase = "persist" | "memory" | "report";
+export type FinalizePhase = "collect" | "persist" | "memory" | "report";
+
+// ---- Opsis result collection before the report (2026-10-19) ------------------
+// opsis_search is PAID and bounded at 25s; a run still going returns
+// `partial:true` plus a `run_id`, and the free opsis_results call fetches the
+// rest. Measured on the 2026-10-18 step metrics: 22 searches started, 12 results
+// fetched — the run entered finalize before collecting what it had paid for
+// (~$1.80 of queries read by nobody). The finalize state machine now has ONE
+// bounded "collect" phase ahead of persist: if a paid search is still pending,
+// the first finalize step offers only opsis_results, required, with the run ids.
+//
+// Bounds, because the finalize window owns this project's worst incidents
+// (CLAUDE.md "do not add work inside the finalize window"):
+//   • at most MAX_OPSIS_COLLECT_STEPS (1) per run, counted whether or not the
+//     call succeeded — a refused or failed read is not retried;
+//   • only when the remaining wall clock covers the read's own 25s deadline PLUS
+//     the required completion (persist + memory + report): a run already short on
+//     time goes straight to persist, exactly as before;
+//   • never on the step cap or an exhausted Anthropic budget. The TOOL cap is the
+//     one trigger it is built for: opsis_results is a free read, exempt from the
+//     cap (cache.ts), and a cap-triggered finalize is the one that usually still
+//     has wall clock to spare;
+//   • the phase can never stall: the next resolve finds the attempt counted and
+//     falls through to persist whatever opsis_results answered.
+// Kill switch OPSIS_FINALIZE_COLLECT_DISABLED=true (read at call time);
+// /health proof key checks.opsis_finalize_collect.
+export const MAX_OPSIS_COLLECT_STEPS = 1;
+export const OPSIS_COLLECT_BUDGET_MS = 25_000 + 5_000; // OPSIS_POLL_DEADLINE_MS + request slack
+export const OPSIS_FINALIZE_COLLECT_DISABLED_ENV = "OPSIS_FINALIZE_COLLECT_DISABLED";
+
+export function opsisFinalizeCollectEnabled(
+  env: (k: string) => string | undefined = (k) => {
+    try { return Deno.env.get(k); } catch { return undefined; }
+  },
+): boolean {
+  return (env(OPSIS_FINALIZE_COLLECT_DISABLED_ENV) ?? "").trim().toLowerCase() !== "true";
+}
+
+export interface OpsisPendingRun {
+  run_id: string;
+  kind: string;
+  value: string;
+}
+
+/** Free, bounded reads that may run inside the finalize window (the collect phase). */
+export const FINALIZE_COLLECT_EXEMPT = new Set<string>(["opsis_results"]);
+export function isFinalizeCollectExempt(toolName: string): boolean {
+  return FINALIZE_COLLECT_EXEMPT.has(toolName);
+}
+
+/**
+ * Paid opsis_search runs whose results were never read: every `partial:true`
+ * search result with a run_id, minus any run_id that a later opsis_search or
+ * opsis_results result reported (complete, failed, or still partial — one read
+ * is the budget, see MAX_OPSIS_COLLECT_STEPS). Pure; scans tool-result parts.
+ */
+export function pendingOpsisRuns(messages: FinalizeMessage[]): OpsisPendingRun[] {
+  const pending = new Map<string, OpsisPendingRun>();
+  const read = new Set<string>();
+  let synthetic = 0;
+  const seen = new Set<string>();
+  for (const message of messages ?? []) {
+    if (!Array.isArray(message?.content)) continue;
+    for (const raw of message.content) {
+      const part = raw as { type?: string; toolName?: string; toolCallId?: string; output?: unknown };
+      if (part.type !== "tool-result" || !part.toolName) continue;
+      if (part.toolName !== "opsis_search" && part.toolName !== "opsis_results") continue;
+      const key = part.toolCallId ?? `__opsis_result_${synthetic++}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // Unwrap the SDK's `{type, value}` envelope only when it IS one: an Opsis result
+      // carries its own `value` (the selector), which the generic toolResultValue
+      // would mistake for the envelope.
+      const o = part.output as Record<string, unknown> | null;
+      const v = (o && typeof o === "object" && typeof o.type === "string" && "value" in o
+        ? toolResultValue(o)
+        : o) as Record<string, unknown> | null;
+      if (!v || typeof v !== "object") continue;
+      const runId = typeof v.run_id === "string" ? v.run_id.trim() : "";
+      if (!runId) continue;
+      if (part.toolName === "opsis_results") { read.add(runId); continue; }
+      if (v.partial === true && v.ok === true) {
+        pending.set(runId, {
+          run_id: runId,
+          kind: typeof v.kind === "string" ? v.kind : "",
+          value: typeof v.value === "string" ? v.value : "",
+        });
+      } else {
+        read.add(runId); // the search itself returned complete/failed
+      }
+    }
+  }
+  return [...pending.values()].filter((r) => !read.has(r.run_id));
+}
+
+/** Whether a collect step may be taken now. Pure — the caller owns the counter and the clock. */
+export function shouldCollectOpsisBeforeFinalize(input: {
+  pending: number;
+  collectStepsRun: number;
+  elapsedMs: number;
+  stepCapDue: boolean;
+  capReached: boolean;
+  budgetExhausted: boolean;
+  enabled?: boolean;
+  budgetMs?: number;
+}): boolean {
+  if (input.enabled === false) return false;
+  if (input.pending <= 0) return false;
+  if (input.stepCapDue || input.budgetExhausted) return false;
+  if (!Number.isFinite(input.collectStepsRun) || input.collectStepsRun >= MAX_OPSIS_COLLECT_STEPS) return false;
+  if (!Number.isFinite(input.elapsedMs)) return false;
+  const remaining = (input.budgetMs ?? ORCHESTRATOR_WALL_CLOCK_MS) - input.elapsedMs;
+  // The read, then the planning turn after it, the closing synthesis and the margin —
+  // in sequence, as on the correlate-deferral path, but with NO correlate budget: a
+  // collect step never dispatches a correlate. Note what this means under the
+  // current 180s/90s budget: at the WALL-CLOCK trigger (≤90s remaining) this is
+  // never affordable, so collection happens on cap-triggered finalizes only.
+  return remaining >= OPSIS_COLLECT_BUDGET_MS + requiredCompletionMs({ correlateBudgetMs: 0 });
+}
+
+export function buildFinalizeCollectDirective(pending: readonly OpsisPendingRun[]): string {
+  const lines = pending.map((p) =>
+    `- opsis_results { run_id: "${p.run_id}", kind: "${p.kind}", value: "${p.value}" }`
+  ).join("\n");
+  return (
+    "\n\n## COLLECT PHASE (before the report)\n" +
+    `${pending.length} paid opsis_search run(s) are still pending — their results have not been read. ` +
+    "Call opsis_results for EACH of them now, exactly as listed (one call per run id). " +
+    "Do NOT start a new opsis_search, do not call any other tool, and do not write the report yet; " +
+    "the persistence and report steps follow.\n" + lines + "\n"
+  );
+}
 
 export interface FinalizeStepPlan {
   activeTools: readonly string[];
@@ -131,11 +262,14 @@ export function countFinalizeProgress(messages: FinalizeMessage[]): FinalizeProg
   return progress;
 }
 
-/** Resolve the next phase using only successful results added after the boundary. */
+/** Resolve the next phase using only successful results added after the boundary.
+ *  `opts.collect` is the caller's already-bounded decision (shouldCollectOpsisBeforeFinalize). */
 export function resolveFinalizePhase(
   boundary: FinalizeProgress,
   current: FinalizeProgress,
+  opts?: { collect?: boolean },
 ): FinalizePhase {
+  if (opts?.collect === true) return "collect";
   const persistenceDecided =
     current.recordSucceeded > boundary.recordSucceeded ||
     current.noFindingsSucceeded > boundary.noFindingsSucceeded;
@@ -147,7 +281,14 @@ export function resolveFinalizePhase(
 }
 
 /** Build the enforced SDK configuration for the current finalize phase. */
-export function buildFinalizeStepPlan(phase: FinalizePhase): FinalizeStepPlan {
+export function buildFinalizeStepPlan(phase: FinalizePhase, pending: readonly OpsisPendingRun[] = []): FinalizeStepPlan {
+  if (phase === "collect") {
+    return {
+      activeTools: ["opsis_results"],
+      toolChoice: "required",
+      directive: buildFinalizeCollectDirective(pending),
+    };
+  }
   if (phase === "persist") {
     return {
       activeTools: FINALIZE_PERSIST_ACTIVE_TOOLS,
@@ -820,4 +961,35 @@ export function buildSalvageSynthesisPrompt(seed: string, artifacts: SalvageArti
     "Artifacts:",
     ...(rows.length ? rows : ["(none recorded)"]),
   ].filter((l) => l !== undefined).join("\n");
+}
+
+/** /health → checks.opsis_finalize_collect. Pure; presence proves this build. */
+export function opsisFinalizeCollectSelfTest(): { ok: boolean; switch: string; detail: string } {
+  const sw = OPSIS_FINALIZE_COLLECT_DISABLED_ENV;
+  if (!opsisFinalizeCollectEnabled()) return { ok: true, switch: `${sw}=true`, detail: `LEGACY via ${sw} (pending Opsis runs are not read before the report)` };
+  const wrong: string[] = [];
+  const hist = [{ content: [
+    { type: "tool-result", toolName: "opsis_search", toolCallId: "a", output: { type: "json", value: { ok: true, partial: true, run_id: "r1", kind: "username", value: "x" } } },
+    { type: "tool-result", toolName: "opsis_search", toolCallId: "b", output: { type: "json", value: { ok: true, partial: true, run_id: "r2", kind: "email", value: "y" } } },
+    { type: "tool-result", toolName: "opsis_results", toolCallId: "c", output: { type: "json", value: { ok: true, run_id: "r2" } } },
+    { type: "tool-result", toolName: "opsis_search", toolCallId: "d", output: { type: "json", value: { ok: true, complete: true, run_id: "r3" } } },
+  ] }];
+  const pending = pendingOpsisRuns(hist);
+  if (pending.length !== 1 || pending[0].run_id !== "r1") wrong.push("pending run detection wrong");
+  const base = { pending: 1, collectStepsRun: 0, elapsedMs: 0, stepCapDue: false, capReached: false, budgetExhausted: false };
+  if (!shouldCollectOpsisBeforeFinalize(base)) wrong.push("collect refused with full budget");
+  if (shouldCollectOpsisBeforeFinalize({ ...base, collectStepsRun: MAX_OPSIS_COLLECT_STEPS })) wrong.push("collect not bounded by step count");
+  if (shouldCollectOpsisBeforeFinalize({ ...base, elapsedMs: ORCHESTRATOR_WALL_CLOCK_MS - 60_000 })) wrong.push("collect taken without time to finish");
+  if (shouldCollectOpsisBeforeFinalize({ ...base, stepCapDue: true })) wrong.push("collect taken on the step cap");
+  if (!shouldCollectOpsisBeforeFinalize({ ...base, capReached: true })) wrong.push("collect refused on the tool cap (its main trigger)");
+  const plan = buildFinalizeStepPlan("collect", pending);
+  if (plan.activeTools.length !== 1 || plan.activeTools[0] !== "opsis_results" || plan.toolChoice !== "required") wrong.push("collect plan wrong");
+  return wrong.length
+    ? { ok: false, switch: `${sw}=false`, detail: wrong.join("; ") }
+    : {
+      ok: true,
+      switch: `${sw}=false`,
+      detail: `a paid opsis_search still pending at finalize gets one bounded opsis_results step (max ${MAX_OPSIS_COLLECT_STEPS}, ` +
+        "only with wall clock to spare, never on the step/tool cap) before persist → memory → report",
+    };
 }

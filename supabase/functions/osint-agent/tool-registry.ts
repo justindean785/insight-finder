@@ -122,7 +122,9 @@ import {
 } from "./guard.ts";
 import { reviewMemoryBatch, type MemoryEntry } from "./lib/memory_consolidate.ts";
 import { normalizeMemoryEntry, parseStringArtifactElements, wrapFlatMemoryEntry } from "./lib/memory-input-normalization.ts";
-import { applyInputCoercion, inferSelectorKind, inputCoercionDisabled, type InputCoercionSpec } from "./lib/tool-input-coercion.ts";
+import {
+  applyInputCoercion, GENERIC_SELECTOR_SPEC, inferSelectorKind, inputCoercionDisabled, mergeInputSpecs, type InputCoercionSpec,
+} from "./lib/tool-input-coercion.ts";
 import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
@@ -578,7 +580,11 @@ const SCHEMA_CACHE = new Map<string, unknown>();
 function memoSchema<T>(key: string, build: () => T): T {
   let cached = SCHEMA_CACHE.get(key);
   if (cached === undefined) {
-    cached = build();
+    const built = build();
+    // Every plain object schema gets the GENERIC selector rules (trim, enclosing quotes, number→string on selector
+    // fields, a stringified-JSON root) — see lib/tool-input-coercion.ts. A schema that is already a preprocess (the
+    // explicitly coerced tools, memory_save) is left to its own wrapper, which merges the generic rules itself.
+    cached = built instanceof z.ZodObject ? coercedSchema(key, {}, built) : built;
     SCHEMA_CACHE.set(key, cached);
   }
   return cached as T;
@@ -589,7 +595,8 @@ function memoSchema<T>(key: string, build: () => T): T {
 // re-validated against `inner`; if it would still fail, the RAW input goes through and is rejected exactly as before.
 // Kill switch INPUT_COERCION_DISABLED=true, read at call time inside applyInputCoercion.
 function coercedSchema<T extends z.ZodTypeAny>(tool: string, spec: InputCoercionSpec, inner: T) {
-  return z.preprocess((raw) => applyInputCoercion(tool, raw, spec, (v) => inner.safeParse(v).success), inner);
+  const merged = mergeInputSpecs(GENERIC_SELECTOR_SPEC, spec);
+  return z.preprocess((raw) => applyInputCoercion(tool, raw, merged, (v) => inner.safeParse(v).success), inner);
 }
 
 // "address" was added to gemini_deep_dork / dork_harvest kind enums together with input coercion; under the kill switch
@@ -1038,7 +1045,7 @@ export function buildTools(ctx: ToolContext) {
     minimax_correlate: tool({
       description:
         "Have MiniMax correlate and rescore a batch of artifacts. Pass the relevant artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after at least three meaningful new artifacts or before final verification. A repeat call after a successful pass is skipped (no cost) if fewer than three new artifacts have been recorded since — keep gathering evidence first.",
-      inputSchema: memoSchema("minimax_correlate", () => coercedSchema("minimax_correlate", { stringFields: ["seed"] }, z.object({
+      inputSchema: memoSchema("minimax_correlate", () => coercedSchema("minimax_correlate", { stringFields: ["seed"], trimFields: ["seed"], jsonFields: ["artifacts"] }, z.object({
         seed: z.string().describe("Original seed identifier"),
         // Models frequently pass `artifacts` as a JSON STRING; coerce to an
         // array before validating (same as record_artifacts) so a stringified
@@ -5528,7 +5535,10 @@ export function buildTools(ctx: ToolContext) {
         "Confidence is automatically CAPPED by source class server-side: breach-only ≤60, two-breach ≤65, username_sweep-only ≤45, social_profile_passive ≤40, ai_summary ≤55. " +
         "Setting confidence ≥90 only works when the artifact has corroboration from a court_record + independent_public/news source. " +
         "Each artifact may include metadata.{status, cluster_id, reason_for_confidence, reason_not_confirmed, contradictions, next_verification_step}. status enum: new|verified|probable|needs_review|contradicted|excluded|exhausted|manual_review_required.",
-      inputSchema: memoSchema("record_artifacts", () => z.object({
+      // Root coercion: a stringified-JSON root (`"{\"artifacts\":[…]}"`) or a stringified `artifacts` field is parsed
+      // before validation (lib/tool-input-coercion.ts); coerceArtifactsInput below still handles the fenced/embedded
+      // shapes and a single object.
+      inputSchema: memoSchema("record_artifacts", () => coercedSchema("record_artifacts", { jsonFields: ["artifacts"] }, z.object({
         // Tolerant input: some models emit `artifacts` as a JSON string
         // (or fenced code block). Parse it back into an array.
         artifacts: z.preprocess(coerceArtifactsInput, z.array(
@@ -5542,7 +5552,7 @@ export function buildTools(ctx: ToolContext) {
           )
           .min(1)
           .max(200)),
-      })),
+      }))),
       execute: async ({ artifacts: rawArtifacts }) => {
         const artifacts = collapseRecordArtifactsBatch(rawArtifacts);
         const accepted: Array<{ index: number; kind: string; value: string }> = [];
@@ -6494,7 +6504,9 @@ export function buildTools(ctx: ToolContext) {
       "Persist a durable cross-investigation memory: a learned pattern, a confirmed connection between artifacts, an analyst lesson, or an identity cluster. Call AT THE END of an investigation with the strongest connections + any lessons (e.g. \"this domain is always parked\", \"this handle resolves to person X\", \"breach DB Y has stale phones\"). Idempotent: calling with the same kind+subject+content updates the existing entry.",
     // Root preprocess: entry fields sent at the TOP LEVEL (no `entries`) are wrapped into `entries` — only when that is
     // unambiguous (lib/memory-input-normalization.ts). Valid input is returned untouched.
-    inputSchema: memoSchema("memory_save", () => z.preprocess(wrapFlatMemoryEntry, z.object({
+    // A bare top-level array `[{kind,subject,content}]` is wrapped as `{entries:[…]}` and a stringified-JSON root is
+    // parsed (lib/tool-input-coercion.ts) before the flat-entry wrapper and the `entries` string parser below run.
+    inputSchema: memoSchema("memory_save", () => coercedSchema("memory_save", { wrapArrayAs: "entries", jsonFields: ["entries"] }, z.preprocess(wrapFlatMemoryEntry, z.object({
       // Tolerant input: some models emit `entries` as a JSON string, or as
       // an array containing stringified objects. Normalize both shapes.
       entries: z.preprocess((raw) => {
@@ -6532,7 +6544,7 @@ export function buildTools(ctx: ToolContext) {
       scope: z.enum(["global", "case"]).optional().default("global").describe(
         "global = reusable cross-case knowledge (default). case = facts/decisions tied to THIS investigation only (dismissed leads, analyst confirmations, false positives).",
       ),
-    }))),
+    })))),
     execute: async ({ entries, scope }) => {
       // C-2: gate every entry through the deterministic C-1-subject consolidation
       // check BEFORE it can reach agent_memory. agent_memory's own upsert ratchets

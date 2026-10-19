@@ -58,6 +58,7 @@ import { wrapToolsWithCache } from "./cache.ts";
 import { paidBudgetTier } from "./cache.ts";
 import { costForTool } from "./costs.ts";
 import { priorSpendEvent, summarizePriorSpend } from "./lib/run-budget.ts";
+import { loadProviderAuthPrior, providerAuthPriorEnabled, type AuthPriorDb } from "./lib/provider-auth-prior.ts";
 import { beginCycle, clearRuntime, runtimeLimits } from "./runtime-policy.ts";
 import {
   TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW,
@@ -69,6 +70,7 @@ import {
   MAX_CORRELATE_FINALIZE_DEFERRALS, requiredCompletionMs,
   wallClockFinalizeDue, stepCapFinalizeDue,
   activeToolsOutsideFinalize, countFinalizeProgress, resolveFinalizePhase, type FinalizePhase,
+  pendingOpsisRuns, shouldCollectOpsisBeforeFinalize, opsisFinalizeCollectEnabled,
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
@@ -470,6 +472,20 @@ Deno.serve(async (req) => {
     };
     // Bootstrap per-thread circuit breakers (firecrawl/intelbase pre-disabled).
     circuit.applyBaselineDisables(threadId);
+    // A 401/402 an EARLIER invocation of this case already received suppresses the
+    // provider for this run too (lib/provider-auth-prior.ts). Awaited — a few ms on
+    // the thread index — because prepareStep must know before the first step which
+    // tools to withhold. Fails OPEN: a read error only loses the carry-over.
+    if (providerAuthPriorEnabled()) {
+      const prior = await loadProviderAuthPrior(supabaseAdmin as unknown as AuthPriorDb, threadId, circuit.providerForTool);
+      for (const r of prior.refusals) circuit.suppressProviderAuthPrior(threadId, r.tool, r.status);
+      if (prior.refusals.length > 0 || prior.error) {
+        console.log(JSON.stringify({
+          event: "provider_auth_prior", thread_id: threadId, rows_read: prior.rowsRead,
+          suppressed: prior.refusals.map((r) => `${r.provider}:${r.status}`), ...(prior.error ? { error: prior.error } : {}),
+        }));
+      }
+    }
     // Startup provider-readiness gate (Phase B1): gate providers that can't run
     // (missing key / unsupported seed) BEFORE the execution loop. Two layers:
     //   (1) circuit.disableTool → removes them from the SCHEDULABLE set (cache.ts
@@ -1017,12 +1033,16 @@ Deno.serve(async (req) => {
     // The two decision tools exist in the registry so forced-finalize can select them,
     // but they must never be available during ordinary investigation steps.
     const normalActiveTools = activeToolsOutsideFinalize(Object.keys(tools));
+    let lastHiddenToolsKey = "";
     // Explicit forced-finalize state. Completion is based on successful post-boundary
     // tool results, never on the number of prompts the model has merely seen.
     let finalizeStarted = false;
     let finalizeStepsRun = 0;
     let finalizePhase: FinalizePhase | null = null;
     let finalizeBoundary = countFinalizeProgress([]);
+    // Bounded Opsis collect phase (orchestrator-finalize.ts): counted on entry, so a
+    // refused/failed read is never retried and the phase can never stall finalize.
+    let finalizeCollectStepsRun = 0;
     let finalizeDecisionSucceededThisStep = false;
     // Per-run genuine-tool-call budget (MAX_TOOL_CALLS_PER_RUN). Passed into
     // wrapToolsWithCache, which increments `genuine` on each live execution and flips
@@ -1330,10 +1350,28 @@ Deno.serve(async (req) => {
               genuine_tool_calls: toolCallBudget.genuine,
             }));
           }
-          finalizePhase = resolveFinalizePhase(finalizeBoundary, progress);
-          finalizeStepsRun++;
+          const opsisPending = pendingOpsisRuns(stepMessages as Array<{ content?: unknown }>);
+          const collectNow = shouldCollectOpsisBeforeFinalize({
+            pending: opsisPending.length,
+            collectStepsRun: finalizeCollectStepsRun,
+            elapsedMs: elapsedMsNow,
+            stepCapDue,
+            capReached,
+            budgetExhausted: anthropicBudget.exhausted,
+            enabled: opsisFinalizeCollectEnabled(),
+          });
+          finalizePhase = resolveFinalizePhase(finalizeBoundary, progress, { collect: collectNow });
+          if (finalizePhase === "collect") {
+            finalizeCollectStepsRun++;
+            console.log(JSON.stringify({
+              event: "finalize_opsis_collect", thread_id: threadId, step_number: stepNumber ?? 0,
+              pending_runs: opsisPending.length, elapsed_ms: elapsedMsNow,
+            }));
+          } else {
+            finalizeStepsRun++;
+          }
           finalizeDecisionSucceededThisStep = false;
-          const finalizePlan = buildFinalizeStepPlan(finalizePhase);
+          const finalizePlan = buildFinalizeStepPlan(finalizePhase, opsisPending);
           logPromptSize(baseSystemPrompt + finalizePlan.directive, [...finalizePlan.activeTools]);
           return {
             messages: stepMessagesOut,
@@ -1356,6 +1394,22 @@ Deno.serve(async (req) => {
         // don't fabricate). Counts come from THIS request's stepMessages and the latch
         // is a closure local, so the nudge state is request-scoped by construction.
         let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective();
+        // A provider suppressed for the run (401/402 in this or an earlier invocation,
+        // 429/5xx/timeouts for the window) is withheld from the step's tool set, so the
+        // model cannot spend a step asking for a tool that can only answer with a
+        // refusal. Logged once per change of the hidden set, never per step.
+        const hiddenTools = circuit.suppressedToolsOf(threadId, normalActiveTools);
+        const stepActiveTools = hiddenTools.length
+          ? normalActiveTools.filter((t) => !hiddenTools.includes(t))
+          : normalActiveTools;
+        const hiddenKey = hiddenTools.join(",");
+        if (hiddenKey !== lastHiddenToolsKey) {
+          lastHiddenToolsKey = hiddenKey;
+          console.log(JSON.stringify({
+            event: "suppressed_tools_hidden", thread_id: threadId, step_number: stepNumber ?? 0,
+            hidden: hiddenTools, providers: circuit.suppressionSnapshot(threadId).map((p) => p.provider),
+          }));
+        }
         const { toolCalls: nudgeToolCalls, recordCalls: nudgeRecordCalls } =
           countModelMessageToolCalls(stepMessages as Array<{ content?: unknown }>);
         if (shouldNudgePersistence(nudgeToolCalls, nudgeRecordCalls, persistenceNudgedAt, persistenceNudgeCount)) {
@@ -1369,7 +1423,7 @@ Deno.serve(async (req) => {
           }));
           const nudgePlan = buildIntermediateStepPlan({
             nudgePersistence: true,
-            normalActiveTools,
+            normalActiveTools: stepActiveTools,
             openingPhase: false,
           });
           logPromptSize(intermediateSystem, nudgePlan.activeTools);
@@ -1391,7 +1445,7 @@ Deno.serve(async (req) => {
         }
         const intermediatePlan = buildIntermediateStepPlan({
           nudgePersistence: false,
-          normalActiveTools,
+          normalActiveTools: stepActiveTools,
           openingPhase,
         });
         logPromptSize(intermediateSystem, intermediatePlan.activeTools);
@@ -1459,6 +1513,9 @@ Deno.serve(async (req) => {
         budgetCeiling,
         shouldStopLiveLookups: () =>
           shouldForceFinalize(Date.now() - runStartedAt, 0) || anthropicBudgetStatus().exhausted,
+        // The opsis_results exemptions in cache.ts hold only while prepareStep has the run
+        // in the collect phase (orchestrator-finalize.ts) — never for a model-initiated read.
+        collectPhaseActive: () => finalizePhase === "collect",
         // See cache.ts's ctx field comment: the correlate exemption in the
         // finalize-window live-call guard is conditional on this, not automatic.
         // Recomputed live (not the stale elapsed captured at the last prepareStep)
@@ -1560,6 +1617,8 @@ Deno.serve(async (req) => {
             ? stepProgress.recordSucceeded + stepProgress.noFindingsSucceeded > 0
             : finalizePhase === "memory"
             ? stepProgress.memorySucceeded + stepProgress.memorySkipped > 0
+            : finalizePhase === "collect"
+            ? names.includes("opsis_results") // any read counts; the attempt is bounded, not the outcome
             : true;
           console.log(JSON.stringify({
             event: "finalize_step_finished", thread_id: threadId,
