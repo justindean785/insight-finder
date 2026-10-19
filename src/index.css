@@ -9,26 +9,23 @@ All colors MUST be HSL.
 @layer base {
   :root {
     /* ══════════════════════════════════════════════════════════════════════
-       THE COLD ROOM — restored 2026-10-19 (JD's approved direction A).
+       OBSIDIAN INTELLIGENCE — approved by JD 2026-10-19 (hybrid direction).
 
-       True-black ground, a cold blue pane ramp (#080E1B → #1C2943), cold
-       platinum ink, and ONE accent — Indigo Signal #6859F8 — that means FOCUS,
-       ACTIVE or LIVE, never decoration. Inference Violet #C879F6 is the second
-       axis: indigo is what a source asserts, violet is what the system
-       inferred. Every value below is the one `DESIGN.md` specifies and the
-       2026-09-22 contrast audit measured (0 AA failures).
+       Near-pure black ground (#030304), graphite plates (#0B0B0E → #1B1B1F),
+       silver ink, and ONE accent — Indigo Signal #7565F8 — spent only as a
+       1–2px edge, a focus outline or a live mark. Inference Violet #C879F6
+       marks agent inference and nothing else. Surfaces carry no hue: every
+       surface token stays at or below 12% saturation at under 12% lightness,
+       which reads as black, not navy (The No Navy Rule, DESIGN.md §2).
 
-       History, so nobody re-derives it: this file carried the Cold Room until
-       2026-09-25, when the "Case desk / 3a" pass flattened it to neutral
-       graphite with a teal accent and collapsed --intel-blue and --intel-violet
-       to one grey. Production shipped that register and JD's 2026-10-19 design
-       review scored it as a grey template. The token values here were first
-       re-painted on PR #804's branch; this file carries them on `main`.
+       Two materials: PLATE (flat, engraved hairline, top cap — everywhere) and
+       LENS (Black Glass — light film over black, on named high-priority
+       surfaces only). See --pane-* and --lens-* below.
 
-       The DISCIPLINE of the graphite pass is kept: depth is a film, a cap and
-       one contained shadow — never a backdrop blur on a pane (blur is reserved
-       for overlays), never a glow without a state behind it, never a gradient
-       as decoration.
+       History, so nobody re-derives it: Cold Room (blue-black) until
+       2026-09-25; "Case desk" graphite + teal until 2026-10-19; a blue Cold
+       Room 2.0 foundation drafted in PR #805 and rejected by JD for its navy
+       surfaces the same day. This register replaces all three.
 
        Three rules govern everything here and none may be quietly relaxed:
          1. HUE BELONGS TO AUTHORITY, NOT TO MAGNITUDE. A confidence of 38 is
@@ -60,34 +57,34 @@ All colors MUST be HSL.
        register used 0% lightness with a warm surface ramp above it; the cast
        is now cold, which is what makes cream anywhere on screen read as a bug
        rather than as a choice. */
-    --background: 0 0% 0%;        /* ground — true black, so a pane reads as an object (DESIGN.md) */
-    --foreground: 210 38% 95%;    /* #EDF2F7 — ink 1, cold platinum */
+    --background: 240 14% 1.4%;  /* ground #030304 — near-pure black */
+    --foreground: 225 10% 92.5%;  /* ink 1 #E9EAED — silver */
 
-    --card: 221 55% 7%;           /* surface-1 #080E1B */
-    --popover: 220 50% 9%;        /* surface-2 #0C1424 */
-    --card-foreground: 210 38% 95%;
-    --popover-foreground: 210 38% 95%;
+    --card: 240 12% 4.9%;  /* plate #0B0B0E */
+    --popover: 240 7% 8.4%;  /* raised #141417 */
+    --card-foreground: 225 10% 92.5%;
+    --popover-foreground: 225 10% 92.5%;
 
     /* Primary — near-white CTAs / active state, cooled into the ink family.
        Deliberately NOT the signal blue: a full-bleed saturated button is the
        cheapest-looking object on a dark UI, and the blue is worth more spent
        on state than on a rectangle. Rule 3. */
-    --primary: 210 38% 95%;
-    --primary-foreground: 0 0% 0%;
+    --primary: 225 10% 92.5%;
+    --primary-foreground: 240 14% 1.4%;
     /* The glow IS blue. Halos, the scan sweep, live dots — the light the room
        is lit by. Was cream, which is why nothing ever looked electric. */
-    --primary-glow: 245 92% 66%;
+    --primary-glow: 247 91% 68%;
 
-    --secondary: 221 45% 14%;     /* surface-3 #131D32 */
-    --secondary-foreground: 210 38% 95%;
+    --secondary: 240 7% 8.4%;
+    --secondary-foreground: 225 10% 92.5%;
 
-    --muted: 221 55% 7%;
+    --muted: 240 12% 4.9%;
     /* Lightness RAISED from 79% to 81% and re-hued cold. ~40 call sites render
        this at /0.7 and /0.6, and those composites only clear WCAG AA because
        the base is this light — the old file warned never to tidy it downward.
        Moving to a blue ground lowered the composite ratio slightly, so it went
        UP, not down. At /0.6 on --surface-2 it measures 4.8:1. Do not lower it. */
-    --muted-foreground: 214 22% 80%;   /* ink 2 — cold, same lightness (AA-measured) */
+    --muted-foreground: 225 7% 76.5%;  /* ink 2 #BFC1C7 */
 
     /* ── Ink ramp, levels 3 and 4 ──────────────────────────────────────────
        The system shipped with exactly TWO named ink levels, and the product
@@ -100,16 +97,16 @@ All colors MUST be HSL.
        neither is a trap: ink 3 reads 7.54 on black and 6.92 on surface-1;
        ink 4 reads 5.02 and 4.61. A token that quietly fails AA is worse than
        no token, because someone will reach for it in good faith. */
-    --subtle-foreground: 215 16% 62%;   /* ink 3 #909CAD — tertiary: source labels, timestamps */
-    --faint-foreground: 214 12% 51%;    /* ink 4 — reference: counts, units, inert chrome (51%, AA on surface-3) */
+    --subtle-foreground: 228 5% 57.8%;  /* ink 3 #8E9098 — 6.2 plate, 5.8 raised, 5.4 surface-4 */
+    --faint-foreground: 228 4% 53.7%;  /* ink 4 #84868E — AA on every surface: 5.4 plate, 5.1 raised, 4.7 surface-4 */
 
     /* Accent — an ELEVATED SLATE, not a hue.
        This is the shadcn menu/hover ground (`hover:bg-accent`), used only by
        the ui/ primitives. It used to be near-white, so every dropdown row and
        ghost-button hover flashed a bright cream rectangle. A quiet lifted
        plane is both calmer and more expensive, and it keeps the blue scarce. */
-    --accent: 221 45% 14%;
-    --accent-foreground: 210 38% 95%;
+    --accent: 240 7% 8.4%;
+    --accent-foreground: 225 10% 92.5%;
 
     /* ── The one alarm ─────────────────────────────────────────────────────
        ONE crimson hue (352°) at TWO intensities, because the two roles have
@@ -140,11 +137,11 @@ All colors MUST be HSL.
        cream reads muddy beside platinum, and a slate-blue "info" is
        indistinguishable from the new signal blue. Each is now separated from
        its neighbours by at least 30° of hue. */
-    --info: 245 92% 66%;          /* system / agent state — the indigo signal */
+    --info: 247 91% 68%;  /* state — the indigo signal, small marks only */
     --success: 152 62% 46%;          /* emerald — corroborated */
     --warning: 38 92% 58%;           /* amber — needs review */
     --danger: 358 75% 59%;           /* crimson — contested */
-    --evidence: 215 16% 66%;         /* immutable / custody marker — neutral */
+    --evidence: 228 5% 66%;  /* immutable / custody marker — neutral */
 
     /* Muted semantic backgrounds — for soft chips, row tints, alerts */
     --info-muted: 191 58% 13%;
@@ -162,18 +159,18 @@ All colors MUST be HSL.
 
        If you are here because a confidence "lost its colour": that is the
        feature. Ask the authority ladder below what the row actually means. */
-    --confidence-high: 212 30% 86%;
-    --confidence-high-glow: 212 44% 93%;
-    --confidence-mid: 213 18% 66%;
-    --confidence-low: 214 14% 48%;
+    --confidence-high: 228 6% 86%;
+    --confidence-high-glow: 228 8% 93%;
+    --confidence-mid: 228 5% 66%;
+    --confidence-low: 228 4% 48%;
     --highconf: 212 30% 86%;
 
-    --conf-confirmed: 212 32% 88%;
-    --conf-confirmed-glow: 212 48% 94%;
-    --conf-likely: 212 24% 77%;
-    --conf-possible: 213 17% 64%;
-    --conf-weak: 214 14% 50%;
-    --conf-unverified: 215 13% 39%;
+    --conf-confirmed: 228 6% 88%;
+    --conf-confirmed-glow: 228 8% 94%;
+    --conf-likely: 228 5% 77%;
+    --conf-possible: 228 4% 64%;
+    --conf-weak: 228 4% 50%;
+    --conf-unverified: 228 3% 39%;
 
     /* ── Authority ladder ──────────────────────────────────────────────────
        The eight analyst-facing states from `src/lib/authority.ts`. THIS is the
@@ -218,21 +215,21 @@ All colors MUST be HSL.
        reads recessed if it is not lighter than what surrounds it. The recess
        comes from the inner shadow and the film above it.
        Strictly monotonic in lightness: 4 → 6 → 8.5 → 12.5 → 17.5. */
-    --surface-0: 0 0% 0%;
-    --surface-1: 221 55% 7%;    /* #080E1B */
-    --surface-2: 220 50% 9%;    /* #0C1424 */
-    --surface-3: 221 45% 14%;   /* #131D32 — selected / hover */
-    --surface-4: 220 41% 19%;   /* #1C2943 */
+    --surface-0: 240 14% 1.4%;
+    --surface-1: 240 12% 4.9%;  /* #0B0B0E plate */
+    --surface-2: 240 9% 6.9%;  /* #101013 hover / selected row */
+    --surface-3: 240 7% 8.4%;  /* #141417 raised */
+    --surface-4: 240 7% 11.4%;  /* #1B1B1F */
 
     /* Border ramp, strictly monotonic: 11 → 18 → 29. */
-    --border: 219 33% 20%;        /* hairline #222E44 */
-    --border-subtle: 221 37% 13%; /* hairline-subtle #151D2E */
-    --border-strong: 217 32% 31%; /* hairline-strong #364968 */
-    --input: 220 50% 9%;
+    --border: 231 9% 15.9%;  /* hairline #25262C */
+    --border-subtle: 230 10% 12.2%;  /* hairline-subtle #1C1D22 */
+    --border-strong: 232 7% 21.6%;  /* hairline-strong #33343B */
+    --input: 240 9% 6.9%;
     /* Focus is the signal blue at full strength. A focus ring is the single
        most "is this a real product" detail on a dark UI, and it was a warm
        grey that disappeared into every border it landed next to. */
-    --ring: 245 92% 66%;
+    --ring: 247 91% 68%;
 
     /* ── Film ──────────────────────────────────────────────────────────────
        THE single most load-bearing token in this file.
@@ -265,8 +262,8 @@ All colors MUST be HSL.
 
        Spend it as a rim, an edge, a bloom or an active state. Never as a
        large fill (rule 3). */
-    --brand: 245 92% 66%;
-    --brand-deep: 248 80% 46%;
+    --brand: 247 91% 68%;  /* Indigo Signal #7565F8 */
+    --brand-deep: 248 80% 52%;
 
     /* Intel tokens — ~79 var() uses across the app.
        These were BOTH literally `39 26% 88%` — two differently-named tokens
@@ -274,7 +271,7 @@ All colors MUST be HSL.
        rendered as sand. They are now genuinely distinct and named honestly:
        blue is the evidence axis (what a source asserts), violet the inference
        axis (what the system concluded). */
-    --intel-blue: 245 92% 66%;    /* evidence axis — Indigo Signal #6859F8 */
+    --intel-blue: 247 91% 68%;  /* evidence axis — Indigo Signal #7565F8 */
     --intel-violet: 282 89% 72%;  /* inference axis — Inference Violet #C879F6 */
 
     /* ── Entity-kind palette (Graph tab) ───────────────────────────────────
@@ -304,18 +301,18 @@ All colors MUST be HSL.
        neutralising of confidence would have greyed out speaker identification
        on the app's primary tab. The analyst is ink; the agent speaks in the
        product's own signal; a tool is machine cyan. */
-    --speaker-analyst: 210 60% 93%;
-    --speaker-agent: 245 92% 66%;   /* the product's own signal */
-    --speaker-tool: 192 70% 56%;    /* machine cyan */
-    --speaker-system: 215 16% 62%;  /* ink 3 */
+    --speaker-analyst: 225 10% 92.5%;
+    --speaker-agent: 247 91% 68%;
+    --speaker-tool: 228 5% 57.8%;  /* neutral — surfaces carry no hue */
+    --speaker-system: 228 5% 57.8%;
     --speaker-failed: 352 78% 48%;  /* destructive — the one speaker allowed to raise its voice */
 
     /* Brain (Global Brain tab) palette — cooled to match the register. */
-    --brain-surface-base: 222 42% 5%;
-    --brain-card:         221 38% 7.5%;
-    --brain-border:       219 27% 16%;
-    --brain-text:         212 38% 93%;
-    --brain-muted:        214 21% 74%;  /* AA body on brain-card */
+    --brain-surface-base: 240 14% 1.4%;
+    --brain-card:         240 12% 4.9%;
+    --brain-border:       231 9% 15.9%;
+    --brain-text:         225 10% 92.5%;
+    --brain-muted:        225 7% 76.5%;
     --brain-cyan:         189 90% 58%;
     --brain-status-ok:    152 62% 46%;
     --brain-status-warn:   38 92% 58%;
@@ -326,45 +323,50 @@ All colors MUST be HSL.
     /* The rail sits at page level; its separation is a border and a film, not
        a darker fill — there is nothing darker than the page. --sidebar-background
        therefore holds the same triple as --background, deliberately. */
-    --sidebar-background: 0 0% 4%;
-    --sidebar-foreground: 214 19% 74%;
-    --sidebar-primary: 245 92% 66%;
-    --sidebar-primary-foreground: 222 55% 6%;
-    --sidebar-accent: 220 45% 13.5%;
-    --sidebar-accent-foreground: 212 40% 95%;
-    --sidebar-border: 220 38% 13%;
-    --sidebar-ring: 245 92% 66%;
+    --sidebar-background: 240 14% 1.4%;
+    --sidebar-foreground: 225 7% 76.5%;
+    --sidebar-primary: 247 91% 68%;
+    --sidebar-primary-foreground: 240 14% 1.4%;
+    --sidebar-accent: 240 7% 8.4%;
+    --sidebar-accent-foreground: 225 10% 92.5%;
+    --sidebar-border: 230 10% 12.2%;
+    --sidebar-ring: 247 91% 68%;
 
-    /* ── The pane material (DESIGN.md §4 Elevation, §5 Panels) ─────────────
+    /* ── Plate: the pane material (DESIGN.md §4 Two materials) ─────────────
        ONE material, referenced by every shared surface class below (.panel,
        the legacy .glass* aliases, .chat-card, .instrument-panel). Eight
        near-identical declarations drifted apart the last time these were
        written out by hand; a class that wants to be a pane reads these three
        variables and nothing else.
-         ground  : an off-axis sheen, a vertical film, then a two-stop surface
-                   tint colder at the foot so a tall pane is not one flat sheet
-         border  : 1px film at 10%
-         shadow  : the specular cap (film 8.5% on the top edge), the refracted
-                   rim (indigo on the left, violet on the right, hairline only)
-                   and one contained shadow
-       No backdrop-filter: a pane is lit, not blurred. */
-    --pane-radius: 13px;
-    --pane-ground:
-      linear-gradient(118deg, hsl(var(--film) / 0.035), transparent 42%),
-      linear-gradient(180deg, hsl(var(--film) / 0.03), transparent 38%),
-      linear-gradient(180deg, hsl(var(--surface-1)), hsl(221 56% 6%));
-    --pane-border: hsl(var(--film) / 0.10);
+         ground  : flat graphite plate, no gradient, no hue
+         border  : 1px hairline
+         shadow  : a 1px inner black line (the engraved edge) and a 1px top cap
+       No backdrop-filter, no glow, 4px machined corner. */
+    --pane-radius: 4px;
+    --pane-ground: hsl(var(--surface-1));
+    --pane-border: hsl(var(--border-subtle));
     --pane-shadow:
-      inset 0 1px 0 hsl(var(--film) / 0.085),
-      inset 1px 0 0 hsl(var(--intel-blue) / 0.05),
-      inset -1px 0 0 hsl(var(--intel-violet) / 0.05),
-      0 14px 38px -22px hsl(0 0% 0% / 0.98);
-    --pane-raised-ground:
-      linear-gradient(118deg, hsl(var(--film) / 0.04), transparent 46%),
-      linear-gradient(180deg, hsl(var(--surface-2)), hsl(var(--surface-1)));
+      inset 0 0 0 1px hsl(0 0% 0% / 0.65),
+      inset 0 1px 0 hsl(var(--film) / 0.04);
+    --pane-raised-ground: hsl(var(--surface-3));
     --pane-raised-shadow:
-      inset 0 1px 0 hsl(var(--film) / 0.075),
-      0 18px 44px -26px hsl(0 0% 0% / 0.95);
+      inset 0 0 0 1px hsl(0 0% 0% / 0.6),
+      inset 0 1px 0 hsl(var(--film) / 0.06),
+      0 18px 40px -24px hsl(0 0% 0% / 1);
+
+    /* ── Lens (Black Glass) — the one exception to flat plates ─────────────
+       Light film over black, never a hue. Budget: one primary and one
+       secondary per screen, named surfaces only (DESIGN.md §4). */
+    --lens-radius: 12px;
+    --lens-ground:
+      radial-gradient(120% 80% at 50% -30%, hsl(var(--film) / 0.07), transparent 55%),
+      linear-gradient(180deg, hsl(var(--film) / 0.045), hsl(var(--film) / 0.015)),
+      hsl(var(--surface-1));
+    --lens-border: hsl(var(--film) / 0.085);
+    --lens-shadow:
+      inset 0 1px 0 hsl(var(--film) / 0.11),
+      0 0 0 1px hsl(0 0% 0% / 0.85),
+      0 30px 60px -34px hsl(0 0% 0% / 1);
   }
 }
 
@@ -414,7 +416,7 @@ All colors MUST be HSL.
        the baseline. On black this reads as dimension rather than as a colour.
        Both stops are in the ink family — a neutral white-to-grey ramp here is
        what kept every heading in the app cold while the body copy went warm. */
-    background: linear-gradient(180deg, hsl(var(--film)) 10%, hsl(214 22% 72%) 100%);
+    background: linear-gradient(180deg, hsl(var(--film)) 10%, hsl(228 5% 72%) 100%);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -467,7 +469,7 @@ All colors MUST be HSL.
      register a confidence numeral is deliberately plain ink, and lighting it
      like a headline is the same mistake as colouring it by value. */
   .stat-figure {
-    background: linear-gradient(175deg, hsl(var(--film)) 6%, hsl(212 30% 85%) 58%, hsl(214 20% 60%) 130%);
+    background: linear-gradient(175deg, hsl(var(--film)) 6%, hsl(228 6% 85%) 58%, hsl(228 4% 60%) 130%);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -510,6 +512,30 @@ All colors MUST be HSL.
     background: var(--pane-raised-ground);
     border-color: hsl(var(--film) / 0.13);
     box-shadow: var(--pane-raised-shadow);
+  }
+  /* Lens — Black Glass. Only on: the analytical brief, the selected-evidence
+     inspector, the decision queue, active investigation controls, and a
+     focused/selected plate row. A focused or selected Lens gets the indigo
+     top hairline. Never more than one primary + one secondary per screen. */
+  .lens {
+    position: relative;
+    border-radius: var(--lens-radius);
+    background: var(--lens-ground);
+    border: 1px solid var(--lens-border);
+    box-shadow: var(--lens-shadow);
+  }
+  .lens[data-selected="true"],
+  .lens:focus-within {
+    box-shadow: inset 0 1px 0 hsl(var(--brand) / 0.6), var(--lens-shadow);
+  }
+  /* Machined corner ticks — top-level plates only. */
+  .plate-ticks {
+    background:
+      linear-gradient(hsl(var(--film) / 0.22), hsl(var(--film) / 0.22)) left top / 7px 1px no-repeat,
+      linear-gradient(hsl(var(--film) / 0.22), hsl(var(--film) / 0.22)) left top / 1px 7px no-repeat,
+      linear-gradient(hsl(var(--film) / 0.22), hsl(var(--film) / 0.22)) right bottom / 7px 1px no-repeat,
+      linear-gradient(hsl(var(--film) / 0.22), hsl(var(--film) / 0.22)) right bottom / 1px 7px no-repeat,
+      var(--pane-ground);
   }
   /* Recessed — for wells that content sits INSIDE (code, JSON, empty states). */
   .panel-inset {
@@ -2726,11 +2752,9 @@ All colors MUST be HSL.
    is why it stays this quiet -- The Light Source Rule: indigo is a light
    source, not a fill. */
 .case-bar {
-  background:
-    radial-gradient(60% 140% at 100% 0%, hsl(var(--intel-blue) / 0.07), transparent 60%),
-    linear-gradient(180deg, hsl(var(--film) / 0.03), transparent 55%),
-    hsl(var(--surface-1));
-  box-shadow: inset 0 1px 0 hsl(var(--film) / 0.07);
+  /* Obsidian: the dossier band is the ground itself, separated by a hairline. */
+  background: hsl(var(--surface-0));
+  box-shadow: inset 0 -1px 0 hsl(var(--border-subtle));
 }
 
 /* The selector's mark. The only piece of brand furniture on the workspace, so
@@ -2918,7 +2942,7 @@ All colors MUST be HSL.
   /* Hairlines are film at 7–10% alpha and vanish under forced colours; every
      shared surface re-establishes its edge in the system's own colour. */
   .panel, .glass, .glass-strong, .glass-card, .glass-interactive,
-  .chat-card, .instrument-panel, .card-material, .ledger-row, .case-bar {
+  .chat-card, .instrument-panel, .card-material, .ledger-row, .case-bar, .lens {
     border: 1px solid CanvasText;
     box-shadow: none;
     background: Canvas;
