@@ -156,6 +156,10 @@ test.describe("app shell — tablet rail", () => {
 
   test("starts collapsed; expanding overlays the page and hands focus in and back", async ({ page }) => {
     await open(page, CASE);
+    // Let the case finish loading first: the workspace focuses its composer on
+    // load, which would otherwise take focus from the rail mid-test.
+    await page.locator("#workspace-tabpanel-chat textarea").first().waitFor();
+    await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe("TEXTAREA");
     const rail = page.locator('aside[aria-label="Cases"]');
     const railWidth = () => rail.evaluate((a) => Math.round(a.getBoundingClientRect().width));
     await expect.poll(railWidth).toBe(56);
@@ -212,5 +216,37 @@ test.describe("graph — seed node selection", () => {
     await seed.focus();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("button", { name: "Close detail" })).toHaveCount(0);
+  });
+});
+
+test.describe("case sheet — collapse to a strip", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("hides to a strip that keeps the decision count, remembers it, and restores without remounting the transcript", async ({ page }) => {
+    await open(page, CASE);
+    const sheet = page.getByRole("complementary", { name: "Case sheet" });
+    await expect(sheet.getByRole("button", { name: "Hide case sheet", exact: true })).toBeVisible();
+    await page.locator("#workspace-tabpanel-chat > *").first().waitFor();
+    await page.evaluate(() => {
+      (document.getElementById("workspace-tabpanel-chat")!.firstElementChild as HTMLElement & { __mark?: number }).__mark = 9;
+    });
+    const chatWidth = () => page.locator("#workspace-tabpanel-chat").evaluate((el) => Math.round(el.getBoundingClientRect().width));
+    const before = await chatWidth();
+
+    await sheet.getByRole("button", { name: "Hide case sheet", exact: true }).click();
+    await expect(sheet.getByRole("button", { name: "Show case sheet", exact: true })).toHaveAttribute("aria-expanded", "false");
+    // The decision count stays on screen while the sheet is folded.
+    await expect(sheet.getByRole("button", { name: /needs? your call/ })).toBeVisible();
+    await expect.poll(chatWidth, "the transcript takes the freed width").toBeGreaterThan(before + 300);
+    expect(await page.evaluate(() =>
+      (document.getElementById("workspace-tabpanel-chat")!.firstElementChild as HTMLElement & { __mark?: number }).__mark,
+    ), "the transcript was not remounted").toBe(9);
+
+    await page.reload();
+    await expect(page.getByRole("complementary", { name: "Case sheet" }).getByRole("button", { name: "Show case sheet", exact: true }), "remembered").toBeVisible();
+
+    await page.getByRole("complementary", { name: "Case sheet" }).getByRole("button", { name: "Show case sheet", exact: true }).click();
+    await expect(page.getByRole("complementary", { name: "Case sheet" }).getByRole("button", { name: "Hide case sheet", exact: true })).toBeVisible();
+    await expect.poll(chatWidth).toBe(before);
   });
 });

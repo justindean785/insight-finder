@@ -19,6 +19,8 @@ const GraphTab = lazy(() => import("@/components/workspace/GraphTab").then((m) =
 const ReportTab = lazy(() => import("@/components/panel/ReportTab").then((m) => ({ default: m.ReportTab })));
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
+import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
 import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -127,7 +129,18 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
   // two panels it sits beside only gain a right inset, so no existing child
   // moves or remounts: the ChatWindow's in-flight stream is untouched by it.
   const showSheet = !isMobile && (tab === "chat" || tab === "report");
-  const besideSheet = (key: WorkspaceTab) => showSheet && (key === "chat" || key === "report") && "xl:right-[380px]";
+  // The analyst can fold the sheet down to a 44px strip, like the cases rail;
+  // the strip keeps the "Needs your call" count so open decisions never vanish.
+  // Remembered across reloads.
+  const [sheetCollapsed, setSheetCollapsed] = useState(() => {
+    try { return localStorage.getItem("if:caseSheetCollapsed") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("if:caseSheetCollapsed", sheetCollapsed ? "1" : "0"); } catch { /* ignore */ }
+  }, [sheetCollapsed]);
+  const besideSheet = (key: WorkspaceTab) =>
+    showSheet && (key === "chat" || key === "report") && (sheetCollapsed ? "xl:right-11" : "xl:right-[380px]");
+  const queueCount = sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null;
 
   const panel = (key: Exclude<WorkspaceTab, "chat">, body: ReactNode, scroll = false) =>
     visited.has(key) || tab === key ? (
@@ -171,12 +184,64 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
       {showSheet && (
         <aside
           key="case-sheet"
+          id="case-sheet"
           aria-label="Case sheet"
-          className="absolute inset-y-0 right-0 hidden w-[380px] border-l border-border-subtle bg-card xl:block"
+          className={cn(
+            "absolute inset-y-0 right-0 hidden border-l border-border-subtle bg-card xl:block",
+            sheetCollapsed ? "w-11" : "w-[380px]",
+          )}
         >
-          <ErrorBoundary>
-            <CaseSheet threadId={threadId} />
-          </ErrorBoundary>
+          {sheetCollapsed ? (
+            <div className="flex h-full flex-col items-center gap-2 py-2">
+              <Tooltip delayDuration={150}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setSheetCollapsed(false)}
+                    aria-label="Show case sheet"
+                    aria-expanded={false}
+                    aria-controls="case-sheet"
+                    className="grid h-8 w-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground"
+                  >
+                    <PanelRightOpen className="h-4 w-4" aria-hidden />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="left" className="text-xs">Show case sheet</TooltipContent>
+              </Tooltip>
+              {queueCount != null && queueCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSheetCollapsed(false)}
+                  aria-label={`${queueCount} need${queueCount === 1 ? "s" : ""} your call — open case sheet`}
+                  title={`${queueCount} need${queueCount === 1 ? "s" : ""} your call`}
+                  className="grid min-h-8 min-w-8 place-items-center rounded-full border border-warning/40 bg-warning/10 px-1.5 font-mono text-data tabular-nums text-warning transition-colors hover:bg-warning/15"
+                >
+                  {queueCount > 99 ? "99+" : queueCount}
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              <Tooltip delayDuration={150}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setSheetCollapsed(true)}
+                    aria-label="Hide case sheet"
+                    aria-expanded
+                    aria-controls="case-sheet"
+                    className="absolute right-2 top-2 z-10 grid h-8 w-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground"
+                  >
+                    <PanelRightClose className="h-4 w-4" aria-hidden />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="left" className="text-xs">Hide case sheet</TooltipContent>
+              </Tooltip>
+              <ErrorBoundary>
+                <CaseSheet threadId={threadId} />
+              </ErrorBoundary>
+            </>
+          )}
         </aside>
       )}
     </div>
