@@ -8,6 +8,8 @@
 > **Written 2026-10-19T02:30Z.** Every number below is a dated measurement, not a state: re-verify it. This file replaces the 2026-10-14 prompt; the old text is in git history.
 >
 > Address the user as **JD**. Engineering only: never investigate any person who appears in a scan.
+>
+> **Superseded on these points (2026-10-20T03:40Z, when this file was reconciled with `main` at `cf501fb`):** #805–#809 and #808 have merged; the UI handoff `SESSION_HANDOFF_2026-10-19_obsidian-foundation-and-stage-a-shell.md` carries JD's newer design-side queue (trust labels, then Stage C1). On the edge channel the first step is now the **deploy of `aae1152` (#802)**, which is stamped and synced but not deployed, and only then #797. The §"Addendum" of `SESSION_HANDOFF_2026-10-19_integrity-before-tool-fleet.md` lists every change, including the two real #809 follow-up defects. Treat the Objective and Current Problem below as the 10-19 reading.
 
 ## Standing rules (these come BEFORE any delegation below)
 
