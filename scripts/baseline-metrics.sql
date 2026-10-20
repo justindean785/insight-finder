@@ -1,6 +1,6 @@
 -- Baseline metrics for the agentic-upgrade plan (Phase 0). READ-ONLY, aggregates only.
 -- No subject values, no thread/user ids in any output column.
--- Run each statement separately (Supabase SQL editor or scripts/baseline-metrics.mjs).
+-- Run each statement separately (Supabase SQL editor or the Lovable `query_database` tool).
 
 -- Q1: orchestrator health, last 14 days
 select count(*) as invocations,
@@ -22,8 +22,9 @@ where created_at > now() - interval '14 days' group by 1 order by 2 desc;
 -- Q3: findings vs artifacts (lifetime)
 -- Never select source/value/metadata: finding-row `source` holds free-text subject PII.
 select count(*) filter (where kind='finding') as finding_rows_all,
-       count(*) filter (where kind='finding' and metadata ? 'synthesis_cluster_id') as finding_rows_engine,
-       count(*) filter (where kind='finding' and not (metadata ? 'synthesis_cluster_id')) as finding_rows_agent,
+       count(*) filter (where kind='finding' and metadata ? 'synthesis_cluster_id') as finding_rows_synthesis_origin,
+       count(*) filter (where kind='finding' and not (metadata ? 'synthesis_cluster_id')) as finding_rows_model_origin,
+       -- Both origins are scored by the same engine chain (lib/finding-row.ts); origin is who reached the conclusion, not whether the engine scored it.
        count(*) as artifact_rows,
        count(distinct thread_id) as threads_with_artifacts,
        (select count(*) from public.threads) as threads_all
