@@ -62,6 +62,9 @@ import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
 import { humanizeSelector } from "@/lib/humanize-selector";
 import { measureRequestBody, reportRequestBodySize } from "@/lib/request-size";
+import { shouldFollowServer, currentRunEvents } from "@/lib/server-follow";
+import { ServerFollowPanel } from "@/components/chat/ServerFollowPanel";
+import { useHeldTrue } from "@/hooks/use-held-true";
 import {
   isTerminalThreadUpdate,
   mergePersistedChatMessages,
@@ -2443,6 +2446,22 @@ function ChatWindowInner({
   };
 
   const isLoading = status === "submitted" || status === "streaming";
+  // The server is running this case's investigation and this page is not
+  // receiving it live: the stream dropped (phone slept, network changed) or the
+  // page was opened mid-run. Settled for 3s, because a normal run ends with the
+  // stream closing a moment before the thread is marked finished.
+  const followingServer = useHeldTrue(shouldFollowServer({ clientStreaming: isLoading, serverRunActive }), 3_000);
+  // When a run this page was not streaming ends, load what it saved. The
+  // watchdog below only hears the realtime UPDATE, which a phone asleep at the
+  // moment the run finished never receives and nothing replays; the case
+  // snapshot does notice (it re-reads on return to the tab and polls while a
+  // run is live), so its run state leaving "running" is the reliable signal.
+  const serverWasRunningRef = useRef(serverRunActive);
+  useEffect(() => {
+    const was = serverWasRunningRef.current;
+    serverWasRunningRef.current = serverRunActive;
+    if (was && !serverRunActive && !isLoading) void reconcilePersistedMessages();
+  }, [serverRunActive, isLoading, reconcilePersistedMessages]);
   // A follow-up inherits the case's target; only a first request needs one.
   const isFollowUp = useMemo(() => messages.some((m) => m.role === "user"), [messages]);
   const preflight = useMemo(
@@ -2950,7 +2969,9 @@ function ChatWindowInner({
                   onRerun={hasCacheBanner ? rerunInvestigation : undefined}
                   rerunBusy={rerunBusy}
                   superseded={superseded}
-                  live={isLoading && isLastAssistant}
+                  // While following the server, the first reply is still in
+                  // progress there: not "Interrupted", and the panel lists its calls.
+                  live={(isLoading || followingServer) && isLastAssistant}
                 />
               );
             });
@@ -2958,6 +2979,10 @@ function ChatWindowInner({
           {isLoading && (
             <LiveActivityCard message={liveAssistantMessage} elapsedLabel={runElapsedLabel} />
           )}
+          <ServerFollowPanel
+            active={followingServer}
+            events={currentRunEvents(caseSnapshot?.snapshot?.tools?.events ?? [], caseSnapshot?.snapshot?.run?.startedAt ?? null)}
+          />
           {/* ONE card per failure.
               A failed run lands in two places: the live `error` state here, and
               a persisted assistant message prefixed FAIL_PREFIX which renders
