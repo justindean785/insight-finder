@@ -9,6 +9,7 @@ import {
 } from "@/lib/intel";
 import { isClusterIneligible } from "@/lib/report-hygiene";
 import { isBreachKind } from "@/lib/breach-kinds";
+import { groupBySelector } from "@/lib/selector-group";
 
 /**
  * Confidence-dimension transform — PURE and DETERMINISTIC (pass `nowMs` to keep
@@ -152,13 +153,24 @@ export function buildConfidenceProfile(input: {
   };
 
   // ── Corroboration (≥2 independent source classes) ────────────────────
-  const multiSource = live.filter((a) => sourceClasses(a).size >= 2).length;
+  // Corroboration is a property of the SELECTOR, not of the row. The hook keeps one item per database row when rows
+  // differ in authority, so the same email recorded by a breach tool and by a public source is two items, each with one
+  // class. Counting rows read that as 0% (#593 review, B2). The classes of every LIVE row of a selector are unioned
+  // before counting, and the denominator is selectors. This is a COUNT over classes, never a transfer: a second row from
+  // the same class adds nothing, and `live` already excludes quarantined, conflicted and false-positive rows, so a
+  // sibling that has no authority lends no class either. Nothing is written to any row.
+  const liveSelectors = [...groupBySelector(live).values()];
+  const multiSource = liveSelectors.filter((rows) => {
+    const classes = new Set<string>();
+    for (const r of rows) for (const c of sourceClasses(r)) classes.add(c);
+    return classes.size >= 2;
+  }).length;
   const corroboration: ConfidenceDimension = {
     key: "corroboration",
     label: "Corroboration",
-    value: live.length ? clamp((multiSource / live.length) * 100) : 0,
-    sufficient: live.length >= 2,
-    reason: live.length ? `${multiSource} of ${live.length} findings backed by ≥2 independent source classes` : "Too few findings to assess corroboration",
+    value: liveSelectors.length ? clamp((multiSource / liveSelectors.length) * 100) : 0,
+    sufficient: liveSelectors.length >= 2,
+    reason: liveSelectors.length ? `${multiSource} of ${liveSelectors.length} findings backed by ≥2 independent source classes` : "Too few findings to assess corroboration",
   };
 
   // ── Source diversity (distinct source families) ──────────────────────

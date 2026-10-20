@@ -39,6 +39,7 @@ import {
   type ReviewAdjustment,
 } from "@/lib/intel";
 import { formatArtifactDisplayValue, buildIdentityRows, isClusterIneligible, isNullResultValue, isSubjectAuthorityEligible, type IdentityRow } from "@/lib/report-hygiene";
+import { distinctSelectorCount, groupBySelector } from "@/lib/selector-group";
 import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
@@ -573,8 +574,18 @@ export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel, 
 
   // Corroboration (BUG-3): findings backed by >=2 INDEPENDENT source classes,
   // NOT distinct source-label count (52 labels incl. 4x minimax != corroboration).
-  const corroborated = positive.filter((a) => artifactSourceClasses(a).size >= 2).length;
-  const corroborationValue = clampScore((corroborated / total) * 100);
+  //
+  // Counted per SELECTOR, not per row (#593 review, B2): the same email recorded by a breach tool and by a public source
+  // is two rows with one class each, and corroboration is a property of the claim. The classes of every positive row of
+  // a selector are unioned before counting; a second row from the same class adds nothing, and an analyst-rejected row
+  // is not in `positive`, so it lends no class. Nothing is written to any row.
+  const corroborated = [...groupBySelector(positive).values()].filter((rows) => {
+    const classes = new Set<string>();
+    for (const r of rows) for (const c of artifactSourceClasses(r)) classes.add(c);
+    return classes.size >= 2;
+  }).length;
+  const selectorTotal = Math.max(distinctSelectorCount(artifacts), 1);
+  const corroborationValue = clampScore((corroborated / selectorTotal) * 100);
 
   // Coverage (BUG-4): observed source CATEGORIES vs the expected set, not tool count.
   const observedCats = new Set<string>();
@@ -592,7 +603,7 @@ export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel, 
 
   return [
     { label: "Identity coverage", value: clampScore((identityHits / 8) * 100), detail: `${identityHits}/8 identity categories observed` },
-    { label: "Cross-source", value: corroborationValue, detail: `${corroborated}/${artifacts.length} finding${artifacts.length === 1 ? "" : "s"} across ≥2 independent source classes` },
+    { label: "Cross-source", value: corroborationValue, detail: `${corroborated}/${distinctSelectorCount(artifacts)} finding${distinctSelectorCount(artifacts) === 1 ? "" : "s"} across ≥2 independent source classes` },
     { label: "Confidence", value: clampScore(avg), detail: `${avg}% average artifact confidence` },
     { label: "Exposure", value: exposureValue, detail: `${exposureArts.length} breach / credential-exposure finding${exposureArts.length === 1 ? "" : "s"}` },
     { label: "Coverage", value: coverageValue, detail: `${coveredExpected}/${EXPECTED_SOURCE_CATEGORIES.length} source categories represented` },

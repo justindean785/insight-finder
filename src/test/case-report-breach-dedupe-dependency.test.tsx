@@ -16,10 +16,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  * them: the OLDEST row's id survives, the later row's metadata is spread over
  * it, and the later row's review is never looked up.
  *
- * Cases marked "PINNED UNTIL #593" record today's behaviour so the dependency is
- * explicit. #593 (rows with different authority stay separate) changes the
- * over-exclusion cases; when it lands these assertions must be revisited, not
- * deleted.
+ * Identical twins still collapse that way. Rows whose AUTHORITY differs (#593:
+ * source, confidence or metadata, e.g. a quarantine flag or a linkage release)
+ * stay separate items, each judged under its own authority, so a clean
+ * observation is no longer hidden by a quarantined copy and a release on one row
+ * is not spread over another. The "WITH #593" cases replaced the cases that
+ * pinned the pre-#593 over-exclusion.
  */
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -144,18 +146,21 @@ describe("Breach Exposure filter after the real load + dedupe path", () => {
     expect(r.table).toContain("DupCorp");
   });
 
-  it("PINNED UNTIL #593: a later linkage release is spread over an older quarantined row, so the breach is shown", async () => {
+  it("WITH #593: a linkage release stays on its own row; the released row is shown, the older quarantined row stays separate", async () => {
     const r = await renderCase([anchor, row("older", 1, UNLINKED), row("newer", 2, { ...UNLINKED, linkage_confirmed: true })]);
+    expect(r.dupItems).toBe(2);
     expect(r.table).toContain("DupCorp");
   });
 
-  it("PINNED UNTIL #593 (over-exclusion): older clean + newer quarantined merge into a quarantined row, so the clean observation is hidden too", async () => {
+  it("WITH #593: older clean + newer quarantined stay separate, so the clean observation is shown", async () => {
     const r = await renderCase([anchor, row("older", 1), row("newer", 2, UNLINKED)]);
-    expect(r.table).not.toContain("DupCorp");
+    expect(r.dupItems).toBe(2);
+    expect(r.table).toContain("DupCorp");
   });
 
-  it("PINNED UNTIL #593 (over-exclusion): older quarantined + newer clean keep the quarantine, so the clean observation is hidden too", async () => {
+  it("WITH #593: older quarantined + newer clean stay separate, so the clean observation is shown", async () => {
     const r = await renderCase([anchor, row("older", 1, UNLINKED), row("newer", 2)]);
-    expect(r.table).not.toContain("DupCorp");
+    expect(r.dupItems).toBe(2);
+    expect(r.table).toContain("DupCorp");
   });
 });

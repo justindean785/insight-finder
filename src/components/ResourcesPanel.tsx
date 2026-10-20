@@ -24,7 +24,7 @@ import { evidenceStatus } from "@/lib/evidence-status";
 import { ANALYST_ACTIONABLE_STATES, authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
 import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
 import {
-  canReleaseLinkage, releasePatch,
+  canReleaseLinkage, releasePatch, releasedMetadata,
   RELEASE_ACTION_LABEL, RELEASE_CONFIRM_BODY, RELEASE_CONFIRM_TITLE,
 } from "@/lib/quarantine-release";
 import {
@@ -855,12 +855,14 @@ export function ArtifactRow({
 }
 
 function ArtifactDrawer({
-  artifact, onClose, onChanged, reviewGet, reviewSet, threadId,
+  artifact, onClose, onChanged, reviewGet, reviewInherited, reviewSet, threadId,
 }: {
   artifact: Artifact | null;
   onClose: () => void;
   onChanged: (a: Artifact) => void;
   reviewGet: (id: string) => ReviewState;
+  /** True when `reviewGet(id)` is a rejection recorded on ANOTHER record of the same value, not on this row. */
+  reviewInherited?: (id: string) => boolean;
   reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => Promise<ReviewWriteResult>;
   threadId: string;
 }) {
@@ -873,6 +875,7 @@ function ArtifactDrawer({
       onClose={onClose}
       onChanged={onChanged}
       reviewGet={reviewGet}
+      reviewInherited={reviewInherited}
       reviewSet={reviewSet}
       threadId={threadId}
     />
@@ -880,12 +883,14 @@ function ArtifactDrawer({
 }
 
 function ArtifactDrawerInner({
-  artifact, onClose, onChanged, reviewGet, reviewSet, threadId,
+  artifact, onClose, onChanged, reviewGet, reviewInherited, reviewSet, threadId,
 }: {
   artifact: Artifact;
   onClose: () => void;
   onChanged: (a: Artifact) => void;
   reviewGet: (id: string) => ReviewState;
+  /** True when `reviewGet(id)` is a rejection recorded on ANOTHER record of the same value, not on this row. */
+  reviewInherited?: (id: string) => boolean;
   reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => Promise<ReviewWriteResult>;
   threadId: string;
 }) {
@@ -897,6 +902,7 @@ function ArtifactDrawerInner({
   const metaRows = humanizeArtifactMetadata(meta);
   const falsePositive = meta.false_positive === true;
   const rState = reviewGet(artifact.id);
+  const inheritedRejection = reviewInherited?.(artifact.id) ?? false;
   // Ground-truth context passed to every review action so feedback events carry
   // confidence_before/source (else they're dropped from the by-band calibration).
   // `confidence` here becomes `analyst_feedback_events.confidence_before` — the
@@ -954,7 +960,7 @@ function ArtifactDrawerInner({
     try {
       const { data, error } = await supabase
         .from("artifacts")
-        .update({ metadata: { ...meta, ...patch } as never })
+        .update({ metadata: releasedMetadata(meta, patch) as never })
         .eq("id", artifact.id)
         .select("id,kind,value,confidence,source,created_at,metadata")
         .maybeSingle();
@@ -1114,6 +1120,11 @@ function ArtifactDrawerInner({
               </span>
               {falsePositive && <span className="px-2 py-0.5 rounded-full bg-destructive/15 text-destructive border border-destructive/40 text-eyebrow uppercase">false positive</span>}
             </div>
+            {inheritedRejection && (
+              <p className="mb-2 text-data text-muted-foreground">
+                Rejected on another record of this value. Reset it there to lift it; a decision on this record overrides it.
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] p-2">
               <ReviewBtn current={rState} target="confirmed" onClick={() => reviewSet(artifact.id, "confirmed", rctx)}>
                 <CheckCircle2 className="w-3 h-3" /> Confirm
@@ -1145,9 +1156,11 @@ function ArtifactDrawerInner({
               <ReviewBtn current={rState} target="key" onClick={() => reviewSet(artifact.id, "key", rctx)}>
                 <Star className="w-3 h-3" /> Key
               </ReviewBtn>
-              <Button size="sm" variant="ghost" className="col-span-2 h-7 px-2 gap-1 text-data" onClick={() => reviewSet(artifact.id, null, rctx)}>
-                Reset
-              </Button>
+              {!inheritedRejection && (
+                <Button size="sm" variant="ghost" className="col-span-2 h-7 px-2 gap-1 text-data" onClick={() => reviewSet(artifact.id, null, rctx)}>
+                  Reset
+                </Button>
+              )}
             </div>
           </Field>
           <Field label="Note">
@@ -1450,6 +1463,7 @@ export function EvidenceBoard({
         onClose={() => setSelected(null)}
         onChanged={(a) => { updateLocal(a); setSelected(a); }}
         reviewGet={review.get}
+        reviewInherited={review.isInherited}
         reviewSet={review.set}
         threadId={threadId}
       />

@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import { z } from "zod";
 import { supabase } from "@/integrations/supabase/client";
 import { toSourceStrings } from "@/lib/source-strings";
+import { normalizeSelectorValue, protectMinorSelectors } from "@/lib/selector-group";
 
 export type Artifact = {
   id: string;
@@ -23,27 +24,6 @@ const realtimeArtifactSchema = z.object({
   metadata: z.record(z.unknown()).nullable(),
 }).partial();
 
-// Canonicalize a value per kind so duplicates across tools collapse cleanly.
-function normalizeValue(kind: string, raw: string): string {
-  const v = (raw ?? "").trim();
-  const k = kind.toLowerCase();
-  if (!v) return v;
-  if (k === "email" || k === "domain") return v.toLowerCase();
-  if (k === "username" || k === "social") return v.replace(/^@+/, "").toLowerCase();
-  if (k === "ip") {
-    // Lightweight IPv4 canonicalization (strip leading zeros per octet).
-    const m = v.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-    if (m) return m.slice(1).map((n) => String(parseInt(n, 10))).join(".");
-    return v.toLowerCase();
-  }
-  if (k === "name") {
-    // Strip trailing parentheticals like "Prince (Twitter display name)" → "prince"
-    // so the bare name and its platform-tagged variant collapse to one row.
-    return v.replace(/\s*\(.*\)\s*$/, "").trim().toLowerCase();
-  }
-  return v.toLowerCase();
-}
-
 /** Artifact kinds that represent meta/status rows — surfaced in audit/timeline,
  * not in the user-facing artifact list. */
 /**
@@ -64,42 +44,108 @@ export function isMetaArtifact(a: Artifact): boolean {
   return META_KINDS.has(String(meta.label ?? "").toLowerCase());
 }
 
+function sourceSet(a: Artifact): string[] {
+  const md = (a.metadata ?? {}) as Record<string, unknown>;
+  return Array.from(new Set<string>([...toSourceStrings(md.sources), ...(a.source ? [a.source] : [])]));
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * Everything a consumer can read authority from. That is the top-level source
+ * and confidence plus the WHOLE metadata blob, not a list of "authority keys":
+ * cluster membership alone reads metadata.email / phone / address /
+ * parent_seed, so no key is safely descriptive. `sources` is folded to the set
+ * dedupe maintains, so a stored item and its raw twin compare equal when a
+ * realtime delta re-dedupes the store.
+ */
+function authorityFingerprint(a: Artifact): string {
+  // Cached per ROW OBJECT. The store keeps the raw rows and re-derives its items on every realtime delta; without the
+  // cache that meant re-serialising the whole metadata blob of EVERY row every time (50 inserts into 1,000 rows of
+  // ~5 KB metadata: 4.5 s). A row is never mutated, a changed row arrives as a new object, so the cache cannot go
+  // stale.
+  let fp = fingerprintCache.get(a);
+  if (fp === undefined) {
+    const { sources: _sources, ...rest } = (a.metadata ?? {}) as Record<string, unknown>;
+    fp = stableStringify({ source: a.source, confidence: a.confidence, metadata: rest, sources: sourceSet(a).sort() });
+    fingerprintCache.set(a, fp);
+  }
+  return fp;
+}
+const fingerprintCache = new WeakMap<Artifact, string>();
+
+function isEarlier(a: Artifact, b: Artifact): boolean {
+  const ta = Date.parse(a.created_at);
+  const tb = Date.parse(b.created_at);
+  if (ta !== tb && !Number.isNaN(ta) && !Number.isNaN(tb)) return ta < tb;
+  return a.id < b.id;
+}
+
+/**
+ * Collapse rows that are the same evidence twice — same kind, same normalized
+ * value AND identical authority — onto the earliest row.
+ *
+ * Rows that share a value but differ in authority stay separate items. The old
+ * merge spread a later row's metadata over the first, so one database row
+ * donated source class, cap, cluster, quarantine release (`linkage_confirmed`)
+ * and analyst confirmation (`reviewed`) to another, and the result depended on
+ * row order. One item cannot carry two rows' authority without inventing a
+ * merged authority object, so it doesn't try: each raw row stays the authority
+ * input, and every surface and export built on these items inherits that.
+ */
 function dedupeArtifacts(rows: Artifact[]): Artifact[] {
-  const seen = new Map<string, Artifact>();
+  // selector -> fingerprint -> entry. Two levels on purpose: the fingerprint is the whole metadata blob (kilobytes),
+  // and concatenating it into a per-row key built a new multi-KB string for every row on every delta, which V8 then
+  // had to hash again. As an inner Map key the cached fingerprint string is the SAME object every time, so its hash
+  // is computed once.
+  const bySelector = new Map<string, Map<string, { row: Artifact; item: Artifact }>>();
+  // First-seen order of (selector, authority) pairs, exactly as a single insertion-ordered Map would have given.
+  const order: Array<{ row: Artifact; item: Artifact }> = [];
   for (const a of rows) {
-    const norm = normalizeValue(a.kind, a.value);
-    const key = `${a.kind.toLowerCase()}|${norm}`;
-    const prev = seen.get(key);
-    if (!prev) {
-      const md = { ...(a.metadata ?? {}) } as Record<string, unknown>;
-      const sources = new Set<string>([
-        ...toSourceStrings(md.sources),
-        ...(a.source ? [a.source] : []),
-      ]);
-      md.sources = Array.from(sources);
-      seen.set(key, { ...a, metadata: md });
+    const selector = `${a.kind.toLowerCase()}|${normalizeSelectorValue(a.kind, a.value)}`;
+    let byAuthority = bySelector.get(selector);
+    if (!byAuthority) bySelector.set(selector, (byAuthority = new Map()));
+    const fp = authorityFingerprint(a);
+    const prev = byAuthority.get(fp);
+    if (prev) {
+      // Same evidence twice: the earliest row survives, whichever order they arrive in.
+      if (isEarlier(a, prev.row)) {
+        prev.row = a;
+        prev.item = itemFor(a);
+      }
       continue;
     }
-    const prevMd = (prev.metadata ?? {}) as Record<string, unknown>;
-    const sources = new Set<string>([
-      ...toSourceStrings(prevMd.sources),
-      ...(prev.source ? [prev.source] : []),
-      ...(a.source ? [a.source] : []),
-    ]);
-    const prevReviewed = prevMd.reviewed === true;
-    const nextReviewed = a.metadata?.reviewed === true;
-    seen.set(key, {
-      ...prev,
-      confidence: Math.max(prev.confidence ?? 0, a.confidence ?? 0) || prev.confidence,
-      metadata: {
-        ...prevMd,
-        ...(a.metadata ?? {}),
-        sources: Array.from(sources),
-        reviewed: prevReviewed || nextReviewed,
-      },
-    });
+    const entry = { row: a, item: itemFor(a) };
+    byAuthority.set(fp, entry);
+    order.push(entry);
   }
-  return Array.from(seen.values());
+  return order.map((e) => e.item);
+}
+
+/** The item for a raw row: the row plus the folded source set. Cached per row so an unchanged row keeps its identity across deltas. */
+function itemFor(a: Artifact): Artifact {
+  let item = itemCache.get(a);
+  if (!item) {
+    item = { ...a, metadata: { ...(a.metadata ?? {}), sources: sourceSet(a) } };
+    itemCache.set(a, item);
+  }
+  return item;
+}
+const itemCache = new WeakMap<Artifact, Artifact>();
+
+/**
+ * What the app reads: rows of identical authority collapsed, then the minor-safety ceiling applied across every row
+ * of a flagged selector (lib/selector-group.ts). The ceiling is derived HERE, from the raw rows, and never stored.
+ */
+function deriveItems(raw: Artifact[]): Artifact[] {
+  return protectMinorSelectors(dedupeArtifacts(raw));
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +155,10 @@ function dedupeArtifacts(rows: Artifact[]): Artifact[] {
 // its own SELECT on every event, multiplying load by N panels.
 // ---------------------------------------------------------------------------
 type Store = {
+  /** Every row as loaded or delivered by realtime, never copied or merged. `items` is derived from it. */
+  raw: Artifact[];
+  /** Bumped on every change to `raw`, so a derivation that needs the sibling rows (see peekThreadRows) knows to recompute. */
+  version: number;
   items: Artifact[];
   // loadedCount is the raw row count returned by the most recent load,
   // before dedupe — used to detect cap saturation honestly.
@@ -155,6 +205,29 @@ export const ARTIFACTS_INITIAL_LIMIT = 1000;
 const stores = new Map<string, Store>();
 const THROTTLE_MS = 500;
 
+// ---- Sibling-row access for derivations outside this hook ------------------
+// Some derivations need every row of a selector, not just the deduped items: an analyst's REJECTION of a value has to
+// reach the sibling rows of that value (lib/selector-group.ts → expandRejections, applied by useReviewStates). They read
+// the store through these three functions, so the store itself stays private.
+const rowListeners = new Set<() => void>();
+function touchRows(store: Store) {
+  store.version += 1;
+  for (const l of rowListeners) l();
+}
+/** The raw rows of a thread's loaded store, or null when none is mounted. Never mutate the result. */
+export function peekThreadRows(threadId: string): readonly Artifact[] | null {
+  return stores.get(threadId)?.raw ?? null;
+}
+/** A number that changes whenever peekThreadRows(threadId) would return different rows. */
+export function threadRowsVersion(threadId: string): number {
+  const s = stores.get(threadId);
+  return s ? s.version + 1 : 0;
+}
+export function subscribeThreadRows(listener: () => void): () => void {
+  rowListeners.add(listener);
+  return () => { rowListeners.delete(listener); };
+}
+
 function snapshot(store: Store): StoreSnapshot {
   return {
     items: store.items,
@@ -187,7 +260,9 @@ async function loadStore(threadId: string, store: Store): Promise<boolean> {
   const rows = (data ?? []) as Artifact[];
   store.loadedCount = rows.length;
   store.hasMore = rows.length >= ARTIFACTS_INITIAL_LIMIT;
-  store.items = dedupeArtifacts(rows);
+  store.raw = rows;
+  store.items = deriveItems(rows);
+  touchRows(store);
   store.loaded = true;
   store.error = false;
   store.loadedAt = Date.now();
@@ -210,22 +285,29 @@ function applyDelta(
   newRow: Partial<Artifact> | null,
   oldRow: Partial<Artifact> | null,
 ): boolean {
+  // The deltas are applied to the RAW rows and the items re-derived, so a row that the dedupe hid (identical authority)
+  // is still there when its twin is updated or deleted — the store used to keep only the survivor, so the hidden row
+  // stayed lost until the next full reload.
   if (eventType === "INSERT" && newRow && newRow.id) {
-    const exists = store.items.some((a) => a.id === newRow.id);
-    if (!exists) {
-      store.items = dedupeArtifacts([...store.items, newRow as Artifact]);
+    if (!store.raw.some((a) => a.id === newRow.id)) {
+      store.raw = [...store.raw, newRow as Artifact];
+      store.items = deriveItems(store.raw);
+      touchRows(store);
     }
     return true;
   }
   if (eventType === "UPDATE" && newRow && newRow.id) {
-    const next = store.items.map((a) => (a.id === newRow.id ? (newRow as Artifact) : a));
-    store.items = dedupeArtifacts(next);
+    store.raw = store.raw.map((a) => (a.id === newRow.id ? (newRow as Artifact) : a));
+    store.items = deriveItems(store.raw);
+    touchRows(store);
     return true;
   }
   if (eventType === "DELETE" && oldRow && oldRow.id) {
-    const next = store.items.filter((a) => a.id !== oldRow.id);
-    if (next.length !== store.items.length) {
-      store.items = next;
+    const next = store.raw.filter((a) => a.id !== oldRow.id);
+    if (next.length !== store.raw.length) {
+      store.raw = next;
+      store.items = deriveItems(next);
+      touchRows(store);
       return true;
     }
   }
@@ -245,6 +327,8 @@ function acquireStore(threadId: string, listener: (snapshot: StoreSnapshot) => v
   let store = stores.get(threadId);
   if (!store) {
     store = {
+      raw: [],
+      version: 0,
       items: [],
       loadedCount: 0,
       hasMore: false,
@@ -342,6 +426,7 @@ function releaseStore(threadId: string, listener: (snapshot: StoreSnapshot) => v
       document.removeEventListener("visibilitychange", store.onVisible);
     }
     stores.delete(threadId);
+    for (const l of rowListeners) l();
   }
 }
 
@@ -368,7 +453,9 @@ export function useThreadArtifacts(threadId: string) {
   const updateLocal = (a: Artifact) => {
     const store = stores.get(threadId);
     if (!store) return;
-    store.items = store.items.map((x) => (x.id === a.id ? a : x));
+    store.raw = store.raw.map((x) => (x.id === a.id ? a : x));
+    store.items = deriveItems(store.raw);
+    touchRows(store);
     const next = snapshot(store);
     for (const fn of store.subscribers) fn(next);
   };

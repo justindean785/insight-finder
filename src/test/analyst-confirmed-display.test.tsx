@@ -59,6 +59,9 @@ vi.mock("@/lib/review", async (importOriginal) => {
     ...actual,
     useReviewStates: () => ({
       get: (id: string) => (mocks.reviews[id] ?? "new") as ReviewState,
+      getOwn: (id: string) => (mocks.reviews[id] ?? "new") as ReviewState,
+      // The fixture rows have no same-value siblings, so nothing is ever inherited (#593).
+      isInherited: () => false,
       getNote: () => "",
       set: vi.fn(),
       setNote: vi.fn(),

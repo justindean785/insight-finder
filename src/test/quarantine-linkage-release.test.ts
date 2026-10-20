@@ -210,3 +210,36 @@ describe("the action reads as a provenance ruling, not a review approval", () =>
     expect(RELEASE_CONFIRM_BODY.toLowerCase()).toContain("kept");
   });
 });
+
+// #593 follow-up. The release writer spreads an ITEM's metadata into the database row. Items carry read-time derivations
+// (the minor-safety ceiling lent by a sibling row), and writing one back would store a restriction the row never earned.
+describe("the release write-back does not persist derived metadata", () => {
+  it("strips the minor-safety keys the hook derived, keeps the ones the row carried, and layers the patch on top", async () => {
+    const { releasedMetadata } = await import("@/lib/quarantine-release");
+    const { MINOR_DERIVED_MARKER } = await import("@/lib/selector-group");
+    const meta = {
+      ...QUARANTINED_META,
+      possible_minor: true,
+      minor_warning: true,
+      auto_pivot_blocked: true,
+      [MINOR_DERIVED_MARKER]: ["possible_minor", "minor_warning"],
+    } as Record<string, unknown>;
+    const patch = releasePatch(meta)!;
+    const written = releasedMetadata(meta, patch);
+    expect(written.linkage_confirmed).toBe(true);
+    expect(written.subject_unlinked).toBe(true); // provenance preserved
+    expect("possible_minor" in written).toBe(false); // derived: not stored
+    expect("minor_warning" in written).toBe(false);
+    expect(written.auto_pivot_blocked).toBe(true); // the row's own
+    expect(MINOR_DERIVED_MARKER in written).toBe(false);
+    // a row with nothing derived is written exactly as before
+    const plain = { ...QUARANTINED_META } as Record<string, unknown>;
+    expect(releasedMetadata(plain, releasePatch(plain)!)).toEqual({ ...plain, ...releasePatch(plain)! });
+  });
+
+  it("WIRING (source assertion): ResourcesPanel writes releasedMetadata, never a raw spread of the item's metadata", async () => {
+    const src = await import("node:fs").then((fs) => fs.readFileSync("src/components/ResourcesPanel.tsx", "utf8"));
+    expect(src).toContain("releasedMetadata(meta, patch)");
+    expect(src).not.toContain("{ ...meta, ...patch }");
+  });
+});

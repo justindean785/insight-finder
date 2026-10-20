@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { recordAnalystFeedback, actionForReviewState } from "@/lib/analyst-feedback";
 import { detectSeed } from "@/lib/seed";
+import { peekThreadRows, subscribeThreadRows, threadRowsVersion } from "@/hooks/useThreadArtifacts";
+import { expandRejections } from "@/lib/selector-group";
 import {
   isNonNewReview,
   isRejectedReview,
@@ -474,7 +476,23 @@ export function useReviewStates(threadId: string) {
     return () => window.removeEventListener(EVT, onChange);
   }, [threadId]);
 
-  const get = useCallback((id: string): ReviewState => map[id] ?? "new", [map]);
+  // The verdicts as the rest of the app should READ them: the rows' own recorded states, plus an analyst REJECTION of a
+  // value applied to the other rows of that value (lib/selector-group.ts → expandRejections). Rows are kept separate by
+  // useThreadArtifacts, so without this a value the analyst dismissed — including every dismissal recorded against the
+  // old merged item — comes back through its sibling row. Positive decisions never propagate. Nothing is written: the
+  // recorded states (`map`) are untouched and `set` below still works on them.
+  const rowsVersion = useSyncExternalStore(subscribeThreadRows, () => threadRowsVersion(threadId), () => 0);
+  const effective = useMemo(
+    () => expandRejections(peekThreadRows(threadId), map),
+    // `rowsVersion` is the dependency that matters: the rows live outside React state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [map, threadId, rowsVersion],
+  );
+  const get = useCallback((id: string): ReviewState => effective[id] ?? "new", [effective]);
+  /** The verdict RECORDED on this row — what the review controls act on. `get` may add a rejection inherited from a sibling. */
+  const getOwn = useCallback((id: string): ReviewState => map[id] ?? "new", [map]);
+  /** True when `get(id)` is a rejection inherited from another record of the same value, not a verdict recorded on this row. */
+  const isInherited = useCallback((id: string): boolean => (effective[id] ?? "new") !== (map[id] ?? "new"), [effective, map]);
   const getNote = useCallback((id: string): string => notes[id] ?? "", [notes]);
 
   /**
@@ -699,5 +717,5 @@ export function useReviewStates(threadId: string) {
     return { ok: true, state: "new" };
   }, [threadId]);
 
-  return { map, notes, availability, revision, get, getNote, set, setNote, clear };
+  return { map: effective, notes, availability, revision, get, getOwn, isInherited, getNote, set, setNote, clear };
 }
