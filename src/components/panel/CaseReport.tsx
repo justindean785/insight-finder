@@ -43,7 +43,8 @@ import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
 import { isRejectedReview, type ReviewState } from "@/lib/review";
-import { isQuarantined } from "@/lib/quarantine";
+import { independentSourceClasses } from "@/lib/intel";
+import { isAnalystConfirmed } from "@/lib/analyst-confirmed";
 import { extractDisplaySeed } from "@/lib/seed";
 import type { MessageSummary } from "@/hooks/useThreadMessages";
 import { isBreachKind } from "@/lib/breach-kinds";
@@ -541,17 +542,14 @@ function artifactSourceClasses(a: Artifact): Set<string> {
  * input - a human vouching for a single-source row does not make it corroborated.
  */
 export function countIndependentlyCorroborated(artifacts: Artifact[], reviews?: Reviews): number {
-  return artifacts.filter((a) => !isRejectedReview(revOf(reviews, a)) && artifactSourceClasses(a).size >= 2).length;
+  return artifacts.filter((a) => !isRejectedReview(revOf(reviews, a)) && independentSourceClasses(a).length >= 2).length;
 }
 
 /** Rows an analyst has confirmed/keyed (or that carry metadata.reviewed). A separate axis from corroboration. */
 export function countAnalystConfirmed(artifacts: Artifact[], reviews?: Reviews): number {
-  return artifacts.filter((a) => {
-    const r = revOf(reviews, a);
-    if (isRejectedReview(r)) return false;
-    const m = (a.metadata ?? {}) as Record<string, unknown>;
-    return !isQuarantined(m) && (r === "confirmed" || r === "key" || m.reviewed === true);
-  }).length;
+  // Canonical predicate (labelForArtifact === "ATTESTED"): it already refuses
+  // possible_minor, quarantined, conflict and false-positive rows.
+  return artifacts.filter((a) => isAnalystConfirmed(a, revOf(reviews, a))).length;
 }
 
 // DISPLAY-METRIC ONLY: these functions change what the radar axes COUNT. They do
@@ -750,10 +748,8 @@ function buildSubjectProfile(artifacts: Artifact[], reviews?: Reviews): ProfileF
   if (name) {
     // A single-source name is a candidate, not a finding: say so beside the value
     // instead of rendering it as a plain fact.
-    const nameClasses = artifactSourceClasses(name).size;
-    const nameReview = revOf(reviews, name);
-    const nameMeta = (name.metadata ?? {}) as Record<string, unknown>;
-    const nameAttested = nameReview === "confirmed" || nameReview === "key" || nameMeta.reviewed === true;
+    const nameClasses = independentSourceClasses(name).length;
+    const nameAttested = isAnalystConfirmed(name, revOf(reviews, name));
     const nameNote = nameClasses >= 2
       ? undefined
       : nameAttested

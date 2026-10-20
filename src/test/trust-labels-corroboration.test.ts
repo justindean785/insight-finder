@@ -52,3 +52,19 @@ describe("analyst-confirmed vs independently corroborated", () => {
     expect(countIndependentlyCorroborated([attested])).toBe(0);
   });
 });
+
+describe("canonical eligibility (review follow-ups)", () => {
+  it("non-corroborating classes (ai_summary + web_search) are not independent corroboration", () => {
+    const weak = mk("w", { metadata: { source_category: ["ai_summary", "web_search"] } });
+    expect(countIndependentlyCorroborated([weak])).toBe(0);
+    const mixed = mk("m", { metadata: { source_category: ["ai_summary", "public_record", "social"] } });
+    expect(countIndependentlyCorroborated([mixed])).toBe(1);
+  });
+
+  it("a possible_minor or false-positive row is never counted analyst-confirmed", () => {
+    const reviews = { p: "confirmed", f: "key" } as never;
+    const minor = mk("p", { metadata: { source_category: ["social"], possible_minor: true } });
+    const fp = mk("f", { metadata: { source_category: ["social"], false_positive: true } });
+    expect(countAnalystConfirmed([minor, fp], reviews)).toBe(0);
+  });
+});

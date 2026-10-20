@@ -20,7 +20,8 @@ import {
   groupForKind, GROUP_LABEL, GROUP_ORDER, type Group,
   extractSourceInfo, CACHE_LAYER_LABEL, CACHE_LAYER_CLASS,
 } from "@/lib/intel";
-import { evidenceStatus, sourceClasses, classLabel } from "@/lib/evidence-status";
+import { evidenceStatus, classLabel } from "@/lib/evidence-status";
+import { independentSourceClasses } from "@/lib/intel";
 import { ANALYST_ACTIONABLE_STATES, authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
 import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
 import {
@@ -1088,7 +1089,7 @@ function ArtifactDrawerInner({
                 {/* Independent source CLASSES only. Repeating one tool or its mirrors
                     above is provenance, not support, and never raises confidence. */}
                 {(() => {
-                  const classes = sourceClasses(artifact);
+                  const classes = independentSourceClasses(artifact);
                   return classes.length >= 2 ? (
                     <>
                       <div className="text-data text-muted-foreground">{classes.length} independent source classes</div>
