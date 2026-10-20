@@ -432,7 +432,8 @@ promotion-quarantine switch, §3 the trap list of four instruments that lied) �
 `…_2026-09-13_instrument-truth-and-the-lineage-prerequisite.md` →
 `…_2026-09-14_sweep-false-positives-and-the-memory-retrieval-gap.md` →
 `…_2026-09-20_prompt-ceiling-payload-store-and-the-overlap-wedge.md` →
-**`SESSION_HANDOFF_2026-10-14_anthropic-orchestrator-and-the-dropped-connection.md` (newest — read this one first; Anthropic went live, the dropped-connection run-termination bug was measured and fixed in #758, §3 is the PR queue, §5 the trap list, §6 the ordered plan)** →
+**`SESSION_HANDOFF_2026-10-19_obsidian-foundation-and-stage-a-shell.md` (newest, frontend design revamp only — read it first for UI work: #805/#806/#807 merged, §3 the JD-ordered queue (trust labels, Stage C1), §5 the traps)** →
+`SESSION_HANDOFF_2026-10-14_anthropic-orchestrator-and-the-dropped-connection.md` (newest for backend/orchestrator work — read this one first for that; Anthropic went live, the dropped-connection run-termination bug was measured and fixed in #758, §3 is the PR queue, §5 the trap list, §6 the ordered plan)** →
 `SESSION_HANDOFF_2026-10-10_s1a-admission-lease-and-the-heartbeat-incident.md` (read second; the run lease is built, deployed and switched OFF, §5 is the JD-gated queue, §6 the release traps) →
 `SESSION_HANDOFF_2026-10-10_evidence-guards-and-the-learning-loop.md` (read third; its §5 is the plan for making the agent learn from every run, §3 the ordered queue, §6 the release traps. **Superseded on one point:** its §5 L5 says the server-side run lease is "unbuilt" — S1a shipped as #730/#734 and is disabled by switch) →
 `SESSION_HANDOFF_2026-10-06_release-train-and-audit-queue.md` (the draft-PR queue and release-recipe traps; `docs/proposals/` holds the P1/P2/P3 and E1-E4 design proposals).
