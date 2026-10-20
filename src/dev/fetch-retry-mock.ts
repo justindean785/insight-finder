@@ -86,11 +86,22 @@ const SCRIPT: Beat[] = [
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function harnessRunStream(): ReadableStream<Uint8Array> {
+function harnessRunStream(signal?: AbortSignal | null): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   let cancelled = false;
   return new ReadableStream<Uint8Array>({
     async start(controller) {
+      // `useChat().stop()` only aborts the request's signal and waits for the
+      // body read to throw AbortError, which a real fetch does. Honour it here
+      // too, or a stopped run can never settle in the harness.
+      if (signal) {
+        const onAbort = () => {
+          cancelled = true;
+          try { controller.error(new DOMException("The operation was aborted.", "AbortError")); } catch { /* already closed */ }
+        };
+        if (signal.aborted) { onAbort(); return; }
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
       let elapsed = 0;
       for (const beat of SCRIPT) {
         await sleep(beat.afterMs - elapsed);
@@ -119,5 +130,5 @@ export async function fetchWithRetry(
 ): Promise<Response> {
   const href = typeof url === "string" ? url : url instanceof URL ? url.href : String((url as Request).url ?? "");
   if (!href.includes(HARNESS_HOST)) return fetch(url, init);
-  return new Response(harnessRunStream(), { status: 200, headers: STREAM_HEADERS });
+  return new Response(harnessRunStream(init?.signal), { status: 200, headers: STREAM_HEADERS });
 }

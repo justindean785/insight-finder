@@ -204,6 +204,12 @@ export interface CaseSnapshotCore {
   hydrated: boolean;
   run: {
     state: CaseRunState;
+    /** The thread row's own reading, with this tab's open stream NOT allowed to
+     *  override it. `state` is what the case shows; this is what the row says. A
+     *  half-open stream keeps `state` at "running" for the life of the page, and
+     *  the transcript needs the row's view to notice the run it is streaming has
+     *  ended (see `shouldForceStreamEnd`). */
+    rowState: CaseRunState;
     label: string;
     terminal: boolean;
     recoveryReason: string | null;
@@ -276,6 +282,7 @@ export interface CaseSnapshotInput {
 
 export function buildCaseSnapshot(input: CaseSnapshotInput): CaseSnapshotCore {
   const state = deriveRunState({ thread: input.thread, chatRunning: input.chatRunning, nowMs: input.nowMs });
+  const rowState = input.chatRunning ? deriveRunState({ thread: input.thread, chatRunning: false, nowMs: input.nowMs }) : state;
   const artifactCount = input.artifacts.items.length;
   const ev = describeEvidence(input.integrity, artifactCount);
 
@@ -298,6 +305,7 @@ export function buildCaseSnapshot(input: CaseSnapshotInput): CaseSnapshotCore {
       !input.tools.loading,
     run: {
       state,
+      rowState,
       label: RUN_STATE_LABEL[state],
       terminal: isTerminalRunState(state),
       recoveryReason: input.thread?.recovery_reason ?? null,

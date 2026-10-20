@@ -62,7 +62,7 @@ import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
 import { humanizeSelector } from "@/lib/humanize-selector";
 import { measureRequestBody, reportRequestBodySize } from "@/lib/request-size";
-import { shouldFollowServer, currentRunEvents } from "@/lib/server-follow";
+import { currentRunEvents, isCurrentRunMessage, shouldFollowServer, shouldForceStreamEnd } from "@/lib/server-follow";
 import { ServerFollowPanel } from "@/components/chat/ServerFollowPanel";
 import { useHeldTrue } from "@/hooks/use-held-true";
 import {
@@ -1469,6 +1469,7 @@ function ChatWindowInner({
   // controls off a thread whose run is live in another tab (overlap guard).
   const caseSnapshot = useOptionalCaseSnapshot();
   const serverRunActive = caseSnapshot?.snapshot?.run.state === "running";
+  const serverRunStartedAt = caseSnapshot?.snapshot?.run.startedAt ?? null;
   // Read at CALL time (delayed auto-continue, send guards) so a callback built
   // while a run was live does not keep refusing after it ends.
   const serverRunActiveRef = useRef(serverRunActive);
@@ -2687,6 +2688,38 @@ function ChatWindowInner({
     };
   }, [reconcilePersistedMessages, threadId]);
 
+  // ---- A stream that outlived its run ---------------------------------------
+  // The watchdog above only hears a realtime UPDATE. When the socket is dead as
+  // well as the stream (the same conditions that kill one tend to kill both),
+  // the case snapshot still re-reads the row on return to the tab and on its
+  // live poll, but `run.state` keeps reading "running" for as long as this tab
+  // is streaming, so nothing acted on it: the case sat on Running and the
+  // report needed a manual refresh. The row's own reading says the run this
+  // tab is streaming has ended (its recorded start is at or after this
+  // stream's). Held for the same 8s grace the watchdog gives a trailing report
+  // chunk, then the dead stream is cut and the saved messages are merged, as
+  // the watchdog would have done.
+  const streamStartedAtRef = useRef<number | null>(null);
+  if (isLoading) {
+    if (streamStartedAtRef.current === null) streamStartedAtRef.current = Date.now();
+  } else {
+    streamStartedAtRef.current = null;
+  }
+  const streamOutlivedRun = useHeldTrue(
+    shouldForceStreamEnd({
+      clientStreaming: isLoading,
+      rowState: caseSnapshot?.snapshot?.run.rowState ?? "draft",
+      rowStartedAt: serverRunStartedAt,
+      streamStartedAtMs: streamStartedAtRef.current,
+    }),
+    8_000,
+  );
+  useEffect(() => {
+    if (!streamOutlivedRun) return;
+    try { stopRef.current?.(); } catch { /* stream already closed */ }
+    void reconcilePersistedMessages();
+  }, [streamOutlivedRun, reconcilePersistedMessages]);
+
   // Run progress readout for the "Investigating…" indicator: an elapsed timer
   // (plus the current tool step) so an analyst can distinguish a working run
   // from a wedged one instead of staring at a bare pulsing dot.
@@ -2969,9 +3002,11 @@ function ChatWindowInner({
                   onRerun={hasCacheBanner ? rerunInvestigation : undefined}
                   rerunBusy={rerunBusy}
                   superseded={superseded}
-                  // While following the server, the first reply is still in
+                  // While following the server, this run's first reply is still in
                   // progress there: not "Interrupted", and the panel lists its calls.
-                  live={(isLoading || followingServer) && isLastAssistant}
+                  // A reply saved before the run started is an earlier run's (a tab
+                  // that already had the case open) and keeps rendering as it was.
+                  live={(isLoading || (followingServer && isCurrentRunMessage(createdAtMap[m.id], serverRunStartedAt))) && isLastAssistant}
                 />
               );
             });

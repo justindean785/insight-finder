@@ -98,6 +98,7 @@ function sameCore(a: CaseSnapshotCore, b: CaseSnapshotCore): boolean {
     a.threadId === b.threadId &&
     a.hydrated === b.hydrated &&
     a.run.state === b.run.state &&
+    a.run.rowState === b.run.rowState &&
     a.run.recoveryReason === b.run.recoveryReason &&
     a.run.recoveredAt === b.run.recoveredAt &&
     a.run.heartbeatAt === b.run.heartbeatAt &&
