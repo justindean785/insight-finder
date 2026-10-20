@@ -41,7 +41,7 @@ export function CaseStatusPill({ snapshot, className }: { snapshot: CaseSnapshot
     return (
       <span
         className={cn(
-          "inline-flex h-5 items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2 text-micro font-medium text-muted-foreground",
+          "inline-flex h-5 items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2 text-data font-medium text-muted-foreground",
           className,
         )}
       >
@@ -55,7 +55,7 @@ export function CaseStatusPill({ snapshot, className }: { snapshot: CaseSnapshot
     <span
       data-run-state={state}
       className={cn(
-        "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full border px-2 text-micro font-semibold",
+        "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full border px-2 text-data font-semibold",
         PILL_TONE[state],
         className,
       )}
@@ -155,7 +155,7 @@ export function CaseSyncStatus({ className, compact = false }: { className?: str
             disabled={syncing}
             aria-label="Refresh case data"
             className={cn(
-              "grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors",
+              "grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors coarse:h-11 coarse:w-11",
               "hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               "disabled:cursor-default disabled:opacity-70",
             )}

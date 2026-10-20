@@ -4,15 +4,16 @@ import { useAuth } from "@/hooks/useAuth";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { CaseSnapshotProvider } from "@/components/workspace/CaseSnapshotProvider";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
-import { AppNav } from "@/components/AppNav";
-import { ViewWorkspaceTabs, type ViewCaseTab } from "@/components/workspace/ViewWorkspaceTabs";
+import { ShellTopBar, ShellTopBarTitle } from "@/components/shell/AppShell";
+import { WorkspaceTabs } from "@/components/workspace/WorkspaceTabs";
+import { CASE_VIEW_SECTIONS, type WorkspaceTab } from "@/lib/workspace-sections";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Button } from "@/components/ui/button";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
 import { supabase } from "@/integrations/supabase/client";
 import { MessageSquare, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { isRunningThread } from "@/lib/thread-status";
 import { extractDisplaySeed } from "@/lib/seed";
 import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
 import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
@@ -30,6 +31,8 @@ const ReportTab = lazy(() =>
   import("@/components/panel/ReportTab").then((m) => ({ default: m.ReportTab })),
 );
 
+type ViewCaseTab = Extract<WorkspaceTab, "evidence" | "report" | "graph" | "tools">;
+
 type ThreadMeta = {
   id: string;
   title: string | null;
@@ -43,6 +46,7 @@ export default function CaseViewPage() {
   const { threadId } = useParams();
   const { user, loading } = useAuth();
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [tab, setTab] = useState<ViewCaseTab>("report");
   const [meta, setMeta] = useState<ThreadMeta | null>(null);
   const [metaLoading, setMetaLoading] = useState(true);
@@ -83,16 +87,16 @@ export default function CaseViewPage() {
   if (!threadId) return <Navigate to="/cases" replace />;
   if (metaLoading) {
     return (
-      <div className="min-h-screen bg-background">
-        <AppNav />
+      <div className="flex min-h-0 flex-1 flex-col">
+        {isMobile && <ShellTopBar><ShellTopBarTitle>Case</ShellTopBarTitle></ShellTopBar>}
         <div className="grid place-items-center h-64 text-muted-foreground text-sm">Loading case…</div>
       </div>
     );
   }
   if (!metaLoading && meta === null) {
     return (
-      <div className="min-h-screen bg-background">
-        <AppNav />
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        {isMobile && <ShellTopBar><ShellTopBarTitle>Case</ShellTopBarTitle></ShellTopBar>}
         <main className="mx-auto max-w-lg px-6 py-16 text-center">
           <h1 className="font-display text-xl font-semibold">{metaError ? "Couldn't load this case" : "Case not found"}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
@@ -109,9 +113,6 @@ export default function CaseViewPage() {
   }
 
 
-  // A thread that never started is not running, however "active" its status
-  // column looks — see isRunningThread / CLAUDE.md invariant I-1.
-  const running = isRunningThread(meta ?? null);
   // The stored title / seed_value can be the whole pasted run-prompt, which
   // overran the header and truncated mid-word. Pull the clean selector out of
   // the blob (same helper the report cover uses) for the heading, and keep the
@@ -121,44 +122,43 @@ export default function CaseViewPage() {
 
   return (
     <CaseSnapshotProvider threadId={threadId}>
-    <div className="min-h-screen bg-background flex flex-col">
-      <AppNav />
-      <div className="border-b border-white/[0.06] bg-[linear-gradient(180deg,hsl(var(--surface-2)/0.6),hsl(var(--surface-0)/0.46))] px-4 sm:px-8 py-4">
-        <div className="mx-auto max-w-6xl flex flex-col sm:flex-row sm:items-center gap-3">
+    <div className="flex min-h-0 flex-1 flex-col">
+      {isMobile && (
+        <ShellTopBar>
+          <ShellTopBarTitle asHeading>{caseTitle || "Untitled case"}</ShellTopBarTitle>
+        </ShellTopBar>
+      )}
+      <div className="border-b border-border-subtle bg-surface-0 px-4 py-3 sm:px-8 sm:py-4">
+        <div className="mx-auto flex max-w-6xl items-center gap-3">
           <Link
             to="/cases"
-            className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+            className="inline-flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="w-3.5 h-3.5" /> All cases
           </Link>
           <div className="min-w-0 flex-1">
-            <h1 className="font-display text-lg sm:text-xl font-semibold tracking-tight truncate">
-              {caseTitle || "Untitled case"}
-            </h1>
+            {!isMobile && (
+              <h1 className="font-display text-lg sm:text-xl font-semibold tracking-tight truncate">
+                {caseTitle || "Untitled case"}
+              </h1>
+            )}
             {caseSubtitle && caseSubtitle !== caseTitle && (
               <p className="text-xs text-muted-foreground font-mono truncate mt-0.5">{caseSubtitle}</p>
             )}
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {running && (
-              <span className="text-eyebrow font-mono uppercase tracking-wider px-2 py-1 rounded-full border border-[hsl(var(--intel-blue)/0.35)] bg-[hsl(var(--intel-blue)/0.08)] text-[hsl(var(--intel-blue))]">
-                Running
-              </span>
-            )}
-            <Button asChild variant="cta" size="sm" className="rounded-lg gap-1.5">
-              <Link to={`/chat/${threadId}`}>
-                <MessageSquare className="w-3.5 h-3.5" />
-                {running ? "Open live chat" : "Continue in chat"}
-              </Link>
-            </Button>
-          </div>
+          <CaseRunControls threadId={threadId} />
         </div>
       </div>
 
-      <CaseViewTabs threadId={threadId} active={tab} onChange={setTab} />
+      {!isMobile && <CaseViewTabs threadId={threadId} active={tab} onChange={setTab} />}
 
       <main className="flex-1 min-h-0 relative mx-auto w-full max-w-6xl">
-        <div className={cn("absolute inset-0", tab === "report" ? "overflow-y-auto" : "")}>
+        <div
+          role="tabpanel"
+          id={`workspace-tabpanel-${tab}`}
+          aria-labelledby={`workspace-tab-${tab}`}
+          className={cn("absolute inset-0", tab === "report" ? "overflow-y-auto" : "")}
+        >
           <Suspense fallback={<FullPageLoader fullScreen={false} className="h-48" />}>
             {tab === "evidence" && (
               <ErrorBoundary>
@@ -185,13 +185,52 @@ export default function CaseViewPage() {
           </Suspense>
         </div>
       </main>
+
+      {/* Phone: the same bottom tab bar as the live workspace. */}
+      {isMobile && (
+        <div className="shrink-0">
+          <CaseViewTabs threadId={threadId} active={tab} onChange={setTab} variant="inline" />
+        </div>
+      )}
     </div>
     </CaseSnapshotProvider>
   );
 }
 
+/**
+ * "Running" and the chat link, from the live case snapshot: the run state the
+ * workspace header shows. The snapshot re-reads the thread (realtime + poll) and
+ * judges liveness on a fresh heartbeat, so a never-started thread (I-1) and a
+ * killed run whose row is still `active` are not running, while a live run does
+ * not lose the badge because this page's own one-time read has aged.
+ */
+function CaseRunControls({ threadId }: { threadId: string }) {
+  const { snapshot } = useCaseSnapshot();
+  const running = snapshot?.run.state === "running";
+  return (
+    <div className="flex items-center gap-2 shrink-0">
+      {running && (
+        <span className="text-eyebrow font-mono uppercase tracking-wider px-2 py-1 rounded-full border border-[hsl(var(--intel-blue)/0.35)] bg-[hsl(var(--intel-blue)/0.08)] text-[hsl(var(--intel-blue))]">
+          Running
+        </span>
+      )}
+      <Button asChild variant="cta" size="sm" className="rounded-lg gap-1.5">
+        <Link to={`/chat/${threadId}`}>
+          <MessageSquare className="w-3.5 h-3.5" />
+          {running ? "Open live chat" : "Continue in chat"}
+        </Link>
+      </Button>
+    </div>
+  );
+}
+
 /** Tab badges from the case snapshot — the same version the Tools and Report tabs read. */
-function CaseViewTabs({ threadId, active, onChange }: { threadId: string; active: ViewCaseTab; onChange: (t: ViewCaseTab) => void }) {
+function CaseViewTabs({ threadId, active, onChange, variant = "bar" }: {
+  threadId: string;
+  active: ViewCaseTab;
+  onChange: (t: ViewCaseTab) => void;
+  variant?: "bar" | "inline";
+}) {
   const { snapshot } = useCaseSnapshot();
   // The Evidence number IS the case sheet's "Needs your call" count.
   const sheet = useCaseSheetModel(threadId);
@@ -199,5 +238,16 @@ function CaseViewTabs({ threadId, active, onChange }: { threadId: string; active
     snapshot?.tools.total ?? 0,
     sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null,
   );
-  return <ViewWorkspaceTabs active={active} onChange={onChange} counts={tabCounts} />;
+  return (
+    <WorkspaceTabs
+      sections={CASE_VIEW_SECTIONS}
+      label="Case views"
+      variant={variant}
+      active={active}
+      // CASE_VIEW_SECTIONS holds only ViewCaseTab keys.
+      onChange={(t) => onChange(t as ViewCaseTab)}
+      counts={tabCounts}
+      loading={!snapshot?.hydrated}
+    />
+  );
 }

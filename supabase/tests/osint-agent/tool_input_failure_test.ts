@@ -266,15 +266,17 @@ Deno.test("E1: model output that is not valid JSON is its own reason — NOT 're
 });
 
 Deno.test("E1: a wrong-TYPE field reports expected/received as type names, and sent_types names the type of each sent key", async () => {
-  const { steps } = await runStep("tif-e1b", "socialfetch_lookup", { handle: 5, platform: "tiktok" });
+  // A BOOLEAN handle: a numeric one is repaired by the generic number→string input coercion
+  // (lib/tool-input-coercion.ts GENERIC_SELECTOR_SPEC) and never reaches the failure path.
+  const { steps } = await runStep("tif-e1b", "socialfetch_lookup", { handle: true, platform: "tiktok" });
   const [f] = collectToolInputFailures(steps[0].toolCalls);
   assertEquals(f.reason, "invalid_input");
-  assertEquals(f.invalidFields, ["handle (invalid_type) [expected string, received number]"]);
-  assertEquals(f.sentTypes, { handle: "number", platform: "string" });
+  assertEquals(f.invalidFields, ["handle (invalid_type) [expected string, received boolean]"]);
+  assertEquals(f.sentTypes, { handle: "boolean", platform: "string" });
   assertEquals(f.inputKind, "object");
   assertEquals(f.inputChars, null);
   const row = buildInputFailureRow(f, { userId: "u", threadId: "t" }) as { input_json: { runtime: Record<string, unknown> } };
-  assertEquals(row.input_json.runtime.sent_types, { handle: "number", platform: "string" });
+  assertEquals(row.input_json.runtime.sent_types, { handle: "boolean", platform: "string" });
   assertEquals(row.input_json.runtime.input_kind, "object");
   assert(!("input_chars" in row.input_json.runtime), "input_chars only exists for text input");
 });

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { RecoveryBanner } from "@/components/workspace/RecoveryBanner";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
 import { WorkspaceTabs } from "@/components/workspace/WorkspaceTabs";
+import { CASE_VIEW_SECTIONS } from "@/lib/workspace-sections";
 import { buildCaseSnapshot, type CaseThreadRow } from "@/lib/case-snapshot";
 import type { CaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { pivotEligibility, validatePivotSuggestion } from "@/lib/pivot-schema";
@@ -217,5 +218,30 @@ describe("WorkspaceTabs (mobile) — labelled, never an unnamed icon", () => {
     expect(items[1].getAttribute("aria-checked")).toBe("true");
     await act(async () => { fireEvent.click(items[2]); });
     expect(onChange).toHaveBeenCalledWith("graph");
+  });
+});
+
+// ── Case viewer: the same component, narrowed by `sections` ────────────────
+describe("WorkspaceTabs (case viewer sections)", () => {
+  it("renders only the viewer's four sections, in order, under its own name", () => {
+    render(<WorkspaceTabs active="report" onChange={vi.fn()} sections={CASE_VIEW_SECTIONS} label="Case views" />);
+    const list = screen.getByRole("tablist", { name: "Case views" });
+    expect(Array.from(list.querySelectorAll('[role="tab"]')).map((t) => t.textContent?.trim())).toEqual([
+      "Report", "Evidence", "Tools", "Graph",
+    ]);
+    expect(screen.queryByRole("tab", { name: /Investigate|Overview/ })).toBeNull();
+  });
+
+  it("keeps roving arrow-key navigation inside the subset", () => {
+    const onChange = vi.fn();
+    render(<WorkspaceTabs active="graph" onChange={onChange} sections={CASE_VIEW_SECTIONS} label="Case views" />);
+    fireEvent.keyDown(screen.getByRole("tab", { name: /Graph/ }), { key: "ArrowRight" });
+    expect(onChange).toHaveBeenLastCalledWith("report");
+  });
+
+  it("on a phone puts Evidence and Report in the bar and Tools and Graph behind More", () => {
+    render(<WorkspaceTabs active="report" onChange={vi.fn()} sections={CASE_VIEW_SECTIONS} label="Case views" variant="inline" />);
+    expect(screen.getAllByRole("tab").map((t) => t.textContent?.trim())).toEqual(["Report", "Evidence"]);
+    expect(screen.getByRole("button", { name: "More sections: Tools, Graph" })).toBeTruthy();
   });
 });

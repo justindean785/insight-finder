@@ -1,6 +1,5 @@
 import { Link, Navigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import { AppNav } from "@/components/AppNav";
 import { useInsightsData } from "@/hooks/useInsightsData";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
@@ -229,19 +228,6 @@ export function InsightsOverview({ embedded = false }: { embedded?: boolean } = 
           )}
       </section>
     </>
-  );
-}
-
-/** Standalone /insights route — kept so existing links keep working; the
- *  canonical home for this content is now the Intelligence page's Overview tab. */
-export default function Insights() {
-  return (
-    <div className="relative min-h-screen bg-background text-foreground">
-      <AppNav />
-      <main className="mx-auto max-w-6xl px-4 sm:px-8 py-8 pb-16">
-        <InsightsOverview />
-      </main>
-    </div>
   );
 }
 

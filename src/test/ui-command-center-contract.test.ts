@@ -91,17 +91,27 @@ describe("operations surface performance and accessibility contract", () => {
 
   it("uses investigation language for the primary work surface", () => {
     expect(tabs).toContain('{ key: "chat", label: "Investigate"');
-    expect(tabs).toContain('aria-label="Investigation workspace"');
+    expect(tabs).toContain('label = "Investigation workspace"');
   });
 
   // The rename originally reached WorkspaceTabs, HomeHub and the command palette
   // but NOT AppNav — the global header rendered on every route, and the one
-  // surface this suite did not cover. An unguarded surface is where drift comes
-  // back, so it is pinned here rather than left to a visual pass.
+  // surface this suite did not cover. AppNav is gone (Stage A): the global nav
+  // is AppShell's rail (ThreadSidebar) plus the palette's "Go to" group, and
+  // both are pinned here so the old word cannot come back on either.
   it("renames the primary nav destination everywhere it is rendered", () => {
-    const nav = read("src/components/AppNav.tsx");
-    expect(nav).toContain('label: "Investigate"');
-    expect(nav).not.toMatch(/label:\s*"Chat"/);
+    for (const rel of ["src/components/ThreadSidebar.tsx", "src/components/CommandPalette.tsx"]) {
+      const nav = read(rel);
+      expect(nav, rel).toContain('label: "Intelligence"');
+      expect(nav, rel).not.toMatch(/label:\s*"Chat"/);
+    }
+  });
+
+  it("has one global nav: AppNav and the viewer's own tab strip are not coming back", () => {
+    expect(() => read("src/components/AppNav.tsx")).toThrow();
+    expect(() => read("src/components/workspace/ViewWorkspaceTabs.tsx")).toThrow();
+    const app = read("src/App.tsx");
+    expect(app).toMatch(/<Route element=\{<AppShell \/>\}>/);
   });
 });
 

@@ -33,6 +33,19 @@ export type BreakerDecision =
 // run boundary (clearThread).
 export const PROVIDER_SUPPRESS_MS = 10 * 60_000;
 
+// ---- Authorization refusals (401 / 402) are for the WHOLE run ----------------
+// A 401 (bad/expired key) or 402 (balance gone) cannot clear by waiting ten
+// minutes inside one run, so the suppression for those is the run's lifetime
+// (the ThreadState is released at end of run anyway). Measured 2026-10-18 on
+// the step metrics: OathNet, mid-transition to crypto-only billing, was asked
+// for 2-7 times per invocation after its first 401. Each later call was already
+// a free breaker skip, but every one still burnt an LLM step; index.ts now also
+// drops a suppressed provider's tools from the step's activeTools, and
+// lib/provider-auth-prior.ts carries the refusal across the case's invocations.
+export const AUTH_SUPPRESS_MS = 24 * 60 * 60_000;
+/** Constant refusal phrase. `suppressed for investigation` keeps it inside tool-outcome.ts SKIP_RE. */
+export const AUTH_REFUSAL_REASON = "provider refused authorization (401/402) earlier in run";
+
 // Tools that share one upstream provider/quota — suppressing the provider
 // suppresses all of them for the investigation. Tools not listed map to a
 // provider equal to their own name.
@@ -260,6 +273,40 @@ function suppressProvider(threadId: string, tool: string, reason: string, ms: nu
   });
 }
 
+/** The run-wide refusal text for a 401/402/403, naming the provider and the status that caused it. */
+export function authRefusalReason(tool: string, status: 401 | 402 | 403, source: "run" | "prior" = "run"): string {
+  const what = status === 402 ? "402 payment required" : status === 401 ? "401 unauthorized" : "403 forbidden";
+  const when = source === "prior" ? "in an earlier run of this case" : "earlier in run";
+  return `${AUTH_REFUSAL_REASON} — ${what} ${when} — provider '${providerForTool(tool)}' suppressed for investigation`;
+}
+
+/**
+ * Carry a 401/402 observed in an EARLIER invocation of this case into this run
+ * (lib/provider-auth-prior.ts). Same effect as recordResult's own 401/402 branch:
+ * the tool is disabled and its whole provider suppressed for the run's lifetime.
+ */
+export function suppressProviderAuthPrior(threadId: string, tool: string, status: 401 | 402): void {
+  const reason = authRefusalReason(tool, status, "prior");
+  breakerFor(threadId, tool).disabledReason = reason;
+  suppressProvider(threadId, tool, reason, AUTH_SUPPRESS_MS);
+}
+
+/**
+ * The subset of `toolNames` whose provider is suppressed for this run right now
+ * — what prepareStep removes from a step's activeTools so the model is never
+ * offered a tool that can only answer with a refusal. ALWAYS-ALLOW recording
+ * tools map to their own name and are never suppressed, so they never appear.
+ */
+export function suppressedToolsOf(threadId: string, toolNames: readonly string[]): string[] {
+  const s = THREADS.get(threadId);
+  if (!s || s.suppressions.size === 0) return [];
+  const now = Date.now();
+  return toolNames.filter((t) => {
+    const sup = s.suppressions.get(providerForTool(t));
+    return !!sup && now < sup.until;
+  });
+}
+
 /** Observable: is the tool's provider currently suppressed for this run? */
 export function isProviderSuppressed(
   threadId: string,
@@ -475,8 +522,8 @@ export function recordResult(
       // suppress the whole provider for the run (mirrors 429/timeout/5xx). Without
       // this, one indicia_* endpoint's 402 leaves the other five firing into the
       // same empty balance, each burning a step to return the same 402.
-      b.disabledReason = "402 payment required — disabled for thread";
-      suppressProvider(threadId, tool, `402 payment required — provider '${providerForTool(tool)}' suppressed for investigation`);
+      b.disabledReason = `402 payment required — ${AUTH_REFUSAL_REASON} — disabled for thread`;
+      suppressProvider(threadId, tool, authRefusalReason(tool, 402), AUTH_SUPPRESS_MS);
       break;
     case "http_403":
     case "http_401":
@@ -485,8 +532,8 @@ export function recordResult(
       // the tool AND suppress the whole provider for the run so sibling
       // endpoints on the same dead key stop firing (deepfind_telegram_search
       // 403 should kill the rest of the deepfind family, not just itself).
-      b.disabledReason = "403/401 unauthorized — disabled for thread";
-      suppressProvider(threadId, tool, `401/403 unauthorized — provider '${providerForTool(tool)}' suppressed for investigation`);
+      b.disabledReason = `403/401 unauthorized — ${AUTH_REFUSAL_REASON} — disabled for thread`;
+      suppressProvider(threadId, tool, authRefusalReason(tool, outcome.status === "http_401" ? 401 : 403), AUTH_SUPPRESS_MS);
       break;
     case "http_404":
       // A single 404 is often "this resource isn't on this site" (legit

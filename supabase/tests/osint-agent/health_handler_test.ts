@@ -1,4 +1,4 @@
-import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { deriveReadiness, isHealthProbe, handleHealthProbe } from "../../functions/osint-agent/health-handler.ts";
 
 // ---------------------------------------------------------------------------
@@ -197,4 +197,51 @@ Deno.test("handleHealthProbe: checks.minimax present on plain ?health=1", async 
   assertEquals(typeof body.checks.minimax, "object");
   assertEquals(body.checks.minimax.ok, false);
   assertEquals(body.checks.minimax.reason, "missing_key");
+});
+
+// ---------------------------------------------------------------------------
+// Maintenance gate (2026-10-19): a plain ?health=1 is a liveness probe and runs
+// no database maintenance; ?maintenance=1 (or the authenticated ?probe=1) does.
+// ---------------------------------------------------------------------------
+import { MAINTENANCE_SKIPPED_DETAIL, maintenanceRequested, CREDENTIAL_HEALTH_SAMPLE_ROWS } from "../../functions/osint-agent/lib/credential-health.ts";
+const HEALTH_SRC = Deno.readTextFileSync(new URL("../../functions/osint-agent/health-handler.ts", import.meta.url));
+
+Deno.test("maintenanceRequested: plain ?health=1 → false; ?maintenance=1 → true", () => {
+  const none = () => undefined;
+  assertEquals(maintenanceRequested(new URL("https://x/osint-agent?health=1"), none), false);
+  assertEquals(maintenanceRequested(new URL("https://x/osint-agent?health=1&maintenance=1"), none), true);
+  assertEquals(maintenanceRequested(new URL("https://x/osint-agent?health=1&maintenance=0"), none), false);
+});
+
+Deno.test("maintenanceRequested: HEALTH_MAINTENANCE_ALWAYS=true restores the old every-probe behaviour", () => {
+  const env = (k: string) => (k === "HEALTH_MAINTENANCE_ALWAYS" ? "true" : undefined);
+  assertEquals(maintenanceRequested(new URL("https://x/osint-agent?health=1"), env), true);
+});
+
+Deno.test("handleHealthProbe: plain ?health=1 reports checks.maintenance as skipped and runs no sweep", async () => {
+  const req = new Request("https://example.com/osint-agent?health=1", { method: "GET" });
+  const res = await handleHealthProbe(req);
+  const body = await res.json();
+  assertEquals(body.checks.maintenance, { ok: true, detail: MAINTENANCE_SKIPPED_DETAIL });
+  // None of the maintenance-only checks may appear on a liveness probe.
+  for (const k of ["recovery", "rejected_cluster_sweep", "credentials", "synthesis", "cache_sweep"]) {
+    assertEquals(body.checks[k], undefined, `${k} must not run on a plain probe`);
+  }
+});
+
+Deno.test("handleHealthProbe: ?health=1&maintenance=1 does not report the probe as skipped", async () => {
+  const req = new Request("https://example.com/osint-agent?health=1&maintenance=1", { method: "GET" });
+  const res = await handleHealthProbe(req);
+  const body = await res.json();
+  // Without SUPABASE_URL/SERVICE_KEY in the test env the sweeps cannot run, but the
+  // gate itself must not stamp the "skipped on a liveness probe" detail.
+  assert(body.checks.maintenance === undefined || body.checks.maintenance.detail !== MAINTENANCE_SKIPPED_DETAIL);
+});
+
+Deno.test("credential health sample is bounded well under the old 5,000-row scan", () => {
+  assert(CREDENTIAL_HEALTH_SAMPLE_ROWS <= 500 && CREDENTIAL_HEALTH_SAMPLE_ROWS >= 100);
+  // Code lines only (comments may still describe the old read).
+  const code = HEALTH_SRC.split("\n").filter((l) => !l.trim().startsWith("//"));
+  assert(!code.some((l) => l.includes('count: "exact"')), "health-handler must not issue an exact-count scan");
+  assert(!code.some((l) => l.includes(".limit(5000)")), "the 5,000-row credential read must stay gone");
 });

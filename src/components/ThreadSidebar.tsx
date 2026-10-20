@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -11,7 +12,7 @@ import {
 import {
   Plus, LogOut, Trash2, PanelLeftOpen, PanelLeftClose, Search, Brain, CheckCircle2,
   ShieldAlert, Database, Activity, BarChart3, Wallet, FolderOpen,
-  Mail, Phone, Globe, Network, User, Hash, FileSearch, type LucideIcon,
+  Mail, Phone, Globe, Network, User, Hash, FileSearch, Settings, type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { detectSeed } from "@/lib/seed";
@@ -140,6 +141,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   const onBrainRoute = location.pathname.startsWith("/brain");
   const onInsightsRoute = location.pathname.startsWith("/insights");
   const onCasesRoute = location.pathname.startsWith("/cases");
+  const onSettingsRoute = location.pathname.startsWith("/settings");
   const [threads, setThreads] = useState<Thread[]>([]);
   const [metrics, setMetrics] = useState<Record<string, ThreadMetrics>>({});
   const [metricsSampled, setMetricsSampled] = useState(false);
@@ -164,19 +166,15 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
       const threadRows = (data as Thread[] | null) ?? [];
       setThreads(threadRows);
 
-      // Reconcile runs the backend never finalized. If the edge function is
-      // hard-killed on the CPU-time limit mid-run, its onFinish/onError never
-      // fire, so the thread stays "active" forever and shows as perpetually
-      // running. A live run writes every few seconds; one silent past the
-      // staleness window is dead — flip it to "finished" (guarded on it still
-      // being "active" so a concurrently-finishing run isn't clobbered).
+      // A run the backend never finalized (isolate hard-killed mid-run) stays
+      // "active". Show it as not running HERE ONLY — this is display state, never
+      // a DB write. Writing `finished` from the browser broke I-2: with no
+      // `recovery_reason` the row read as COMPLETE (green, no report), and server
+      // recovery, which only claims `status='active'` rows, could no longer stamp
+      // `recovery_reason` and post the recovered report. That row belongs to
+      // `recoverStaleActiveThreads`.
       const staleIds = selectStaleActiveIds(threadRows);
       if (staleIds.length > 0) {
-        void supabase
-          .from("threads")
-          .update({ status: "finished" })
-          .in("id", staleIds)
-          .eq("status", "active");
         setThreads((prev) =>
           prev.map((t) => (staleIds.includes(t.id) ? { ...t, status: "finished" } : t)),
         );
@@ -322,58 +320,65 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   if (collapsed) {
     return (
       <div className="w-14 h-full flex flex-col items-center py-3 gap-3">
-        <button
-          onClick={onToggleCollapse}
-          className="w-8 h-8 rounded-lg glass-interactive grid place-items-center"
-          title="Expand sidebar"
-          aria-label="Expand sidebar"
-        >
-          <PanelLeftOpen className="w-4 h-4 text-primary" />
-        </button>
+        <RailTip label="Expand cases list">
+          <button
+            onClick={onToggleCollapse}
+            className="w-8 h-8 rounded-lg glass-interactive grid place-items-center"
+            aria-label="Expand sidebar"
+            aria-expanded={false}
+          >
+            <PanelLeftOpen className="w-4 h-4 text-primary" />
+          </button>
+        </RailTip>
 
         <div className="w-8 h-px bg-border-subtle" />
 
-        <button
-          onClick={newThread}
-          className="w-8 h-8 rounded-lg glass-interactive grid place-items-center text-primary"
-          title="New investigation"
-          aria-label="New investigation"
-        >
-          <Plus className="w-4 h-4" />
-        </button>
+        <RailTip label="New investigation">
+          <button
+            onClick={newThread}
+            className="w-8 h-8 rounded-lg glass-interactive grid place-items-center text-primary"
+            aria-label="New investigation"
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+        </RailTip>
 
-        <Link
-          to="/cases"
-          className={cn(
-            "relative w-8 h-8 rounded-lg grid place-items-center transition-colors",
-            onCasesRoute
-              ? "bg-primary/15 text-primary ring-1 ring-primary/40"
-              : "glass-interactive text-muted-foreground hover:text-primary",
-          )}
-          title="All cases"
-          aria-label="All cases"
-        >
-          <FolderOpen className="w-4 h-4" strokeWidth={1.5} />
-        </Link>
+        <RailTip label="All cases">
+          <Link
+            to="/cases"
+            className={cn(
+              "relative w-8 h-8 rounded-lg grid place-items-center transition-colors",
+              onCasesRoute
+                ? "bg-primary/15 text-primary ring-1 ring-primary/40"
+                : "glass-interactive text-muted-foreground hover:text-primary",
+            )}
+            aria-label="All cases"
+            aria-current={onCasesRoute ? "page" : undefined}
+          >
+            <FolderOpen className="w-4 h-4" strokeWidth={1.5} />
+          </Link>
+        </RailTip>
 
-        <Link
-          to="/brain"
-          className={cn(
-            "relative w-8 h-8 rounded-lg grid place-items-center transition-colors",
-            onBrainRoute
-              ? "bg-primary/15 text-primary ring-1 ring-primary/40"
-              : "glass-interactive text-muted-foreground hover:text-primary",
-          )}
-          title="Intelligence"
-          aria-label="Intelligence"
-        >
-          <Brain className="w-4 h-4" strokeWidth={1.5} />
-          {newPatternCount > 0 && !onBrainRoute && (
-            <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-primary text-primary-foreground text-micro font-mono font-bold grid place-items-center shadow-[0_0_10px_hsl(var(--primary)/0.7)]">
-              {newPatternCount > 99 ? "99+" : newPatternCount}
-            </span>
-          )}
-        </Link>
+        <RailTip label="Intelligence">
+          <Link
+            to="/brain"
+            className={cn(
+              "relative w-8 h-8 rounded-lg grid place-items-center transition-colors",
+              onBrainRoute
+                ? "bg-primary/15 text-primary ring-1 ring-primary/40"
+                : "glass-interactive text-muted-foreground hover:text-primary",
+            )}
+            aria-label="Intelligence"
+            aria-current={onBrainRoute ? "page" : undefined}
+          >
+            <Brain className="w-4 h-4" strokeWidth={1.5} />
+            {newPatternCount > 0 && !onBrainRoute && (
+              <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-primary text-primary-foreground text-micro font-mono font-bold grid place-items-center shadow-[0_0_10px_hsl(var(--primary)/0.7)]">
+                {newPatternCount > 99 ? "99+" : newPatternCount}
+              </span>
+            )}
+          </Link>
+        </RailTip>
 
         {/* Only the most-recent cases belong in the 56px rail. Mapping the full
             list crammed all ~140+ cases in as indistinguishable icons; the active
@@ -387,34 +392,52 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             const Icon = seedIcon(t.seed_type, t.title);
             const active = t.id === threadId;
             return (
-              <Link
-                key={t.id}
-                to={`/chat/${t.id}`}
-                className={cn(
-                  "w-8 h-8 rounded-md grid place-items-center transition-colors",
-                  active
-                    ? "glass-interactive text-foreground"
-                    : "text-muted-foreground hover:text-foreground hover:bg-white/5",
-                )}
-                title={`${t.title} · ${formatUsd(t.cost_micro_usd)}`}
-                aria-label={t.title}
-              >
-                <Icon className="w-4 h-4" strokeWidth={1.5} />
-              </Link>
+              <RailTip key={t.id} label={`${t.title} · ${formatUsd(t.cost_micro_usd)}`}>
+                <Link
+                  to={`/chat/${t.id}`}
+                  className={cn(
+                    "w-8 h-8 rounded-md grid place-items-center transition-colors",
+                    active
+                      ? "glass-interactive text-foreground"
+                      : "text-muted-foreground hover:text-foreground hover:bg-white/5",
+                  )}
+                  aria-label={t.title}
+                  aria-current={active ? "page" : undefined}
+                >
+                  <Icon className="w-4 h-4" strokeWidth={1.5} />
+                </Link>
+              </RailTip>
             );
           })}
         </div>
 
         <div className="w-8 h-px bg-border-subtle" />
 
-        <button
-          onClick={signOut}
-          className="w-8 h-8 rounded-lg grid place-items-center text-muted-foreground hover:text-foreground glass-interactive transition-colors"
-          title="Sign out"
-          aria-label="Sign out"
-        >
-          <LogOut className="w-4 h-4" />
-        </button>
+        <RailTip label="Settings">
+          <Link
+            to="/settings"
+            className={cn(
+              "w-8 h-8 rounded-lg grid place-items-center transition-colors",
+              onSettingsRoute
+                ? "bg-primary/15 text-primary ring-1 ring-primary/40"
+                : "glass-interactive text-muted-foreground hover:text-foreground",
+            )}
+            aria-label="Settings"
+            aria-current={onSettingsRoute ? "page" : undefined}
+          >
+            <Settings className="w-4 h-4" strokeWidth={1.5} />
+          </Link>
+        </RailTip>
+
+        <RailTip label="Sign out">
+          <button
+            onClick={signOut}
+            className="w-8 h-8 rounded-lg grid place-items-center text-muted-foreground hover:text-foreground glass-interactive transition-colors"
+            aria-label="Sign out"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        </RailTip>
       </div>
     );
   }
@@ -460,7 +483,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         <Link
           to="/"
           aria-label="Home"
-          className="flex min-w-0 items-center gap-2 rounded-lg group focus:outline-none focus:ring-2 focus:ring-primary/40"
+          className="flex min-w-0 items-center gap-2 rounded-lg group coarse:min-h-11"
         >
           {/* 3a register: a flat plate, no glow. The
               gradient fill, bloom and specular were the chrome's last glow. */}
@@ -469,17 +492,18 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           </div>
           <div className="min-w-0">
             <div className="font-display text-sm font-semibold leading-none tracking-tight text-foreground">Insight Finder</div>
-            <div className="mt-0.5 text-eyebrow leading-none text-muted-foreground">Cases</div>
+            <div className="mt-0.5 text-data leading-none text-muted-foreground">Cases</div>
           </div>
         </Link>
-        <button
+        {onToggleCollapse && <button
           onClick={onToggleCollapse}
+          aria-expanded
           className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/10 bg-white/[0.035] text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground"
           title="Collapse sidebar"
           aria-label="Collapse sidebar"
         >
           <PanelLeftClose className="h-4 w-4" />
-        </button>
+        </button>}
       </div>
 
       {/* Primary actions + destinations */}
@@ -488,7 +512,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
           onClick={newThread}
           size="sm"
           variant="cta"
-          className="h-9 w-full justify-center gap-2 rounded-lg border border-white/12 text-sm font-semibold"
+          className="h-9 w-full justify-center gap-2 rounded-lg border border-white/12 text-sm font-semibold coarse:h-11"
         >
           <Plus className="h-4 w-4" /> New investigation
         </Button>
@@ -499,7 +523,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             put its marker. Low-contrast labels on purpose — navigation is not
             the content, and on black it only needs to be findable. */}
         <div className="pt-1">
-          <div className="px-1 pb-1 text-eyebrow font-medium uppercase tracking-[0.14em] text-muted-foreground/55">
+          <div className="px-1 pb-1 text-data font-medium text-muted-foreground">
             Workspace
           </div>
           <div className="relative pl-3">
@@ -516,7 +540,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
                 aria-label={label}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "group/nav relative flex h-8 w-full items-center gap-2.5 rounded-md pl-3 pr-2 text-sm transition-colors",
+                  "group/nav relative flex h-8 w-full items-center gap-2.5 rounded-md pl-3 pr-2 text-sm transition-colors coarse:h-11",
                   active
                     ? "bg-white/[0.06] font-medium text-foreground"
                     : "text-muted-foreground/85 hover:bg-white/[0.035] hover:text-foreground",
@@ -538,7 +562,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
                 <Icon className={cn("h-3.5 w-3.5 shrink-0", active ? "text-foreground" : "text-muted-foreground/70")} strokeWidth={1.6} />
                 <span className="truncate">{label}</span>
                 {badge > 0 && (
-                  <span className="ml-auto inline-flex h-[17px] min-w-[20px] items-center justify-center rounded-full bg-white px-1.5 font-mono text-eyebrow font-bold tracking-normal text-black">
+                  <span className="ml-auto inline-flex h-[17px] min-w-[20px] items-center justify-center rounded-full bg-white px-1.5 font-mono text-micro font-bold tracking-normal text-black">
                     {badge > 99 ? "99+" : badge}
                   </span>
                 )}
@@ -550,22 +574,25 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
 
       {/* Search + filter */}
       <div className="shrink-0 space-y-2 px-3 pb-2">
-        <div className="flex h-9 items-center gap-2 rounded-lg border border-border-subtle bg-black/20 px-3 transition-colors focus-within:border-white/20 focus-within:bg-surface-1">
-          <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        {/* The ring sits on the wrapper, so it frames the icon and the field
+            together; the input itself stays unstyled. A <label>, so a tap
+            anywhere in the 44px frame focuses the field. */}
+        <label className="flex h-9 items-center gap-2 rounded-lg border border-border-subtle bg-black/20 px-3 coarse:h-11 transition-colors focus-within:border-transparent focus-within:bg-surface-1 focus-within:ring-2 focus-within:ring-ring">
+          <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search investigations"
             aria-label="Search investigations"
-            className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+            className="h-full min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:outline-none"
           />
-        </div>
+        </label>
         <label htmlFor="case-type-filter" className="sr-only">Filter investigations</label>
         <select
           id="case-type-filter"
           value={typeFilter}
           onChange={(event) => setTypeFilter(event.target.value)}
-          className="h-9 w-full rounded-lg border border-border-subtle bg-surface-1 px-3 text-sm text-foreground outline-none transition-colors focus:border-white/25"
+          className="h-9 w-full rounded-lg border border-border-subtle bg-surface-1 px-3 text-sm text-foreground outline-none transition-colors coarse:h-11 focus-visible:border-transparent focus-visible:ring-2 focus-visible:ring-ring"
         >
           {TYPES.map((t) => (
             <option key={t.key} value={t.key}>{t.label}</option>
@@ -577,7 +604,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2.5 pb-2 [scrollbar-width:thin]">
         {metricsSampled && (
           <div
-            className="mb-2 mx-1 inline-flex items-center gap-1 rounded border border-warning/25 bg-warning/8 px-2 py-1 text-eyebrow text-warning"
+            className="mb-2 mx-1 inline-flex items-center gap-1 rounded border border-warning/25 bg-warning/8 px-2 py-1 text-data text-warning"
             title={`Per-thread badges are aggregated from the latest ${SIDEBAR_METRICS_SAMPLE_LIMIT.toLocaleString()} artifact rows.`}
           >
             ⚠ Metrics sampled
@@ -586,7 +613,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
         {(["Today", "This week", "Older"] as const).map((bucket) =>
           listGroups[bucket].length === 0 ? null : (
             <div key={bucket} className="mb-2">
-              <div className="flex items-center gap-1.5 px-2 py-1 text-micro font-medium tracking-normal text-muted-foreground">
+              <div className="flex items-center gap-1.5 px-2 py-1 text-data font-medium tracking-normal text-muted-foreground">
                 <span className="h-1 w-1 rounded-full bg-muted-foreground/50" />
                 {bucket}
                 <span className="ml-1 font-mono opacity-50">{listGroups[bucket].length}</span>
@@ -634,15 +661,27 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             </span>
             <a
               href={SUPPORT_MAILTO}
-              className="mt-px flex items-center gap-1 text-eyebrow text-muted-foreground transition-colors hover:text-foreground"
+              className="mt-px flex items-center gap-1 text-data text-muted-foreground transition-colors hover:text-foreground coarse:min-h-11"
             >
               <Mail className="h-2.5 w-2.5" strokeWidth={1.75} aria-hidden />
               Send feedback
             </a>
           </span>
+          <Link
+            to="/settings"
+            aria-label="Settings"
+            aria-current={onSettingsRoute ? "page" : undefined}
+            title="Settings"
+            className={cn(
+              "shrink-0 rounded-md p-1.5 transition-colors hover:bg-white/[0.06] hover:text-foreground coarse:grid coarse:h-11 coarse:w-11 coarse:place-items-center",
+              onSettingsRoute ? "text-foreground" : "text-muted-foreground/70",
+            )}
+          >
+            <Settings className="h-3.5 w-3.5" />
+          </Link>
           <button
             onClick={signOut}
-            className="shrink-0 rounded-md p-1.5 text-muted-foreground/70 transition-colors hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="shrink-0 rounded-md p-1.5 text-muted-foreground/70 transition-colors hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring coarse:grid coarse:h-11 coarse:w-11 coarse:place-items-center"
             aria-label="Sign out"
             title="Sign out"
           >
@@ -682,6 +721,18 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   );
 }
 
+/** Collapsed-rail tooltip: names an icon-only control on hover AND on keyboard
+ *  focus (a native `title` does neither reliably). The control keeps its own
+ *  aria-label, so the tooltip is a visual aid, not the accessible name. */
+function RailTip({ label, children }: { label: string; children: React.ReactElement }) {
+  return (
+    <Tooltip delayDuration={150}>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="right" sideOffset={8} className="text-xs">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function ThreadRow({
   t, active, onDelete, dim, m,
 }: {
@@ -704,7 +755,9 @@ function ThreadRow({
         "group relative flex min-h-[2.75rem] items-center gap-2 overflow-hidden rounded-lg px-2.5 py-2 text-meta transition-colors",
         "hover:bg-white/[0.04]",
         active && "bg-[hsl(var(--intel-blue)/0.12)] text-foreground ring-1 ring-[hsl(var(--intel-blue)/0.3)]",
-        dim && !active && "opacity-55",
+        // Completed runs recede, but stay readable: at 55% the 11px meta line fell
+        // under 4.5:1. The check icon carries the "finished" state as well.
+        dim && !active && "opacity-75",
       )}
     >
       {/* Status pip — in flow, not absolute (prevents bleed into next row) */}
@@ -728,7 +781,7 @@ function ThreadRow({
         </div>
         <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] leading-tight text-muted-foreground">
           {t.seed_type && (
-            <span className="shrink-0 rounded border border-border-subtle bg-white/[0.03] px-1 py-px text-[10px] uppercase tracking-wide">
+            <span className="shrink-0 rounded border border-border-subtle bg-white/[0.03] px-1 py-px text-micro uppercase">
               {t.seed_type}
             </span>
           )}
@@ -749,7 +802,7 @@ function ThreadRow({
       <button
         type="button"
         onClick={(e) => onDelete(t, e)}
-        className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
+        className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100 coarse:-my-2 coarse:-mr-2 coarse:grid coarse:h-11 coarse:w-11 coarse:place-items-center coarse:opacity-70"
         aria-label="Delete case"
       >
         <Trash2 className="h-3.5 w-3.5" />
@@ -773,7 +826,7 @@ function SpendTrend({ threads, totalCost }: { threads: Thread[]; totalCost: numb
     <div className="rounded-xl border border-white/10 bg-white/[0.035] p-1">
       <div className="rounded-lg bg-black/20 px-3 py-2.5">
         <div className="flex items-center justify-between gap-3">
-          <span className="text-micro tracking-normal text-muted-foreground">Spend</span>
+          <span className="text-data tracking-normal text-muted-foreground">Spend</span>
           <span className="font-mono text-micro text-muted-foreground">{threads.length} cases</span>
         </div>
         <div className="mt-1 flex items-end justify-between gap-3">

@@ -10,14 +10,14 @@
  * A live run persists a tool_usage_log row / artifact (and bumps
  * threads.updated_at) every few seconds — the slowest single tool cap is ~30s.
  * So a thread that is STILL "active" but has had no write for several minutes is
- * not running; it was killed. This lets the signed-in owner reconcile that dead
- * state to the terminal "finished" (owner-writable under RLS) so the UI stops
- * showing it stuck.
+ * not running; it was killed. The sidebar uses this to stop SHOWING it as
+ * running.
  *
- * This is a UI safety net, NOT a replacement for the backend finalizer — it only
- * reconciles threads the owner can already see, and never touches a thread that
- * is still writing. The evidence itself is unaffected (artifacts persist
- * incrementally); this only corrects the run's terminal status.
+ * Display only — never a DB write. The browser used to write `finished` here,
+ * which broke invariant I-2: without a `recovery_reason` the row reads as
+ * COMPLETE, and server recovery (`recoverStaleActiveThreads`, which only claims
+ * `status='active'` rows) could then no longer stamp the reason and post the
+ * recovered report. The terminal status of a dead run is the server's to write.
  */
 import { hasRunMarker, type ThreadRunMarkers } from "@/lib/thread-status";
 
@@ -74,7 +74,8 @@ export function isStaleActiveThread(
 }
 
 /** Ids of the threads in `rows` whose active run has gone stale and should be
- *  reconciled to "finished". Pure — exported for tests.
+ *  displayed as not running (display only; the server writes the terminal
+ *  status). Pure — exported for tests.
  *
  *  A thread with NO run marker is excluded, mirroring the backend's own refusal
  *  to recover one (CLAUDE.md invariant I-1). Without that check this sweep read

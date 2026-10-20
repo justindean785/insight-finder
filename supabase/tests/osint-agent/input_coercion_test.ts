@@ -366,3 +366,117 @@ Deno.test("/health: checks.input_coercion is wired, passes, and reports the swit
   assert(health.includes("r.checks.input_coercion = inputCoercionSelfTest();"));
   await withEnv(SWITCH, "true", () => assertEquals(inputCoercionSelfTest().switch, "INPUT_COERCION_DISABLED=true"));
 });
+
+// ---------------------------------------------------------------------------
+// 2026-10-19 hardening: stringified-JSON roots/fields, bare arrays, enclosing
+// quotes, number→string on every selector field (GENERIC_SELECTOR_SPEC via
+// memoSchema), pinned against the REAL schemas built by buildTools().
+// ---------------------------------------------------------------------------
+import { GENERIC_SELECTOR_SPEC, mergeInputSpecs } from "../../functions/osint-agent/lib/tool-input-coercion.ts";
+
+Deno.test("coerceToolInput: a stringified-JSON root parses to the object (root_json)", () => {
+  const r = coerceToolInput('{"email":"a@example.com"}', {});
+  assertEquals(r.value, { email: "a@example.com" });
+  assertEquals(r.records, [{ field: "", coercion: "root_json" }]);
+});
+
+Deno.test("coerceToolInput: a root string that is not JSON is left alone (rejected as before)", () => {
+  const r = coerceToolInput("not json", {});
+  assertStrictEquals(r.value, "not json");
+  assertEquals(r.records, []);
+});
+
+Deno.test("coerceToolInput: a bare array is wrapped under wrapArrayAs; without it, left alone", () => {
+  const arr = [{ kind: "lesson", subject: "s", content: "abc" }];
+  assertEquals(coerceToolInput(arr, { wrapArrayAs: "entries" }).value, { entries: arr });
+  assertStrictEquals(coerceToolInput(arr, {}).value, arr);
+});
+
+Deno.test("coerceToolInput: jsonFields parses a stringified object/array field, including a fenced block", () => {
+  const r = coerceToolInput({ artifacts: "```json\n[{\"kind\":\"email\",\"value\":\"a@b.c\"}]\n```" }, { jsonFields: ["artifacts"] });
+  assertEquals(r.value, { artifacts: [{ kind: "email", value: "a@b.c" }] });
+  assertEquals(r.records, [{ field: "artifacts", coercion: "json_parsed" }]);
+  const bad = coerceToolInput({ artifacts: "[not json" }, { jsonFields: ["artifacts"] });
+  assertEquals(bad.records, []);
+});
+
+Deno.test("coerceToolInput: enclosing quotes are stripped on trim fields; an inner quote is not", () => {
+  const spec = { trimFields: ["email", "username"] };
+  assertEquals(coerceToolInput({ email: "'a@example.com'" }, spec).value, { email: "a@example.com" });
+  assertEquals(coerceToolInput({ email: ' "a@example.com" ' }, spec).value, { email: "a@example.com" });
+  assertEquals(coerceToolInput({ username: "`handle`" }, spec).value, { username: "handle" });
+  assertEquals(coerceToolInput({ email: "'a@example.com'" }, spec).records, [{ field: "email", coercion: "unquoted" }]);
+  // O'Brien keeps its apostrophe; a lone quote is not a pair.
+  assertEquals(coerceToolInput({ username: "o'brien" }, spec).records, []);
+  assertEquals(coerceToolInput({ username: "'" }, spec).records, []);
+});
+
+Deno.test("mergeInputSpecs: the tool's lists are unioned with the generic ones, its enums win", () => {
+  const m = mergeInputSpecs(GENERIC_SELECTOR_SPEC, { trimFields: ["identifierValue"], enumFields: { kind: ["a"] } });
+  assert(m.trimFields!.includes("identifierValue") && m.trimFields!.includes("email"));
+  assertEquals(m.enumFields, { kind: ["a"] });
+});
+
+Deno.test("PRODUCTION (2026-10-18): rapidapi_breach_search email with enclosing quotes + whitespace validates", async () => {
+  await withEnv(SWITCH, undefined, () => {
+    assertEquals(ok("rapidapi_breach_search", { email: " 'person@example.com' " }).email, "person@example.com");
+  });
+});
+
+Deno.test("PRODUCTION (2026-10-18): minimax_correlate numeric seed + stringified artifacts validate", async () => {
+  await withEnv(SWITCH, undefined, () => {
+    const d = ok("minimax_correlate", { seed: 6175550100, artifacts: '[{"kind":"phone","value":"6175550100"}]' });
+    assertEquals(d.seed, "6175550100");
+    assertEquals((d.artifacts as Array<{ kind: string }>)[0].kind, "phone");
+  });
+});
+
+Deno.test("PRODUCTION (2026-10-18): record_artifacts sent as a stringified-JSON root validates", async () => {
+  await withEnv(SWITCH, undefined, () => {
+    const d = ok("record_artifacts", '{"artifacts":[{"kind":"email","value":"a@example.com"}]}');
+    assertEquals((d.artifacts as Array<{ value: string }>)[0].value, "a@example.com");
+  });
+});
+
+Deno.test("PRODUCTION (2026-10-18): memory_save sent as a bare array (no {entries}) validates", async () => {
+  await withEnv(SWITCH, undefined, () => {
+    const d = ok("memory_save", [{ kind: "lesson", subject: "example.com", content: "domain is parked" }]);
+    assertEquals((d.entries as Array<{ subject: string }>)[0].subject, "example.com");
+    assertEquals(d.scope, "global");
+    ok("memory_save", '{"entries":[{"kind":"lesson","subject":"example.com","content":"domain is parked"}]}');
+  });
+});
+
+Deno.test("memoSchema: a plain tool (no explicit spec) still trims and unquotes its selector field", async () => {
+  await withEnv(SWITCH, undefined, () => {
+    assertEquals(ok("gravatar_profile", { email: " 'a@example.com' " }).email, "a@example.com");
+  });
+});
+
+Deno.test("kill switch: INPUT_COERCION_DISABLED=true rejects the quoted email and the bare array again", async () => {
+  await withEnv(SWITCH, "true", () => {
+    rejected("rapidapi_breach_search", { email: "'person@example.com'" });
+    rejected("memory_save", [{ kind: "lesson", subject: "s", content: "abc" }]);
+  });
+});
+
+// Review findings (2026-10-19): two generic rules were not spelling-only.
+Deno.test("GENERIC: `query` is whitespace-trimmed but NEVER unquoted — quotes are exact-phrase search semantics", () => {
+  const exact = coerceToolInput({ query: '"Jordan Vale"' }, GENERIC_SELECTOR_SPEC);
+  assertEquals(exact.records, []);
+  assertEquals((exact.value as Record<string, unknown>).query, '"Jordan Vale"');
+  const padded = coerceToolInput({ query: ' "Jordan Vale" ' }, GENERIC_SELECTOR_SPEC);
+  assertEquals(padded.records, [{ field: "query", coercion: "trimmed" }]);
+  assertEquals((padded.value as Record<string, unknown>).query, '"Jordan Vale"');
+  // selectors still unquote
+  assertEquals(coerceToolInput({ email: "'a@example.com'" }, GENERIC_SELECTOR_SPEC).records, [{ field: "email", coercion: "unquoted" }]);
+});
+
+Deno.test("GENERIC: a number beyond Number.MAX_SAFE_INTEGER is never stringified (a 17-19 digit discord_id would be corrupted)", () => {
+  const unsafe = coerceToolInput({ value: JSON.parse("123456789012345678") }, GENERIC_SELECTOR_SPEC);
+  assertEquals(unsafe.records, []);
+  assertStrictEquals(typeof (unsafe.value as Record<string, unknown>).value, "number");
+  const safe = coerceToolInput({ value: 6175550100, seed: 1.5 }, GENERIC_SELECTOR_SPEC).value as Record<string, unknown>;
+  assertEquals(safe.value, "6175550100");
+  assertEquals(safe.seed, "1.5");
+});

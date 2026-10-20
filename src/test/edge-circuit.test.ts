@@ -187,3 +187,56 @@ describe("snapshot / applyBaselineDisables / clearThread", () => {
     expect(shouldRun(thread, "tool", "sel").allow).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 401 / 402 are run-wide (2026-10-19): the tool AND its provider siblings are
+// refused for the rest of the thread with a constant, legible reason, and
+// suppressedToolsOf lists what prepareStep must withhold from activeTools.
+// ---------------------------------------------------------------------------
+import {
+  AUTH_REFUSAL_REASON, AUTH_SUPPRESS_MS, PROVIDER_SUPPRESS_MS,
+  suppressProviderAuthPrior, suppressedToolsOf, isProviderSuppressed,
+} from "../../supabase/functions/osint-agent/circuit.ts";
+
+describe("401/402 fail-fast", () => {
+  it("a 401 on oathnet_lookup refuses the tool and every oathnet_* sibling with the constant reason", () => {
+    recordResult(thread, "oathnet_lookup", "a@example.com", "default", { status: "http_401" });
+    const same = shouldRun(thread, "oathnet_lookup", "other@example.com");
+    expect(same.allow).toBe(false);
+    expect((same as { reason: string }).reason).toContain(AUTH_REFUSAL_REASON);
+    const sibling = shouldRun(thread, "oathnet_stealer_search", "a@example.com");
+    expect(sibling.allow).toBe(false);
+    expect((sibling as { reason: string }).reason).toContain("provider 'oathnet' suppressed for investigation");
+    // An unrelated provider is untouched.
+    expect(shouldRun(thread, "hunter_combined", "example.com").allow).toBe(true);
+  });
+
+  it("a 402 is run-wide: the suppression window is the run's lifetime, not the 10-minute provider window", () => {
+    recordResult(thread, "indicia_email", "a@example.com", "default", { status: "http_402" });
+    const sup = isProviderSuppressed(thread, "indicia_phone");
+    expect(sup.suppressed).toBe(true);
+    expect(sup.until! - Date.now()).toBeGreaterThan(PROVIDER_SUPPRESS_MS * 2);
+    expect(sup.until! - Date.now()).toBeLessThanOrEqual(AUTH_SUPPRESS_MS);
+    expect(sup.reason).toContain(AUTH_REFUSAL_REASON);
+  });
+
+  it("classifyResult reads a tool's {ok:false,status:401|402} as http_401 / http_402", () => {
+    expect(classifyResult({ ok: false, status: 401, data: {} }, null)).toBe("http_401");
+    expect(classifyResult({ ok: false, status_code: 402, error: "payment required" }, null)).toBe("http_402");
+  });
+
+  it("suppressedToolsOf lists only the suppressed provider's tools (recording tools never appear)", () => {
+    const names = ["oathnet_lookup", "oathnet_subdomains", "hunter_combined", "record_artifacts", "memory_save"];
+    expect(suppressedToolsOf(thread, names)).toEqual([]);
+    recordResult(thread, "oathnet_lookup", "a@example.com", "default", { status: "http_401" });
+    expect(suppressedToolsOf(thread, names)).toEqual(["oathnet_lookup", "oathnet_subdomains"]);
+  });
+
+  it("suppressProviderAuthPrior (a 401/402 from an earlier invocation) has the same run-wide effect", () => {
+    suppressProviderAuthPrior(thread, "oathnet_victims_search", 402);
+    const d = shouldRun(thread, "oathnet_lookup", "a@example.com");
+    expect(d.allow).toBe(false);
+    expect((d as { reason: string }).reason).toContain("in an earlier run of this case");
+    expect((d as { reason: string }).reason).toContain(AUTH_REFUSAL_REASON);
+  });
+});

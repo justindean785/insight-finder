@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { MoreHorizontal, MessagesSquare, Database, FileText, Share2, Activity, LayoutDashboard, Check, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { WorkspaceTab } from "@/lib/workspace-sections";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-export type WorkspaceTab = "overview" | "chat" | "evidence" | "report" | "graph" | "tools";
+export type { WorkspaceTab };
 
 /** Per-tab badge data. `value` is what the tab SHOWS — not the size of the
  * corpus behind it. Those differ on Evidence, whose board has defaulted to
@@ -37,9 +38,14 @@ const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
 // evidence, and the report they will hand on — are one thumb-tap away. Report
 // used to sit behind More while Overview took a primary slot; on a phone the
 // report is the deliverable and Overview is a summary of the other two.
-const COMPACT_PRIMARY = TABS.filter((t) => t.key === "chat" || t.key === "evidence" || t.key === "report");
-const COMPACT_MORE = TABS.filter((t) => t.key === "overview" || t.key === "tools" || t.key === "graph");
-const MORE_LABEL = `More sections: ${COMPACT_MORE.map((t) => t.label).join(", ")}`;
+const COMPACT_PRIMARY_KEYS: ReadonlySet<WorkspaceTab> = new Set(["chat", "evidence", "report"]);
+
+type TabDef = (typeof TABS)[number];
+
+function sectionTabs(sections?: readonly WorkspaceTab[]): TabDef[] {
+  if (!sections) return TABS;
+  return sections.map((k) => TABS.find((t) => t.key === k)).filter((t): t is TabDef => Boolean(t));
+}
 
 function countText(value: number): string {
   return value > 999 ? "999+" : String(value);
@@ -72,7 +78,11 @@ function AlertDot({ count, className }: { count: number; className?: string }) {
  *
  * Mobile: a BOTTOM tab bar, where the thumb is — Investigate, Evidence and
  * Report as labelled tabs (icon over label), and Overview, Tools and Graph
- * behind More. The More trigger ALWAYS carries a name — "More sections: …" or,
+ * behind More.
+ *
+ * `sections` narrows the strip to a subset in a fixed order — the case viewer
+ * uses `CASE_VIEW_SECTIONS` from `@/lib/workspace-sections` — so both case screens share one tab
+ * component, one keyboard model and one count badge. The More trigger ALWAYS carries a name — "More sections: …" or,
  * when one of its sections is active, "More, current section: Graph" — so
  * primary navigation is never an unlabelled icon. The bar pads itself by the
  * device's bottom safe-area inset so the home indicator never sits on a tab.
@@ -83,6 +93,8 @@ export function WorkspaceTabs({
   counts,
   loading = false,
   variant = "bar",
+  sections,
+  label = "Investigation workspace",
 }: {
   active: WorkspaceTab;
   onChange: (t: WorkspaceTab) => void;
@@ -90,11 +102,16 @@ export function WorkspaceTabs({
   /** Counts are not known yet: show a placeholder, never a false 0. */
   loading?: boolean;
   variant?: "bar" | "inline";
+  /** Show only these sections, in this order. Default: all six. */
+  sections?: readonly WorkspaceTab[];
+  /** Accessible name of the tablist. */
+  label?: string;
 }) {
+  const tabs = sectionTabs(sections);
   if (variant === "inline") {
-    return <CompactNav active={active} onChange={onChange} counts={counts} loading={loading} />;
+    return <CompactNav tabs={tabs} label={label} active={active} onChange={onChange} counts={counts} loading={loading} />;
   }
-  return <TabBar active={active} onChange={onChange} counts={counts} loading={loading} />;
+  return <TabBar tabs={tabs} label={label} active={active} onChange={onChange} counts={counts} loading={loading} />;
 }
 
 function TabCountBadge({ count, loading, active }: { count?: TabCount; loading: boolean; active: boolean }) {
@@ -113,8 +130,10 @@ function TabCountBadge({ count, loading, active }: { count?: TabCount; loading: 
 }
 
 function TabBar({
-  active, onChange, counts, loading,
+  tabs, label, active, onChange, counts, loading,
 }: {
+  tabs: TabDef[];
+  label: string;
   active: WorkspaceTab;
   onChange: (t: WorkspaceTab) => void;
   counts?: Partial<Record<WorkspaceTab, TabCount>>;
@@ -125,28 +144,28 @@ function TabBar({
   // Keep the active tab in view when it changes from outside (command palette,
   // "View failed tools").
   useEffect(() => {
-    const idx = TABS.findIndex((t) => t.key === active);
+    const idx = tabs.findIndex((t) => t.key === active);
     tabRefs.current[idx]?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-  }, [active]);
+  }, [active, tabs]);
 
   // Roving arrow-key navigation (WAI-ARIA tabs, automatic activation).
   const onKeyDown = (e: React.KeyboardEvent, idx: number) => {
     let next = idx;
-    if (e.key === "ArrowRight") next = (idx + 1) % TABS.length;
-    else if (e.key === "ArrowLeft") next = (idx - 1 + TABS.length) % TABS.length;
+    if (e.key === "ArrowRight") next = (idx + 1) % tabs.length;
+    else if (e.key === "ArrowLeft") next = (idx - 1 + tabs.length) % tabs.length;
     else if (e.key === "Home") next = 0;
-    else if (e.key === "End") next = TABS.length - 1;
+    else if (e.key === "End") next = tabs.length - 1;
     else return;
     e.preventDefault();
-    onChange(TABS[next].key);
+    onChange(tabs[next].key);
     tabRefs.current[next]?.focus();
   };
 
   return (
     <div className="relative border-b border-white/[0.07] bg-surface-0">
       <div className="flex overflow-x-auto px-1 sm:px-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <div role="tablist" aria-label="Investigation workspace" className="flex w-max shrink-0 items-stretch gap-1">
-          {TABS.map((t, idx) => {
+        <div role="tablist" aria-label={label} className="flex w-max shrink-0 items-stretch gap-1">
+          {tabs.map((t, idx) => {
             const Icon = t.icon;
             const isActive = active === t.key;
             return (
@@ -187,38 +206,43 @@ function TabBar({
 }
 
 function CompactNav({
-  active, onChange, counts, loading,
+  tabs, label, active, onChange, counts, loading,
 }: {
+  tabs: TabDef[];
+  label: string;
   active: WorkspaceTab;
   onChange: (t: WorkspaceTab) => void;
   counts?: Partial<Record<WorkspaceTab, TabCount>>;
   loading: boolean;
 }) {
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const activeMore = COMPACT_MORE.find((t) => t.key === active);
-  const moreAlert = COMPACT_MORE.reduce((sum, t) => (t.key === active ? sum : sum + (counts?.[t.key]?.alert ?? 0)), 0);
+  const primary = tabs.filter((t) => COMPACT_PRIMARY_KEYS.has(t.key));
+  const more = tabs.filter((t) => !COMPACT_PRIMARY_KEYS.has(t.key));
+  const moreLabel = `More sections: ${more.map((t) => t.label).join(", ")}`;
+  const activeMore = more.find((t) => t.key === active);
+  const moreAlert = more.reduce((sum, t) => (t.key === active ? sum : sum + (counts?.[t.key]?.alert ?? 0)), 0);
 
   // Roving focus across the three labelled tabs.
   const onKeyDown = (e: React.KeyboardEvent, idx: number) => {
     let next = idx;
-    if (e.key === "ArrowRight") next = (idx + 1) % COMPACT_PRIMARY.length;
-    else if (e.key === "ArrowLeft") next = (idx - 1 + COMPACT_PRIMARY.length) % COMPACT_PRIMARY.length;
+    if (e.key === "ArrowRight") next = (idx + 1) % primary.length;
+    else if (e.key === "ArrowLeft") next = (idx - 1 + primary.length) % primary.length;
     else if (e.key === "Home") next = 0;
-    else if (e.key === "End") next = COMPACT_PRIMARY.length - 1;
+    else if (e.key === "End") next = primary.length - 1;
     else return;
     e.preventDefault();
-    onChange(COMPACT_PRIMARY[next].key);
+    onChange(primary[next].key);
     tabRefs.current[next]?.focus();
   };
 
-  const item = "relative flex min-w-0 flex-1 flex-col items-center justify-center gap-1 pb-1.5 pt-2 text-[11.5px] font-medium leading-none transition-colors duration-fast ease-standard focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
+  const item = "relative flex min-w-0 flex-1 flex-col items-center justify-center gap-1 pb-1.5 pt-2 text-data font-medium leading-none transition-colors duration-fast ease-standard focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
   return (
     <nav
       aria-label="Workspace sections"
       className="flex items-stretch border-t border-border-subtle bg-card pb-[env(safe-area-inset-bottom)]"
     >
-      <div role="tablist" aria-label="Investigation workspace" className="flex min-w-0 flex-[3] items-stretch">
-        {COMPACT_PRIMARY.map((t, idx) => {
+      <div role="tablist" aria-label={label} className="flex min-w-0 flex-[3] items-stretch">
+        {primary.map((t, idx) => {
           const Icon = t.icon;
           const isActive = active === t.key;
           const count = counts?.[t.key];
@@ -245,6 +269,7 @@ function CompactNav({
           );
         })}
       </div>
+      {more.length > 0 && (
       <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <button
@@ -252,7 +277,7 @@ function CompactNav({
             // When a More section is active, this trigger is the element that
             // labels its panel (`aria-labelledby="workspace-tab-<key>"`).
             id={activeMore ? `workspace-tab-${activeMore.key}` : undefined}
-            aria-label={activeMore ? `More, current section: ${activeMore.label}` : MORE_LABEL}
+            aria-label={activeMore ? `More, current section: ${activeMore.label}` : moreLabel}
             className={cn(item, "min-h-14", activeMore ? "text-foreground" : "text-subtle-foreground data-[state=open]:text-foreground")}
           >
             <span className="relative">
@@ -270,9 +295,9 @@ function CompactNav({
           sideOffset={6}
           className="mr-2 w-60 rounded-xl border-border bg-[hsl(var(--popover))] p-1 shadow-overlay"
         >
-          <DropdownMenuLabel className="px-2.5 pb-1 pt-1.5 text-micro font-medium text-muted-foreground">More sections</DropdownMenuLabel>
+          <DropdownMenuLabel className="px-2.5 pb-1 pt-1.5 text-data font-medium text-muted-foreground">More sections</DropdownMenuLabel>
           <DropdownMenuRadioGroup value={activeMore?.key ?? ""} onValueChange={(v) => onChange(v as WorkspaceTab)}>
-            {COMPACT_MORE.map((t) => {
+            {more.map((t) => {
               const Icon = t.icon;
               const count = counts?.[t.key];
               const selected = t.key === active;
@@ -298,6 +323,7 @@ function CompactNav({
           </DropdownMenuRadioGroup>
         </DropdownMenuContent>
       </DropdownMenu>
+      )}
     </nav>
   );
 }

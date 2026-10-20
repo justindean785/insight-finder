@@ -57,6 +57,43 @@ test.describe("canonical case snapshot", () => {
     await expect(page.getByRole("region", { name: /run/i })).toHaveCount(0);
   });
 
+  test("2b · a run alive on the server with no live stream shows its recorded calls", async ({ page }) => {
+    // The live stream can drop (a phone suspends the page, an idle connection is
+    // cut) or never exist (the case was opened mid-run). The server keeps going;
+    // the transcript must keep showing what it records instead of freezing.
+    await open(page, `${THREAD}?scenario=running`);
+    const live = page.getByRole("region", { name: "Live from the server" });
+    await expect(live).toBeVisible();
+    await expect(live).toContainText("3 calls recorded");
+    for (const name of ["dns_records", "crtsh_lookup", "wayback_cdx_search"]) await expect(live).toContainText(name);
+    // Only this run: calls from earlier runs on the case are not repeated here.
+    await expect(live).not.toContainText("hunter_verify");
+    // The first reply was cut off by the drop, not by the run: it is still in
+    // progress on the server and must not be labelled interrupted.
+    await expect(page.getByText("Starting with the domain's DNS and certificate history.")).toBeVisible();
+    await expect(page.getByText("Interrupted response.")).toHaveCount(0);
+  });
+
+  test("2d · a run that finishes while the page is away shows its report on return, with no reload", async ({ page }) => {
+    // Production, 2026-10-19: the phone slept, the run finished, no realtime
+    // event reached the page, and the transcript stayed frozen until a reload.
+    await open(page, `${THREAD}?scenario=running`);
+    const live = page.getByRole("region", { name: "Live from the server" });
+    await expect(live).toBeVisible();
+    await page.evaluate(() => (window as unknown as { __harnessFinishRun: () => void }).__harnessFinishRun());
+    // Returning to the app is the one signal a dead socket cannot swallow.
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await expect(page.getByText("Synthetic run finished while this page was away.")).toBeVisible();
+    await expect(page.getByRole("region", { name: "Case summary" }).getByText("Running", { exact: true })).toHaveCount(0);
+    await expect(live).toHaveCount(0);
+  });
+
+  test("2c · a finished case shows no server-follow panel", async ({ page }) => {
+    await open(page, THREAD);
+    await page.getByRole("tab", { name: /^Investigate/ }).click();
+    await expect(page.getByRole("region", { name: "Live from the server" })).toHaveCount(0);
+  });
+
   test("5 · reconciliation from interrupted to complete lands in one version, and is announced", async ({ page }) => {
     await open(page, `${THREAD}?scenario=reconcile`);
     const header = page.getByRole("region", { name: "Case summary" });

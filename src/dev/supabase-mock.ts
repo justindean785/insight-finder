@@ -325,6 +325,21 @@ const nowIso = () => new Date().toISOString();
 if (!SNAPSHOT && mainThread) {
   if (SCENARIO === "running") {
     Object.assign(mainThread, { status: "active", run_started_at: new Date(Date.now() - 120_000).toISOString(), last_heartbeat_at: nowIso() });
+    // Calls this run has recorded so far: the server keeps working whether or
+    // not this browser still holds the live stream (a fresh page load holds none).
+    const inRun = (id: string, name: string, ok: boolean, ms: number, secsAgo: number) =>
+      ({ ...tool(id, name, ok, ms, 0), created_at: new Date(Date.now() - secsAgo * 1000).toISOString() });
+    FIXTURES.tool_usage_log = [
+      ...(FIXTURES.tool_usage_log ?? []),
+      inRun("r1", "dns_records", true, 474, 100),
+      inRun("r2", "crtsh_lookup", false, 2829, 95),
+      inRun("r3", "wayback_cdx_search", true, 679, 40),
+    ];
+    // The agent's first reply as a dropped stream leaves it: cut off mid-stream.
+    (FIXTURES.messages as unknown[]).push({
+      id: "m-run-start", thread_id: THREAD_ID, user_id: USER_ID, role: "assistant", created_at: new Date(Date.now() - 110_000).toISOString(),
+      parts: [{ type: "text", text: "Starting with the domain's DNS and certificate history.", state: "streaming" }],
+    });
   } else if (SCENARIO === "interrupted" || SCENARIO === "reconcile") {
     Object.assign(mainThread, {
       status: "finished",
@@ -376,6 +391,19 @@ if (!SNAPSHOT && mainThread && SCENARIO === "reconcile" && typeof window !== "un
     Object.assign(mainThread, { status: "finished", recovery_reason: null, recovered_at: null, cost_micro_usd: 393_000, updated_at: nowIso() });
     emit("threads", "UPDATE", { new: { ...mainThread }, old: {} });
   }, 2500);
+}
+
+// `running`: the run finishes while the page is away (a phone asleep). The row
+// and the report are saved and NO realtime event reaches the page, which is the
+// production gap: only a re-read (return to the tab, the live poll) can see it.
+if (!SNAPSHOT && mainThread && SCENARIO === "running" && typeof window !== "undefined") {
+  (window as unknown as { __harnessFinishRun?: () => void }).__harnessFinishRun = () => {
+    Object.assign(mainThread, { status: "finished", last_heartbeat_at: nowIso(), updated_at: nowIso() });
+    (FIXTURES.messages as unknown[]).push({
+      id: "m-run-end", thread_id: THREAD_ID, user_id: USER_ID, role: "assistant", created_at: nowIso(),
+      parts: text("## Findings report\n\nSynthetic run finished while this page was away."),
+    });
+  };
 }
 
 const RPC: Record<string, unknown> = {

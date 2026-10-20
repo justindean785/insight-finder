@@ -40,7 +40,7 @@ import {
 import { reserveToolCall } from "./orchestrator-budget.ts";
 import { cacheVersionFor } from "./lib/tool-cache-version.ts";
 import { takeInputCoercions } from "./lib/tool-input-coercion.ts";
-import { isFinalizeWindowLiveLookupExempt } from "./orchestrator-finalize.ts";
+import { isFinalizeWindowLiveLookupExempt, isFinalizeCollectExempt } from "./orchestrator-finalize.ts";
 import {
   ALWAYS_ALLOW_TOOLS,
   analyzeWeakLead,
@@ -700,6 +700,11 @@ export function wrapToolsWithCache(
     // entrypoints) get no exemption once the window is open, i.e. the tool is
     // skipped like any other live lookup -- the safe default.
     hasCorrelateDispatchBudget?: () => boolean;
+    // TRUE only while prepareStep has put the run in the finalize COLLECT phase
+    // (orchestrator-finalize.ts). The opsis_results exemptions below are scoped to it:
+    // a model-initiated read on a path where the collect decision declined (wall-clock
+    // trigger, exhausted budget) stays a finalize-window skip, as before.
+    collectPhaseActive?: () => boolean;
     onHeartbeat?: () => void;
   },
 ) {
@@ -1532,7 +1537,11 @@ export function wrapToolsWithCache(
         // (ALWAYS_ALLOW) are exempt via shouldSkipForToolCap, so the closing
         // record_artifacts is never starved and no collected evidence is stranded.
         // This is the hard backstop; prepareStep also forces synthesis once capped.
-        if (ctx.toolCallBudget && !reserveToolCall(ctx.toolCallBudget, ALWAYS_ALLOW_TOOLS.has(name))) {
+        // opsis_results is a FREE read of a run already paid for; DURING THE COLLECT PHASE
+        // ONLY it is exempt from the tool-call cap, the finalize-window guard and (via
+        // startCall) the internal total run cap, so the collect phase can actually run.
+        const collectExempt = isFinalizeCollectExempt(name) && (ctx.collectPhaseActive?.() ?? false);
+        if (ctx.toolCallBudget && !reserveToolCall(ctx.toolCallBudget, ALWAYS_ALLOW_TOOLS.has(name) || collectExempt)) {
           // reserveToolCall already flipped `capped`. Reservation (not completed-call
           // count) is now the admission gate, so a parallel fan-out cannot overshoot.
           await logUsage(false, false, Date.now() - t0, "run tool-call cap reached", null, true, {
@@ -1563,7 +1572,8 @@ export function wrapToolsWithCache(
         if (
           ctx.shouldStopLiveLookups?.() &&
           !ALWAYS_ALLOW_TOOLS.has(name) &&
-          !correlateExempt
+          !correlateExempt &&
+          !collectExempt
         ) {
           await logUsage(false, false, Date.now() - t0, "finalize window open; live lookup skipped", null, true, {
             input: inputJson,
@@ -1584,7 +1594,7 @@ export function wrapToolsWithCache(
           initial: circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force }),
           recheck: () => circuit.shouldRun(ctx.investigationId, name, sel, purpose, { force }),
           shouldStop: () =>
-            (!!ctx.shouldStopLiveLookups?.() && !ALWAYS_ALLOW_TOOLS.has(name) && !correlateExempt) ||
+            (!!ctx.shouldStopLiveLookups?.() && !ALWAYS_ALLOW_TOOLS.has(name) && !correlateExempt && !collectExempt) ||
             !!(opts as { abortSignal?: AbortSignal } | null | undefined)?.abortSignal?.aborted,
           onTick: () => ctx.onHeartbeat?.(),
           disabled: providerBusyQueueDisabled(),
@@ -1666,6 +1676,7 @@ export function wrapToolsWithCache(
           staleCache: !!staleRecord,
           manualOverride,
           force,
+          collectExempt,
         });
         if (!runtimeDecision.allow) {
           if (runtimeDecision.budgetCeiling && ctx.budgetCeiling) ctx.budgetCeiling.fired = true;

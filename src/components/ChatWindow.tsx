@@ -62,6 +62,9 @@ import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
 import { humanizeSelector } from "@/lib/humanize-selector";
 import { measureRequestBody, reportRequestBodySize } from "@/lib/request-size";
+import { shouldFollowServer, currentRunEvents } from "@/lib/server-follow";
+import { ServerFollowPanel } from "@/components/chat/ServerFollowPanel";
+import { useHeldTrue } from "@/hooks/use-held-true";
 import {
   isTerminalThreadUpdate,
   mergePersistedChatMessages,
@@ -2346,6 +2349,13 @@ function ChatWindowInner({
       toast.error("Wait for the current run to finish");
       return;
     }
+    // This tab is idle but the SERVER still reports a live run (second tab,
+    // dropped stream). Re-running here deletes the cache replay and starts a
+    // second billed run on top of it; the server rejects no overlaps.
+    if (serverRunActiveRef.current) {
+      toast.info(submitRefusalMessage("server_running"));
+      return;
+    }
     const firstUser = messages.find((m) => m.role === "user") as UIMessage | undefined;
     if (!firstUser) return;
     const text = (firstUser.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("").trim();
@@ -2399,8 +2409,10 @@ function ChatWindowInner({
   const retryLastUser = async () => {
     // The same synchronous lock the composer and the pivot rail hold. Retry used
     // to skip it, so a double-click on "Retry investigation" started two billed
-    // runs: the server has no idempotency key and does not reject overlaps.
-    const retryRefusal = submitRefusal(status, submitLockRef.current);
+    // runs: the server has no idempotency key and does not reject overlaps. The
+    // server-run check matters for the same reason: a stale failure card in this
+    // tab must not start a run on top of one that is still live on the server.
+    const retryRefusal = submitRefusal(status, submitLockRef.current, serverRunActiveRef.current);
     if (retryRefusal) {
       toast.info(submitRefusalMessage(retryRefusal));
       return;
@@ -2434,6 +2446,22 @@ function ChatWindowInner({
   };
 
   const isLoading = status === "submitted" || status === "streaming";
+  // The server is running this case's investigation and this page is not
+  // receiving it live: the stream dropped (phone slept, network changed) or the
+  // page was opened mid-run. Settled for 3s, because a normal run ends with the
+  // stream closing a moment before the thread is marked finished.
+  const followingServer = useHeldTrue(shouldFollowServer({ clientStreaming: isLoading, serverRunActive }), 3_000);
+  // When a run this page was not streaming ends, load what it saved. The
+  // watchdog below only hears the realtime UPDATE, which a phone asleep at the
+  // moment the run finished never receives and nothing replays; the case
+  // snapshot does notice (it re-reads on return to the tab and polls while a
+  // run is live), so its run state leaving "running" is the reliable signal.
+  const serverWasRunningRef = useRef(serverRunActive);
+  useEffect(() => {
+    const was = serverWasRunningRef.current;
+    serverWasRunningRef.current = serverRunActive;
+    if (was && !serverRunActive && !isLoading) void reconcilePersistedMessages();
+  }, [serverRunActive, isLoading, reconcilePersistedMessages]);
   // A follow-up inherits the case's target; only a first request needs one.
   const isFollowUp = useMemo(() => messages.some((m) => m.role === "user"), [messages]);
   const preflight = useMemo(
@@ -2574,7 +2602,12 @@ function ChatWindowInner({
       // Nothing has ever run here — there is no stuck run of ours to reap, and a
       // sweep from a blank thread is exactly what produced the ghost recoveries.
       if (!threadHasActivityRef.current) return;
-      void fetch(`${FUNCTIONS_URL}?health=1`, { method: "GET" }).catch(() => {});
+      // `maintenance=1` is what makes this a SWEEP. Since 2026-10-19 a plain
+      // `?health=1` is a liveness probe that runs no database maintenance (it was a
+      // 5,000-row scan plus two sweeps every 30s per open case); the stale-run
+      // recovery this effect exists for only runs when asked. Older edge builds
+      // ignore the extra parameter, so this is safe to ship ahead of the edge deploy.
+      void fetch(`${FUNCTIONS_URL}?health=1&maintenance=1`, { method: "GET" }).catch(() => {});
     };
     sweep(); // once on open: reap a run already stuck when this thread is loaded
     if (!isLoading) {
@@ -2936,7 +2969,9 @@ function ChatWindowInner({
                   onRerun={hasCacheBanner ? rerunInvestigation : undefined}
                   rerunBusy={rerunBusy}
                   superseded={superseded}
-                  live={isLoading && isLastAssistant}
+                  // While following the server, the first reply is still in
+                  // progress there: not "Interrupted", and the panel lists its calls.
+                  live={(isLoading || followingServer) && isLastAssistant}
                 />
               );
             });
@@ -2944,6 +2979,10 @@ function ChatWindowInner({
           {isLoading && (
             <LiveActivityCard message={liveAssistantMessage} elapsedLabel={runElapsedLabel} />
           )}
+          <ServerFollowPanel
+            active={followingServer}
+            events={currentRunEvents(caseSnapshot?.snapshot?.tools?.events ?? [], caseSnapshot?.snapshot?.run?.startedAt ?? null)}
+          />
           {/* ONE card per failure.
               A failed run lands in two places: the live `error` state here, and
               a persisted assistant message prefixed FAIL_PREFIX which renders

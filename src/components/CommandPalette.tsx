@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useMatch, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import {
   CommandDialog,
@@ -12,7 +12,7 @@ import {
 import {
   Database, BarChart3, Lock, Network,
   Clock, FileText, ShieldCheck, AlertTriangle,
-  RotateCcw, MessageSquare,
+  RotateCcw, MessageSquare, Home, FolderOpen, Brain, Settings,
 } from "lucide-react";
 
 type Thread = { id: string; title: string; seed_value: string | null; updated_at: string };
@@ -43,6 +43,15 @@ const NAV_TARGETS: NavTarget[] = [
   { id: "ou-report",    label: "Report",     hint: "Output",     icon: FileText,     section: "output",     tab: "report"    },
 ];
 
+// Screens, reachable from anywhere the palette is mounted (every route inside
+// AppShell).
+const ROUTES: { to: string; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  { to: "/", label: "Home", icon: Home },
+  { to: "/cases", label: "All cases", icon: FolderOpen },
+  { to: "/brain", label: "Intelligence", icon: Brain },
+  { to: "/settings", label: "Settings", icon: Settings },
+];
+
 function navigateToTab(t: NavTarget) {
   window.dispatchEvent(
     new CustomEvent("swarmbot:navigate", { detail: { section: t.section, tab: t.tab } }),
@@ -64,6 +73,10 @@ export function CommandPalette() {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [loadError, setLoadError] = useState(false);
   const navigate = useNavigate();
+  // The quick actions and section jumps are handled by the live workspace
+  // (ChatPage / ChatWindow listen for them). Anywhere else they would no-op,
+  // so they are offered only there.
+  const inWorkspace = Boolean(useMatch("/chat/:threadId"));
 
   // Cmd/Ctrl+K toggle, ESC handled by Dialog.
   useEffect(() => {
@@ -107,7 +120,7 @@ export function CommandPalette() {
 
   return (
     <CommandDialog open={open} onOpenChange={setOpen}>
-      <CommandInput placeholder="Search cases, jump to a tab, run an action…" />
+      <CommandInput placeholder={inWorkspace ? "Search cases, jump to a tab, run an action…" : "Search cases or go to a screen…"} />
       <CommandList className="max-h-[440px]">
         <CommandEmpty>No matches.</CommandEmpty>
 
@@ -117,6 +130,7 @@ export function CommandPalette() {
           </div>
         )}
 
+        {inWorkspace && (
         <CommandGroup heading="Quick actions">
           <PaletteItem
             icon={MessageSquare}
@@ -137,8 +151,9 @@ export function CommandPalette() {
             }}
           />
         </CommandGroup>
+        )}
 
-        {Object.entries(grouped).map(([section, items]) => (
+        {inWorkspace && Object.entries(grouped).map(([section, items]) => (
           <CommandGroup key={section} heading={`Jump to ${section}`}>
             {items.map((t) => (
               <PaletteItem
@@ -151,6 +166,17 @@ export function CommandPalette() {
             ))}
           </CommandGroup>
         ))}
+
+        <CommandGroup heading="Go to">
+          {ROUTES.map((r) => (
+            <PaletteItem
+              key={r.to}
+              icon={r.icon}
+              label={r.label}
+              onSelect={() => { setOpen(false); navigate(r.to); }}
+            />
+          ))}
+        </CommandGroup>
 
         {threads.length > 0 && (
           <CommandGroup heading="Open case">

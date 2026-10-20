@@ -131,3 +131,25 @@ export function describeCredentialHealth(h: CredentialHealth, truncated = false)
   if (truncated) parts.push("window truncated by row cap — counts are a floor");
   return parts.join(" · ");
 }
+
+// ---- /health maintenance gate (2026-10-19) --------------------------------------
+// The newest rows read for checks.credentials, by created_at, inside the window.
+// 300 is a few full runs' worth (a long invocation logs ~100-130 calls): enough to
+// name a provider that is refusing every call right now, small enough that the read
+// is an index range scan rather than the 5,000-row exact-count scan it replaced.
+export const CREDENTIAL_HEALTH_SAMPLE_ROWS = 300;
+export const CREDENTIAL_HEALTH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export const MAINTENANCE_SKIPPED_DETAIL =
+  "skipped on a liveness probe — pass ?maintenance=1 (or the authenticated ?probe=1) to run " +
+  "recovery, the rejected-cluster sweep, credential health, synthesis and the cache sweep";
+
+/** True when the probe asks for the maintenance sweeps, or HEALTH_MAINTENANCE_ALWAYS=true restores the old default. */
+export function maintenanceRequested(
+  u: URL,
+  env: (k: string) => string | undefined = (k) => {
+    try { return Deno.env.get(k); } catch { return undefined; }
+  },
+): boolean {
+  if (u.searchParams.get("maintenance") === "1") return true;
+  return (env("HEALTH_MAINTENANCE_ALWAYS") ?? "").trim().toLowerCase() === "true";
+}

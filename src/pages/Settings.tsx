@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { useNavigate, Navigate, Link } from "react-router-dom";
+import { useNavigate, Navigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
-import { SwarmMark } from "@/components/ui/swarm-mark";
+import { ShellTopBar, ShellTopBarTitle } from "@/components/shell/AppShell";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PasswordInput } from "@/components/ui/password-input";
@@ -14,6 +15,7 @@ import { toast } from "sonner";
 export default function Settings() {
   const { user, loading } = useAuth();
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [saving, setSaving] = useState(false);
@@ -54,15 +56,16 @@ export default function Settings() {
   };
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto max-w-xl px-6 py-12 space-y-6">
-        {/* Header */}
-        <div className="flex items-center gap-3">
-          <Link to="/" className="inline-flex items-center justify-center w-9 h-9 rounded-xl glass-strong border border-white/10">
-            <SwarmMark className="w-5 h-5" glow={false} />
-          </Link>
-          <h1 className="text-lg font-semibold tracking-tight">Settings</h1>
-        </div>
+    <div className="flex min-h-0 flex-1 flex-col text-foreground">
+      {isMobile && (
+        <ShellTopBar>
+          <ShellTopBarTitle asHeading>Settings</ShellTopBarTitle>
+        </ShellTopBar>
+      )}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto max-w-xl px-6 py-8 pb-[calc(3rem+env(safe-area-inset-bottom))] sm:py-12 space-y-6">
+        {/* Header — on phones the shell's top bar carries the title. */}
+        {!isMobile && <h1 className="text-lg font-semibold tracking-tight">Settings</h1>}
 
         {/* Profile */}
         <div className="glass-card rounded-2xl border border-white/[0.07] p-6 space-y-3">
@@ -144,6 +147,7 @@ export default function Settings() {
             {signingOut ? "Signing out…" : "Sign out"}
           </Button>
         </div>
+      </div>
       </div>
     </div>
   );

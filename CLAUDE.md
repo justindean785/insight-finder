@@ -9,6 +9,46 @@ Project: **Insight Finder** (a.k.a. Swarmbot) — an OSINT investigator. Vite + 
 > canonical history cannot tell you what is deployed. Enumerate it:
 > `ls ../seeker-spark-search-5362c57c/supabase/functions/`.
 
+## 🧭 Session hygiene — stay in this session, or start a new one? (JD, 2026-10-19)
+
+JD asked to be told when to start a fresh session and when to stay and keep compacting.
+**Claude reports one line, unprompted, at three moments:** right after a compaction, when a
+PR merges, and before starting a new stage or task. The format is
+`Session check: STAY — <reason>` or `Session check: START FRESH — <reason>`. When the answer
+is START FRESH, the line also names where the handoff was written and gives the opening prompt.
+
+**Start a fresh session when any of these holds:**
+- A stage or PR has merged and the next one is about to begin. One session per stage or PR is
+  the default boundary.
+- This session has already been compacted **twice**. Each summary drops detail, so a third pass
+  works from a summary of a summary. Count the summaries; do not guess. In a remote session, run
+  `grep -c '"isCompactSummary":true' ~/.claude/projects/*/*.jsonl`.
+- The work changes channel: frontend, edge deploy and schema each have their own recipe and traps
+  (see the deploy topology below).
+- The session shows drift: it re-reads files it already read, re-derives settled facts, or
+  contradicts one of its own earlier measurements.
+- The container was reclaimed, or the branch was reset under the session.
+
+**Stay, compacting if needed, when any of these holds:**
+- There is uncommitted or unpushed work, or a verification run is in progress.
+- The session owns an open PR that is red or still waiting on CI. PR subscriptions and
+  `send_later` check-ins belong to the session that created them; a new session must
+  re-subscribe and re-arm them.
+- The next step depends on detail that exists only in this conversation. Write that detail down
+  first (PR body, plan or handoff), then decide.
+
+**Before starting fresh, check all of these:**
+- Everything is committed and pushed.
+- These are written into the newest `SESSION_HANDOFF_*.md` or the open PR's body:
+  - open PRs and their CI state
+  - active subscriptions and pending check-ins, with their trigger ids so the old ones can be cancelled
+  - JD's standing decisions made in the session
+  - the exact next step
+- JD has been given the opening prompt to paste into the new session.
+
+**Rule of thumb:** staying costs little until the second compaction. After that, a fresh session
+with a good handoff is more accurate than a third summary.
+
 ## ⚠️ Deploy topology — the #1 thing to get right
 
 > A mirror merge is NOT a deploy. The only proof of deploy is a moved build SHA.
@@ -428,8 +468,9 @@ promotion-quarantine switch, §3 the trap list of four instruments that lied) �
 `…_2026-09-13_instrument-truth-and-the-lineage-prerequisite.md` →
 `…_2026-09-14_sweep-false-positives-and-the-memory-retrieval-gap.md` →
 `…_2026-09-20_prompt-ceiling-payload-store-and-the-overlap-wedge.md` →
-**`SESSION_HANDOFF_2026-10-19_integrity-before-tool-fleet.md` (newest — read this one first).** It covers JD's latest direction, what was done since the 10-14 save, the PR queue (#797 ready; #799 and #800 drafts; the #593 decision), the three integrity defects, and the verify commands. Its evidence is in `docs/AUDIT_2026-10-18_full-code-review-lovable-vercel-github.md` (F1–F33) and `docs/AUDIT_2026-10-18-evening_state-pr-queue-next-tasks.md` (F34–F41; §10 is the integrity re-trace). If `origin/main` lacks these files, docs PR #793 is unmerged: read them from branch `claude/code-review-lovable-vercel-0knfbb` →
-**`SESSION_HANDOFF_2026-10-14_anthropic-orchestrator-and-the-dropped-connection.md` (read second; Anthropic went live, the dropped-connection run-termination bug was measured and fixed in #758, §3 is the PR queue, §5 the trap list, §6 the ordered plan)** →
+**`SESSION_HANDOFF_2026-10-19_obsidian-foundation-and-stage-a-shell.md` (newest, frontend design revamp only — read it first for UI work: #805/#806/#807 merged, §3 the JD-ordered queue (trust labels, Stage C1), §5 the traps)** →
+**`SESSION_HANDOFF_2026-10-19_integrity-before-tool-fleet.md` (newest for backend, orchestrator and evidence-integrity work — read it first for that).** It covers JD's latest direction, what was done since the 10-14 save, the PR queue (#797 ready; #799 and #800 drafts; the #593 decision), the three integrity defects, and the verify commands. Its evidence is in `docs/AUDIT_2026-10-18_full-code-review-lovable-vercel-github.md` (F1–F33) and `docs/AUDIT_2026-10-18-evening_state-pr-queue-next-tasks.md` (F34–F41; §10 is the integrity re-trace). Its §"Addendum" records what changed after it was written →
+`SESSION_HANDOFF_2026-10-14_anthropic-orchestrator-and-the-dropped-connection.md` (read second for backend work; Anthropic went live, the dropped-connection run-termination bug was measured and fixed in #758, §3 is the PR queue, §5 the trap list, §6 the ordered plan) →
 `SESSION_HANDOFF_2026-10-10_s1a-admission-lease-and-the-heartbeat-incident.md` (read second; the run lease is built, deployed and switched OFF, §5 is the JD-gated queue, §6 the release traps) →
 `SESSION_HANDOFF_2026-10-10_evidence-guards-and-the-learning-loop.md` (read third; its §5 is the plan for making the agent learn from every run, §3 the ordered queue, §6 the release traps. **Superseded on one point:** its §5 L5 says the server-side run lease is "unbuilt" — S1a shipped as #730/#734 and is disabled by switch) →
 `SESSION_HANDOFF_2026-10-06_release-train-and-audit-queue.md` (the draft-PR queue and release-recipe traps; `docs/proposals/` holds the P1/P2/P3 and E1-E4 design proposals).
