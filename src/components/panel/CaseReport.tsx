@@ -43,6 +43,7 @@ import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
 import { isRejectedReview, type ReviewState } from "@/lib/review";
+import { isQuarantined } from "@/lib/quarantine";
 import { extractDisplaySeed } from "@/lib/seed";
 import type { MessageSummary } from "@/hooks/useThreadMessages";
 import { isBreachKind } from "@/lib/breach-kinds";
@@ -533,6 +534,26 @@ function artifactSourceClasses(a: Artifact): Set<string> {
   return set;
 }
 
+/**
+ * Findings backed by >=2 INDEPENDENT source classes. The ONE definition of
+ * "corroborated": the Cross-source radar axis and the Auto-corroboration panel
+ * both call it, so they can never disagree. Analyst review is deliberately not an
+ * input - a human vouching for a single-source row does not make it corroborated.
+ */
+export function countIndependentlyCorroborated(artifacts: Artifact[], reviews?: Reviews): number {
+  return artifacts.filter((a) => !isRejectedReview(revOf(reviews, a)) && artifactSourceClasses(a).size >= 2).length;
+}
+
+/** Rows an analyst has confirmed/keyed (or that carry metadata.reviewed). A separate axis from corroboration. */
+export function countAnalystConfirmed(artifacts: Artifact[], reviews?: Reviews): number {
+  return artifacts.filter((a) => {
+    const r = revOf(reviews, a);
+    if (isRejectedReview(r)) return false;
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    return !isQuarantined(m) && (r === "confirmed" || r === "key" || m.reviewed === true);
+  }).length;
+}
+
 // DISPLAY-METRIC ONLY: these functions change what the radar axes COUNT. They do
 // NOT touch confidence caps, source classification, or status derivation — Signal
 // reuses the same bucket() the Confirmed/Probable counters use.
@@ -573,7 +594,7 @@ export function buildAnalyticRadar(artifacts: Artifact[], riskLevel: RiskLevel, 
 
   // Corroboration (BUG-3): findings backed by >=2 INDEPENDENT source classes,
   // NOT distinct source-label count (52 labels incl. 4x minimax != corroboration).
-  const corroborated = positive.filter((a) => artifactSourceClasses(a).size >= 2).length;
+  const corroborated = countIndependentlyCorroborated(artifacts, reviews);
   const corroborationValue = clampScore((corroborated / total) * 100);
 
   // Coverage (BUG-4): observed source CATEGORIES vs the expected set, not tool count.
@@ -722,12 +743,23 @@ function topByConfidence(artifacts: Artifact[], kinds: string[], reviews?: Revie
   return pool.slice().sort((a, b) => (confOf(reviews, b) ?? 0) - (confOf(reviews, a) ?? 0))[0];
 }
 
-type ProfileField = { label: string; value: string };
+type ProfileField = { label: string; value: string; note?: string };
 function buildSubjectProfile(artifacts: Artifact[], reviews?: Reviews): ProfileField[] {
   const out: ProfileField[] = [];
   const name = topByConfidence(artifacts, ["name", "person"], reviews);
   if (name) {
-    out.push({ label: "Name", value: name.value });
+    // A single-source name is a candidate, not a finding: say so beside the value
+    // instead of rendering it as a plain fact.
+    const nameClasses = artifactSourceClasses(name).size;
+    const nameReview = revOf(reviews, name);
+    const nameMeta = (name.metadata ?? {}) as Record<string, unknown>;
+    const nameAttested = nameReview === "confirmed" || nameReview === "key" || nameMeta.reviewed === true;
+    const nameNote = nameClasses >= 2
+      ? undefined
+      : nameAttested
+        ? "Analyst-confirmed · single-source"
+        : `Candidate — needs review · ${Math.max(nameClasses, 1)} source${Math.max(nameClasses, 1) === 1 ? "" : "s"}`;
+    out.push({ label: "Name", value: name.value, note: nameNote });
     const m = (name.metadata ?? {}) as Record<string, unknown>;
     const dob = m.dob ? String(m.dob) : "";
     const age = m.age != null ? String(m.age) : "";
@@ -1024,6 +1056,8 @@ export function CaseReport({
 }) {
   const display = useMemo(() => extractDisplaySeed(seedValue, seedType), [seedValue, seedType]);
   const subjectProfile = useMemo(() => buildSubjectProfile(artifacts, reviews), [artifacts, reviews]);
+  const corroboratedCount = useMemo(() => countIndependentlyCorroborated(artifacts, reviews), [artifacts, reviews]);
+  const analystConfirmedCount = useMemo(() => countAnalystConfirmed(artifacts, reviews), [artifacts, reviews]);
   const profileLinks = useMemo(() => buildProfileLinks(artifacts, reviews), [artifacts, reviews]);
   const aliases = useMemo(() => buildAliases(artifacts, reviews), [artifacts, reviews]);
   const breachRows = useMemo(() => buildBreachExposure(artifacts, reviews), [artifacts, reviews]);
@@ -1164,7 +1198,7 @@ export function CaseReport({
       {/* Analyst confidence vs strict auto-corroboration — reconciles the
           "0 confirmed" metric with the reasoned identity read so they don't read
           as a contradiction. Display only; no scoring changed. */}
-      <section className="mt-4 grid gap-3 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3 sm:grid-cols-2">
+      <section className="mt-4 grid gap-3 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3 sm:grid-cols-3">
         <div>
           <div className="text-micro font-mono tracking-normal text-muted-foreground">Analyst confidence</div>
           <div className="mt-1 font-display text-2xl font-semibold text-[hsl(var(--info))]">
@@ -1173,9 +1207,14 @@ export function CaseReport({
           <p className="mt-1 text-data leading-relaxed text-muted-foreground">Strongest identity-bearing artifact — reasoned read, not an auto-confirmation.</p>
         </div>
         <div>
-          <div className="text-micro font-mono tracking-normal text-muted-foreground">Auto-corroboration</div>
-          <div className="mt-1 font-display text-2xl font-semibold text-foreground">{buckets.confirmed.length} / {artifacts.length}</div>
-          <p className="mt-1 text-data leading-relaxed text-muted-foreground">Findings backed by ≥2 independent source classes. Breach-only / single-class evidence stays a lead by design.</p>
+          <div className="text-micro font-mono tracking-normal text-muted-foreground">Independently corroborated</div>
+          <div className="mt-1 font-display text-2xl font-semibold text-foreground">{corroboratedCount} / {artifacts.length}</div>
+          <p className="mt-1 text-data leading-relaxed text-muted-foreground">Findings backed by ≥2 independent source classes (same count as the Cross-source axis). Breach-only / single-class evidence stays a lead by design.</p>
+        </div>
+        <div>
+          <div className="text-micro font-mono tracking-normal text-muted-foreground">Analyst-confirmed</div>
+          <div className="mt-1 font-display text-2xl font-semibold text-foreground">{analystConfirmedCount}</div>
+          <p className="mt-1 text-data leading-relaxed text-muted-foreground">A human vouched for these. Separate from corroboration: confirming a single-source row does not make it corroborated.</p>
         </div>
       </section>
 
@@ -1200,6 +1239,9 @@ export function CaseReport({
                     </span>
                   )}
                 </span>
+                {f.note && (
+                  <span className="mt-0.5 text-micro font-mono text-muted-foreground">{f.note}</span>
+                )}
               </div>
             );
           })}

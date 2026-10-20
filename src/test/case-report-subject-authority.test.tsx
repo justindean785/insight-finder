@@ -84,7 +84,11 @@ describe("CaseReport subject surfaces honour quarantine + analyst rejection", ()
   it("control: without quarantine flags or verdicts, every surface picks up the namesake rows", () => {
     const c = renderCase(false);
     const text = c.textContent ?? "";
-    expect(profileCell(c, "Name")).toBe("Jordan Vale - Midvale Chamber CEO");
+    // The cell now also carries the review-state note: a single-source name is a
+    // candidate, not a plain fact (trust-labels). The value itself is unchanged.
+    const nameCell = profileCell(c, "Name") ?? "";
+    expect(nameCell.startsWith("Jordan Vale - Midvale Chamber CEO")).toBe(true);
+    expect(nameCell).toContain("needs review");
     expect(profileCell(c, "Aliases / handles")).toContain("jordanvael");
     expect(text).toMatch(/Analyst confidence85%/);
     // With the negatives excluded, only one breach row remains, so the note is

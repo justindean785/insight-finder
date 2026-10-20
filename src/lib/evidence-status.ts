@@ -113,7 +113,7 @@ const CLASS_LABEL: Record<string, string> = {
   independent_public: "public page",
 };
 
-function classLabel(cls: string): string {
+export function classLabel(cls: string): string {
   return CLASS_LABEL[cls] ?? cls.replace(/_/g, " ");
 }
 
@@ -137,7 +137,7 @@ function statusFromLabel(label: ConfLabel): EvidenceDisplayStatus {
  * `metadata.source_category` (written by `applyEvidenceCaps`); falls back to a
  * coarse split of the raw source strings for legacy rows that predate it.
  */
-function sourceClasses(a: Artifact): string[] {
+export function sourceClasses(a: Artifact): string[] {
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
   const sc = meta.source_category;
   if (Array.isArray(sc) && sc.length > 0) {
