@@ -20,7 +20,8 @@ import {
   groupForKind, GROUP_LABEL, GROUP_ORDER, type Group,
   extractSourceInfo, CACHE_LAYER_LABEL, CACHE_LAYER_CLASS,
 } from "@/lib/intel";
-import { evidenceStatus } from "@/lib/evidence-status";
+import { evidenceStatus, classLabel } from "@/lib/evidence-status";
+import { independentSourceClasses } from "@/lib/intel";
 import { ANALYST_ACTIONABLE_STATES, authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
 import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
 import {
@@ -1057,10 +1058,6 @@ function ArtifactDrawerInner({
 
           <div className="grid grid-cols-2 gap-2">
             <div className="rounded-lg border border-white/[0.08] bg-white/[0.035] p-3">
-              <div className="text-eyebrow uppercase tracking-wider text-muted-foreground">Primary source</div>
-              <div className="mt-1 min-w-0 font-mono text-sm break-all">{src.primary}</div>
-            </div>
-            <div className="rounded-lg border border-white/[0.08] bg-white/[0.035] p-3">
               <div className="text-eyebrow uppercase tracking-wider text-muted-foreground">First seen</div>
               <div className="mt-1 font-mono text-sm">{new Date(artifact.created_at).toLocaleString()}</div>
             </div>
@@ -1087,24 +1084,31 @@ function ArtifactDrawerInner({
           <Field label="Corroboration">
             {!src.hasMetadata ? (
               <div className="text-muted-foreground text-xs">source metadata unavailable</div>
-            ) : src.all.length === 0 ? (
-              <div className="text-muted-foreground text-xs">No source recorded.</div>
             ) : (
-              <ul className="space-y-1 rounded-lg border border-white/[0.08] bg-white/[0.025] p-2 text-xs">
-                {src.all.map((s) => (
-                  <li key={s} className="flex items-center justify-between font-mono">
-                    <span className="truncate">{s}</span>
-                    <span className="text-data text-muted-foreground shrink-0">
-                      {shownArtifact.effective != null ? `${shownArtifact.effective}%` : "—"}
-                    </span>
-                  </li>
-                ))}
+              <div className="space-y-1 rounded-lg border border-white/[0.08] bg-white/[0.025] p-2 text-xs">
+                {/* Independent source CLASSES only. Repeating one tool or its mirrors
+                    above is provenance, not support, and never raises confidence. */}
+                {(() => {
+                  const classes = independentSourceClasses(artifact);
+                  return classes.length >= 2 ? (
+                    <>
+                      <div className="text-data text-muted-foreground">{classes.length} independent source classes</div>
+                      <ul className="space-y-0.5 font-mono">
+                        {classes.map((c) => <li key={c}>{classLabel(c)}</li>)}
+                      </ul>
+                    </>
+                  ) : (
+                    <div className="text-data text-muted-foreground">
+                      Not independently corroborated — {classes.length === 1 ? `single source class (${classLabel(classes[0])})` : "no source class recorded"}.
+                    </div>
+                  );
+                })()}
                 {src.rawValue && src.rawValue !== artifact.value && (
-                  <li className="text-data text-muted-foreground">
+                  <div className="text-data text-muted-foreground">
                     raw: <span className="font-mono text-foreground break-all">{src.rawValue}</span>
-                  </li>
+                  </div>
                 )}
-              </ul>
+              </div>
             )}
           </Field>
           <Field label="Review">

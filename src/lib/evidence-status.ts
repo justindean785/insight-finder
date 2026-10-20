@@ -113,7 +113,7 @@ const CLASS_LABEL: Record<string, string> = {
   independent_public: "public page",
 };
 
-function classLabel(cls: string): string {
+export function classLabel(cls: string): string {
   return CLASS_LABEL[cls] ?? cls.replace(/_/g, " ");
 }
 

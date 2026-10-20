@@ -537,8 +537,11 @@ function artifactSourceClasses(a: Artifact): string[] {
  *  Non-corroborating classes (discovery / low-trust / single-AI-summary) are
  *  excluded, so census+nominatim (one `public_record` class) count once and
  *  exa+gemini (`ai_summary` only) count zero. */
+export function independentSourceClasses(a: Artifact): string[] {
+  return artifactSourceClasses(a).filter((c) => !NON_CORROBORATING_CLASSES.has(c));
+}
 function independentSourceClassCount(a: Artifact): number {
-  return artifactSourceClasses(a).filter((c) => !NON_CORROBORATING_CLASSES.has(c)).length;
+  return independentSourceClasses(a).length;
 }
 
 /**
