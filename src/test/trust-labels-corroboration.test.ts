@@ -68,3 +68,37 @@ describe("canonical eligibility (review follow-ups)", () => {
     expect(countAnalystConfirmed([minor, fp], reviews)).toBe(0);
   });
 });
+
+describe("excluded shapes never count as corroborated (matches bucket())", () => {
+  const two = { source_category: ["social", "public_record"] };
+  const shapes: Array<[string, Partial<Artifact>]> = [
+    ["quarantined", { metadata: { ...two, subject_unlinked: true } }],
+    ["status=contradicted", { metadata: { ...two, status: "contradicted" } }],
+    ["possible_collision", { metadata: { ...two, possible_collision: true } }],
+    ["status=excluded", { metadata: { ...two, status: "excluded" } }],
+    ["kind=excluded_collision", { kind: "excluded_collision", metadata: two }],
+    ["kind=contradiction", { kind: "contradiction", metadata: two }],
+  ];
+  for (const [name, over] of shapes) {
+    it(`${name} counts 0`, () => {
+      expect(countIndependentlyCorroborated([mk("x", over)])).toBe(0);
+      // Analyst-confirmed excludes cluster-ineligible rows (quarantine/collision); a
+      // merely contradicted row keeps its analyst verdict, which is a separate axis.
+      if (!/contradict/.test(name)) {
+        expect(countAnalystConfirmed([mk("x", over)], { x: "confirmed" } as never)).toBe(0);
+      }
+    });
+  }
+
+  it("panel count and Cross-source axis agree on a mixed set", () => {
+    const arts = [
+      mk("g1", { metadata: two }),
+      mk("g2", { metadata: two }),
+      ...shapes.map(([n, o], i) => mk(`bad${i}`, o)),
+    ];
+    const n = countIndependentlyCorroborated(arts);
+    expect(n).toBe(2);
+    const axis = buildAnalyticRadar(arts, "LOW").find((m) => m.label === "Cross-source")!;
+    expect(axis.detail).toContain(`${n}/${arts.length}`);
+  });
+});

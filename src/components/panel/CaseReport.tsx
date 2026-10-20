@@ -536,20 +536,26 @@ function artifactSourceClasses(a: Artifact): Set<string> {
 }
 
 /**
- * Findings backed by >=2 INDEPENDENT source classes. The ONE definition of
- * "corroborated": the Cross-source radar axis and the Auto-corroboration panel
+ * Findings backed by >=2 INDEPENDENT source classes, among rows bucket() would
+ * not exclude. The ONE definition of "corroborated": the Cross-source radar axis
+ * and the Independently-corroborated panel
  * both call it, so they can never disagree. Analyst review is deliberately not an
  * input - a human vouching for a single-source row does not make it corroborated.
  */
 export function countIndependentlyCorroborated(artifacts: Artifact[], reviews?: Reviews): number {
-  return artifacts.filter((a) => !isRejectedReview(revOf(reviews, a)) && independentSourceClasses(a).length >= 2).length;
+  // Eligibility is bucket()'s own: quarantined, collision, contradicted and
+  // rejected rows land in "excluded"/"contradiction" and are never corroboration.
+  return artifacts.filter((a) => {
+    const b = bucket(a, revOf(reviews, a));
+    return b !== "excluded" && b !== "contradiction" && independentSourceClasses(a).length >= 2;
+  }).length;
 }
 
 /** Rows an analyst has confirmed/keyed (or that carry metadata.reviewed). A separate axis from corroboration. */
 export function countAnalystConfirmed(artifacts: Artifact[], reviews?: Reviews): number {
   // Canonical predicate (labelForArtifact === "ATTESTED"): it already refuses
   // possible_minor, quarantined, conflict and false-positive rows.
-  return artifacts.filter((a) => isAnalystConfirmed(a, revOf(reviews, a))).length;
+  return artifacts.filter((a) => !isClusterIneligible(a) && isAnalystConfirmed(a, revOf(reviews, a))).length;
 }
 
 // DISPLAY-METRIC ONLY: these functions change what the radar axes COUNT. They do
@@ -754,7 +760,9 @@ function buildSubjectProfile(artifacts: Artifact[], reviews?: Reviews): ProfileF
       ? undefined
       : nameAttested
         ? "Analyst-confirmed · single-source"
-        : `Candidate — needs review · ${Math.max(nameClasses, 1)} source${Math.max(nameClasses, 1) === 1 ? "" : "s"}`;
+        : nameClasses === 0
+          ? "Candidate — needs review · no source class recorded"
+          : `Candidate — needs review · ${nameClasses} source class${nameClasses === 1 ? "" : "es"}`;
     out.push({ label: "Name", value: name.value, note: nameNote });
     const m = (name.metadata ?? {}) as Record<string, unknown>;
     const dob = m.dob ? String(m.dob) : "";
