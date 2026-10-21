@@ -62,13 +62,13 @@ function Sep() {
   return <span aria-hidden className="text-muted-foreground/40">·</span>;
 }
 
-/** Placeholder for a figure that has not been read yet — never a false "0". */
 /** "tool calls" (desktop) / "calls" (phone strip), singular at 1. */
 function toolCallsLabel(total: number, dense: boolean): string {
   const word = total === 1 ? "call" : "calls";
   return dense ? word : `tool ${word}`;
 }
 
+/** Placeholder for a figure that has not been read yet — never a false "0". */
 function FigureSkeleton({ width = "w-14" }: { width?: string }) {
   return <span aria-hidden className={cn("inline-block h-3 rounded-sm bg-white/[0.07] animate-pulse motion-reduce:animate-none", width)} />;
 }
