@@ -321,3 +321,20 @@ test.describe("case sheet → Evidence handoff", () => {
     await expect(drawer).toContainText(value);
   });
 });
+
+test.describe("overview decision queue", () => {
+  test("a reason shared by several cards is printed once, and each card keeps it for screen readers", async ({ page }) => {
+    await open(page, THREAD);
+    await page.getByRole("tab", { name: /Overview/ }).click();
+    const queue = page.locator("section", { hasText: "Needs a decision" }).first();
+    const shared = queue.getByTestId("shared-caveat");
+    await expect(shared).toHaveCount(1);
+    await expect(shared).toContainText(/rows below share this reason/);
+    const reason = (await shared.locator("p").innerText()).trim();
+    // The visible sentence appears once; each pointing card still carries it as sr-only text.
+    const pointers = queue.getByText("Shared reason, above");
+    const n = await pointers.count();
+    expect(n).toBeGreaterThanOrEqual(2);
+    await expect(queue.locator(".sr-only", { hasText: reason })).toHaveCount(n);
+  });
+});
