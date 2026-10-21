@@ -23,6 +23,7 @@
  * grounded strictly in artifacts already gathered.
  */
 import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN } from "./orchestrator-budget.ts";
+import { tierLadderDotted } from "./lib/prompt-tier-ladder.ts";
 
 // Reserve the final stretch of the wall-clock budget for a guaranteed synthesis+record
 // step. Once elapsed enters this window the orchestrator stops issuing new lookups and
@@ -589,9 +590,10 @@ export function shouldDeferFinalizeForCorrelate(
  * structured artifacts feed). Integrity-neutral: changes only the free-text channel;
  * record_artifacts / evidence provenance are untouched.
  *
- * Tier thresholds MUST mirror tierFor() in lib/cluster.ts (≥90 Confirmed, ≥75
- * Likely, ≥50 Possible, ≥30 Weak, else Unverified) so the words shown in the live
- * cycle stream match the structured tiers the clusterer stamps.
+ * Tier thresholds come from lib/prompt-tier-ladder.ts, i.e. CONFIDENCE_TIERS — the
+ * ladder the analyst's badges use (src/lib/confidence-tier.ts). They used to mirror
+ * lib/cluster.ts tierFor() (50/30), which disagreed with the badge beside the prose
+ * on ~24% of rows. P1, 2026-10-21; cluster.ts itself is unchanged.
  */
 export function buildPerCycleCompactDirective(): string {
   return [
@@ -603,7 +605,7 @@ export function buildPerCycleCompactDirective(): string {
     "For each new finding, emit exactly ONE short line:",
     "  <finding> — <selector/value> — <Tier>",
     "where <Tier> is derived from the finding's 0-100 confidence using these exact thresholds:",
-    "  ≥90 Confirmed · ≥75 Likely · ≥50 Possible · ≥30 Weak · else Unverified.",
+    `  ${tierLadderDotted()}`,
     "If this cycle found nothing new, say so in one short line and pivot. Keep the whole message tight.",
     "You will be told explicitly when to write the full closing report — do NOT pre-empt it here.",
   ].join("\n");
