@@ -13,6 +13,8 @@ import { timeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { fmtWallClock } from "@/lib/duration";
 import { buildDecisionQueue } from "@/lib/decision-queue";
+import { RunCockpit } from "@/components/workspace/RunCockpit";
+import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
 import {
   Unlink, AlertTriangle, XCircle, ShieldCheck, Timer,
   DatabaseZap, Activity, ArrowRight, type LucideIcon,
@@ -151,6 +153,8 @@ export function OverviewTab({ threadId }: { threadId: string }) {
     degraded: tools?.degraded ?? 0,
   }), [tools]);
   const review = useReviewStates(threadId);
+  // "Waiting on you" is the Evidence badge's own number, from the same model.
+  const sheet = useCaseSheetModel(threadId);
 
   // `tallyAuthority` over the snapshot's own rows, computed once by the provider.
   const tally = snapshot?.authority ?? NO_TALLY;
@@ -311,6 +315,19 @@ export function OverviewTab({ threadId }: { threadId: string }) {
             their shares — so the bank was saying the same thing three times on
             one screen. What is left is the other axis: what the run itself
             cost, which appears nowhere else as a figure. */}
+        {/* ── The run itself: state, elapsed, last action, why it stopped ──
+            Read-only; assembled from the same snapshot (lib/run-cockpit.ts). */}
+        <RunCockpit
+          input={{
+            run: snapshot.run,
+            tools: snapshot.tools,
+            spendText: snapshot.spend.text,
+            pendingDecisions: sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null,
+          }}
+          onOpenDecisions={() => jump("artifacts")}
+          onOpenTools={() => jump("issues")}
+        />
+
         <RunStrip
           calls={activity.persistedTotal}
           failed={activity.failed}
