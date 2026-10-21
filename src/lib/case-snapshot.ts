@@ -143,8 +143,12 @@ export function pickEvidenceCount(
 export function describeEvidence(
   integrity: { total: number } | null,
   artifactCount: number,
-): { text: string; unledgered: number; hint: string | undefined } {
-  if (!integrity) return { text: `${artifactCount} evidence`, unledgered: 0, hint: undefined };
+): { text: string; label: string; shortLabel: string; unledgered: number; hint: string | undefined } {
+  // `label` is the visible word beside the number (`shortLabel` on the phone
+  // strip). It names WHAT is counted, so "64 evidence logged" can no longer be
+  // read as 64 artifacts: the chain-of-custody scope used to live only in the
+  // tooltip (2026-10-19 handoff, trust labels sub-item 4).
+  if (!integrity) return { text: `${artifactCount} evidence`, label: "evidence", shortLabel: "evidence", unledgered: 0, hint: undefined };
   const unledgered = Math.max(0, artifactCount - integrity.total);
   if (unledgered === 0) {
     // Always explain the scope: "evidence" here is chain-of-custody entries across every run of the
@@ -152,10 +156,13 @@ export function describeEvidence(
     const hint = integrity.total > artifactCount
       ? `${integrity.total} chain-verified evidence rows across ${artifactCount} deduped artifact${artifactCount === 1 ? "" : "s"} — one artifact can carry more than one evidence-log entry.`
       : `${integrity.total} chain-verified evidence-log entries across all runs of this case. This counts custody entries, not the artifacts listed in the Evidence tab.`;
-    return { text: `${integrity.total} evidence`, unledgered: 0, hint };
+    return { text: `${integrity.total} evidence`, label: "evidence logged", shortLabel: "logged", unledgered: 0, hint };
   }
+  // The text already names both numbers; a trailing label would mislabel one of them.
   return {
     text: `${artifactCount} recorded · ${integrity.total} chain-verified`,
+    label: "",
+    shortLabel: "",
     unledgered,
     hint: `${unledgered} recorded artifact${unledgered === 1 ? " has" : "s have"} no chain-of-custody entry`,
   };
@@ -218,6 +225,10 @@ export interface CaseSnapshotCore {
     /** `evidence_log` total, once the integrity probe has answered. */
     ledger: number | null;
     text: string;
+    /** The visible word beside the figure, naming what is counted; "" when `text` is self-describing. */
+    label: string;
+    /** `label` for the phone strip. */
+    shortLabel: string;
     hint: string | undefined;
     unledgered: number;
     available: boolean;
@@ -310,6 +321,8 @@ export function buildCaseSnapshot(input: CaseSnapshotInput): CaseSnapshotCore {
       artifacts: artifactCount,
       ledger: input.integrity ? input.integrity.total : null,
       text: ev.text,
+      label: ev.label,
+      shortLabel: ev.shortLabel,
       hint: ev.hint,
       unledgered: ev.unledgered,
       available: !input.artifacts.error || artifactCount > 0,
