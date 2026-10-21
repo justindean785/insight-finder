@@ -63,6 +63,12 @@ function Sep() {
 }
 
 /** Placeholder for a figure that has not been read yet — never a false "0". */
+/** "tool calls" (desktop) / "calls" (phone strip), singular at 1. */
+function toolCallsLabel(total: number, dense: boolean): string {
+  const word = total === 1 ? "call" : "calls";
+  return dense ? word : `tool ${word}`;
+}
+
 function FigureSkeleton({ width = "w-14" }: { width?: string }) {
   return <span aria-hidden className={cn("inline-block h-3 rounded-sm bg-white/[0.07] animate-pulse motion-reduce:animate-none", width)} />;
 }
@@ -142,7 +148,9 @@ export function CaseFigures({
       <Figure value={evidence.available ? evidence.text.replace(/ evidence$/, "") : "—"} label={evidence.available ? (dense ? evidence.shortLabel : evidence.label) : ""} hint={evidence.hint} />
       <span className={unit}>
         <Sep />
-        <Figure value={tools.available ? tools.total : "—"} label={tools.total === 1 ? "tool" : "tools"} hint={toolHint} />
+        {/* CALLS, not distinct tools: the Report's "N tools with artifacts" is a
+            different population, and both used to read "tools". */}
+        <Figure value={tools.available ? tools.total : "—"} label={toolCallsLabel(tools.total, dense)} hint={toolHint} />
       </span>
       {authority.verified > 0 && (
         <span className={unit}>

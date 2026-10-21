@@ -158,7 +158,7 @@ async function flush(times = 6) {
 
 const headerTools = () => {
   const header = screen.getByRole("region", { name: "Case summary" });
-  return within(header).getByText(/^tools?$/).previousElementSibling?.textContent;
+  return within(header).getByText(/^(tool )?calls?$/).previousElementSibling?.textContent;
 };
 const badgeTools = () => screen.getByRole("tab", { name: /Tools/ }).textContent?.replace(/\D/g, "");
 const panelTools = () => within(screen.getByText("Tool calls").closest("div")!.parentElement!).getByText(/^\d+$/).textContent;
@@ -195,7 +195,7 @@ describe("CaseSnapshotProvider — one version on every surface", () => {
     expect(screen.getAllByText("Syncing case…").length).toBeGreaterThan(0);
     // No authoritative-looking zero anywhere while the ledger is unread.
     expect(screen.queryByText(/^0$/)).toBeNull();
-    expect(document.body.textContent ?? "").not.toMatch(/\b0 tools?\b|Tool calls\s*0/);
+    expect(document.body.textContent ?? "").not.toMatch(/\b0 (tool )?calls?\b|\b0 tools?\b|Tool calls\s*0/);
 
     await act(async () => { release(); });
     await flush();

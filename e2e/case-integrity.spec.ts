@@ -35,13 +35,13 @@ test.describe("canonical case snapshot", () => {
   test("1 · initial syncing: skeletons, never a false 0", async ({ page }) => {
     await open(page, `${THREAD}?scenario=syncing`, { waitHydrated: false });
     await expect(page.getByText("Syncing case…").first()).toBeVisible();
-    await expect(page.locator("body")).not.toContainText(/\b0 tools?\b/);
+    await expect(page.locator("body")).not.toContainText(/\b0 (tool )?calls?\b|\b0 tools?\b/);
   });
 
   test("header tool count = Tools tab badge = Tools panel count", async ({ page }) => {
     await open(page, THREAD);
     const header = page.getByRole("region", { name: "Case summary" });
-    const headerTools = await header.getByText(/^tools?$/).locator("xpath=preceding-sibling::*[1]").textContent();
+    const headerTools = await header.getByText(/^(tool )?calls?$/).locator("xpath=preceding-sibling::*[1]").textContent();
     const badge = (await page.getByRole("tab", { name: /Tools/ }).textContent())?.replace(/\D/g, "");
     await page.getByRole("tab", { name: /Tools/ }).click();
     // MetricCard: the label sits in a row, the figure in the next block.
