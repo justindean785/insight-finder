@@ -321,3 +321,17 @@ test.describe("case sheet → Evidence handoff", () => {
     await expect(drawer).toContainText(value);
   });
 });
+
+test.describe("chat cycle cards", () => {
+  test("a failed call stays visible: counted on the cycle row and listed when expanded", async ({ page }) => {
+    await open(page, THREAD);
+    const cycle = page.locator('[data-speaker="tool"]').filter({ hasText: /1 failed/ }).first();
+    await expect(cycle).toBeVisible();
+    await cycle.getByRole("button", { expanded: false }).first().click();
+    const failedCall = cycle.locator('[data-failed-tool="true"]');
+    await expect(failedCall).toHaveCount(1);
+    await expect(failedCall).toContainText("Firecrawl Scrape");
+    await failedCall.getByRole("button").first().click();
+    await expect(failedCall).toContainText(/timeout after 15000ms/);
+  });
+});
