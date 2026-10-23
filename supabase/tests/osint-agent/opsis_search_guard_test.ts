@@ -10,13 +10,17 @@ import { wrapToolsWithCache } from "../../functions/osint-agent/cache.ts";
 import { clearRuntime } from "../../functions/osint-agent/runtime-policy.ts";
 import * as circuit from "../../functions/osint-agent/circuit.ts";
 import { OPSIS_POLL_DEADLINE_MS } from "../../functions/osint-agent/lib/opsis.ts";
-import { OPSIS_COLLECT_BUDGET_MS, requiredCompletionMs } from "../../functions/osint-agent/orchestrator-finalize.ts";
+import { OPSIS_COLLECT_BUDGET_MS, requiredCompletionMs, type OpsisPendingRun } from "../../functions/osint-agent/orchestrator-finalize.ts";
+import { classifyToolOutcome } from "../../functions/osint-agent/tool-outcome.ts";
 import {
   MAX_UNCOLLECTED_OPSIS_RUNS,
   OPSIS_GUARD_NOTE_CAP,
   OPSIS_GUARD_NOTE_DEADLINE,
+  OPSIS_GUARD_NOTE_SAME_SELECTOR,
+  OPSIS_GUARD_SKIP_PREFIX,
   clearOpsisGuardThread,
   decideOpsisSearch,
+  findPendingForSelector,
   noteOpsisResultsOutcome,
   noteOpsisSearchOutcome,
   opsisSearchGuardDisabled,
@@ -44,7 +48,27 @@ Deno.test("decision: cap, deadline, allow — and the cap is checked first", () 
   const cap = decideOpsisSearch({ uncollected: MAX_UNCOLLECTED_OPSIS_RUNS, remainingMs: needed * 10 });
   assert(!cap.allow && cap.reason === "uncollected_cap" && cap.note === OPSIS_GUARD_NOTE_CAP && cap.uncollected === MAX_UNCOLLECTED_OPSIS_RUNS);
   const both = decideOpsisSearch({ uncollected: 5, remainingMs: 0 });
-  assert(!both.allow && both.reason === "uncollected_cap", "the cap is the first reason named");
+  assert(!both.allow && both.reason === "uncollected_cap", "the cap is named before the deadline");
+  const run: OpsisPendingRun = { run_id: "p1", kind: "username", value: "x" };
+  const same = decideOpsisSearch({ uncollected: 5, remainingMs: 0, sameSelectorRun: run });
+  assert(!same.allow && same.reason === "pending_same_selector" && same.note === OPSIS_GUARD_NOTE_SAME_SELECTOR, "a repeat of an un-read run is named before everything");
+  assertEquals(same.pending_run, run);
+  assertEquals(decideOpsisSearch({ uncollected: 0, remainingMs: needed, sameSelectorRun: null }), { allow: true });
+});
+
+Deno.test("selector match is by kind + value, case- and whitespace-insensitive; a different kind is a different search", () => {
+  const pending: OpsisPendingRun[] = [{ run_id: "a", kind: "email", value: "Who@Example.test" }, { run_id: "b", kind: "username", value: "who" }];
+  assertEquals(findPendingForSelector(pending, "EMAIL", "  who@example.test ")?.run_id, "a");
+  assertEquals(findPendingForSelector(pending, "username", "WHO")?.run_id, "b");
+  assertEquals(findPendingForSelector(pending, "domain", "who"), null);
+  assertEquals(findPendingForSelector(pending, "", "who"), null);
+});
+
+Deno.test("a refusal's error text classifies as SKIPPED, never failed — it must not count against Opsis's health", () => {
+  for (const reason of ["pending_same_selector", "uncollected_cap", "deadline"]) {
+    assertEquals(classifyToolOutcome(`${OPSIS_GUARD_SKIP_PREFIX} ${reason}`, null), "skipped", reason);
+  }
+  assertEquals(classifyToolOutcome("opsis search start request failed", null), "failed", "a real Opsis failure still reads as one");
 });
 
 Deno.test("decision FAILS CLOSED on an unreadable clock; a disabled guard admits everything", () => {
@@ -65,19 +89,21 @@ Deno.test("decision FAILS CLOSED on an unreadable clock; a disabled guard admits
 Deno.test("registry: partial searches await a read; complete/failed searches and any results read retire them; history ids union by id", () => {
   const t = "guard-registry-thread";
   clearOpsisGuardThread(t);
-  noteOpsisSearchOutcome(t, { ok: true, partial: true, run_id: "a" });
-  noteOpsisSearchOutcome(t, { ok: true, partial: true, run_id: "b" });
+  const ids = (x: OpsisPendingRun[]) => x.map((r) => r.run_id);
+  noteOpsisSearchOutcome(t, { ok: true, partial: true, run_id: "a", kind: "username", value: "A_Handle" });
+  noteOpsisSearchOutcome(t, { ok: true, partial: true, run_id: "b" }, { kind: "email", value: "b@example.test" }); // selector from the input when the body lacks it
   noteOpsisSearchOutcome(t, { ok: true, complete: true, run_id: "c" });
   noteOpsisSearchOutcome(t, { ok: false, run_status: "failed", run_id: "d" });
   noteOpsisSearchOutcome(t, { ok: false, skipped: true }); // no run id: nothing to track
-  assertEquals(uncollectedOpsisRuns(t), ["a", "b"]);
+  assertEquals(uncollectedOpsisRuns(t), [{ run_id: "a", kind: "username", value: "A_Handle" }, { run_id: "b", kind: "email", value: "b@example.test" }]);
   noteOpsisResultsOutcome(t, { ok: true, partial: true, run_id: "a" }); // a read, even partial, retires the run
-  assertEquals(uncollectedOpsisRuns(t), ["b"]);
+  assertEquals(ids(uncollectedOpsisRuns(t)), ["b"]);
   noteOpsisResultsOutcome(t, { ok: false, error: "x" }, "b"); // a failed read names the run it asked for
   assertEquals(uncollectedOpsisRuns(t), []);
-  // The SDK envelope shape and ids replayed from history.
-  noteOpsisSearchOutcome(t, { type: "json", value: { ok: true, partial: true, run_id: "e" } });
-  assertEquals(uncollectedOpsisRuns(t, ["e", "f", " ", "f"]), ["e", "f"]);
+  // The SDK envelope shape, and runs replayed from history (history wins on a shared id; blanks dropped).
+  noteOpsisSearchOutcome(t, { type: "json", value: { ok: true, partial: true, run_id: "e", kind: "domain", value: "e.example" } });
+  const replayed: OpsisPendingRun[] = [{ run_id: "f", kind: "username", value: "f" }, { run_id: " ", kind: "", value: "" }, { run_id: "f", kind: "username", value: "f" }];
+  assertEquals(ids(uncollectedOpsisRuns(t, replayed)), ["e", "f"]);
   clearOpsisGuardThread(t);
   assertEquals(uncollectedOpsisRuns(t), []);
 });
@@ -109,13 +135,19 @@ function chain(v: { data: unknown; error: unknown }): Record<string, unknown> {
   n.upsert = () => Promise.resolve({ error: null });
   return n;
 }
+const USAGE_ROWS: Array<Record<string, unknown>> = [];
 function db(): SupabaseClient {
   const inert = chain({ data: [], error: null });
-  return { from: () => inert, rpc: () => Promise.resolve({ data: null, error: null }) } as unknown as SupabaseClient;
+  const usage = chain({ data: [], error: null });
+  usage.insert = (rows: Record<string, unknown> | Record<string, unknown>[]) => {
+    USAGE_ROWS.push(...(Array.isArray(rows) ? rows : [rows]));
+    return Promise.resolve({ error: null });
+  };
+  return { from: (t: string) => (t === "tool_usage_log" ? usage : inert), rpc: () => Promise.resolve({ data: null, error: null }) } as unknown as SupabaseClient;
 }
 
 let seq = 0;
-function harness(opts: { remainingMs: () => number; replayed?: () => string[]; partial?: boolean }) {
+function harness(opts: { remainingMs: () => number; replayed?: () => OpsisPendingRun[]; partial?: boolean }) {
   seq += 1;
   const investigationId = `44444444-5555-4666-8777-${String(seq).padStart(12, "0")}`;
   clearRuntime(investigationId);
@@ -145,7 +177,7 @@ function harness(opts: { remainingMs: () => number; replayed?: () => string[]; p
     investigationId,
     userId: "guard-user",
     supabase: db(),
-    pendingOpsisRunIds: opts.replayed ?? (() => []),
+    pendingOpsisRuns: opts.replayed ?? (() => []),
     remainingRunMs: opts.remainingMs,
   });
   const exec = (name: string) => (wrapped[name] as unknown as Exec).execute;
@@ -189,11 +221,51 @@ Deno.test("wrapper: the third un-read search in one step is refused with the pen
 });
 
 Deno.test("wrapper: runs replayed from earlier steps' history count too (the model cannot forget them)", async () => {
-  const h = harness({ remainingMs: () => opsisSearchNeededMs() * 2, replayed: () => ["hist-1", "hist-2"] });
+  const h = harness({
+    remainingMs: () => opsisSearchNeededMs() * 2,
+    replayed: () => [{ run_id: "hist-1", kind: "username", value: "h1" }, { run_id: "hist-2", kind: "username", value: "h2" }],
+  });
   const out = await h.exec("opsis_search")({ kind: "email", value: "guard.person@example.test" }, o());
   assertEquals(h.calls.search, 0);
   assertEquals(out.opsis_guard, "uncollected_cap");
   assertEquals(out.pending_run_ids, ["hist-1", "hist-2"]);
+});
+
+Deno.test("wrapper: CARRY-OVER — a search for a selector whose run from an EARLIER TURN is still un-read is refused free and pointed at that run; reading it is allowed; a different selector still runs", async () => {
+  // The earlier turn's run reaches this request only through the replayed history (a fresh
+  // isolate has no registry), which is exactly what index.ts hands the wrapper per step.
+  const h = harness({
+    remainingMs: () => opsisSearchNeededMs() * 2,
+    replayed: () => [{ run_id: "turn1-run", kind: "username", value: "Carry_Over" }],
+  });
+  const repeat = await h.exec("opsis_search")({ kind: "username", value: "carry_over" }, o());
+  assertEquals(h.calls.search, 0, "no second credit for the same selector");
+  assertEquals(repeat.opsis_guard, "pending_same_selector");
+  assertEquals(repeat.pending_run_id, "turn1-run");
+  assertEquals(repeat.read_with, { tool: "opsis_results", run_id: "turn1-run", kind: "username", value: "Carry_Over" });
+  assertEquals(repeat.reason, OPSIS_GUARD_NOTE_SAME_SELECTOR);
+  const read = await h.exec("opsis_results")({ kind: "username", value: "Carry_Over", run_id: "turn1-run" }, o());
+  assertEquals(h.calls.results, 1);
+  assertEquals(read.ok, true);
+  const other = await h.exec("opsis_search")({ kind: "username", value: "someone_new" }, o());
+  assertEquals(h.calls.search, 1, "one un-read run leaves room under the cap for a NEW selector");
+  assertEquals(other.partial, true);
+});
+
+Deno.test("wrapper: the refusal's tool_usage_log row is SKIPPED at $0 with the reason — never a failed Opsis call", async () => {
+  USAGE_ROWS.length = 0;
+  const h = harness({ remainingMs: () => 0 });
+  await h.exec("opsis_search")({ kind: "username", value: "logged_handle" }, o());
+  const row = USAGE_ROWS.find((r) => r.tool_name === "opsis_search");
+  assert(row, "a usage row must be written for the refusal");
+  assertEquals(row!.outcome, "skipped");
+  assertEquals(row!.charged_micro_usd, 0);
+  assertEquals(row!.cost_micro_usd, 0);
+  assertEquals(row!.ok, true, "okStored: not a hard failure");
+  assertStringIncludes(String(row!.error_msg), `${OPSIS_GUARD_SKIP_PREFIX} deadline`);
+  const runtime = ((row!.input_json as Record<string, unknown>)?.runtime ?? {}) as Record<string, unknown>;
+  assertEquals(runtime.rejection_source, "opsis_guard");
+  assertEquals(runtime.rejection_reason, "opsis_deadline");
 });
 
 Deno.test("wrapper: a COMPLETED search needs no read, so it never counts toward the cap", async () => {
@@ -227,7 +299,7 @@ Deno.test("wrapper: with NO clock wired only the cap applies (a wired clock that
 Deno.test("wrapper: kill switch OPSIS_SEARCH_GUARD_DISABLED restores the legacy admission", async () => {
   Deno.env.set(KILL, "true");
   try {
-    const h = harness({ remainingMs: () => 0, replayed: () => ["a", "b", "c"] });
+    const h = harness({ remainingMs: () => 0, replayed: () => [{ run_id: "a", kind: "username", value: "legacy_handle" }, { run_id: "b", kind: "username", value: "b" }] });
     const out = await h.exec("opsis_search")({ kind: "username", value: "legacy_handle" }, o());
     assertEquals(h.calls.search, 1);
     assertEquals(out.partial, true);
@@ -264,12 +336,14 @@ Deno.test("wiring: the guard sits after cache hits and BEFORE the paid slot; ind
   assert(guardAt < cache.indexOf("// ---- Per-run tool-call cap (graceful) ----"), "guard before the run cap");
   assert(guardAt < cache.indexOf("reserveToolCall(ctx.toolCallBudget"), "guard before the paid slot is reserved");
   assert(guardAt > cache.lastIndexOf("isCacheableToolResult(output)"), "guard after the cache-hit reads, so a completed run still replays free");
-  assert(cache.includes('if (name === "opsis_search") noteOpsisSearchOutcome(ctx.investigationId, result);'));
+  assert(cache.includes('if (name === "opsis_search") noteOpsisSearchOutcome(ctx.investigationId, result, input as { kind?: unknown; value?: unknown });'));
   assert(cache.includes('if (name === "opsis_results") noteOpsisResultsOutcome(ctx.investigationId, result'));
   const index = await Deno.readTextFile(new URL("../../functions/osint-agent/index.ts", import.meta.url));
-  assert(index.includes("pendingOpsisRunIds: () => latestPendingOpsisRunIds,"));
+  assert(index.includes("pendingOpsisRuns: () => latestPendingOpsisRuns,"));
   assert(index.includes("remainingRunMs: () => ORCHESTRATOR_WALL_CLOCK_MS - (Date.now() - runStartedAt),"));
-  assert(index.includes("latestPendingOpsisRunIds = pendingOpsisRuns(stepMessages as Array<{ content?: unknown }>).map((r) => r.run_id);"));
+  assert(index.includes("latestPendingOpsisRuns = pendingOpsisRuns(stepMessages as Array<{ content?: unknown }>);"));
+  const outcome = await Deno.readTextFile(new URL("../../functions/osint-agent/tool-outcome.ts", import.meta.url));
+  assert(outcome.includes("opsis search guard:"), "SKIP_RE names the refusal prefix");
   const health = await Deno.readTextFile(new URL("../../functions/osint-agent/health-handler.ts", import.meta.url));
   assert(health.includes("r.checks.opsis_search_guard = opsisSearchGuardSelfTest();"));
   const registry = await Deno.readTextFile(new URL("../../functions/osint-agent/tool-registry.ts", import.meta.url));
