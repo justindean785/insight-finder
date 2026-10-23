@@ -6378,7 +6378,21 @@ export function buildTools(ctx: ToolContext) {
         metadata: z.record(z.unknown()).optional(),
       })),
       execute: async ({ classification, kind, value, source, source_url, confidence, notes, metadata }) => {
-        const meta = { ...(metadata ?? {}), ...(notes ? { notes } : {}) };
+        // A1 (defense in depth): the same boundary as record_artifacts / record_artifact. This writes the
+        // model's metadata to evidence_log._metadata (and its JSON into the content snapshot); nothing reads
+        // the reserved keys there today, but a custody row is the one place a forged "reviewed" would read
+        // as an attestation if a reader ever appeared. Stripped before the snapshot is built; disclosed by
+        // key NAME on the row, in the log and in this result — never the values.
+        const authority = stripAnalystAuthorityKeys(metadata);
+        if (authority.stripped.length > 0) {
+          console.warn(JSON.stringify({
+            event: "analyst_authority_stripped",
+            thread_id: threadId,
+            tool: "record_evidence",
+            keys: authority.stripped,
+          }));
+        }
+        const meta = { ...(authority.metadata ?? {}), ...(notes ? { notes } : {}) };
         const { data, error } = await supabase.rpc("append_evidence", {
           _thread_id: threadId,
           _artifact_id: null,
@@ -6410,7 +6424,16 @@ export function buildTools(ctx: ToolContext) {
             archived = { sha256: arch.sha256, bytes: arch.bytes };
           }
         }
-        return { ok: true, id: row?.id, seq: row?.seq, chain_hash: row?.chain_hash, ...(archived ? { archived } : {}) };
+        return {
+          ok: true,
+          id: row?.id,
+          seq: row?.seq,
+          chain_hash: row?.chain_hash,
+          ...(archived ? { archived } : {}),
+          ...(authority.stripped.length > 0
+            ? { analyst_authority_stripped: authority.stripped, analyst_authority_note: ANALYST_AUTHORITY_NOTE }
+            : {}),
+        };
       },
     }),
   };
