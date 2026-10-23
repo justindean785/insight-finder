@@ -97,7 +97,7 @@ test.describe("canonical case snapshot", () => {
     await open(page, `${THREAD}?scenario=running-elsewhere`);
     const live = page.getByRole("region", { name: "Live from the server" });
     await expect(live).toBeVisible();
-    await expect(live).toContainText("3 calls recorded");
+    await expect(live).toContainText("3 calls this run");
     await expect(page.getByText("Earlier run: the breach sweep found two reused handles and")).toBeVisible();
     await expect(page.getByText("Interrupted response.")).toHaveCount(1);
   });
