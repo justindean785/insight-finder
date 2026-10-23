@@ -31,6 +31,7 @@
  */
 
 import { isSubjectUnlinked } from "./quarantine.ts";
+import { kindAliases } from "./kind-alias.ts";
 
 /** The refusal marker, on the payload and in the log, so it is greppable. */
 export const DISPATCH_REFUSAL_MARKER = "subject_unlinked_dispatch_boundary";
@@ -179,6 +180,10 @@ export type QuarantineRow = {
 export function buildRefusedKeys(
   rows: readonly QuarantineRow[] | null | undefined,
   normalize: (kind: string, raw: unknown) => string,
+  // Also key each row under its canonical kind (kind-alias.ts), as the rejection
+  // keys already are: auto-persist writes handles as `handle` / `social_account`,
+  // but a dispatch asks for `username`. Opt-in so the caller's kill switch holds.
+  opts: { kindAliases?: boolean } = {},
 ): Set<string> {
   const out = new Set<string>();
   for (const row of rows ?? []) {
@@ -188,8 +193,10 @@ export function buildRefusedKeys(
     const kind = typeof row.kind === "string" ? row.kind : "";
     const raw = typeof row.value === "string" ? row.value : "";
     if (!kind || !raw) continue;
-    const norm = normalize(kind, raw);
-    if (norm) out.add(dispatchKey(kind, norm));
+    for (const t of opts.kindAliases ? kindAliases(kind, raw) : [kind]) {
+      const norm = normalize(t, raw);
+      if (norm) out.add(dispatchKey(t, norm));
+    }
   }
   return out;
 }
@@ -206,7 +213,7 @@ export function reasonForKey(
     const kind = typeof row.kind === "string" ? row.kind : "";
     const raw = typeof row.value === "string" ? row.value : "";
     if (!kind || !raw) continue;
-    if (dispatchKey(kind, normalize(kind, raw)) !== want) continue;
+    if (!kindAliases(kind, raw).some((t) => dispatchKey(t, normalize(t, raw)) === want)) continue;
     const r = (row.metadata as Record<string, unknown> | null)?.subject_unlinked_reason;
     if (typeof r === "string" && r.trim()) return r.trim();
   }
@@ -296,6 +303,7 @@ export type RefusedArtifactRead = {
 export async function loadRefusedArtifacts(
   read: RefusedArtifactReader,
   normalize: (kind: string, raw: unknown) => string,
+  opts: { kindAliases?: boolean } = {},
 ): Promise<RefusedArtifactRead> {
   const rows: QuarantineRow[] = [];
   let complete = false;
@@ -332,5 +340,5 @@ export async function loadRefusedArtifacts(
   if (!complete && reason === null) {
     reason = `scan ceiling ${REFUSED_ARTIFACT_SCAN_MAX} reached`;
   }
-  return { keys: buildRefusedKeys(rows, normalize), rows, complete, scanned: rows.length, reason };
+  return { keys: buildRefusedKeys(rows, normalize, opts), rows, complete, scanned: rows.length, reason };
 }

@@ -22,6 +22,7 @@ import * as circuit from "./circuit.ts";
 // (`dispatch-rejection.ts` + `loadReviewsForThread`) is a SEPARATE boundary that
 // runs alongside the quarantine read, not a competing implementation of it.
 import { dispatchTypeCandidates, isDispatchRefused, loadRefusedArtifacts, quarantineRefusal, reasonForKey } from "./lib/dispatch-quarantine.ts";
+import { dispatchSelectorAliasesDisabled, dispatchSelectorCandidates } from "./lib/dispatch-selector.ts";
 import { unprovenLinkageMarker, UNPROVEN_LINKAGE_KEY, type UnprovenLinkage } from "./lib/unproven-linkage.ts";
 import { promotionQuarantineEnabled } from "./env.ts";
 import type { QuarantineRow } from "./lib/dispatch-quarantine.ts";
@@ -856,6 +857,8 @@ export function wrapToolsWithCache(
             }
           },
           circuit.normalizeSelector,
+          // Key `handle` / `social_account` rows under `username` too (kind-alias.ts).
+          { kindAliases: !dispatchSelectorAliasesDisabled() },
         );
         if (!res.complete) {
           // DO NOT CACHE AN INCOMPLETE READ. The keys in hand are still sound —
@@ -1167,28 +1170,59 @@ export function wrapToolsWithCache(
           // Candidates, not the computed type alone — the paid breach tools take
           // `{ type, value }` and detectSelectorType does not read `type`.
           const candidateTypes = dispatchTypeCandidates(selectorType, inp);
-          if (isDispatchRefused(refusedKeys, candidateTypes, sel)) {
-            const declared = candidateTypes.find((t) => refusedKeys.has(`${t}:${sel}`)) ?? selectorType;
-            const why = reasonForKey(refusedRows, circuit.normalizeSelector, declared, sel);
+          // Tools whose selector lives in a field the central detector does not
+          // read (Serus identifierValue, Indicia query, CordCat discord_id) left
+          // `sel` empty, and both checks below fail open on an empty selector.
+          // Their candidates are consulted only then, and only here: cache and
+          // circuit keys still use `sel`. Kill switch DISPATCH_SELECTOR_ALIASES_DISABLED.
+          const govChecks: Array<{ types: string[]; sel: string }> = [{ types: candidateTypes, sel }];
+          if (!sel) {
+            for (const c of dispatchSelectorCandidates(inp, name)) {
+              const norm = circuit.normalizeSelector(c.type, c.value);
+              if (norm) govChecks.push({ types: [c.type], sel: norm });
+            }
+          }
+          // A stored phone is canonical E.164 (+1…, validation.ts), but a call may
+          // spell it 5550100000 or 15550100000, and normalizeSelector("phone") keeps
+          // a leading "+": one number, different keys. Check every spelling the
+          // stored form could take — the expansion the cross-case set already uses.
+          // Same kill switch.
+          if (!dispatchSelectorAliasesDisabled()) {
+            for (const c of [...govChecks]) {
+              for (const t of c.types) {
+                const spellings = dispatchSpellings(t, c.sel);
+                if (spellings.length < 2) continue; // not a phone: nothing to expand
+                for (const spelling of spellings) {
+                  const norm = circuit.normalizeSelector(t, spelling);
+                  if (norm && norm !== c.sel) govChecks.push({ types: [t], sel: norm });
+                }
+              }
+            }
+          }
+          const refusedHit = govChecks.find((c) => isDispatchRefused(refusedKeys, c.types, c.sel));
+          if (refusedHit) {
+            const hitSel = refusedHit.sel;
+            const declared = refusedHit.types.find((t) => refusedKeys.has(`${t}:${hitSel}`)) ?? selectorType;
+            const why = reasonForKey(refusedRows, circuit.normalizeSelector, declared, hitSel);
             if (!promotionQuarantineEnabled()) {
               // KILL SWITCH. PROMOTION_QUARANTINE_DISABLED=true restores the
               // pre-2026-09-12 dispatch block with no deploy. Kept because this
               // reverses #433/#436/#448/#518/#519 and its blast radius is every
               // paid tool in the registry; a bad outcome must be revertible in
               // seconds, not in a mirror-sync-and-deploy cycle.
-              const refusal = quarantineRefusal(name, declared, sel, why);
+              const refusal = quarantineRefusal(name, declared, hitSel, why);
               console.warn(
-                `[quarantine-dispatch] refused ${name} on ${declared}:${sel}` +
+                `[quarantine-dispatch] refused ${name} on ${declared}:${hitSel}` +
                 (why ? ` (${why})` : ""),
               );
               return refusal;
             }
-            unprovenLinkage = unprovenLinkageMarker(declared, sel, why);
+            unprovenLinkage = unprovenLinkageMarker(declared, hitSel, why);
             console.log(JSON.stringify({
               event: "unproven_linkage_dispatch",
               tool: name,
               parent_type: declared,
-              parent_value: sel,
+              parent_value: hitSel,
               parent_reason: why ?? null,
             }));
           }
@@ -1196,17 +1230,21 @@ export function wrapToolsWithCache(
           // does not override it either: the analyst clears a rejection by
           // resetting the review, not by re-running the call.
           const rejectedKeys = await loadRejectedKeys();
-          const rejectedAs = isRejectedDispatch(rejectedKeys.inThread, candidateTypes, sel);
-          if (rejectedAs) {
-            const refusal = rejectionRefusal(name, rejectedAs, sel);
-            console.warn(`[rejected-dispatch] refused ${name} on ${rejectedAs}:${sel} (analyst rejected)`);
-            return refusal;
+          for (const c of govChecks) {
+            const rejectedAs = isRejectedDispatch(rejectedKeys.inThread, c.types, c.sel);
+            if (rejectedAs) {
+              const refusal = rejectionRefusal(name, rejectedAs, c.sel);
+              console.warn(`[rejected-dispatch] refused ${name} on ${rejectedAs}:${c.sel} (analyst rejected)`);
+              return refusal;
+            }
           }
-          const crossRejectedAs = isRejectedDispatch(rejectedKeys.crossCase, candidateTypes, sel);
-          if (crossRejectedAs) {
-            const refusal = rejectionRefusal(name, crossRejectedAs, sel, "other_case");
-            console.warn(`[rejected-dispatch] refused ${name} on ${crossRejectedAs} (analyst rejected in another case)`);
-            return refusal;
+          for (const c of govChecks) {
+            const crossRejectedAs = isRejectedDispatch(rejectedKeys.crossCase, c.types, c.sel);
+            if (crossRejectedAs) {
+              const refusal = rejectionRefusal(name, crossRejectedAs, c.sel, "other_case");
+              console.warn(`[rejected-dispatch] refused ${name} on ${crossRejectedAs} (analyst rejected in another case)`);
+              return refusal;
+            }
           }
         }
         const overrideSelector = ctx.manualOverrideSelector
