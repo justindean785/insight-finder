@@ -28,6 +28,19 @@ async function open(page: Page, path: string) {
 
 const activeLabel = (page: Page) => page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? null);
 
+/**
+ * Open the phone cases drawer and wait until it is actually ready for keys.
+ * "Visible" is not enough: the dialog paints before Radix attaches its Escape
+ * handler (a passive effect), so an immediate Escape is intermittently lost.
+ * Focus landing inside the dialog happens at the same mount, so it is the
+ * observable "ready" signal.
+ */
+async function openCasesDrawer(page: Page) {
+  await page.getByRole("button", { name: "Open cases" }).click();
+  await expect(page.getByRole("dialog", { name: "Investigations" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => !!document.activeElement?.closest('[role="dialog"]'))).toBe(true);
+}
+
 test.describe("app shell — phone cases drawer", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
 
@@ -52,7 +65,7 @@ test.describe("app shell — phone cases drawer", () => {
       (document.getElementById("workspace-tabpanel-chat")!.firstElementChild as HTMLElement & { __mark?: number }).__mark = 7;
     });
     await page.getByRole("tab", { name: /^Evidence/ }).click();
-    await page.getByRole("button", { name: "Open cases" }).click();
+    await openCasesDrawer(page);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
     expect(new URL(page.url()).pathname).toBe(CASE);
@@ -68,8 +81,7 @@ test.describe("app shell — phone cases drawer", () => {
     const report = page.locator("#workspace-tabpanel-report");
     await expect.poll(() => report.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(800);
     await report.evaluate((el) => { el.scrollTop = 600; });
-    await page.getByRole("button", { name: "Open cases" }).click();
-    await expect(page.getByRole("dialog", { name: "Investigations" })).toBeVisible();
+    await openCasesDrawer(page);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
     expect(await report.evaluate((el) => el.scrollTop)).toBe(600);
