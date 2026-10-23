@@ -10,6 +10,7 @@
 //
 // The hard-limit line is interpolated from the runtime constants so the prompt
 // can never advertise caps that disagree with what the code actually enforces.
+import { memoryRecallPromptRules } from "./lib/memory-provenance.ts";
 import {
   MAX_TOTAL_CALLS,
   MAX_CONCURRENT_CALLS,
@@ -58,7 +59,7 @@ export function buildCredentialSafetyRail(reveal: boolean): string {
 - This system's OWN secrets are ALWAYS redacted, in BOTH reveal modes, and are never subject evidence: service/API authentication keys, bearer tokens, session cookies, private keys, and \`Authorization\` headers belonging to this application or its providers. Never print, record, or echo one — not in chat, not in a report table, not in artifact metadata. If a tool result contains one, treat it as an artifact of the plumbing and drop it.`;
 }
 
-export function buildSystemPrompt(reveal: boolean): string {
+export function buildSystemPrompt(reveal: boolean, legacyMemoryWording = false): string {
   return `You are PROXIMITY, a staged OSINT investigator. The user gives a seed (email, username, phone, IP, domain, URL, or crypto wallet). Investigate it with evidence discipline and weak-lead labeling — investigate to evidence saturation, tagging weak leads [LOW]/[VERIFY] and ranking them below corroborated ones rather than dropping them. Then write a final report.
 
 ## Workflow
@@ -142,8 +143,7 @@ export function buildSystemPrompt(reveal: boolean): string {
 - RECORDING IS A PRECONDITION OF FINISHING, NOT AN OPTIONAL HABIT. Before you write the final report you MUST have called \`record_artifacts\` to persist the seed and every infra/identity/breach finding. Most tools do NOT auto-record — \`gemini_deep_dork\` is the only one that saves its own results. WHOIS, DNS, certs/subdomains, wayback, http_fingerprint, virustotal, urlscan, breach (oathnet/leakcheck/breach_check), socialfetch, username_sweep, google_dorks, and web-search results are LOST unless you call \`record_artifacts\` with them. RECORD AS YOU GO — persist each cycle's hard findings in the step you obtain them. A run that defers all recording to the end loses everything if it is cut short, and long runs are routinely cut short. A run that ends with a Findings table but ZERO recorded artifacts is a FAILED run. For a DOMAIN seed, record the domain itself, its WHOIS/registrar, resolving IPs/DNS, certs/subdomains, and any breach/email hits — but ONLY each category a tool actually returned this run. Never fabricate or pad a category a tool did not produce: a category with no successful tool output is simply omitted (or recorded as UNAVAILABLE when the tool ran and returned nothing), never invented.
 
 ## Memory (cross-investigation learning — MANDATORY)
-- FIRST TURN, IN PARALLEL with triage_seed (or as the very first call for non-email/username seeds), call \`memory_recall\` with the raw seed value. If it returns prior connections, identity clusters, or lessons, INCORPORATE them into your plan and CITE them in the final report as "[MEMORY] previously corroborated".
-- After EVERY high-value pivot (new confirmed email / handle / domain / wallet / person name), call \`memory_recall\` with that new value before burning fresh API calls — you may already have prior knowledge.
+${memoryRecallPromptRules(legacyMemoryWording)}
 - BEFORE writing the final report, call \`memory_save\` ONCE with a batch of every durable lesson from this run:
     • kind='identity'    — confirmed identity cluster (subject = primary handle/email; related_values = corroborating values)
     • kind='connection'  — confirmed link between two artifacts (subject = canonical anchor; related_values = the linked values)
@@ -255,8 +255,10 @@ export const HYPOTHESIS_AND_SOURCE_DISCIPLINE = `
  * to the deployed flag — so a test asserting on buildSystemPromptFull(true) is
  * asserting on the exact text that ships when reveal is on.
  */
-export function buildSystemPromptFull(reveal: boolean): string {
-  return buildSystemPrompt(reveal) + IDENTITY_CLUSTER_RULES + PERSON_SEARCH_RULES + HYPOTHESIS_AND_SOURCE_DISCIPLINE;
+export function buildSystemPromptFull(reveal: boolean, legacyMemoryWording = false): string {
+  return buildSystemPrompt(reveal, legacyMemoryWording) + IDENTITY_CLUSTER_RULES + PERSON_SEARCH_RULES + HYPOTHESIS_AND_SOURCE_DISCIPLINE;
 }
 
 export const SYSTEM_PROMPT_FULL = SYSTEM_PROMPT + IDENTITY_CLUSTER_RULES + PERSON_SEARCH_RULES + HYPOTHESIS_AND_SOURCE_DISCIPLINE;
+/** The pre-2026-10-13 Memory wording, kept ONLY so MEMORY_AUTHORITY_WORDING_DISABLED can restore it with no deploy. */
+export const SYSTEM_PROMPT_FULL_LEGACY_MEMORY = buildSystemPromptFull(REVEAL_BREACH_DATA, true);

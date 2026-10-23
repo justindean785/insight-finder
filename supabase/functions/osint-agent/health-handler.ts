@@ -59,6 +59,9 @@ import { providerAuthPriorSelfTest } from "./lib/provider-auth-prior.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 import { memoryContextSelfTest } from "./lib/memory-context.ts";
 import { crossCaseReviewsSelfTest } from "./lib/cross-case-reviews.ts";
+import { memoryAuthoritySelfTest } from "./lib/memory-provenance.ts";
+import { historyLabelSelfTest } from "./lib/history-label.ts";
+import { historicalMemorySelfTest } from "./lib/historical-memory.ts";
 import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
 import { analystAuthorityBoundarySelfTest } from "./lib/analyst-authority-keys.ts";
 import { archiveOriginRuleSelfTest, breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
@@ -593,6 +596,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.archive_origin_rule = archiveOriginRuleSelfTest();
   r.checks.breach_origin_cap = breachOriginCapSelfTest();
   r.checks.memory_context = memoryContextSelfTest();
+  // Recall surfaces carry no corroboration wording and tag rows unreviewed / analyst_marker_pattern. Pure.
+  r.checks.memory_authority = memoryAuthoritySelfTest();
+  r.checks.history_label = historyLabelSelfTest();
+  r.checks.historical_memory = historicalMemorySelfTest();
   r.checks.user_supplied_status = userSuppliedStatusSelfTest();
   // A1: can a model-supplied artifact metadata blob carry the analyst's review / release /
   // dismissal keys? Pure. PRESENCE proves the build that strips them is live; ok:false means
