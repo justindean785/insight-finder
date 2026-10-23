@@ -6,7 +6,7 @@ import type { ToolEvent } from "@/hooks/useThreadToolActivity";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { useReviewStates } from "@/lib/review";
 import { isProseValue } from "@/lib/evidence-bands";
-import { authorityFor, LEDGER_SORT_RANK, AUTHORITY_LEGEND, AUTHORITY_DISTRIBUTION, type AuthorityState } from "@/lib/authority";
+import { authorityFor, LEDGER_SORT_RANK, AUTHORITY_LEGEND, AUTHORITY_DISTRIBUTION, type AuthorityState, type CaveatKind } from "@/lib/authority";
 import { AuthorityChip, AuthoritySpine, AuthorityCaveat, RuleLabel } from "@/components/ui/authority";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { timeAgo } from "@/lib/time";
@@ -15,6 +15,7 @@ import { fmtWallClock } from "@/lib/duration";
 import { buildDecisionQueue } from "@/lib/decision-queue";
 import { RunCockpit } from "@/components/workspace/RunCockpit";
 import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
+import { groupSharedCaveats } from "@/lib/shared-caveats";
 import {
   Unlink, AlertTriangle, XCircle, ShieldCheck, Timer,
   DatabaseZap, Activity, ArrowRight, type LucideIcon,
@@ -186,6 +187,10 @@ export function OverviewTab({ threadId }: { threadId: string }) {
     return buildDecisionQueue(candidates);
   }, [items, review]);
   const unresolved = queue.shown;
+  const sharedCaveats = useMemo(
+    () => groupSharedCaveats(unresolved.map(({ a, v }) => ({ id: a.id, caveat: v.caveat, caveatKind: v.caveatKind }))),
+    [unresolved],
+  );
 
   const failures = useMemo(
     () => activity.events.filter((e) => e.status === "failed" || e.status === "degraded").slice(-5).reverse(),
@@ -282,18 +287,40 @@ export function OverviewTab({ threadId }: { threadId: string }) {
                 : "Nothing disputed or unattributable. Conflicts and quarantined selectors would appear here."}
             </p>
           ) : (
-            <ul>
-              {unresolved.map(({ a, v }) => (
-                <li key={a.id} className="relative border-b border-border-subtle px-3 py-2 pl-4 last:border-b-0">
-                  <AuthoritySpine state={v.state} />
-                  <div className="flex items-start gap-2">
-                    <ArtifactValue value={a.value} className="flex-1" />
-                    <AuthorityChip view={v} />
-                  </div>
-                  <AuthorityCaveat view={v} className="mt-1" />
-                </li>
+            <>
+              {/* A reason shared by several cards is said once here; each card
+                  keeps a pointer and the full text for screen readers. */}
+              {sharedCaveats.shared.map((s) => (
+                <div key={s.caveat} className="border-b border-border-subtle px-3 py-2" data-testid="shared-caveat">
+                  <span className="text-micro font-medium text-muted-foreground">
+                    {s.count} rows below share this reason
+                  </span>
+                  <AuthorityCaveat view={{ caveat: s.caveat, caveatKind: s.caveatKind as CaveatKind }} className="mt-0.5" />
+                </div>
               ))}
-            </ul>
+              <ul>
+                {unresolved.map(({ a, v }) => {
+                  const shared = sharedCaveats.byRow.get(a.id);
+                  return (
+                    <li key={a.id} className="relative border-b border-border-subtle px-3 py-2 pl-4 last:border-b-0">
+                      <AuthoritySpine state={v.state} />
+                      <div className="flex items-start gap-2">
+                        <ArtifactValue value={a.value} className="flex-1" />
+                        <AuthorityChip view={v} />
+                      </div>
+                      {shared ? (
+                        <p className="mt-1 text-micro text-faint-foreground">
+                          <span aria-hidden>Shared reason, above</span>
+                          <span className="sr-only">{shared.caveat}</span>
+                        </p>
+                      ) : (
+                        <AuthorityCaveat view={v} className="mt-1" />
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
           )}
           {(queue.more > 0 || queue.heldBack > 0) && (
             <p className="border-t border-border-subtle px-3 py-2 text-micro text-muted-foreground" data-testid="decision-queue-footer">
