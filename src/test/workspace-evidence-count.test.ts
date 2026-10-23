@@ -185,3 +185,30 @@ describe("deriveRunState", () => {
     expect(deriveRunState({ thread: row({ status: "failed_context_limit" }), chatRunning: false, nowMs: NOW })).toBe("interrupted");
   });
 });
+
+// 2026-10-19 handoff §3 item 1 (trust labels), sub-item 4: the case bar read a
+// bare "64 evidence" while counting chain-of-custody entries, with the only
+// explanation in a hover tooltip. The visible word must say what is counted.
+describe("describeEvidence — the visible label names what is counted", () => {
+  it("counts chain-of-custody entries as 'evidence logged'", () => {
+    const d = describeEvidence({ total: 64 }, 53);
+    expect(d.label).toBe("evidence logged");
+    expect(d.shortLabel).toBe("logged");
+  });
+
+  it("still says 'evidence logged' when the two counts agree", () => {
+    expect(describeEvidence({ total: 12 }, 12).label).toBe("evidence logged");
+  });
+
+  it("falls back to plain 'evidence' when no chain total was read (it is counting artifacts)", () => {
+    const d = describeEvidence(null, 53);
+    expect(d.label).toBe("evidence");
+    expect(d.shortLabel).toBe("evidence");
+  });
+
+  it("adds no label to the missing-custody shape, whose text already names both numbers", () => {
+    const d = describeEvidence({ total: 2 }, 50);
+    expect(d.label).toBe("");
+    expect(d.shortLabel).toBe("");
+  });
+});

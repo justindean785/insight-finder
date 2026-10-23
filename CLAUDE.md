@@ -62,6 +62,8 @@ with a good handoff is more accurate than a third summary.
 >
 > **State as of 2026-10-19T00:53Z** (older dated lines: `docs/archive/CLAUDE_STATE_HISTORY_2026-10.md`):
 >
+> *Later (2026-10-23, at the #793 merge): edge `aae1152` (#802) was deployed on 2026-10-20 and recorded by #810, `deploy/live` → `aae1152`; `main` has moved on (#812–#815). The rows below are the 2026-10-19 measurement; re-measure.*
+>
 > | Item | Value |
 > |---|---|
 > | Canonical `main` | `8fae8c8` (#798); Vercel production READY on it |
@@ -77,22 +79,13 @@ with a good handoff is more accurate than a third summary.
 >   - Lovable *reported* "credits ran out" at 2026-10-18 19:55Z. Nobody has verified this. If it is true, it blocks the Lovable deploy step.
 > - **The S1a run lease is deployed but DISABLED** (`RUN_LEASE_DISABLED=true`, `checks.run_lease` = `LEGACY`). Do not touch it without JD. See `SESSION_HANDOFF_2026-10-10_s1a-admission-lease-and-the-heartbeat-incident.md`.
 > - **Proof keys added since 2026-10-14** (found by pickaxe):
->   - `checks.client_cancel_isolation` (#758)
->   - `tool_input_object_repair` (#765)
->   - `orchestrator_fallback` (#769)
->   - `input_coercion` (#766)
->   - `cross_case_reviews` (#768)
->   - `provider_busy_queue` (#778)
->   - `breach_exposure_guard` (#781)
->   - `archive_origin_rule` (#786)
->   - `input_kind_inference` (#790)
+>   `checks.client_cancel_isolation` (#758), `tool_input_object_repair` (#765), `orchestrator_fallback` (#769), `input_coercion` (#766), `cross_case_reviews` (#768), `provider_busy_queue` (#778), `breach_exposure_guard` (#781), `archive_origin_rule` (#786), `input_kind_inference` (#790).
 > - **Unmerged proof keys:**
 >   - `checks.dispatch_selector_aliases` (#797, ready)
 >   - `jina_target_403` (#799, draft)
 >   - `wayback_cdx_budget` (#800, draft)
 > - **Baselines** on `8fae8c8` after a clean `npm ci`, measured 2026-10-18: vitest 2653 / 1 / 210 files, edge 2449 / 0 / 6, e2e 52 / 2. They drift with every PR, so re-measure before blaming a diff.
 > - **What was done since the last save, and what is next:** `SESSION_HANDOFF_2026-10-19_integrity-before-tool-fleet.md`, plus the audits `docs/AUDIT_2026-10-18_*.md`.
->   - If `origin/main` lacks these files, docs PR #793 (branch `claude/code-review-lovable-vercel-0knfbb`) is unmerged: read them from that branch.
 >
 > **⛔ Three open evidence-integrity defects (2026-10-18; file:line in evening audit §10.3). Fix these before expanding the tool fleet.**
 >
@@ -139,45 +132,7 @@ There is **ONE place to work: this repo, `justindean785/insight-finder`** (produ
 - The Lovable-hosted frontend (`*.lovable.app`) is **deprecated** — both frontends hit the same Supabase backend, so Vercel already works against live data.
 
 ### Backend (4 deployed edge functions) → via Lovable
-- The Supabase project `skzqwbyvmwqarfgfvyky` is **owned by Lovable Cloud**, not the user. The Lovable project is connected to the mirror repo `justindean785/seeker-spark-search-5362c57c` (branch `main`), but **a push to that mirror only SYNCS the code into the Lovable project — it does NOT deploy the edge function.** ⚠️ **Mirror push = sync only; the edge-function deploy is ALWAYS a separate, explicit step** (the Lovable project agent running `supabase--deploy_edge_functions` — see the recipe below). Skipping it is why `osint-agent` has repeatedly shipped stale: the code was synced but never deployed, so `/health` kept reporting the old build.
-- **Do NOT use `supabase functions deploy`** — the user's token 403s on that project (ownership wall). It is the wrong channel.
-- **The backend is 3 functions + a shared module. A sync MUST cover all that changed — not just `osint-agent/`** (the old single-function recipe is why `evidence-export` drifted below):
-  - `supabase/functions/osint-agent/` — 72 files; live tool defs inline in `index.ts`
-  - `supabase/functions/evidence-export/` — PDF/zip export; `index.ts` + `text-sanitize.ts` (+ test)
-  - `supabase/functions/security-test-lab/` — admin-only red-team harness; `index.ts`
-  - `supabase/functions/_shared/ai-gateway.ts`
-- **To ship a backend change — the canonical VERIFIED recipe (proven 2026-07-11 on #297; do NOT skip a step):**
-  1. **Merge to `insight-finder` `main`** (source of truth).
-  2. **Stamp the build marker:** run `node scripts/stamp-build.mjs` (aka `npm run stamp:build`) and commit `build-info.ts`. The `BUILD_MARKER` does **NOT** auto-update — without this the `/health` `build` SHA will not move even after a successful deploy.
-  3. **Surgical mirror sync:** `cp -R supabase/functions/<fn>/. <clone>/supabase/functions/<fn>/` (per changed function) + a `git diff` review, then push to `seeker-spark-search-5362c57c`. **NEVER blanket-overwrite** — the mirror holds un-backported Lovable-authored work (e.g. `tools/peopledatalabs.ts` / `pdl_person_enrich`); sync **only** the files that actually changed. ⚠️ **`cp -R` cannot delete.** When a file is removed or moved out of a function folder in canonical (e.g. the 2026-10-15 move of every `*_test.ts` to `supabase/tests/`), delete exactly those paths in the mirror too (`git -C <clone> rm` the list from `git diff --diff-filter=D --name-only <prev-stamp> origin/main -- supabase/functions`), or `verify:deploy` reports `mirror_tree_differs` and the upload stays over the 4.5 MB limit. Delete only paths canonical deleted — never mirror-only files.
-  4. **⛔ HARD GATE — `npm run verify:deploy` must report `mirror tree -> equal` BEFORE any deploy message is sent.** No new machinery: this is the check that already exists. ⚠️ **It is not side-effect free.** `scripts/record-deploy.mjs:47,76` fetches the live `/health`, which makes a paid GLM call and runs recovery and sweep writes. Treat it as the deploy-day probe. For a read-only audit, compare `git rev-parse origin/main:supabase/functions/<fn>` against the mirror's tree hash instead (measured 2026-10-18). If it prints `mirror_tree_differs`, **the deploy stops here** — do not send the Lovable message, report both tree hashes, and resolve the difference first.
-     - **This is not hypothetical.** On 2026-08-29 the Lovable agent pushed **11 commits** ("Changes" / "Work in progress", `c4a70c1..fde5e58`) to the mirror after a verified deploy, touching 25 runtime files. It was audited as runtime-inert — the `npm:ai@6` → `@ai-sdk/provider-utils` swap moves an identity function (`function tool(t){return t}`) — but **none of it touched `build-info.ts`**. The next unrelated deploy would have shipped all eleven while `/health` still reported the old SHA, so the one instrument this project has for proving what is running would have shown *no change at all*. The gate caught it; it was simply being run after the deploy instead of before.
-     - The mirror is writable by a second agent whose edits this repo never sees. **Re-run the gate immediately before the deploy message**, not once at the start of the session — the window between sync and deploy is exactly when drift lands.
-     - **`mirror tree -> equal` used to be gameable by an unpushed local commit — fixed 2026-09-11.** `--mirror <path>` computed the tree digest from `git -C <path> rev-parse HEAD:...`, i.e. the LOCAL clone's HEAD, never checking whether that HEAD had reached the mirror's GitHub remote. On 2026-09-11 a sync commit was made locally in the `seeker-spark-search-5362c57c` clone and never pushed before `verify:deploy` ran; the gate reported `mirror tree -> equal` anyway (true of the local clone) — a false green caught only because the Lovable agent independently re-pulled its own connected GitHub repo and refused to deploy stale code on its own initiative. Same instrument-trap shape as `ledger_ref_divergence` above. Fixed in `scripts/record-deploy.mjs` / `scripts/lib/deploy-provenance.mjs`: the script now runs a best-effort `git fetch origin main` in the mirror checkout and compares local `HEAD` against `origin/main`; a mismatch is a blocking `mirror_local_not_pushed` problem (fails `verdict.markerProvenanceOk`, refuses `--record`), reported on its own `mirror pushed : <sha> -> <status>` line. Pinned by `verifyMirrorPushed` tests in `src/test/deploy-provenance.test.ts`. Do not "simplify" this back to reading only the local clone.
-  5. **EXPLICIT Lovable deploy — the step everyone forgets (a mirror push does NOT do this):** `send_message` to Lovable project **`4ce11bc3-039d-4439-b293-acacca9e1e3a`** instructing its agent to (a) pull GitHub `main`, (b) confirm `build-info.ts`'s `BUILD_MARKER`, (c) run `supabase--deploy_edge_functions` with `function_names: ["osint-agent"]` (deploy AS-IS — no edits, no frontend/`deploy_project` publish).
-  6. **Verify live — the ONLY proof of deploy:** `curl https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1` and confirm the `build` SHA **moved** to the commit you stamped. A mirror push, a "changes are done" notification, and the agent's own "deployed" report are **NOT** proof — only the moved health SHA counts.
-  7. **Record it — `npm run record:deploy -- --previous <prev> --mirror <path>`.** `npm run verify:deploy` is the same check, read-only. Neither pushes; publish with `git push origin HEAD deploy/live`.
-     - **⚠️ Read the scope line, not the green word.** This establishes that the *observed runtime marker maps to canonical source history*. It does **NOT** establish deployed-byte identity. `build-info.ts` is a static file the running code echoes about itself — edit any OTHER file after the mirror sync, leave the marker alone, deploy, and every check still passes. `deployed_bytes_verified` is `false` in every row and `deployed_artifact_digest` is `null`, because the Lovable → Supabase path exposes no artifact digest or attestation. Closing that needs platform attestation, not another self-reported marker. A regression test (`src/test/deploy-provenance.test.ts`, "cannot detect a post-sync edit to a NON-marker file") pins this ceiling so nobody quietly upgrades the claim.
-     - **Note the one-commit offset** (documented in `stamp-build.mjs`): the marker holds HEAD *at stamp time*, so `build-info.ts` at the marker commit still holds the PREVIOUS marker. The checker resolves the **stamp commit** (the child that introduced the marker) by pickaxe and asserts its parent IS the marker. Comparing `/health`'s SHA against `build-info.ts` at that SHA reports a false mismatch on a healthy deploy — don't "fix" the offset, it is inherent.
-     - The ledger and the `deploy/live` ref are written by **separate, non-atomic** operations. The guarantee is *detection*: `verifyLedgerConsistency` runs first on every invocation and blocks recording on divergence.
-     - **"The live build has no source in GitHub" is false** and gets re-reported periodically. `git branch -r --contains <sha>` settles it: every deployed build originates as a commit here, because the pipeline runs main → mirror sync → Lovable deploy. What was genuinely missing was the *record*, not the source. Note `/health`'s marker is the stamp commit's **parent**, so it never equals the `origin/main` tip — that is the offset, not drift.
-- **Sync = true merge, NEVER `rsync --delete` / blanket overwrite.** The mirror has at times held Lovable-authored work not yet backported (e.g. the #16 source-classification rework — see `PR_BODY_backport-16.md` in the `pr2` worktree); a delete-sync would clobber it.
-- **Known parity/drift (re-measured 2026-08-28 on `28acddd`).** `diff -rq` is **empty for `evidence-export`, `security-test-lab` and `_shared`.** The long-standing `evidence-export` drift is **CLOSED** and stays closed; the mirror no longer runs the old 273-line `index.ts`. `osint-agent` had **eight differing paths at the time of that sync and ten more found since, none of them a live runtime file** — `tool-registry.ts`, `auto-persist-findings.ts`, `validation.ts`, `index.ts` and all of `lib/` are byte-identical, which is what the deployed build actually runs:
-  - **`tools/*.ts` — TEN files, not one, and the mirror's copies were the BETTER ones. Backported 2026-08-28; this difference is now CLOSED.** Canonical carried a real `SyntaxError: Expected ident` in `breach`, `crypto`, `deepfind_special`, `disabled`, `email`, `infrastructure`, `osint_navigator`, `recording`, `search` and `social` — 66 occurrences of `}),` closing a `tool({…})` call that must close `});`. Lovable's agent fixed `breach.ts` on 08-26 and the other nine on 08-28 (commit `199f9a7`, *"Fixed auto-extract build errors"*), each time **after a red build blocked its own project**, and neither fix ever came back here. Nine of the ten differed ONLY by that brace; `breach.ts` also gained `import { HIBP_API_KEY }` and `fetchRetry`/`fetchT`, which it needs to compile. All ten were copied back verbatim and every one now parses (`deno info`).
-    **Why this kept happening:** these files are auto-extracted dead code — nothing imports any of them (the live tool defs are in `tool-registry.ts`), so no test and no runtime path ever touched them, and the *only* thing that noticed was the Lovable project build. That is also why it is worth keeping fixed rather than deleting: a red build banner in the operator's face on every deploy is a real cost for code that costs nothing to keep parsing.
-    **The standing lesson is unchanged and now has teeth:** the mirror is writable by a second agent whose edits this repo never sees, and it had accumulated ten of them. Check `git log origin/main` in the mirror clone after every sync — not just `diff -rq`.
-  - **Three comment-only files** — `dsml-tool-call-guard.ts`, `incremental-persist.ts`, `runtime-policy.ts`. #506 corrected headers that described behaviour removed by #366's rollback. Zero executable change, so nothing to deploy for them.
-  - **Test files — RESOLVED 2026-09-07, and the reasoning that kept them differing is retired.** This bullet used to record four differing/canonical-only test files (`artifact_hygiene_test.ts`, `selector_normalize_test.ts`, `thread_wide_artifact_dedup_test.ts`, `breach_cotenant_provenance_test.ts`) and dismiss the difference as cosmetic, on the grounds that the mirror has no test suite and tests are not deployed. Both facts are still true, but the conclusion was wrong: the difference also kept the ledger's `mirror_tree_digest` permanently unequal, which left `verify:deploy` unable to tell that known gap apart from real drift. All of them were synced on 2026-09-07 (mirror `42372aa`), so `diff -rq` over `osint-agent` is now empty and the gate reports `mirror tree -> equal`. **Keep it that way: sync test files too, precisely so the digest stays a usable signal.** Syncing tests is not blanket-overwriting — the rule below is still sync only what changed.
-
-  Keep the *rule* (sync only files that actually changed, never blanket-overwrite) — and note the `tools/peopledatalabs.ts` example is retired only because `tools/breach.ts` replaced it as the live instance of the same hazard.
-- **⚠️ Source-identical is NOT deployed-identical, and a whole-repo diff is NOT a drift signal.** `git diff mirror/main..main` reports ~306 files / +12k / −38k **by design** — the mirror is a separate Lovable project that merely holds a copy of `supabase/functions/<fn>/`; its frontend, migrations and absent test suite are its own. Reading that number as drift leads straight to the blanket overwrite this file exists to forbid. **The only meaningful parity check is `diff -rq` per function directory.**
-- **Only `osint-agent` has a build marker.** `evidence-export`, `security-test-lab` and `mcp` expose no health endpoint and no marker, so for those three there is *no instrument at all* to distinguish synced from deployed. #453 shipped a security-ordering fix to the live `mcp` function with no way to confirm it landed. If an export bug appears, suspect a stale deployed `evidence-export` first.
-- **⚠️ There is NO automated production health monitoring as of 2026-08-23.** The `Edge Health`
-  cron was removed in #483: at `*/15` a ~10-second curl billed as a full minute each run (GitHub
-  rounds every job up), which drained the account's shared Actions allowance and took CI down on
-  every PR for ~70 hours. `workflow_dispatch` is retained — run it by hand from the Actions tab, or
-  stand up an external uptime monitor, which is what the workflow header already calls it.
-- Edge-function secrets live in Supabase function settings (e.g. `IPQUALITYSCORE_API_KEY`, `SERUS_API_KEY`). Tools self-skip if their key is missing.
+- **Mirror push = sync only; the edge-function deploy is ALWAYS a separate, explicit step**, and `/health`'s moved build SHA is the only proof of deploy. The full verified recipe (stamp → surgical sync, never blanket-overwrite → `npm run verify:deploy` hard gate must say `mirror tree -> equal` → Lovable project `4ce11bc3-039d-4439-b293-acacca9e1e3a` deploy message → `/health` check → `record:deploy`) is in the **`edge-deploy` skill** (`.claude/skills/edge-deploy/SKILL.md`). Load it before any backend ship. Never use `supabase functions deploy` (403s).
 
 ### Dead repos — ignore
 `seeker-spark-search`, `seeker-spark-search-5fea4dc8`, `seeker-spark-search-ec85cfea` are **archived dead spawns** from past Lovable reconnect cycles. The ONLY live Lovable repo is `…-5362c57c`. Never push to the others; never disconnect/reconnect GitHub in Lovable (it spawns more dead repos).
@@ -377,8 +332,8 @@ The two design hazards the guard was built around still hold:
   record for a tool disabled since 2026-07-09. Never let a quarantine refusal burn a step
   silently.
 
-Canonical fixtures: the `leoseyes86@gmail.com` collision case (exercises all of the above),
-and `NOC@onemobility.net` as the *uncontaminated* budget-exhaustion case. Both are real
+Canonical fixtures: the `<collision-case-email>` collision case (exercises all of the above),
+and `<uncontaminated-case-email>` as the *uncontaminated* budget-exhaustion case. Both are real
 investigations — `src/dev/fixtures.json` and `src/dev/raw/` are gitignored; sanitize before
 checking anything in.
 
@@ -449,275 +404,10 @@ fresh analysis.
 Evidence ranking, confidence caps, chain-of-custody, credential masking, minor-safety detection, and the audit/coverage behavior are integrity-critical. Treat changes to them as requiring sign-off.
 
 ## Reading the handoff series
+Newest handoffs first: `SESSION_HANDOFF_2026-10-19_obsidian-foundation-and-stage-a-shell.md` (frontend design revamp) and `SESSION_HANDOFF_2026-10-19_integrity-before-tool-fleet.md` (backend, orchestrator and evidence integrity; the 10-14 orchestrator note comes second). The full ordered series, with what each section is for and which parts are superseded, is in `docs/claude-md/handoff-reading-order.md`. Every handoff is a dated measurement, not a state — take current state from the top of this file and re-measure.
 
-> **Archived 2026-10-14:** every dated handoff, audit and state note older than `SESSION_HANDOFF_2026-09-14` (the series named below, plus `AUDIT_REPORT_*`, `HANDOFF_*`, `PROJECT_STATE_*`, the June beta sign-off and checklists) was moved with `git mv` to `docs/archive/handoffs/`, so history is intact. A filename cited below that is not at the repo root is there. Handoffs from 2026-09-14 onward, the incident write-up, the `SCOPE_*` / `DESIGN_*` / `PRICING_*` / `PLAN_*` design notes and `NEXT_SESSION_PROMPT.md` stayed at the root.
-
-`SESSION_HANDOFF_2026-08-09` → `…_2026-08-10_…-II` → `…_2026-08-10_…-III` →
-`…_2026-08-14_deploy-transport-and-promote-boundary` →
-`…_2026-08-23_report-authority-and-ci-recovery` (re-measured the baselines and carries the
-production corpus numbers that govern #477/#479/#482) →
-`…_2026-08-25_merge-deploy-and-tool-telemetry` →
-`…_2026-08-26_workspace-pass-and-production-defects` →
-`…_2026-08-31_workbench-truth-boundary` (its §4 is the trap list, §6 the honest not-done
-list, §7 the ordered plan) →
-`…_2026-09-03_evidence-board-and-pivot-quality` →
-`…_2026-09-07_drop-suppression-and-the-duplicate-pr` →
-`…_2026-09-08_queue-drain-and-dispatch-deploy.md` →
-`…_2026-09-12_promotion-quarantine-and-measured-audit.md` (its §2 is the
-promotion-quarantine switch, §3 the trap list of four instruments that lied) →
-`…_2026-09-13_instrument-truth-and-the-lineage-prerequisite.md` →
-`…_2026-09-14_sweep-false-positives-and-the-memory-retrieval-gap.md` →
-`…_2026-09-20_prompt-ceiling-payload-store-and-the-overlap-wedge.md` →
-**`SESSION_HANDOFF_2026-10-19_obsidian-foundation-and-stage-a-shell.md` (newest, frontend design revamp only — read it first for UI work: #805/#806/#807 merged, §3 the JD-ordered queue (trust labels, Stage C1), §5 the traps)** →
-**`SESSION_HANDOFF_2026-10-19_integrity-before-tool-fleet.md` (newest for backend, orchestrator and evidence-integrity work — read it first for that).** It covers JD's latest direction, what was done since the 10-14 save, the PR queue (#797 ready; #799 and #800 drafts; the #593 decision), the three integrity defects, and the verify commands. Its evidence is in `docs/AUDIT_2026-10-18_full-code-review-lovable-vercel-github.md` (F1–F33) and `docs/AUDIT_2026-10-18-evening_state-pr-queue-next-tasks.md` (F34–F41; §10 is the integrity re-trace). Its §"Addendum" records what changed after it was written →
-`SESSION_HANDOFF_2026-10-14_anthropic-orchestrator-and-the-dropped-connection.md` (read second for backend work; Anthropic went live, the dropped-connection run-termination bug was measured and fixed in #758, §3 is the PR queue, §5 the trap list, §6 the ordered plan) →
-`SESSION_HANDOFF_2026-10-10_s1a-admission-lease-and-the-heartbeat-incident.md` (read second; the run lease is built, deployed and switched OFF, §5 is the JD-gated queue, §6 the release traps) →
-`SESSION_HANDOFF_2026-10-10_evidence-guards-and-the-learning-loop.md` (read third; its §5 is the plan for making the agent learn from every run, §3 the ordered queue, §6 the release traps. **Superseded on one point:** its §5 L5 says the server-side run lease is "unbuilt" — S1a shipped as #730/#734 and is disabled by switch) →
-`SESSION_HANDOFF_2026-10-06_release-train-and-audit-queue.md` (the draft-PR queue and release-recipe traps; `docs/proposals/` holds the P1/P2/P3 and E1-E4 design proposals).
-Its §1 is the state and the caveat that Releases 1–2 are not yet observed in production, §3 JD's
-standing rules, §4 the draft-PR queue with proof keys and recommended order, §5 the release-recipe
-traps, §7 the decisions only JD can make, §9 the ordered plan.
-The 09-20 handoff: its §2 is the stale-baseline correction, §4 the production overlap wedge
-(the highest-value unfixed defect), §5 the `unknown` stop reason, §6 the payload-store decision
-and why the store is a TABLE not the archive bucket, §7 the trap list, §9 the ordered plan.
-The 09-14 handoff. Its §2 is the sweep bug that was manufacturing evidence, §4 the
-memory-retrieval gap, §5 the built-and-dark synthesis layer, §7 the ruling on Lovable's audit
-prompt, §8 the trap list, §9 the one open decision, §11 the ordered plan.
-
-The 09-13 handoff. Its §3 carries the three verified findings that reorder the plan
-(the GitHub 401, the missing call-to-artifact lineage, telemetry durability), §5 states the
-goal, **§6 is the ordered roadmap**, **§7 is the small-PR discipline and why a large PR
-cannot be deployed or reverted here**, §8 the trap list, §9 the ruling on Codex's planning
-PR #586, §10 the open-PR queue.
-`NEXT_SESSION_PROMPT.md` is the companion entry point and is the more current of the two.
-Take the dated state from the top of THIS file rather than from any handoff's own §1 state
-table — every one of them has been overtaken by a later session, including the 09-07 pair,
-whose §1 predates the `4e6888a` deploy. Each corrects the
-one before it, and **every one of them is a dated measurement, not a state.** III's own §1.0
-is the lesson: a "deploy axis verified green" claim went false within six hours because the
-mirror is writable by a second agent whose edits this repo never sees.
-
-Read III plus its §11 corrections if you read only one. Then treat these as already applied
-and do not act on the superseded originals:
-
-- III's §3 promote-boundary P0 is **closed** (#448) — this file's section above is current.
-- II's §2 status table lists #436/#437/#438/#439 as unmerged drafts; all are long since
-  resolved. Its §2.1, *what green CI missed*, is still the most useful page in the repo:
-  every defect caught in review here was a **timeline or identity** error, not a logic
-  error, and every one passed the full suite, typecheck, lint and build. **A behavioural
-  test must DRIVE the shipped control flow, never re-describe it.**
-- The 08-09 handoff's three-boundary framing is right; its status is not.
-
-## ⛔ BUILT AND UNWIRED — check before you build (2026-09-12)
-
-Five separate times in one session, the thing a plan said to build turned out to be
-already built and either disconnected at the call site or mislabelled. The work in this
-repo is not missing; its **instruments and labels** have been reporting something else, so
-each session diagnosed from bad readings and built beside the thing that already worked.
-That is the real answer to "we do all these upgrades and it never changes the app."
-
-**Before implementing anything from a plan or audit, grep for it first.** Verified cases:
-
-| Thing | Status on `main` |
-|---|---|
-| `toolAgentRole()` / `toolActionLabel()` (`src/lib/tool-display.ts`) | exported, unit-tested, **zero component consumers** until #587 |
-| `tool_health` view → `scoreExpectedValue` reliability prior | fully wired and loaded per run — but `runtime-policy.ts:373` states EV is **advisory and never blocks a call**, so nothing is ever suppressed by it |
-| `shouldAllowToolCall` (`runtime-policy.ts:556`) | complete, tested, **unreferenced**. Has `QUERY_FAMILY_NO_YIELD_LIMIT = 3` → `action:"suppress"` — i.e. most of the "stop calling what never yields" feature |
-| `tool-routing-policy.ts` | **100% dead code**; `RouteContext` already carries `highYieldTools`, `failedQueryFamilies`, `duplicateQueryKeys` |
-| `circuit.applyBaselineDisables(threadId)` (`circuit.ts:634`) | an **explicitly empty hook**, already called once per thread, kept for a persisted skip list |
-| `capabilities.seedTypes` | the gate is **fully enforced** at `capabilities.ts:184` — and no tool declares it, AND `index.ts:441` passes `null` as the seed type, so it can never fire ⚠️ |
-| Evidence board "Leads drawer" | **already shipped** (#543). Default filter is `analyst`, hiding weak/quarantined/excluded, with Leads and Excluded chips. `STATUS_FILTER_GROUPS` warns that a kind-based filter beside the authority states would be "a second, drifting source of truth" — do not add one |
-| **finding synthesis** (`finding-synthesis.ts`, `finding-synthesis-sweep.ts`, `lib/finding-row.ts`) | **complete, deployed, and switched OFF** behind `FINDING_SYNTHESIS_ENABLED` / `_BACKFILL_ENABLED` / `_DRY_RUN`. Runs in the HEALTH SWEEP — a separate request — so it is structurally incapable of failing finalize. Its header measures the gap it closes: **9,615 artifacts / 181 threads / 13 `kind='finding'` rows in the product's lifetime**, because `workflow_prompt.ts:34` makes `record_finding` advisory and the model almost never calls it (the `@wopdell` run: 87 tool calls, **zero**). ⚠️ Prerequisite before any flag flips: confirm migration `20260907000000` (`artifacts_synthesis_cluster_uniq`) is applied **against the live DB** — the sweep is an unlocked read-then-write fired every 60s |
-| `useDensity` (`src/hooks/useDensity.ts`) | complete, persists to `localStorage`, applies `<html data-density>`, and has **ZERO consumers** — no control anywhere sets it. Worse, its CSS is not inert while dark: `[data-density-row]` sets symmetric `padding: … !important` UNLAYERED, so it beat `.ledger-row`'s own rule and pulled the evidence ledger's left inset from 1rem to 0.75rem while the column head and group rule stayed at 1rem. Fixed in #617 by giving the ledger back its horizontal inset; density still owns the vertical rhythm. Wiring a control is still unbuilt, and it is a global preference, so decide WHERE it lives (command palette is the cheap answer) before building one |
-| `SweepSite.confirm` | the documented lever for a platform whose not-found page echoes the handle — **and unreachable until #594**, since no site configured it. Populating it honestly needs a KNOWN-REAL profile per platform, which is why #594 encodes the measured NEGATIVE (`echoUnsafe`) instead |
-
-### ⚠️ Do NOT populate `seedTypes` to shrink the tool-schema payload
-
-It looks like the obvious fix for the ~95–105k chars of tool schemas re-serialized every
-step. It is the wrong mechanism: OSINT pivots **derive** new selector types mid-run — an
-email seed yields a domain, a username, a phone. Gating `crtsh_subdomains` off because the
-SEED was not a domain breaks the run's ability to follow the domain it just discovered.
-The real duplication is that `catalog.ts` exists to hold when-to-use guidance and is
-fetched once, while each tool's `description` still carries paragraphs of the same prose
-on every step. Cut there instead — and only after `prompt_size_step` reports the real
-number, not an estimate.
-
-### Instruments that were lying — #587 shipped in `c87c07b` 2026-09-13
-
-**Read the per-item status, not the heading.** #587 made all four *legible*; it repaired
-exactly one of them. Two now have an honest meter beside the broken reading, and the
-defect they measure is still there — which is the point, because the number that sets the
-cap has to come from production, not from an estimate.
-
-- **`approxPromptChars` — MEASURED, not fixed, deliberately.** It still omits the workflow
-  addendum, `analystDecisionsBlock` (0 → ~30k), the per-step directives and **every tool
-  schema**, so the ~175k average `initial_context_chars` in telemetry is still a floor.
-  `approxPromptChars` was left alone because it *routes providers*; changing it changes
-  behaviour. The honest meter is separate: `prompt-size.ts` → `prompt_size_initial` and
-  `prompt_size_step`, the latter logged from each of the three `prepareStep` return
-  branches so a nudge step reports the tool set it actually ships. It names
-  `tool_input_schemas_serialized` as unmeasured rather than estimating it — zod@3 has no
-  JSON-Schema export, so those bytes cannot be counted from inside the function.
-- **The run caps are per ISOLATE, not per investigation — STILL TRUE, now measured.**
-  `index.ts:331` calls `clearRuntime(threadId)` on every request and that is
-  `THREADS.delete(threadId)`, while `runtime-policy.ts:296-299` claims only "a brand-new
-  investigation" clears them. An investigation is 2–12 invocations, so `MAX_PAID_CALLS = 12`
-  is really **24–144 per case**. Production: 130 calls/12 invocations, 112/9, 102/6. This
-  also explains 74 `minimax_correlate` calls against a documented cap of 2. #587 adds
-  `run_budget_prior`, which classifies prior `tool_usage_log` rows into what actually
-  consumed a paid slot (cached replays and `outcome === "skipped"` consumed nothing; failed
-  and empty paid calls did), with the paid predicate **injected, not imported**, so it
-  cannot drift from the admission gate. **A2b — enforcing the per-investigation cap — is
-  deliberately NOT done and is blocked on a week of this data.** `MAX_PAID_CALLS` is a
-  settled operator decision; setting the replacement number from an estimate is the error
-  that condemned a healthy provider.
-- **`/health`'s tools line is STILL a PRESENCE test** (`has(env.X_API_KEY)`) and #587 did
-  not touch it. What it adds is **`checks.credentials`** beside it, which reads `outcome`
-  and `status_code` over a rolling 7 days and so can tell a dead key from a working one and
-  can confirm a rotation. It earned its keep on the first probe: it caught that
-  `github_code_search` is still 401 (see the dated state above). Read the two together —
-  the tools line says a secret is *set*, `checks.credentials` says whether it *works*.
-- **The cache sweep could not have drained a row — FIXED and deployed.** It handed all
-  5,000 identified ids to one `DELETE`, and PostgREST renders `.in()` into the URL query
-  string: a ~185 KB URL against a ~24 KB gateway cap. It now chunks at
-  `CACHE_SWEEP_DELETE_CHUNK = 300` and a chunk fault returns, so `deleted` reports only what
-  was actually removed. ⚠️ **`CACHE_SWEEP_ENABLED` is still OFF** — the chunking landed
-  first so that flipping the switch is a separate, reversible decision. ⚠️ **And it must be sequenced AFTER the payload store, never before:** measured 2026-09-19, `tool_call_cache` is the largest table at 47 MB / 12,701 rows back to 2026-06-25 with only 129 unexpired, so it is currently the only — accidental — copy of historical tool outputs. Draining it destroys them. Before tuning TTLs,
-  measure **key-miss vs expiry**: L2 is keyed on full-param `input_hash`, which may be the
-  real reason for the 1.6% hit rate.
-
-### ⚠️ Where each number DURABLY lives — measured 2026-09-13, before planning any week-long read
-
-A meter nobody can read a week later is not a meter. Checked against the live DB:
-
-| Store | Retention as measured | Holds |
-|---|---|---|
-| `tool_usage_log` | **15,136 rows back to 2026-06-08** — three months | every tool call: `outcome`, `status_code`, `cached`, cost. **Durable.** |
-| `evidence_log` / `artifacts` / `threads` | back to 2026-06-08 / 07-05 / 07-05 | case data. Durable. |
-| `orchestrator_invocations` / `orchestrator_step_metrics` | **only 2026-09-11 onward** (58 / 350 rows) | per-invocation and per-step timing + context |
-| `prompt_size_initial` / `prompt_size_step` / `run_budget_prior` | **nothing — `console.log` only** | the honest prompt terms and prior spend |
-
-**The two-day floor on the orchestrator tables is NOT a purge — do not report it as one.**
-There is no `pg_cron`, no trigger on either table, and every other table holds months. They
-are a two-day-old feature: `supabase/migrations/20260908000000_orchestrator_telemetry.sql`
-from #560, applied live around 2026-09-11. They accumulate normally from here. (Note the
-live migration ledger tops out at `20260825024640` and does **not** list it — more evidence
-for the rule above that `supabase/migrations/` is intent, not mechanism.)
-
-**The real gap is narrower and worse: the durable table records the WRONG number.**
-`orchestrator_invocations.initial_context_chars` and `orchestrator_step_metrics.context_chars`
-are fed by `approxPromptChars` (`telemetry.ts:175,223`) — the meter that omits the workflow
-addendum, the analyst-decisions block, the per-step directives and every tool schema. The
-honest measurement from #587 goes to `console.log` and therefore only to Supabase edge-function
-logs, which are short-lived and awkward to query. So a week from now the durable store will
-still hold the floor, and the accurate figure may be gone.
-
-Consequences for the ordered plan, so nobody mis-sequences it:
-
-- **A2b (per-investigation budget) is SAFE.** `run_budget_prior` classifies rows it reads from
-  `tool_usage_log`, which retains three months, so the week of evidence will be there even
-  though the log line is not. The plan stands.
-- **The context-size target is NOT safe to set from telemetry yet.** Before using
-  `prompt_size_step` for a threshold, give it a durable home — add the term breakdown to
-  `orchestrator_step_metrics` (a schema change, so **through Lovable and verified against the
-  live DB**, per the rule above), or persist it beside the existing row. Do **not** "fix"
-  `approxPromptChars` to close the gap: it routes providers, and changing it changes behaviour.
-  That is exactly why #587 left it alone.
-
-### ⚠️ OPEN mirror PR #41 — Lovable-authored, un-backported (as of 2026-09-13T00:55Z)
-
-`seeker-spark-search-5362c57c#41` — *"silence ai sdk warning spam and treat memory_save dedup as
-benign"* — is **open and not a draft**, and touches two real runtime files: `index.ts` (sets
-`AI_SDK_LOG_WARNINGS = false` on `globalThis`) and `tool-registry.ts` (a `memory_save` dedup
-collision returns `{ok:true, deduped:true}` rather than `{ok:false}`).
-
-The content looks correct — the second is arguably a finalize-wedge fix, since
-`resolveFinalizePhase` blocks the report phase until `memory_save` or `finalize_skip_memory`
-succeeds, and a collision is a genuine no-op rather than a laundered refusal. **The hazard is the
-channel, not the content:** it is authored where this repo cannot see it and **it does not touch
-`build-info.ts`**, so merging it on the mirror means the next deploy ships it while `/health`
-reports the SHA we stamped. That is the 2026-08-29 incident exactly.
-
-**Do not merge it on the mirror. Backport both hunks here** and let them flow through the normal
-pipeline; then close #41 as superseded. `diff -rq` is empty today only because #41 is unmerged —
-re-check it as part of the hard gate, and check `git log origin/main` in the mirror clone, not
-just `diff -rq`.
-
-### ⛔ There is NO call-to-artifact lineage — it blocks the whole learning layer
-
-**Measured 2026-09-13 against the live DB.** `artifacts` columns are exactly
-`id, thread_id, user_id, kind, value, confidence, source, metadata, created_at, cluster_id,
-subject_id`. **There is no join key to `tool_usage_log`.** The closest thing is `metadata.tool`,
-present on **714 of 1,868** recent artifacts — **38%**, and only on auto-persisted rows
-(`auto_persist_source` and `via` carry the identical count; anything from `record_finding` /
-`record_artifacts` has nothing). It stores a tool **name**, not a call id, so it cannot say which
-of 74 `minimax_correlate` calls produced a row and cannot be joined at all.
-
-**Consequence:** you can measure how often a tool returned HTTP 200, and how many artifacts exist —
-but not *how often a source produced something an analyst kept*. Operational memory, per-dork
-yield, EV ordering and the operator's "15 false positives" ask are **all blocked on this**. It is a
-prerequisite, not a nice-to-have, and it comes before any learning code.
-
-Fix shape: an `artifact_tool_lineage` **junction table**, plus `run_id` and a stable `call_id` on
-`tool_usage_log`, carrying selector **type** rather than raw selector value for cross-case
-analytics (privacy-correct, and it also fixes rejection keys being per-thread only).
-**Never an array of artifact ids on the call row** — that re-creates the exact failure that broke
-the cache sweep: PostgREST renders `.in()` into the URL query string, ~5,000 uuids is a ~185 KB URL
-against a ~24 KB cap. Schema first, through Lovable, verified against the live DB; then the write
-path behind a kill switch with a new `/health` key. Full detail:
-`mem://architecture/artifact-tool-lineage-gap`.
-
-### ⛔ Memory IS learning — the RETRIEVAL is what is broken (measured 2026-09-14)
-
-Do not rebuild the memory layer, and do not accept "it never learns" at face value. Measured against
-the live DB: **1,395 `agent_memory` rows back to 2026-05-27, 517 of them `kind='lesson'`, 246 of
-those about tool reliability.** It captures exactly the right things —
-
-> *"rapidapi_breach_search returned 0 hits for this email while breach_check (leakcheck) returned 21"*
-> *"Instagram profile could not be scraped (HTTP 451 block + SocialFetch not_found)"*
-
-— and then buries them. **`memory_recall` matches on `subject` only** (`tool-registry.ts:5707`,
-`.or(agentMemoryOrFilter(subj))`), so a lesson about a TOOL is filed under the SELECTOR it was
-learned on (`caseypritchard1@gmail.com`, `baig_azhar`). **101 tool-reliability lessons are filed
-under a case-specific subject and can never surface again.**
-
-Fix shape: a second recall axis — key tool lessons by tool name (`tool:rapidapi_breach_search`) and
-recall that set every run regardless of seed.
-
-**Do NOT conflate this with a broken detector.** A tool that is wrong by construction is a code
-defect and must be fixed in code; memory carries genuinely case-specific knowledge. Conflating them
-is why this has felt broken from both ends. Worked example: 12 lessons about HackerRank existed in
-memory while `sweeper.ts` had **no suppression input at all** (the platform list is a hardcoded
-array) and rejection keys were per-thread — so the lesson was recorded twelve times with no lever to
-act on it even once.
-
-### ✅ `lib/*_test.ts` now runs in CI — CLOSED by #597 (2026-09-14)
-
-Kept because the *shape* recurs. `test:edge` was `deno test … *_test.ts`, a shell glob matching the
-osint-agent **top level only**, so five test files had never been executed by CI or by the
-documented local command — `lib/cluster_test.ts` (the C-1 suite guarding against false identity
-merges), `lib/memory_save_test.ts`, `lib/memory_supersession_test.ts`, `tools/serus_core_test.ts`
-and `evidence-export/text-sanitize_test.ts`. All 34 passed on first run, so nothing was being
-hidden — but nothing was being *checked* either. The script now passes directories so Deno
-discovers recursively. **Baseline 1845 → 1879: the number moved because coverage moved, not
-because tests were added.** When a suite total jumps, check the runner before crediting the code.
-
-### ⛔ `promoteConfidence`'s corroboration branch is a mathematical no-op
-
-`lib/cluster.ts` advertises confidence promotion from cluster corroboration. The expression is
-`conf = Math.max(conf, Math.min(TIERS.LIKELY, member.confidence))`, and
-`Math.max(c, Math.min(75, c)) === c` for every `c`. It is an identity function. The branch can only
-ever CAP (contradicted → 40) or jump to 90 on a verified self-admission — confirmed across 64
-production rows, not one promoted upward. Either the expression is wrong or the comment is.
-**Evidence-ranking, so it needs explicit sign-off — do not "fix" it as a drive-by.**
-
-### ⛔ Report readiness punishes collection
-
-`confidence-dimensions.ts:196-201`: `readiness = reportSafe / TOTAL artifacts`, where report-safe
-means label ∈ `{CONFIRMED, ATTESTED, CORRELATED}`. The denominator includes `weak_lead`,
-`excluded_collision`, avatar placeholders and the engine's own notes — rows that can never be
-report-safe. **A more thorough run scores worse.** Measured: 7/64 = 11% on `@wopdell`, 2% on a
-120-artifact person case.
+## ⛔ BUILT AND UNWIRED — check before you build
+Before implementing anything from a plan or audit, **grep for it first**: it is usually already built and disconnected or mislabelled. Verified cases, the instruments that were lying, where each number durably lives, the lineage gap, the memory-retrieval gap and other measured traps: `docs/claude-md/built-and-unwired-and-measured-traps.md`. Never populate `seedTypes` to shrink tool-schema payload; never "fix" `approxPromptChars` (it routes providers); never enable `CACHE_SWEEP_ENABLED` before the payload store exists.
 
 ### ⛔ Ship in SMALL PRs — a large PR cannot be deployed or reverted here
 

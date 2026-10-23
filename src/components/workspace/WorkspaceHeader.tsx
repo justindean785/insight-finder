@@ -139,7 +139,7 @@ export function CaseFigures({
       )}
       data-case-figures={dense ? "dense" : undefined}
     >
-      <Figure value={evidence.available ? evidence.text.replace(/ evidence$/, "") : "—"} label={evidence.text.endsWith(" evidence") ? "evidence" : ""} hint={evidence.hint} />
+      <Figure value={evidence.available ? evidence.text.replace(/ evidence$/, "") : "—"} label={evidence.available ? (dense ? evidence.shortLabel : evidence.label) : ""} hint={evidence.hint} />
       <span className={unit}>
         <Sep />
         <Figure value={tools.available ? tools.total : "—"} label={tools.total === 1 ? "tool" : "tools"} hint={toolHint} />
