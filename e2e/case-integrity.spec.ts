@@ -88,6 +88,37 @@ test.describe("canonical case snapshot", () => {
     await expect(live).toHaveCount(0);
   });
 
+  test("2e · a tab that had the case open before the run started keeps the previous reply as it was", async ({ page }) => {
+    // A second tab or device: its transcript still ends with the PREVIOUS run's
+    // final reply (messages are not published over realtime). The new run is
+    // followed from the server, but that old reply is not this run's and must
+    // not be presented as still in progress: an interrupted reply stays
+    // labelled interrupted.
+    await open(page, `${THREAD}?scenario=running-elsewhere`);
+    const live = page.getByRole("region", { name: "Live from the server" });
+    await expect(live).toBeVisible();
+    await expect(live).toContainText("3 calls recorded");
+    await expect(page.getByText("Earlier run: the breach sweep found two reused handles and")).toBeVisible();
+    await expect(page.getByText("Interrupted response.")).toHaveCount(1);
+  });
+
+  test("2f · a stream that never ends is cut once the row says its run finished, and the report loads", async ({ page }) => {
+    // A half-open stream (a CPU-killed isolate, a socket that silently died)
+    // keeps this tab "streaming" forever, which also pins the case to Running.
+    // No realtime event arrives. Returning to the tab re-reads the row; once it
+    // says THIS run finished, the dead stream is cut and the saved report lands.
+    await open(page, `${THREAD}?scenario=stalled`);
+    const box = page.getByLabel("Message this case");
+    await box.fill("follow-up: anything new on the mailbox?");
+    await page.getByRole("button", { name: "Send" }).click();
+    const header = page.getByRole("region", { name: "Case summary" });
+    await expect(header.getByText("Running", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await page.evaluate(() => (window as unknown as { __harnessFinishRun: () => void }).__harnessFinishRun());
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await expect(page.getByText("Synthetic run finished after its stream stalled.")).toBeVisible({ timeout: 20_000 });
+    await expect(header.getByText("Running", { exact: true })).toHaveCount(0);
+  });
+
   test("2c · a finished case shows no server-follow panel", async ({ page }) => {
     await open(page, THREAD);
     await page.getByRole("tab", { name: /^Investigate/ }).click();

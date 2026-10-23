@@ -187,3 +187,28 @@ describe("shouldAnnounceChanges — the live region's volume", () => {
     expect(shouldAnnounceChanges([{ field: "tools", from: "46", to: "48" }], next)).toBe(true);
   });
 });
+
+describe("run.rowState — the thread row's own reading, beside the derived state", () => {
+  // A half-open stream keeps this tab's `chatRunning` true for the life of the
+  // page, and `run.state` honours it. The row's own reading has to stay
+  // visible so the transcript can notice the run it is streaming has ended.
+  it("matches run.state when this tab is not streaming", () => {
+    const snap = buildCaseSnapshot(input({ chatRunning: false, thread: thread({ status: "finished", recovery_reason: null }) }));
+    expect(snap.run.state).toBe("completed");
+    expect(snap.run.rowState).toBe("completed");
+  });
+  it("reads the row as completed while chatRunning still pins run.state to running", () => {
+    const snap = buildCaseSnapshot(input({ chatRunning: true, thread: thread({ status: "finished", recovery_reason: null }) }));
+    expect(snap.run.state).toBe("running");
+    expect(snap.run.rowState).toBe("completed");
+  });
+  it("reads a stale heartbeat as interrupted under an open stream", () => {
+    const snap = buildCaseSnapshot(input({
+      chatRunning: true,
+      nowMs: NOW,
+      thread: thread({ status: "active", recovery_reason: null, last_heartbeat_at: "2026-09-11T09:50:00Z" }),
+    }));
+    expect(snap.run.state).toBe("running");
+    expect(snap.run.rowState).toBe("interrupted");
+  });
+});
