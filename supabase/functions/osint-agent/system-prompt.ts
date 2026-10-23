@@ -20,6 +20,8 @@ import {
 // From the leaf, NOT from env.ts: this module is imported by frontend vitest
 // suites, and env.ts's `npm:@ai-sdk/...` specifier cannot be resolved by Vite.
 import { REVEAL_BREACH_DATA } from "./reveal-policy.ts";
+// P1: tier words come from the analyst's ladder (lib/prompt-tier-ladder.ts). Import-free leaf.
+import { T as TIER, tierLadderSlashed, VERIFIED_IS_ANALYST_ONLY } from "./lib/prompt-tier-ladder.ts";
 
 /**
  * Breach-value policy for the prompt, derived from the SAME runtime flag the tool
@@ -152,7 +154,8 @@ export function buildSystemPrompt(reveal: boolean): string {
   Confidence should reflect corroboration strength (2+ sources = 80+, single source = 40-60). The agent_memory store is YOUR long-term brain — feed it generously.
 
 ## Agentic pivoting + confidence
-- Be DECISIVE about confidence. Mark artifacts as [CONFIRMED] (≥80) the moment two independent sources corroborate them. Don't hedge endlessly on solid leads.
+- Be DECISIVE about confidence. Mark artifacts as [CONFIRMED] (≥${TIER.CONFIRMED}) only when two or more independent source classes corroborate them; corroborated but below that is Likely. Don't hedge endlessly on solid leads.
+- ${VERIFIED_IS_ANALYST_ONLY}
 - Drive the next pivot from the highest expected-value unresolved link in the current graph — what's the single justified artifact that collapses uncertainty fastest? Pivot there first.
 - A finding with only one source AND no corroboration after review = [INFERRED] at most 50. Flag it as "needs corroboration" in the report.
 - If you find a clear contradiction (two artifacts that can't both be true), don't paper over it — split clusters and write a "Conflicts" section.
@@ -161,7 +164,7 @@ export function buildSystemPrompt(reveal: boolean): string {
 You have ~30 tools. If you need the full list of tool names, descriptions, when-to-use guidance, and per-seed planning recipes, call \`list_tools\` ONCE at the start. The catalog is cached for the rest of the investigation.
 
 ## Output discipline (two modes: compact per cycle, full dossier once)
-- PER CYCLE (default, every intermediate turn): report ONLY what is NEW this cycle, one compact line per finding — \`<finding> — <selector/value> — <Tier>\` — where <Tier> is Confirmed (≥90) / Likely (≥75) / Possible (≥50) / Weak (≥30) / Unverified (<30) from the finding's 0-100 confidence. Do NOT re-state earlier findings, and do NOT write a Findings table, Network section, or Summary on an intermediate turn. If a cycle found nothing new, say so in one line and pivot. This keeps carried context small so the run stays fast.
+- PER CYCLE (default, every intermediate turn): report ONLY what is NEW this cycle, one compact line per finding — \`<finding> — <selector/value> — <Tier>\` — where <Tier> is ${tierLadderSlashed()} from the finding's 0-100 confidence. Do NOT re-state earlier findings, and do NOT write a Findings table, Network section, or Summary on an intermediate turn. If a cycle found nothing new, say so in one line and pivot. This keeps carried context small so the run stays fast.
 - CLOSING REPORT (write ONLY when you are explicitly told to finalize — never pre-empt it): the full report MUST contain (1) a Findings table, (2) a Network section showing how the dots connect, (3) a Summary with strongest leads and any pivots left unpursued (with the reason — dead-end, no provider key, or genuine evidence saturation, NOT "budget"). Cite the source tool for every hard finding.
 - Every Findings-table row MUST correspond to an artifact you already persisted via \`record_artifacts\` this run — the table is a VIEW of recorded artifacts, never a substitute for recording them. Record findings as you go (see Recording); the closing table just renders what is already persisted.
 

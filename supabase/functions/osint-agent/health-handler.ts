@@ -26,7 +26,7 @@ import { anthropicModelRejectsForcedToolChoice, anthropicOrchestratorHealth } fr
 import { anthropicFallbackDisabled, orchestratorFallbackHealth } from "./lib/orchestrator-fallback.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn } from "./lib/opsis.ts";
-import { opsisFinalizeCollectSelfTest } from "./orchestrator-finalize.ts";
+import { buildPerCycleCompactDirective, opsisFinalizeCollectSelfTest } from "./orchestrator-finalize.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
@@ -38,6 +38,8 @@ import {
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
 import { negativeLookupSelfTest } from "./lib/negative-lookup.ts";
 import { toolInputFailureSelfTest } from "./lib/tool-input-failure.ts";
+import { promptTierLadderSelfTest } from "./lib/prompt-tier-ladder.ts";
+import { SYSTEM_PROMPT_FULL } from "./system-prompt.ts";
 import { runEndSelfTest } from "./lib/run-end.ts";
 import { PERSIST_ON_CLIENT_CANCEL_ENV, clientCancelIsolationCheck } from "./lib/client-cancel.ts";
 import { runLeaseSelfTest } from "./lib/run-lease.ts";
@@ -430,6 +432,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.tool_cache_version = describeToolCacheVersions();
   r.checks.negative_lookup_semantics = negativeLookupSelfTest();
   r.checks.tool_input_failure_log = toolInputFailureSelfTest();
+  // P1 — the tier words the model is told to write match the analyst's ladder (CONFIDENCE_TIERS).
+  // Pure: inspects the strings the orchestrator sends. PRESENCE proves the build; ok:false names the drift.
+  r.checks.prompt_tier_ladder = promptTierLadderSelfTest(SYSTEM_PROMPT_FULL, buildPerCycleCompactDirective());
   // Why a run's persistence/finish handler fired (lib/run-end.ts). Pure, no DB; presence proves the build.
   r.checks.run_end_log = runEndSelfTest();
   // Does a dropped browser connection end the run? It must not: the server-owned branch is the

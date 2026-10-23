@@ -229,15 +229,14 @@ Deno.test("buildPerCycleCompactDirective: forbids the full dossier and demands n
   assert(/do not pre-empt|explicitly when to write/i.test(d), "defers the closing report");
 });
 
-Deno.test("buildPerCycleCompactDirective: tier thresholds mirror tierFor() exactly", () => {
+Deno.test("buildPerCycleCompactDirective: tier thresholds are the analyst's ladder (P1)", () => {
   const d = buildPerCycleCompactDirective();
-  // The words + numeric thresholds must match lib/cluster.ts tierFor():
-  //   >=90 Confirmed, >=75 Likely, >=50 Possible, >=30 Weak, else Unverified.
-  for (const [n, tier] of [["90", "Confirmed"], ["75", "Likely"], ["50", "Possible"], ["30", "Weak"]] as const) {
-    assert(d.includes(n), `directive states the ${tier} threshold ${n}`);
-    assert(d.includes(tier), `directive names the ${tier} tier`);
+  // P1 (2026-10-21): CONFIDENCE_TIERS, the ladder the UI badges use — no longer
+  // lib/cluster.ts tierFor()'s 50/30 (see prompt_tier_ladder_test.ts).
+  for (const [n, tier] of [["90", "Confirmed"], ["75", "Likely"], ["55", "Possible"], ["35", "Weak"]] as const) {
+    assert(d.includes(`≥${n} ${tier}`), `directive states the ${tier} threshold ${n}`);
   }
-  assert(d.includes("Unverified"), "directive names the Unverified (below-30) tier");
+  assert(d.includes("Unverified"), "directive names the Unverified (below-35) tier");
 });
 
 // ---- Run tool-call cap ----------------------------------------------------------
