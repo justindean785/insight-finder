@@ -15,6 +15,14 @@ import {
 } from "lucide-react";
 import { BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  SOURCE_RELIABILITY_ROW_LIMIT,
+  describeSourceReliability,
+  summarizeSourceReliability,
+  windowStartIso,
+  type SourceLogRow,
+  type SourceReliability,
+} from "@/lib/source-reliability";
 
 export const BRAIN_LAST_VISITED_KEY = "brain_last_visited";
 const BRAIN_VISIT_EVENT = "proximity:brain-visited";
@@ -895,24 +903,19 @@ const SOURCE_TOOLS = [
   "exa_search", "jina_reader_scrape",
 ];
 
-type SourceRow = {
-  tool: string;
-  reliability: number; // 0-100
-  delta: number;       // pp change recent vs prior
-  runs: number;
-};
-
 type ReviewSummary = { confirmed: number; key: number; recheck: number; dismissed: number };
 
-function reliabilityColor(p: number): string {
+function reliabilityColor(p: number | null): string {
+  if (p === null) return "hsl(var(--muted-foreground))";
   if (p >= 70) return "hsl(var(--brain-status-ok))";
   if (p >= 40) return "hsl(var(--brain-status-warn))";
   return "hsl(var(--brain-status-bad))";
 }
 
-function SourcesTab() {
+export function SourcesTab() {
   const { user } = useAuth();
-  const [rows, setRows] = useState<SourceRow[]>([]);
+  const [rows, setRows] = useState<SourceReliability[]>([]);
+  const [truncated, setTruncated] = useState(false);
   const [reviews, setReviews] = useState<ReviewSummary>({ confirmed: 0, key: 0, recheck: 0, dismissed: 0 });
   const [loading, setLoading] = useState(true);
 
@@ -921,40 +924,25 @@ function SourcesTab() {
     let alive = true;
     (async () => {
       setLoading(true);
-      const cutoff = new Date(Date.now() - 14 * 24 * 3600 * 1000).toISOString();
+      // Same definition as the tool_health view: outcome over real attempts, live calls,
+      // last 30 days. Newest first, so a row cap can only ever drop the oldest.
       const [{ data: logs }, { data: revs }] = await Promise.all([
         supabase
           .from("tool_usage_log")
-          .select("tool_name, ok, created_at")
+          .select("tool_name, outcome, cached, created_at")
           .eq("user_id", user.id)
+          .eq("cached", false)
+          .gte("created_at", windowStartIso(Date.now()))
           .in("tool_name", SOURCE_TOOLS)
-          .limit(5000),
+          .order("created_at", { ascending: false })
+          .limit(SOURCE_RELIABILITY_ROW_LIMIT),
         supabase.from("artifact_reviews").select("state").eq("user_id", user.id),
       ]);
       if (!alive) return;
-      const byTool = new Map<string, { okR: number; nR: number; okP: number; nP: number }>();
-      for (const t of SOURCE_TOOLS) byTool.set(t, { okR: 0, nR: 0, okP: 0, nP: 0 });
-      for (const row of (logs as { tool_name: string; ok: boolean; created_at: string }[] | null) ?? []) {
-        const b = byTool.get(row.tool_name);
-        if (!b) continue;
-        const recent = row.created_at >= cutoff;
-        if (recent) { b.nR++; if (row.ok) b.okR++; }
-        else { b.nP++; if (row.ok) b.okP++; }
-      }
-      const computed: SourceRow[] = SOURCE_TOOLS.map((t) => {
-        const b = byTool.get(t)!;
-        const total = b.nR + b.nP;
-        const overall = total ? Math.round(((b.okR + b.okP) / total) * 100) : 0;
-        const rPct = b.nR ? (b.okR / b.nR) * 100 : NaN;
-        const pPct = b.nP ? (b.okP / b.nP) * 100 : NaN;
-        const delta = isFinite(rPct) && isFinite(pPct) ? Math.round(rPct - pPct) : 0;
-        return { tool: t, reliability: overall, delta, runs: total };
-      })
-        // Only surface sources this user has ACTUALLY run — otherwise a new
-        // account sees all 13 tools at 0%/0 runs, which reads as fake example
-        // data rather than their own live activity.
-        .filter((r) => r.runs > 0)
-        .sort((a, b) => b.runs - a.runs);
+      // `outcome` is live in the table but missing from the generated types (same cast as useThreadToolHealth).
+      const logRows = (logs as unknown as SourceLogRow[] | null) ?? [];
+      setTruncated(logRows.length >= SOURCE_RELIABILITY_ROW_LIMIT);
+      const computed = summarizeSourceReliability(logRows, SOURCE_TOOLS);
       setRows(computed);
 
       const summary: ReviewSummary = { confirmed: 0, key: 0, recheck: 0, dismissed: 0 };
@@ -973,7 +961,10 @@ function SourcesTab() {
   return (
     <div className="space-y-5">
       <p className="text-xs text-muted-foreground">
-        Tool reliability reflects recent run outcomes; review totals summarize your saved case decisions.
+        Reliability is successes ÷ real attempts (succeeded + failed) over the last 30 days, live calls only.
+        Skipped and no-record calls are not counted either way. The arrow compares the last 14 days with the 16 before.
+        Review totals summarize your saved case decisions.
+        {truncated && " Showing the most recent calls only."}
       </p>
 
       <div className="flex gap-2 flex-wrap">
@@ -1019,23 +1010,23 @@ function FeedbackChip({ label, value, tone }: { label: string; value: number; to
   );
 }
 
-function SourceWeightRow({ row }: { row: SourceRow }) {
+function SourceWeightRow({ row }: { row: SourceReliability }) {
   const tone = reliabilityColor(row.reliability);
   const hasDelta = row.delta !== 0;
   const deltaUp = row.delta > 0;
   return (
-    <div className="px-3 py-2.5 flex items-center gap-3">
+    <div className="px-3 py-2.5 flex items-center gap-3" title={describeSourceReliability(row)}>
       <div className="font-mono text-xs text-foreground min-w-0 w-44 truncate">{row.tool}</div>
       <div className="flex-1 min-w-0">
         <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
           <div
             className="h-full rounded-full transition-[width] duration-slow ease-standard"
-            style={{ width: `${Math.max(2, row.reliability)}%`, background: tone }}
+            style={{ width: `${Math.max(2, row.reliability ?? 0)}%`, background: tone }}
           />
         </div>
       </div>
       <div className="font-mono text-data tabular-nums w-10 text-right" style={{ color: tone }}>
-        {row.reliability}%
+        {row.reliability === null ? "—" : `${row.reliability}%`}
       </div>
       <div className="w-12 text-right">
         {hasDelta ? (
@@ -1050,7 +1041,7 @@ function SourceWeightRow({ row }: { row: SourceRow }) {
         )}
       </div>
       <span className="px-1.5 py-0.5 rounded border border-border-subtle font-mono text-data text-muted-foreground tabular-nums shrink-0">
-        {row.runs} runs
+        {row.attempts === 0 ? "no attempts" : `${row.attempts} ${row.attempts === 1 ? "attempt" : "attempts"}`}
       </span>
     </div>
   );
