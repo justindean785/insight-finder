@@ -35,13 +35,13 @@ test.describe("canonical case snapshot", () => {
   test("1 · initial syncing: skeletons, never a false 0", async ({ page }) => {
     await open(page, `${THREAD}?scenario=syncing`, { waitHydrated: false });
     await expect(page.getByText("Syncing case…").first()).toBeVisible();
-    await expect(page.locator("body")).not.toContainText(/\b0 tools?\b/);
+    await expect(page.locator("body")).not.toContainText(/\b0 (tool )?calls?\b|\b0 tools?\b/);
   });
 
   test("header tool count = Tools tab badge = Tools panel count", async ({ page }) => {
     await open(page, THREAD);
     const header = page.getByRole("region", { name: "Case summary" });
-    const headerTools = await header.getByText(/^tools?$/).locator("xpath=preceding-sibling::*[1]").textContent();
+    const headerTools = await header.getByText(/^(tool )?calls?$/).locator("xpath=preceding-sibling::*[1]").textContent();
     const badge = (await page.getByRole("tab", { name: /Tools/ }).textContent())?.replace(/\D/g, "");
     await page.getByRole("tab", { name: /Tools/ }).click();
     // MetricCard: the label sits in a row, the figure in the next block.
@@ -64,7 +64,7 @@ test.describe("canonical case snapshot", () => {
     await open(page, `${THREAD}?scenario=running`);
     const live = page.getByRole("region", { name: "Live from the server" });
     await expect(live).toBeVisible();
-    await expect(live).toContainText("3 calls recorded");
+    await expect(live).toContainText("3 calls this run");
     for (const name of ["dns_records", "crtsh_lookup", "wayback_cdx_search"]) await expect(live).toContainText(name);
     // Only this run: calls from earlier runs on the case are not repeated here.
     await expect(live).not.toContainText("hunter_verify");
@@ -86,6 +86,37 @@ test.describe("canonical case snapshot", () => {
     await expect(page.getByText("Synthetic run finished while this page was away.")).toBeVisible();
     await expect(page.getByRole("region", { name: "Case summary" }).getByText("Running", { exact: true })).toHaveCount(0);
     await expect(live).toHaveCount(0);
+  });
+
+  test("2e · a tab that had the case open before the run started keeps the previous reply as it was", async ({ page }) => {
+    // A second tab or device: its transcript still ends with the PREVIOUS run's
+    // final reply (messages are not published over realtime). The new run is
+    // followed from the server, but that old reply is not this run's and must
+    // not be presented as still in progress: an interrupted reply stays
+    // labelled interrupted.
+    await open(page, `${THREAD}?scenario=running-elsewhere`);
+    const live = page.getByRole("region", { name: "Live from the server" });
+    await expect(live).toBeVisible();
+    await expect(live).toContainText("3 calls this run");
+    await expect(page.getByText("Earlier run: the breach sweep found two reused handles and")).toBeVisible();
+    await expect(page.getByText("Interrupted response.")).toHaveCount(1);
+  });
+
+  test("2f · a stream that never ends is cut once the row says its run finished, and the report loads", async ({ page }) => {
+    // A half-open stream (a CPU-killed isolate, a socket that silently died)
+    // keeps this tab "streaming" forever, which also pins the case to Running.
+    // No realtime event arrives. Returning to the tab re-reads the row; once it
+    // says THIS run finished, the dead stream is cut and the saved report lands.
+    await open(page, `${THREAD}?scenario=stalled`);
+    const box = page.getByLabel("Message this case");
+    await box.fill("follow-up: anything new on the mailbox?");
+    await page.getByRole("button", { name: "Send" }).click();
+    const header = page.getByRole("region", { name: "Case summary" });
+    await expect(header.getByText("Running", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await page.evaluate(() => (window as unknown as { __harnessFinishRun: () => void }).__harnessFinishRun());
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await expect(page.getByText("Synthetic run finished after its stream stalled.")).toBeVisible({ timeout: 20_000 });
+    await expect(header.getByText("Running", { exact: true })).toHaveCount(0);
   });
 
   test("2c · a finished case shows no server-follow panel", async ({ page }) => {
@@ -319,5 +350,36 @@ test.describe("case sheet → Evidence handoff", () => {
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
     await expect(drawer).toContainText(value);
+  });
+});
+
+test.describe("chat cycle cards", () => {
+  test("a failed call stays visible: counted on the cycle row and listed when expanded", async ({ page }) => {
+    await open(page, THREAD);
+    const cycle = page.locator('[data-speaker="tool"]').filter({ hasText: /1 failed/ }).first();
+    await expect(cycle).toBeVisible();
+    await cycle.getByRole("button", { expanded: false }).first().click();
+    const failedCall = cycle.locator('[data-failed-tool="true"]');
+    await expect(failedCall).toHaveCount(1);
+    await expect(failedCall).toContainText("Firecrawl Scrape");
+    await failedCall.getByRole("button").first().click();
+    await expect(failedCall).toContainText(/timeout after 15000ms/);
+    });
+  });
+
+test.describe("overview decision queue", () => {
+  test("a reason shared by several cards is printed once, and each card keeps it for screen readers", async ({ page }) => {
+    await open(page, THREAD);
+    await page.getByRole("tab", { name: /Overview/ }).click();
+    const queue = page.locator("section", { hasText: "Needs a decision" }).first();
+    const shared = queue.getByTestId("shared-caveat");
+    await expect(shared).toHaveCount(1);
+    await expect(shared).toContainText(/rows below share this reason/);
+    const reason = (await shared.locator("p").innerText()).trim();
+    // The visible sentence appears once; each pointing card still carries it as sr-only text.
+    const pointers = queue.getByText("Shared reason, above");
+    const n = await pointers.count();
+    expect(n).toBeGreaterThanOrEqual(2);
+    await expect(queue.locator(".sr-only", { hasText: reason })).toHaveCount(n);
   });
 });

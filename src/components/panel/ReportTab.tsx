@@ -156,6 +156,10 @@ export function ReportTab({
   const standaloneTools = useThreadToolActivity(snapshot ? "" : threadId);
   const toolEvents = snapshot ? snapshot.tools.events : standaloneTools.events;
   const toolInvocations = snapshot ? snapshot.tools.total : standaloneTools.persistedTotal;
+  // Same availability rule as the case bar: an unread ledger is not 0 calls.
+  const toolCallsKnown = snapshot
+    ? snapshot.tools.available
+    : !standaloneTools.loading && (!standaloneTools.error || standaloneTools.loadedAt !== null);
   const toolActivityList = useMemo(() => toolEvents.map((e) => ({ toolName: e.toolName })), [toolEvents]);
 
   const markdown = useMemo(
@@ -402,6 +406,7 @@ export function ReportTab({
             reportType={reportType}
             authority={authority}
             draftMark={isDraft ? { readinessPct: gate.readinessPct, reasons: gate.reasons } : null}
+            toolCallTotal={toolCallsKnown ? toolInvocations : undefined}
           />
         </div>
 

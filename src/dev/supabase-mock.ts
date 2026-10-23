@@ -323,7 +323,7 @@ const SCENARIO =
 const mainThread = FIXTURES.threads?.[0] as Record<string, unknown> | undefined;
 const nowIso = () => new Date().toISOString();
 if (!SNAPSHOT && mainThread) {
-  if (SCENARIO === "running") {
+  if (SCENARIO === "running" || SCENARIO === "running-elsewhere") {
     Object.assign(mainThread, { status: "active", run_started_at: new Date(Date.now() - 120_000).toISOString(), last_heartbeat_at: nowIso() });
     // Calls this run has recorded so far: the server keeps working whether or
     // not this browser still holds the live stream (a fresh page load holds none).
@@ -335,11 +335,22 @@ if (!SNAPSHOT && mainThread) {
       inRun("r2", "crtsh_lookup", false, 2829, 95),
       inRun("r3", "wayback_cdx_search", true, 679, 40),
     ];
-    // The agent's first reply as a dropped stream leaves it: cut off mid-stream.
-    (FIXTURES.messages as unknown[]).push({
-      id: "m-run-start", thread_id: THREAD_ID, user_id: USER_ID, role: "assistant", created_at: new Date(Date.now() - 110_000).toISOString(),
-      parts: [{ type: "text", text: "Starting with the domain's DNS and certificate history.", state: "streaming" }],
-    });
+    if (SCENARIO === "running") {
+      // The agent's first reply as a dropped stream leaves it: cut off mid-stream.
+      (FIXTURES.messages as unknown[]).push({
+        id: "m-run-start", thread_id: THREAD_ID, user_id: USER_ID, role: "assistant", created_at: new Date(Date.now() - 110_000).toISOString(),
+        parts: [{ type: "text", text: "Starting with the domain's DNS and certificate history.", state: "streaming" }],
+      });
+    } else {
+      // `running-elsewhere`: this tab had the case open BEFORE the run started
+      // (a second tab or device). `messages` is not in the realtime publication,
+      // so its transcript still ends with the PREVIOUS run's final reply — here
+      // one that was itself cut off — and no message of the new run is loaded.
+      (FIXTURES.messages as unknown[]).push({
+        id: "m-prev-run-end", thread_id: THREAD_ID, user_id: USER_ID, role: "assistant", created_at: new Date(Date.now() - 720_000).toISOString(),
+        parts: [{ type: "text", text: "Earlier run: the breach sweep found two reused handles and", state: "streaming" }],
+      });
+    }
   } else if (SCENARIO === "interrupted" || SCENARIO === "reconcile") {
     Object.assign(mainThread, {
       status: "finished",
@@ -402,6 +413,22 @@ if (!SNAPSHOT && mainThread && SCENARIO === "running" && typeof window !== "unde
     (FIXTURES.messages as unknown[]).push({
       id: "m-run-end", thread_id: THREAD_ID, user_id: USER_ID, role: "assistant", created_at: nowIso(),
       parts: text("## Findings report\n\nSynthetic run finished while this page was away."),
+    });
+  };
+}
+
+// `stalled`: the case is finished when the page opens. The test then sends a
+// message, which the harness answers with a stream that never closes (see
+// fetch-retry-mock.ts). Finishing the run saves the row and the report and,
+// as in production when the socket is dead, NO realtime event reaches the page.
+// The row names THIS run (its start is after the stream opened), which is what
+// lets the transcript tell a dead stream from a healthy new one.
+if (!SNAPSHOT && mainThread && SCENARIO === "stalled" && typeof window !== "undefined") {
+  (window as unknown as { __harnessFinishRun?: () => void }).__harnessFinishRun = () => {
+    Object.assign(mainThread, { status: "finished", run_started_at: nowIso(), last_heartbeat_at: nowIso(), updated_at: nowIso() });
+    (FIXTURES.messages as unknown[]).push({
+      id: "m-stalled-end", thread_id: THREAD_ID, user_id: USER_ID, role: "assistant", created_at: nowIso(),
+      parts: text("## Findings report\n\nSynthetic run finished after its stream stalled."),
     });
   };
 }

@@ -1,4 +1,5 @@
 import type { ToolEvent } from "@/hooks/useThreadToolActivity";
+import { isTerminalRunState, type CaseRunState } from "@/lib/case-snapshot";
 
 /**
  * "Following the server": the run is alive on the server (fresh heartbeat) but
@@ -38,4 +39,51 @@ export function currentRunEvents(events: readonly ToolEvent[], runStartedAt: str
   return events
     .filter((e) => Date.parse(e.at) >= start - START_SKEW_MS)
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+}
+
+/**
+ * While following, the last assistant message is treated as this run's reply
+ * still in progress on the server: not "Interrupted", and its tool cards are
+ * left to the server-follow panel. That is only right when it IS this run's.
+ * A second tab that already had the case open keeps the PREVIOUS run's final
+ * reply as its last message when a new run starts elsewhere (`messages` is not
+ * in the realtime publication), and it must keep rendering as the finished
+ * reply it is. A reply saved before the run's recorded start is not this run's;
+ * one with no saved time is this tab's own local copy and is.
+ */
+export function isCurrentRunMessage(createdAt: string | undefined, runStartedAt: string | null): boolean {
+  if (!createdAt || !runStartedAt) return true;
+  const at = Date.parse(createdAt);
+  const start = Date.parse(runStartedAt);
+  if (!Number.isFinite(at) || !Number.isFinite(start)) return true;
+  return at >= start - START_SKEW_MS;
+}
+
+/**
+ * A stream that outlived the run it was streaming.
+ *
+ * The case snapshot reports "running" for as long as this tab's stream is open,
+ * so a half-open stream that never ends (a CPU-killed isolate, a socket that
+ * silently died) pins the case to Running even after the poll or a return to
+ * the tab has read a finished row. The realtime watchdog only hears a realtime
+ * UPDATE, which is the signal that is also dead in that case. The row's own
+ * reading (`run.rowState`) is terminal, and it describes THIS run (its recorded
+ * start is at or after this stream's start): the stream is dead and must be
+ * stopped so the saved report can load.
+ *
+ * The start comparison is the safety case: when a new run starts, the row can
+ * still show the previous run's finish until the next re-read, and a healthy
+ * fresh stream must never be killed for it.
+ */
+export function shouldForceStreamEnd({ clientStreaming, rowState, rowStartedAt, streamStartedAtMs }: {
+  clientStreaming: boolean;
+  rowState: CaseRunState;
+  rowStartedAt: string | null;
+  streamStartedAtMs: number | null;
+}): boolean {
+  if (!clientStreaming || !isTerminalRunState(rowState)) return false;
+  if (!rowStartedAt || streamStartedAtMs === null) return false;
+  const start = Date.parse(rowStartedAt);
+  if (!Number.isFinite(start)) return false;
+  return start >= streamStartedAtMs - START_SKEW_MS;
 }

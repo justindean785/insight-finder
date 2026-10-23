@@ -62,7 +62,7 @@ import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
 import { humanizeSelector } from "@/lib/humanize-selector";
 import { measureRequestBody, reportRequestBodySize } from "@/lib/request-size";
-import { shouldFollowServer, currentRunEvents } from "@/lib/server-follow";
+import { currentRunEvents, isCurrentRunMessage, shouldFollowServer, shouldForceStreamEnd } from "@/lib/server-follow";
 import { ServerFollowPanel } from "@/components/chat/ServerFollowPanel";
 import { useHeldTrue } from "@/hooks/use-held-true";
 import {
@@ -571,22 +571,24 @@ function computeToolGroups(parts: MessagePartShape[]): Array<ToolRunGroup | { pa
   return groups;
 }
 
-// Beta-facing cycle badges. Failed tool calls are intentionally NOT surfaced to
-// users — `group.failed` is still counted in the group data (and kept in state),
-// it is only hidden from this presentation. Exported solely for a regression
-// test; it is a pure helper, not a component.
+// Cycle badges. Failures are shown (T10, 2026-10-21): the June beta rule that hid
+// them here (#120 / 7462ba4) left chat as the one surface where a failed call was
+// invisible while the case bar, Overview and Tools tab all counted it. Exported
+// solely for a regression test; it is a pure helper, not a component.
 // eslint-disable-next-line react-refresh/only-export-components
 export function cycleSummaryBadges(group: {
   cached: number;
   stale: number;
   skipped: number;
   useful: number;
+  failed: number;
 }): string[] {
   return [
     group.cached > 0 ? `${group.cached} cached` : null,
     group.stale > 0 ? `${group.stale} stale` : null,
     group.skipped > 0 ? `${group.skipped} skipped` : null,
     group.useful > 0 ? `${group.useful} completed` : null,
+    group.failed > 0 ? `${group.failed} failed` : null,
   ].filter((bit): bit is string => Boolean(bit));
 }
 
@@ -681,10 +683,10 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
   const selectors = Array.from(new Set(group.selectors)).slice(0, 3);
   const extra = Math.max(0, new Set(group.selectors).size - selectors.length);
   const summaryBits = cycleSummaryBadges(group);
-  // Beta-facing: failed tool parts are hidden from the expanded list too. The
-  // underlying group.parts stays intact in state; only the rendered subset omits
-  // errors, so a user who expands a cycle never sees a red "failed" card.
-  const visibleParts = group.parts.filter((part) => deriveToolTone(part) !== "error");
+  // Every call is listed when a cycle is expanded, failures included (T10): a
+  // failed lookup is not a negative finding, and the analyst must be able to see
+  // which one failed and why rather than infer it from a count elsewhere.
+  const visibleParts = group.parts;
   return (
     <div className="chat-card text-[13px] leading-relaxed text-muted-foreground" data-speaker="tool">
       {/* One row per cycle when collapsed: stage, calls, EV, what it touched,
@@ -712,6 +714,12 @@ function ToolGroupSummary({ group, createdAt }: { group: ToolRunGroup; createdAt
           {!(selectors.length > 0 || extra > 0) && <span className="flex-1" />}
           {summaryBits.length > 0 && (
             <span className="hidden shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground sm:inline">{summaryBits.join(" · ")}</span>
+          )}
+          {/* Failures stay visible on a phone too, where the chip line above is hidden. */}
+          {group.failed > 0 && (
+            <span className="shrink-0 font-mono text-[11px] tabular-nums text-[hsl(var(--danger))] sm:hidden" data-testid="cycle-failed">
+              {group.failed} failed
+            </span>
           )}
           {time && <span className="shrink-0 tabular-nums text-muted-foreground/80">{time}</span>}
         </div>
@@ -1469,6 +1477,7 @@ function ChatWindowInner({
   // controls off a thread whose run is live in another tab (overlap guard).
   const caseSnapshot = useOptionalCaseSnapshot();
   const serverRunActive = caseSnapshot?.snapshot?.run.state === "running";
+  const serverRunStartedAt = caseSnapshot?.snapshot?.run.startedAt ?? null;
   // Read at CALL time (delayed auto-continue, send guards) so a callback built
   // while a run was live does not keep refusing after it ends.
   const serverRunActiveRef = useRef(serverRunActive);
@@ -2687,6 +2696,38 @@ function ChatWindowInner({
     };
   }, [reconcilePersistedMessages, threadId]);
 
+  // ---- A stream that outlived its run ---------------------------------------
+  // The watchdog above only hears a realtime UPDATE. When the socket is dead as
+  // well as the stream (the same conditions that kill one tend to kill both),
+  // the case snapshot still re-reads the row on return to the tab and on its
+  // live poll, but `run.state` keeps reading "running" for as long as this tab
+  // is streaming, so nothing acted on it: the case sat on Running and the
+  // report needed a manual refresh. The row's own reading says the run this
+  // tab is streaming has ended (its recorded start is at or after this
+  // stream's). Held for the same 8s grace the watchdog gives a trailing report
+  // chunk, then the dead stream is cut and the saved messages are merged, as
+  // the watchdog would have done.
+  const streamStartedAtRef = useRef<number | null>(null);
+  if (isLoading) {
+    if (streamStartedAtRef.current === null) streamStartedAtRef.current = Date.now();
+  } else {
+    streamStartedAtRef.current = null;
+  }
+  const streamOutlivedRun = useHeldTrue(
+    shouldForceStreamEnd({
+      clientStreaming: isLoading,
+      rowState: caseSnapshot?.snapshot?.run.rowState ?? "draft",
+      rowStartedAt: serverRunStartedAt,
+      streamStartedAtMs: streamStartedAtRef.current,
+    }),
+    8_000,
+  );
+  useEffect(() => {
+    if (!streamOutlivedRun) return;
+    try { stopRef.current?.(); } catch { /* stream already closed */ }
+    void reconcilePersistedMessages();
+  }, [streamOutlivedRun, reconcilePersistedMessages]);
+
   // Run progress readout for the "Investigating…" indicator: an elapsed timer
   // (plus the current tool step) so an analyst can distinguish a working run
   // from a wedged one instead of staring at a bare pulsing dot.
@@ -2969,9 +3010,11 @@ function ChatWindowInner({
                   onRerun={hasCacheBanner ? rerunInvestigation : undefined}
                   rerunBusy={rerunBusy}
                   superseded={superseded}
-                  // While following the server, the first reply is still in
+                  // While following the server, this run's first reply is still in
                   // progress there: not "Interrupted", and the panel lists its calls.
-                  live={(isLoading || followingServer) && isLastAssistant}
+                  // A reply saved before the run started is an earlier run's (a tab
+                  // that already had the case open) and keeps rendering as it was.
+                  live={(isLoading || (followingServer && isCurrentRunMessage(createdAtMap[m.id], serverRunStartedAt))) && isLastAssistant}
                 />
               );
             });
