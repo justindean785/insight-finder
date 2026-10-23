@@ -60,6 +60,7 @@ import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
 import { memoryContextSelfTest } from "./lib/memory-context.ts";
 import { crossCaseReviewsSelfTest } from "./lib/cross-case-reviews.ts";
 import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
+import { analystAuthorityBoundarySelfTest } from "./lib/analyst-authority-keys.ts";
 import { archiveOriginRuleSelfTest, breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 import { memoryInputNormalizationSelfTest } from "./lib/memory-input-normalization.ts";
 import { exactBooleanRepairSelfTest } from "./lib/exact-boolean-repair.ts";
@@ -593,6 +594,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.breach_origin_cap = breachOriginCapSelfTest();
   r.checks.memory_context = memoryContextSelfTest();
   r.checks.user_supplied_status = userSuppliedStatusSelfTest();
+  // A1: can a model-supplied artifact metadata blob carry the analyst's review / release /
+  // dismissal keys? Pure. PRESENCE proves the build that strips them is live; ok:false means
+  // the boundary failed its own probe.
+  r.checks.analyst_authority_boundary = analystAuthorityBoundarySelfTest();
 
   // Is a memory_save / minimax_correlate call that is right in substance but wrong in SHAPE re-shaped (and only when
   // unambiguous), while values (kind, scope, confidence) are never rewritten? Pure. PRESENCE proves the deployed bundle.
