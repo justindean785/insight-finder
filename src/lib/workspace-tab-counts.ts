@@ -21,7 +21,9 @@
 
 export interface WorkspaceTabCounts {
   evidence: { value: number; alert: number; hint?: string };
-  tools: { value: number; alert: number };
+  /** `unit` is read by screen readers after the number ("18 tool calls"), so
+   *  the badge is not a bare figure that could be taken for distinct tools. */
+  tools: { value: number; alert: number; unit: string };
 }
 
 /**
@@ -41,6 +43,6 @@ export function buildWorkspaceTabCounts(
         alert: 0,
         hint: `${needsCall} need${needsCall === 1 ? "s" : ""} your call — conflicts, and rows whose linkage to the subject is unproven`,
       },
-    tools: { value: toolsTotal, alert: 0 },
+    tools: { value: toolsTotal, alert: 0, unit: toolsTotal === 1 ? "tool call" : "tool calls" },
   };
 }

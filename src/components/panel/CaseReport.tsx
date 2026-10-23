@@ -1043,6 +1043,7 @@ export function CaseReport({
   reportType = "full",
   authority,
   draftMark = null,
+  toolCallTotal,
 }: {
   seedValue: string | null;
   seedType: string | null;
@@ -1057,6 +1058,9 @@ export function CaseReport({
   /** Set when the report is NOT report-safe. Marks the document top and bottom,
    *  inside the print root, so every printed copy carries it. */
   draftMark?: { readinessPct: number; reasons: string[] } | null;
+  /** Every recorded tool call for the case (the case bar's figure). Omitted, the
+   *  chip is left out rather than printed as 0. */
+  toolCallTotal?: number;
 }) {
   const display = useMemo(() => extractDisplaySeed(seedValue, seedType), [seedValue, seedType]);
   const subjectProfile = useMemo(() => buildSubjectProfile(artifacts, reviews), [artifacts, reviews]);
@@ -1140,7 +1144,12 @@ export function CaseReport({
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{display.kind}</span>
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{reportType === "brief" ? "executive brief" : "full dossier"}</span>
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{artifacts.length} artifacts</span>
-              <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{audit.tools.length} tools</span>
+              {/* Two populations, two words: calls are every recorded invocation;
+                  "tools with artifacts" is distinct producing tools (buildToolAudit). */}
+              {typeof toolCallTotal === "number" && (
+                <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{toolCallTotal} tool call{toolCallTotal === 1 ? "" : "s"}</span>
+              )}
+              <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{audit.tools.length} tool{audit.tools.length === 1 ? "" : "s"} with artifacts</span>
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{sources.length} sources</span>
               <span className="px-2 py-1 border border-white/[0.08] rounded-lg bg-white/[0.035]">{avgConfidence}% avg confidence</span>
             </div>
@@ -1423,7 +1432,7 @@ export function CaseReport({
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
           <MiniAssessment label="Evidence volume" value={`${artifacts.length}`} hint="raw artifacts retained after client-side grouping" />
           <MiniAssessment label="Independent sources" value={`${effectiveSources}`} hint={`${sources.length} source label${sources.length === 1 ? "" : "s"} → ${effectiveSources} independent (mirrors & duplicate datasets collapsed)`} />
-          <MiniAssessment label="Tool coverage" value={`${audit.tools.length}`} hint="tools represented in this case artifact set" />
+          <MiniAssessment label="Tools with artifacts" value={`${audit.tools.length}`} hint="tools represented in this case artifact set" />
         </div>
       </div>
 

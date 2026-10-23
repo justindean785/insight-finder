@@ -21,7 +21,7 @@ export type { WorkspaceTab };
  * `alert` is the number that NEEDS ATTENTION (failed tool calls, breaches)
  * and renders as a dot — never as a count, so a tab number always means the
  * same thing as the word next to it. */
-export type TabCount = { value: number; alert?: number; hint?: string };
+export type TabCount = { value: number; alert?: number; hint?: string; /** Screen-reader-only noun after the number. */ unit?: string };
 
 const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
   // Overview leads: it is the only tab that answers "what is the state of this
@@ -122,6 +122,7 @@ function TabCountBadge({ count, loading, active }: { count?: TabCount; loading: 
       {count.value > 0 && (
         <span className={cn("font-mono text-data tabular-nums leading-none", active ? "text-foreground/70" : "text-muted-foreground")} title={count.hint}>
           {countText(count.value)}
+          {count.unit && <span className="sr-only"> {count.unit}</span>}
         </span>
       )}
       {count.alert ? <AlertDot count={count.alert} /> : null}
@@ -314,7 +315,10 @@ function CompactNav({
                   <span className="min-w-0 flex-1 truncate">{t.label}</span>
                   {!loading && count?.alert ? <AlertDot count={count.alert} /> : null}
                   {!loading && count && count.value > 0 && (
-                    <span className="font-mono text-data tabular-nums text-muted-foreground">{countText(count.value)}</span>
+                    <span className="font-mono text-data tabular-nums text-muted-foreground">
+                      {countText(count.value)}
+                      {count.unit && <span className="sr-only"> {count.unit}</span>}
+                    </span>
                   )}
                   {selected && <Check className="h-3.5 w-3.5 text-[hsl(var(--brand))]" aria-hidden />}
                 </DropdownMenuRadioItem>

@@ -55,7 +55,7 @@ describe("buildWorkspaceTabCounts", () => {
   });
 
   it("Tools prints the persisted tool total the header prints", () => {
-    expect(buildWorkspaceTabCounts(33, 0).tools).toEqual({ value: 33, alert: 0 });
+    expect(buildWorkspaceTabCounts(33, 0).tools).toEqual({ value: 33, alert: 0, unit: "tool calls" });
   });
 });
 
