@@ -29,13 +29,15 @@ export function ServerFollowPanel({ active, events }: { active: boolean; events:
         <span aria-hidden className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[hsl(var(--brand))] motion-reduce:animate-none" />
         <span>Live view disconnected — still running on the server</span>
         <span className="chat-card__header-time font-mono tabular-nums" aria-live="polite">
-          {events.length} call{events.length === 1 ? "" : "s"} recorded
+          {/* THIS run's calls (currentRunEvents); the case bar counts every run. */}
+          {events.length} call{events.length === 1 ? "" : "s"} this run
         </span>
       </div>
       <div className="chat-card__body space-y-3">
         <p className="text-meta text-muted-foreground">
           This page isn&apos;t receiving the live stream, but the investigation is still running on the server.
           Its tool calls appear below as they&apos;re recorded; the agent&apos;s write-up appears here when the run finishes.
+          Only this run&apos;s calls are listed; the case bar counts every run of the case.
         </p>
         {rows.length === 0 ? (
           <p className="text-meta text-muted-foreground">Waiting for the first recorded call…</p>

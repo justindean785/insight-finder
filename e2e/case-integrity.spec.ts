@@ -64,7 +64,7 @@ test.describe("canonical case snapshot", () => {
     await open(page, `${THREAD}?scenario=running`);
     const live = page.getByRole("region", { name: "Live from the server" });
     await expect(live).toBeVisible();
-    await expect(live).toContainText("3 calls recorded");
+    await expect(live).toContainText("3 calls this run");
     for (const name of ["dns_records", "crtsh_lookup", "wayback_cdx_search"]) await expect(live).toContainText(name);
     // Only this run: calls from earlier runs on the case are not repeated here.
     await expect(live).not.toContainText("hunter_verify");
