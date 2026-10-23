@@ -1165,6 +1165,9 @@ Deno.serve(async (req) => {
       return text ? Boolean(detectSeedServer(text)) : false;
     })();
 
+    // Opsis runs replayed in the latest step's history that nothing has read yet. Refreshed
+    // every step; read by the cache wrapper's search-side guard (lib/opsis-search-guard.ts).
+    let latestPendingOpsisRunIds: string[] = [];
     const prepareStep: NonNullable<Parameters<typeof streamText>[0]["prepareStep"]> =
       async ({ messages: stepMessages, stepNumber }) => {
         const { data: threadState } = await supabase
@@ -1290,6 +1293,7 @@ Deno.serve(async (req) => {
         // that removed the "stream updates, then summarize" behavior. Left out so the
         // model concludes on its own, as it did days ago.
         const elapsedMsNow = Date.now() - runStartedAt;
+        latestPendingOpsisRunIds = pendingOpsisRuns(stepMessages as Array<{ content?: unknown }>).map((r) => r.run_id);
         // BOUNDED correlation deferral. `shouldDeferFinalizeForCorrelate` is now
         // gated by BOTH a per-run counter (max 1) and a hard wall-clock floor, so a
         // run whose model never issues a correlate call can no longer suppress the
@@ -1516,6 +1520,10 @@ Deno.serve(async (req) => {
         // The opsis_results exemptions in cache.ts hold only while prepareStep has the run
         // in the collect phase (orchestrator-finalize.ts) — never for a model-initiated read.
         collectPhaseActive: () => finalizePhase === "collect",
+        // Opsis search-side guard inputs (lib/opsis-search-guard.ts): the runs the history
+        // already shows as un-read, and the live remaining wall-clock.
+        pendingOpsisRunIds: () => latestPendingOpsisRunIds,
+        remainingRunMs: () => ORCHESTRATOR_WALL_CLOCK_MS - (Date.now() - runStartedAt),
         // See cache.ts's ctx field comment: the correlate exemption in the
         // finalize-window live-call guard is conditional on this, not automatic.
         // Recomputed live (not the stale elapsed captured at the last prepareStep)

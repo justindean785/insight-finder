@@ -3224,7 +3224,7 @@ export function buildTools(ctx: ToolContext) {
     // signal is forwarded so its cap can end a poll early.
     opsis_search: tool({
       description:
-        "Opsis: find accounts for a username, email or domain across ~700 platforms. PAID (1 credit). Returns within ~25s; a run still going returns partial results plus a run_id, so fetch the rest with opsis_results and never search the same selector again. Hits are unverified account leads.",
+        "Opsis: find accounts for a username, email or domain across ~700 platforms. PAID (1 credit). Start searches EARLY in a turn: a search is refused (free) while 2 runs from this thread are still un-read, or when the run cannot read it before the report — read pending runs with opsis_results first. Returns within ~25s; a run still going returns partial results plus a run_id, so fetch the rest with opsis_results and never search the same selector again. Hits are unverified account leads.",
       inputSchema: memoSchema("opsis_search", () => z.object({
         kind: z.enum(["username", "email", "domain"]),
         value: z.string().min(1),

@@ -15,6 +15,9 @@ import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL
 import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome, isProvenEmptyResult } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
+import {
+  decideOpsisSearch, noteOpsisResultsOutcome, noteOpsisSearchOutcome, opsisSearchGuardDisabled, uncollectedOpsisRuns,
+} from "./lib/opsis-search-guard.ts";
 // Union of both sides. #519 replaced this file's quarantine read with the paged
 // `loadRefusedArtifacts`, which absorbs what `buildRefusedKeys` did here, so that
 // symbol is deliberately NOT re-imported — it is unused in this module after the
@@ -706,6 +709,12 @@ export function wrapToolsWithCache(
     // a model-initiated read on a path where the collect decision declined (wall-clock
     // trigger, exhausted budget) stays a finalize-window skip, as before.
     collectPhaseActive?: () => boolean;
+    /** Run ids of Opsis searches replayed in the latest step's history that no opsis_results has
+     *  read yet (orchestrator-finalize.ts pendingOpsisRuns). The search-side guard
+     *  (lib/opsis-search-guard.ts) unions these with the runs it saw start this request. */
+    pendingOpsisRunIds?: () => string[];
+    /** Run wall-clock remaining right now (ms); recomputed live, like hasCorrelateDispatchBudget. */
+    remainingRunMs?: () => number;
     onHeartbeat?: () => void;
   },
 ) {
@@ -1566,6 +1575,53 @@ export function wrapToolsWithCache(
           }
         }
 
+        // ---- Opsis search-side guard (lib/opsis-search-guard.ts) --------------
+        // A paid opsis_search is admitted only when the run can still READ it before the
+        // report, and only while at most MAX_UNCOLLECTED_OPSIS_RUNS runs await reading.
+        // Measured: 7 of 11 paid searches in one case were never read. Checked here —
+        // after cache hits (a completed run still replays free) and BEFORE the paid slot
+        // is reserved — so a refusal costs nothing and burns no budget. Legible: ok:false,
+        // skipped, provider_attempted:false, with the pending run ids so the model can read
+        // them. opsis_results is never gated here. Kill switch: OPSIS_SEARCH_GUARD_DISABLED.
+        if (name === "opsis_search" && !opsisSearchGuardDisabled()) {
+          const pendingIds = uncollectedOpsisRuns(ctx.investigationId, ctx.pendingOpsisRunIds?.() ?? []);
+          const remainingMs = ctx.remainingRunMs ? ctx.remainingRunMs() : null;
+          const decision = decideOpsisSearch({ uncollected: pendingIds.length, remainingMs });
+          if (!decision.allow) {
+            const rejection = decision.reason === "uncollected_cap" ? "opsis_uncollected_cap" : "opsis_deadline";
+            console.warn(JSON.stringify({
+              event: "opsis_search_refused",
+              thread_id: ctx.investigationId,
+              reason: decision.reason,
+              uncollected_runs: decision.uncollected,
+              remaining_ms: decision.remaining_ms,
+              needed_ms: decision.needed_ms,
+            }));
+            await logUsage(false, false, Date.now() - t0, `opsis search guard: ${decision.reason}`, null, true, {
+              input: inputJson,
+              runtime: { ...runtimeMetaBase, rejection_reason: rejection, rejection_source: "opsis_guard", stale_cache: !!staleRecord },
+            });
+            return attachRuntimeMeta({
+              ok: false,
+              skipped: true,
+              provider_attempted: false,
+              opsis_guard: decision.reason,
+              uncollected_runs: decision.uncollected,
+              pending_run_ids: pendingIds,
+              remaining_ms: decision.remaining_ms,
+              needed_ms: decision.needed_ms,
+              reason: decision.note,
+              error: `opsis_search not started (${decision.reason}); no credit spent`,
+            }, {
+              ...runtimeMetaBase,
+              rejection_reason: rejection,
+              stage: "TARGETED_PIVOT",
+              cache_layer: "miss",
+              stale_cache: !!staleRecord,
+            });
+          }
+        }
+
         // ---- Per-run tool-call cap (graceful) ----
         // Once the run has made MAX_TOOL_CALLS_PER_RUN genuine live executions, stop
         // STARTING new lookups: return a schema-safe skip (like a governor rejection)
@@ -1812,6 +1868,10 @@ export function wrapToolsWithCache(
           });
           ok = deriveOk(result);
           if (!ok) errInfo = extractToolError(result);
+          // Opsis search-side guard bookkeeping: a PARTIAL search is a run awaiting a read;
+          // any opsis_results read retires it (lib/opsis-search-guard.ts).
+          if (name === "opsis_search") noteOpsisSearchOutcome(ctx.investigationId, result);
+          if (name === "opsis_results") noteOpsisResultsOutcome(ctx.investigationId, result, (input as { run_id?: unknown } | null)?.run_id);
           // PAID-CALL ACCOUNTING — the only place the reserved paid slot is
           // released. `startCall` reserves at admission (atomically, so a parallel
           // batch cannot overshoot); a tool that declined BEFORE contacting the
