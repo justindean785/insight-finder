@@ -73,4 +73,15 @@ describe("pivotForArtifact", () => {
     const out = pivotForArtifact(row, ctx([row]));
     expect(out.available).toBe(false);
   });
+
+  it("offers a pivot on a second row with the same identity (username + handle)", () => {
+    const first = art({ kind: "username", value: "synthetic_user" });
+    const second = art({ kind: "handle", value: "synthetic_user" });
+    const out = pivotForArtifact(second, ctx([first, second]));
+    expect(out.available).toBe(true);
+    if (out.available === false) return;
+    expect(out.pivot.targetType).toBe("username");
+    // eligibility is judged on the selected row, not the engine's first row
+    expect(out.pivot.sourceArtifactIds).toEqual([second.id]);
+  });
 });

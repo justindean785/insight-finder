@@ -1,5 +1,6 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import { computePivots, type DisplayPivot } from "@/lib/pivot-engine";
+import { canonicalKey, computePivots, type DisplayPivot } from "@/lib/pivot-engine";
+import { KIND_TO_PIVOT } from "@/lib/intel";
 import type { ReviewState } from "@/lib/review";
 import {
   pivotEligibility,
@@ -44,11 +45,20 @@ export function pivotForArtifact(
     queriedSet: ctx.queriedSet,
     reviews: ctx.reviews,
   });
-  const mine = all.find((p) => p.sourceArtifactId === artifact.id);
+  // The engine collapses rows with the same pivot identity (type + normalized
+  // value) into ONE pivot that carries the first row's id, so a second row of
+  // the same identity (a `handle` beside a `username`, say) is matched by that
+  // identity, not by id alone.
+  const rowType = KIND_TO_PIVOT[artifact.kind.toLowerCase()];
+  const rowKey = rowType ? canonicalKey({ type: rowType, value: artifact.value }) : null;
+  const mine = all.find((p) => p.sourceArtifactId === artifact.id)
+    ?? (rowKey ? all.find((p) => canonicalKey(p) === rowKey) : undefined);
   if (!mine) {
     return { available: false, why: "No pivot is offered for this row: its kind has no pivot, it is the case seed, or it was dismissed." };
   }
-  const validation = validatePivotSuggestion(pivotSuggestionInput(mine));
+  // Eligibility is judged on the row the analyst is looking at, even when the
+  // engine attributed the identity to a duplicate row.
+  const validation = validatePivotSuggestion({ ...pivotSuggestionInput(mine), sourceArtifactIds: mine.sourceArtifactId.startsWith("report-pivot-") ? [] : [artifact.id] });
   if (validation.status !== "valid") {
     return { available: false, why: `This row cannot be pivoted on: ${validation.problems.join("; ")}` };
   }
