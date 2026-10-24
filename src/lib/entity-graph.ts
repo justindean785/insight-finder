@@ -290,6 +290,7 @@ export function buildEntityGraph(
   // Collision/false-positive artifacts may still appear as (conflict) nodes,
   // but must NOT seed identity edges — exactly the clustering rule.
   const selectorMembers = new Map<string, { kind: SelectorKind; raw: string; ids: string[] }>();
+  const seedOwnKeys = new Set<string>();
   const addSelectors = (id: string, sels: Selector[]) => {
     for (const s of sels) {
       const bucket = selectorMembers.get(s.key) ?? { kind: s.kind, raw: s.raw, ids: [] };
@@ -298,10 +299,13 @@ export function buildEntityGraph(
     }
   };
   if (seedNode && seedValue) {
-    const seedSels = selectorsFor(seedType ?? "", seedValue, null);
+    // The seed's OWN selector is not a second holder of that selector: an artifact carrying the same
+    // email/handle IS the seed's record, so indexing the seed there joined two copies of one entity with
+    // an identity edge counted as "1 real link" (measured 2026-10-24). Only the parent pointer anchors
+    // the seed in the index; seed-record association is added below as a non-relationship edge.
+    for (const s of selectorsFor(seedType ?? "", seedValue, null)) seedOwnKeys.add(s.key);
     // The seed also anchors any artifact tagged with it as a parent pointer.
-    seedSels.push({ key: `parent:${seedValue.trim().toLowerCase()}`, kind: "parent", raw: seedValue });
-    addSelectors(SEED_ID, seedSels);
+    addSelectors(SEED_ID, [{ key: `parent:${seedValue.trim().toLowerCase()}`, kind: "parent", raw: seedValue }]);
   }
   for (const a of sorted) {
     // ANY conflict row (collision / false-positive / metadata.conflict / breach
@@ -372,6 +376,18 @@ export function buildEntityGraph(
     }
   }
 
+  // Seed-record association: an artifact whose own value is the seed's selector is the seed's record, the
+  // same entity. It is drawn as the faint provenance edge, never as an identity link, and the record keeps
+  // its own node, authority and evidence. Real links between distinct entities are untouched.
+  const seedRecordIds = new Set<string>();
+  if (seedNode && seedOwnKeys.size > 0) {
+    for (const a of sorted) {
+      if (!selectorsFor(a.kind, a.value, null).some((sel) => seedOwnKeys.has(sel.key))) continue;
+      seedRecordIds.add(a.id);
+      upsertEdge(SEED_ID, a.id, "seed-discovery", `Same ${seedNode.kind} as the seed — the seed's own record, not a separate relationship`, SELECTOR_STRENGTH.parent);
+    }
+  }
+
   // Seed-discovery fallback: nothing should float unexplained. Any non-seed
   // node with no edge yet ties to the seed with a faint provenance edge — this
   // is honest (it WAS surfaced under the seed), and visibly the weakest link.
@@ -419,7 +435,7 @@ export function buildEntityGraph(
     m.set(e.target, (m.get(e.target) ?? 0) + 1);
   }
   const isolatedCount = nodes.filter(
-    (n) => !n.isSeed && (realDeg.get(n.id) ?? 0) === 0 && (fallbackDeg.get(n.id) ?? 0) > 0,
+    (n) => !n.isSeed && !seedRecordIds.has(n.id) && (realDeg.get(n.id) ?? 0) === 0 && (fallbackDeg.get(n.id) ?? 0) > 0,
   ).length;
 
   return {

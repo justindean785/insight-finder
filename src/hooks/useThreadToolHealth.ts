@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   classifyDetailedOutcome,
   explainLeakCheckRefusal,
+  explainSchemaRejection,
   normalizeProviderError,
   CANONICAL_OUTCOME_META,
   type CanonicalOutcome,
@@ -52,6 +53,8 @@ export interface ToolIssue {
   /** True for an explanation on a row that does NOT need attention (a LeakCheck 403 on the calm http_denied
    *  category): shown as information, not styled as a fault. Absent on every needs-attention issue. */
   informational?: boolean;
+  /** The provider's / validator's own words when the headline is a plain-language rewrite (schema rejections). */
+  detail?: string;
 }
 
 export interface ToolHealthRow {
@@ -144,6 +147,7 @@ export function aggregateToolHealth(raw: RawRow[]): Omit<ThreadToolHealth, "load
         category,
         message: normalizeProviderError(name, r.error_msg, r.status_code, category),
         statusCode: r.status_code ?? null,
+        ...(explainSchemaRejection(name, r.error_msg) ? { detail: String(r.error_msg).trim() } : {}),
       };
     }
   }

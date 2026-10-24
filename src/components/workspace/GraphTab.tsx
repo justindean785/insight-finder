@@ -781,7 +781,7 @@ function GraphList({
           Linked entities <span className="font-mono tabular-nums">{linked.length}</span>
         </h3>
         {linked.length === 0 ? (
-          <p className="px-4 py-3 text-[13px] text-muted-foreground">No entity shares a selector with another yet. Corroborating pivots form links.</p>
+          <p className="px-4 py-3 text-[13px] text-muted-foreground">No relationships between distinct entities established. A record that only repeats the seed is the seed itself, not a link; corroborating pivots form links.</p>
         ) : (
           <ul className="divide-y divide-white/[0.06]">{linked.map(row)}</ul>
         )}

@@ -106,3 +106,20 @@ describe("the stated-chip stylesheet", () => {
     expect(body).toMatch(/border:\s*1px dashed/);
   });
 });
+
+describe("the AI-narrative notice", () => {
+  it("sits ABOVE the prose, visible without hovering, whenever the agent stated a label", () => {
+    const { container } = render(<MessageView m={assistant(allLabels)} />);
+    const notice = container.querySelector("[data-narrative-notice]")!;
+    expect(notice).toBeTruthy();
+    expect(notice.textContent).toMatch(/AI narrative — claims need evidence review/);
+    expect(notice.textContent).toMatch(/scores/);
+    const body = container.querySelector(".chat-card__body")!;
+    expect(notice.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("is absent when the agent stated nothing", () => {
+    const { container } = render(<MessageView m={assistant("Moving to identity expansion. Nothing to report yet.")} />);
+    expect(container.querySelector("[data-narrative-notice]")).toBeNull();
+  });
+});

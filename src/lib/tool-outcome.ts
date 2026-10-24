@@ -231,6 +231,34 @@ export function explainLeakCheckRefusal(
  * Never dump a bare HTTP code. The category drives the wording; the tool name
  * and code add specificity.
  */
+/**
+ * The edge function's schema-rejection message: `input rejected by schema: entries (invalid_type) [expected array,
+ * received undefined], …`. It is the AGENT's request that was malformed, not a provider fault, and the raw text is
+ * zod vocabulary. Returns a plain-language headline plus the untouched raw text (for a Details disclosure), or null
+ * for any other message.
+ */
+export function explainSchemaRejection(toolName: string, errorMsg: string | null | undefined): { summary: string; detail: string } | null {
+  const raw = String(errorMsg ?? "").trim();
+  const m = /^input rejected by schema:\s*(.+)$/is.exec(raw);
+  if (!m) return null;
+  const issues = m[1].split(/,\s+(?=[\w.]+ \()/).map((part) => /^([\w.]+) \(([^)]*)\)(?: \[(.*)\])?/s.exec(part.trim()));
+  const missing: string[] = [];
+  const wrong: string[] = [];
+  for (const i of issues) {
+    if (!i) continue;
+    (/received undefined/.test(i[3] ?? "") ? missing : wrong).push(i[1]);
+  }
+  const unique = (xs: string[]) => [...new Set(xs)];
+  const parts: string[] = [];
+  if (missing.length) parts.push(`left out ${unique(missing).map((f) => `“${f}”`).join(", ")}`);
+  if (wrong.length) parts.push(`sent ${unique(wrong).map((f) => `“${f}”`).join(", ")} in the wrong form`);
+  const what = parts.length ? parts.join(" and ") : "sent a request in the wrong form";
+  return {
+    summary: `The agent’s request to ${toolName} was malformed — it ${what}. The call did not run; this is an input error, not a provider fault, and the agent normally retries.`,
+    detail: raw,
+  };
+}
+
 export function normalizeProviderError(
   toolName: string,
   errorMsg: string | null | undefined,
@@ -262,6 +290,10 @@ export function normalizeProviderError(
       if (code === 402 || /payment|quota|credit|balance/i.test(raw)) return `Provider quota/billing limit reached${code ? ` (HTTP ${code})` : ""} — top up or wait for the quota to reset.`;
       return `Provider authentication failed (HTTP ${code ?? 401}) — the API key is missing or unauthorized.`;
     case "failed":
+      {
+        const schema = explainSchemaRejection(toolName, errorMsg);
+        if (schema) return schema.summary;
+      }
       // Never throw away the provider's own words. `raw` is the only place the
       // actual cause survives; the generic sentence is a fallback for when the
       // provider gave us nothing, not a replacement for what it did give us.
