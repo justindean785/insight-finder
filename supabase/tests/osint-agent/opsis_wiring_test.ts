@@ -184,13 +184,26 @@ Deno.test("dispatch: a repeat search of a COMPLETED run replays from cache — n
 Deno.test("dispatch: a repeat search of a PARTIAL run is refused free — finish it with opsis_results", async () => {
   // A partial run is never cached (cache.ts isCacheableToolResult), so without
   // PREMIUM_TOOLS the repeat would reach Opsis and spend a second credit.
+  // Two layers refuse it. FIRST the search-side guard (lib/opsis-search-guard.ts): the
+  // selector has an un-read run, so the model is pointed at opsis_results with the run id.
+  // Under the guard's kill switch the premium per-entity dedup (circuit.ts) still refuses it.
   const calls = { n: 0 };
   const exec = (wrapOpsis(calls, PARTIAL).opsis_search as unknown as Exec).execute;
   await exec({ kind: "username", value: "slow_handle" }, { toolCallId: "p1", messages: [] });
   const second = await exec({ kind: "username", value: "Slow_Handle" }, { toolCallId: "p2", messages: [] });
   assertEquals(calls.n, 1, "the paid search must not run twice for one entity");
-  assert(JSON.stringify(second).includes("already ran for this entity"), JSON.stringify(second));
+  assertEquals(second.opsis_guard, "pending_same_selector", JSON.stringify(second));
+  assertEquals(second.pending_run_id, "r");
+  assert(JSON.stringify(second).includes("opsis_results"), "the refusal names the free read");
   // A different entity is unaffected.
   await exec({ kind: "username", value: "another_handle" }, { toolCallId: "p3", messages: [] });
   assertEquals(calls.n, 2);
+  Deno.env.set("OPSIS_SEARCH_GUARD_DISABLED", "true");
+  try {
+    const legacy = await exec({ kind: "username", value: "slow_handle" }, { toolCallId: "p4", messages: [] });
+    assertEquals(calls.n, 2, "with the guard off, the premium dedup still refuses the repeat");
+    assert(JSON.stringify(legacy).includes("already ran for this entity"), JSON.stringify(legacy));
+  } finally {
+    Deno.env.delete("OPSIS_SEARCH_GUARD_DISABLED");
+  }
 });

@@ -27,6 +27,7 @@ import { anthropicFallbackDisabled, orchestratorFallbackHealth } from "./lib/orc
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn } from "./lib/opsis.ts";
 import { opsisFinalizeCollectSelfTest } from "./orchestrator-finalize.ts";
+import { opsisSearchGuardSelfTest } from "./lib/opsis-search-guard.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
@@ -528,6 +529,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // network call. Its PRESENCE is the behavioural proof that the build carrying
   // the opsis_* tools is live; the detail says whether they can run.
   r.checks.opsis = opsisHealthDetail(!!OPSIS_API_KEY, opsisKillSwitchOn(), !opsisCreditHintDisabled());
+  // Is a paid opsis_search refused (free) while runs await reading or when the run cannot
+  // read it before the report? Pure probe of lib/opsis-search-guard.ts; PRESENCE proves the
+  // build. The wrapper wiring is pinned by opsis_search_guard_test.ts in CI, not by this probe.
+  r.checks.opsis_search_guard = opsisSearchGuardSelfTest();
   // Is a paid opsis_search still pending at finalize read (one bounded opsis_results step)
   // before persist → memory → report? Pure. PRESENCE proves the deployed bundle.
   // Kill switch: OPSIS_FINALIZE_COLLECT_DISABLED.
