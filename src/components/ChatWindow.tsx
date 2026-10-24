@@ -43,6 +43,9 @@ import { hasReportShape, joinAssistantTranscript, stripReasoningPerPart } from "
 import { findLastReportIndex, isReportMessage } from "@/lib/superseded-reports";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import { computePivots } from "@/lib/pivot-engine";
+import { buildEntityGraph } from "@/lib/entity-graph";
+import { summarizeConnections } from "@/lib/connection-summary";
+import { isAutoRunnable, pickBestPivot } from "@/lib/best-pivot";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
 import { scrollBehavior } from "@/lib/motion";
 import { fetchWithRetry } from "@/lib/fetch-retry";
@@ -2151,6 +2154,19 @@ function ChatWindowInner({
   // dossier, on demand, instead of after every turn.
   const artifactsCountRef = useRef(artifacts.length);
   artifactsCountRef.current = artifacts.length;
+  // Auto-run follows the ranking: each cycle runs the best next pivot (see the
+  // refs' assignment after `suggestions`) and falls back to the generic
+  // continue prompt when none is safe to start unattended.
+  const autoPivotRef = useRef<RunnablePivot | null>(null);
+  const autoPivotKeyRef = useRef<string | null>(null);
+  const autoSentRef = useRef<Set<string>>(new Set());
+  const nextAutoPrompt = () => {
+    const pivot = autoPivotRef.current;
+    const key = autoPivotKeyRef.current;
+    if (!pivot || !key) return CONTINUE_PROMPT;
+    autoSentRef.current.add(key);
+    return pivot.prompt;
+  };
   const sendCycle = useCallback(async (prompt: string, countAsAutoCycle: boolean) => {
     // Continue / Write report / arming Auto-run all land here, and all three are
     // buttons the analyst just pressed. A bare `return` is what made Continue
@@ -2183,7 +2199,8 @@ function ChatWindowInner({
     setAutoRun({ enabled: true, cyclesRun: 0, artifactsBefore: null });
     // Arm and start immediately when idle; when a run is already going, the
     // completion effect below picks it up.
-    if (!isSubmitBlocked(status, submitLockRef.current)) void sendCycle(CONTINUE_PROMPT, true);
+    if (!isSubmitBlocked(status, submitLockRef.current)) void sendCycle(nextAutoPrompt(), true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sendCycle, status]);
 
   // Listen for "run pivot" events dispatched from the Pivots tab.
@@ -2543,7 +2560,7 @@ function ChatWindowInner({
         serverRunActive: serverRunActiveRef.current,
       });
       if (decision.action === "continue") {
-        void sendCycle(CONTINUE_PROMPT, true);
+        void sendCycle(nextAutoPrompt(), true);
         return;
       }
       if (decision.action === "wait") {
@@ -2795,6 +2812,19 @@ function ChatWindowInner({
     return () => window.removeEventListener("swarmbot:request-report-pivots", onRequest as EventListener);
   }, [reportPivots, threadId]);
 
+  // What the agent has linked so far: the same graph the Graph tab draws,
+  // summarized. Held back until there is something to summarize.
+  const artifactsByIdMemo = useMemo(() => new Map(artifacts.map((a) => [a.id, a] as const)), [artifacts]);
+  const connections = useMemo(() => {
+    if (artifacts.length === 0) return null;
+    const reviews: Record<string, ReviewState> = {};
+    for (const a of artifacts) {
+      const r = review.map[a.id];
+      if (r && r !== "new") reviews[a.id] = r;
+    }
+    return summarizeConnections(buildEntityGraph(artifacts, seedValue, null, reviews), artifacts);
+  }, [artifacts, seedValue, review.map]);
+
   // Build suggested next-step replies after the agent stops streaming.
   // Memoized — without this the IIFE re-runs on every streamed token because
   // `messages` updates dozens of times per second during streaming.
@@ -2871,6 +2901,16 @@ function ChatWindowInner({
     }
     return [...out.slice(0, 4), ...repair];
   }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability]);
+
+  // The pivot Auto-run would start next. Read from a ref at cycle time, because
+  // the cycle effect fires between renders. A pivot Auto-run already sent this
+  // session is not sent again while the tool log catches up to it.
+  autoPivotRef.current = (() => {
+    const best = pickBestPivot(suggestions);
+    if (!best || best.validation.status !== "valid" || !isAutoRunnable(best)) return null;
+    return autoSentRef.current.has(best.key) ? null : best.validation.pivot;
+  })();
+  autoPivotKeyRef.current = pickBestPivot(suggestions)?.key ?? null;
 
   return (
     <div className="chat-stage relative h-full min-w-0 overflow-hidden bg-background">
@@ -3053,6 +3093,9 @@ function ChatWindowInner({
               busy={isLoading}
               openKey={openStep}
               onOpenChange={setOpenStep}
+              connections={connections}
+              artifactsById={artifactsByIdMemo}
+              onOpenGraph={() => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "graph" } }))}
             />
           )}
           <div ref={endRef} />

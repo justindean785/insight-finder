@@ -84,6 +84,7 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
       if (t === "overview") setTab("overview");
       else if (t === "chat") setTab("chat");
       else if (t === "report") setTab("report");
+      else if (t === "graph") setTab("graph");
       else if (["custody", "audit", "issues"].includes(t)) {
         setTab("tools");
         setToolsReq((prev) => ({ view: t === "issues" ? "health" : t, n: (prev?.n ?? 0) + 1 }));
