@@ -1925,6 +1925,47 @@ All colors MUST be HSL.
   padding-left: 1rem !important;
   padding-right: 0.625rem !important;
 }
+/* The same bug, one property over: `[data-density-row] { gap }` (0.5rem) beat the ledger's own 0.75rem column gap on
+   ROWS only, so the column head (12px gap) and the rows (8px gap) were two different grids and AUTHORITY / SOURCE
+   drifted 8px / 4px off the cells beneath them (measured 2026-10-24, 1440px). It also overrode the phone layout's
+   row-gap, which is why a phone row cost 67px. Rows own their gaps here, vertical rhythm still comes from density. */
+.ledger-row[data-density-row] {
+  column-gap: 0.75rem;
+  row-gap: 0.25rem;
+}
+
+/* Secondary text on a ledger row (authority basis, source, band label): a label, so the reading face at a size that is
+   actually legible, at full muted ink. It used to be 10px mono at 60-70% opacity. Selectors keep the mono. */
+.ledger-meta {
+  font-size: 11.5px;
+  line-height: 1.2;
+  color: hsl(var(--muted-foreground));
+}
+
+/* Confidence on a ledger row: a plain tabular figure at full ink. The magnitude is the rule beneath it; the light 19px
+   serif read as a decorative numeral and was the faintest thing in the row. */
+.ledger-row .conf-figure {
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+/* When no row on the board prints a source (provenance is carried by the band headings above them), the Source column
+   is an empty 136px slot that squeezes the authority line into "single-sou…". Give that width to Authority instead.
+   Needs :has(); where it is unsupported the four-column layout stays exactly as before. */
+@media (min-width: 900px) {
+  /* Per row, where the board mixes rows that print a source with rows that do not: a row with no source lets its
+     authority line use that cell's width instead of leaving it blank beside a truncated "single-sou…". */
+  .ledger-row [data-ledger-col="source"]:empty { display: none; }
+  .ledger-row [data-ledger-col="status"]:has(+ [data-ledger-col="source"]:empty) { grid-column: span 2; }
+  .ledger:not(:has(.ledger-row [data-ledger-col="source"]:not(:empty))) {
+    --ledger-cols: minmax(0, 1fr) 15rem 4.5rem;
+  }
+  .ledger:not(:has(.ledger-row [data-ledger-col="source"]:not(:empty))) [data-ledger-col="source"] {
+    display: none;
+  }
+}
 [data-density-card] {
   padding: var(--density-card-py) var(--density-card-px) !important;
 }
