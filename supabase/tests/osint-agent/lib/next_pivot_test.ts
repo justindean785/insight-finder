@@ -437,6 +437,19 @@ Deno.test("correlation: a cluster member flagged possible_minor / blocked / fals
   assertFalse(flat.includes("+16175551212"));
 });
 
+Deno.test("a withheld row (false-positive / minor / blocked / collision) cannot bridge two live selectors into a link or a 'linked' bonus", () => {
+  for (const meta of [{ false_positive: true }, { possible_minor: true }, { minor_warning: true }, { auto_pivot_blocked: true }, { collision: true }]) {
+    const out = rank([
+      row("email", "one@example.test", { source: "github_user" }),
+      row("username", "other_handle", { source: "whois_lookup" }),
+      row("email", "one@example.test", { source: "hunter_domain_search", meta: { ...meta, associated_handle: "other_handle" } }),
+    ]);
+    assertEquals(out.correlation.clusters, 0, JSON.stringify(meta));
+    assertEquals(out.correlation.crossSourceClusters, 0, JSON.stringify(meta));
+    assertFalse([out.top, ...out.next].some((p) => p?.reasons.includes("linked")), JSON.stringify(meta));
+  }
+});
+
 Deno.test("correlation: quarantined rows form no link and every named token is shape-validated", () => {
   const out = rank([
     row("email", "pair@example.test", { source: "github_user" }),

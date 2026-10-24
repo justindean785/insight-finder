@@ -484,7 +484,11 @@ export function rankNextPivots(input: RankInput): RankResult {
 
   // Correlation over ALL surviving rows. Quarantined / excluded / bookkeeping rows are inert inside
   // clusterArtifacts, so nothing withheld can ever form a link here.
-  const clusterArts: ClusterArtifact[] = parsed.map((r) => ({
+  // Rows the brief withholds (quarantined, collision, minor, blocked, false-positive) are removed BEFORE clustering:
+  // the clusterer only treats some of those flags as inert, so a withheld row could otherwise bridge two live
+  // selectors into a link or a 'tied to the subject's cluster' bonus. `m.index` below indexes `clusterRows`.
+  const clusterRows = parsed.filter((r) => !denialOf(r.meta));
+  const clusterArts: ClusterArtifact[] = clusterRows.map((r) => ({
     id: r.id || undefined, created_at: r.at || undefined, kind: r.kind, value: r.value, source: r.source,
     confidence: r.conf, metaRaw: JSON.stringify(r.meta),
   }));
@@ -497,13 +501,13 @@ export function rankNextPivots(input: RankInput): RankResult {
   for (const s of clustering.subjects) {
     if (s.members.length < 2) continue;
     clusters++;
-    for (const m of s.members) multiIdx.add(m.index);
+    for (const m of s.members) { const cr = clusterRows[m.index]; if (cr) multiIdx.add(cr.idx); }
     const classes = countIndependentClasses(
-      s.members.flatMap((m) => classifySourceInput({ source: m.source, metadata: metaOf(parsed[m.index]?.meta) })),
+      s.members.flatMap((m) => classifySourceInput({ source: m.source, metadata: metaOf(clusterRows[m.index]?.meta) })),
     );
     if (classes < 2) continue;
     crossSourceClusters++;
-    crossCandidates.push({ tokens: linkLabels(s.members.map((m) => parsed[m.index]).filter((r): r is Row => !!r)), rows: s.members.length, classes });
+    crossCandidates.push({ tokens: linkLabels(s.members.map((m) => clusterRows[m.index]).filter((r): r is Row => !!r)), rows: s.members.length, classes });
   }
   crossCandidates.sort((a, b) => b.classes - a.classes || b.rows - a.rows);
   for (const c of crossCandidates) {
