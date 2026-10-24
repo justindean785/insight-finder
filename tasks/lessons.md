@@ -2,6 +2,22 @@
 
 Running log of non-obvious gotchas learned while working in this repo. Newest first.
 
+## 2026-10-23 (Opsis guard ship, brendanloza measurements)
+- **A pre-flight refusal's error text must match `tool-outcome.ts` `SKIP_RE`**, or its `tool_usage_log` row logs `failed`
+  and counts against the tool's health. Pin it with a captured-row test (`opsis_search_guard_test.ts`).
+- **`detectSeedServer` labels any few-word prose `person`** ("look into this for me"). It is a word count, not a shape;
+  never treat `person` as structural in a fallback or an inferred kind.
+- **`memoSchema` is module-global**: one schema per tool name for every thread, so a preprocess cannot know the thread's
+  seed. Thread-aware defaults resolve in `execute`. **`triageState` (guard.ts) is shared across threads on an isolate.**
+- **`applyInputCoercion` hands back the RAW input when the coerced value still fails validation**, so the rejection log
+  can name a field the model never sent. Read `input_json.runtime.sent_keys` before calling a rename broken.
+- **`orchestrator_invocations.credits_micro_usd` is tools + LLM** (the same accumulator as `threads.cost_micro_usd`),
+  not LLM credits; adding the tool log to it double-counts.
+- **The 220k prompt budget's un-trimmable floor is tool-call INPUTS** (`record_artifacts` batches above all); outputs are
+  capped, inputs are not. `initial_context_chars` is measured after trimming.
+- **The Opsis finalize collect phase cannot fire at the wall-clock trigger** (its own comment); the money fix is on the
+  SEARCH side (#833), never more work inside the finalize window.
+
 ## 2026-10-13
 - **A read-only DB trace beats inference.** Two separate corrections came only from queries: the thread holds THREE runs (not two), and the three cache hits in run 1 came from a different thread started 15s earlier. Ask for the data path before reasoning about it.
 - **`agent_memory` has no writer or provenance column, and the browser's analyst lesson and the model's `memory_save` use the same `save_agent_memories` RPC.** Analyst authorship can only be inferred from wording; never claim it. The upsert overwrites `source_thread_id`, ratchets confidence, keeps the longer content and bumps `hit_count`/`last_used_at`, so those columns are not recall evidence.
