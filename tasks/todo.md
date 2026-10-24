@@ -170,3 +170,64 @@ PR B design (backward compatible, preview-preserving, additive; separate edge an
 - Historical `verified` rows on `7a2968e1` (F5): remediate through Lovable with an audit row, or leave and document.
 - #612: supersede (recommended) or extend.
 - Which providers to keep (OathNet, Opsis, FOFA, deepfind, reddit) — governs S6 wording.
+
+---
+
+## 2026-10-18 evening review: integrity before tool fleet (outside review of the evening audit)
+
+Appended, not overwritten. The full evidence is in `docs/AUDIT_2026-10-18-evening_state-pr-queue-next-tasks.md` §10 (PR #793).
+
+This was a read-only review. Nothing was merged, deployed or closed. No `/health` call, no scan, no Lovable message, and production was read with SELECT only. Verified 2026-10-18 between 20:56Z and 21:15Z.
+
+### Checklist
+- [x] Establish current repository and release state.
+  - `main` `8fae8c8`, `deploy/live` `cabfeb9`, `BUILD_MARKER` `cabfeb9`, mirror `98c015e`.
+  - All four shared function trees are EQUAL.
+  - The runtime marker now is Unverified (no `/health` call).
+- [x] Reconcile the PR queue against current `main`.
+  - Older heads are unchanged.
+  - #797 and #593 were tested merged with `main` in isolated worktrees.
+  - F35 (tests in the old location) is confirmed for #741, #738, #763, #764 and #701.
+- [x] Inspect the highest-impact unresolved integrity defects, with file:line in audit §10.3:
+  - A: the model can write analyst-only keys (#741);
+  - B: memory can lead to a `confirmed` finding (new; #738 does not close it);
+  - C: dedupe donates authority, and the release button can save it (#593).
+- [x] Recommend one bounded next change (below).
+- [ ] JD approves (or changes) the recommended change before any product-code edit.
+
+### Recommended next change (awaiting JD)
+**Rebase #741 onto current `main`** as one edge PR:
+- cherry-pick its 2 commits;
+- resolve the 2 import-only conflicts;
+- `git mv` its 2 test files to `supabase/tests/osint-agent/` and repoint the imports;
+- add one rule: a protective flag supplied by the model (`subject_unlinked`, `possible_minor`, …) is kept only when it is `true`;
+- add tests for re-recording a non-name selector (`username` with `linkage_confirmed`, `reviewed`, `subject_unlinked:false`).
+
+Kept from #741:
+- kill switch `ANALYST_AUTHORITY_STRIP_DISABLED`;
+- proof key `checks.analyst_authority_boundary`.
+
+Out of scope until JD rules on each (evidence ranking): `source_quote` / `ownership_proof`, `parent*`, `user_provided`, custody classification.
+
+### Results
+- Gates on PR + `main` merges:
+  - #797: lint 0 errors, typecheck ok, vitest 2653/1/210, edge 2475/0/6.
+  - #593: lint 0 errors, typecheck ok, vitest 2736/1/213, build ok, e2e 52/2.
+  - In both runs the edge suite was run directly with the `test:edge` flags plus `--no-lock`, and the working tree and lockfiles were unchanged afterwards.
+- Production prevalence (SELECT):
+  - On 11,082 rows the model wrote: `reviewed=true` 0, `linkage_confirmed` 0, `false_positive` 2, `source_quote`/`ownership_proof` 4, protective flags written `false` 7 (no quarantined twin), parent pointers 373 (53 with `@`).
+  - 25 finding rows in total; 0 with status confirmed or verified; 1 citing a tool that never ran in its thread.
+- Corrections applied to the audit (§10.4):
+  - credit stated as a reported condition;
+  - Jina 403 cause marked Unverified;
+  - MX lookup disclosure corrected;
+  - numeric repair only when the value is unambiguous;
+  - no scan triggered to test a key;
+  - integrity work ordered before tool work.
+- #799 and #800 were opened before this review. Both are drafts with green CI. Amending #799 is proposed, not pushed.
+
+### Remaining gaps
+- The live runtime marker and runtime behaviour are unverified, as are provider balances (Lovable, Z.AI, Anthropic).
+- No authoritative Jina documentation on 403 semantics; bodies are not stored.
+- Not measured: whether any of the 53 `@` parent pointers changed a displayed label, and how many past verdicts point at merged-item ids.
+- The executed-source gate and #741's remaining keys each need JD's ruling before they are built.

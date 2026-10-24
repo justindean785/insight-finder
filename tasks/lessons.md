@@ -2,6 +2,37 @@
 
 Running log of non-obvious gotchas learned while working in this repo. Newest first.
 
+## 2026-10-18/19 (full review, integrity re-trace, free-tool PRs)
+- **`npm run verify:deploy` is not read-only either.** `scripts/record-deploy.mjs:47,76` fetches `/health`, so the "read-only" gate makes the same paid GLM
+  call and recovery writes. For an audit, compare trees instead: `git rev-parse origin/main:supabase/functions/<fn>` against the same path in the mirror.
+- **Textual mergeability is not integration.** #763 shows no conflict on GitHub yet fails `src/test/edge-deploy-bundle.test.ts` once merged, because it
+  predates #774 and keeps its tests under `supabase/functions/`. Before calling any older edge PR ready: `git worktree add --detach <scratch> origin/main`,
+  `git merge --no-ff <head>` there, run the full suite, never push that merge.
+- **Interleaved successes prove a key works, not why each call failed.** Jina had 257 ok and 11 raw 403s in 30 days, mixed together. That rules out a dead
+  key; it does not prove each 403 was the target's page. The bodies are not stored, so the cause stays Unverified until the tool logs Jina's error `name`.
+  Make a cause measurable before encoding it as a rule.
+- **Budget the SUM of sequential sub-queries against the wrapper cap.** `wayback_cdx_search` ran two CDX queries in series, each on a 12 s `fetchRetry` with a
+  retry: worst case about 48 s against a 25 s cap. Production showed it (1 ok, 21 failed in 30 days). Run them in parallel, give each its own timeout, keep
+  partial answers, and test the budget arithmetic (`waybackCdxBudgetSelfTest`).
+- **`{...modelMetadata, ...serverKeys}` makes every key the server does not overwrite model-writable.** `tool-registry.ts:5712`/`:6182` spread model
+  metadata into artifacts with the user-JWT client; RLS only checks `user_id`. The name-only guard at `:5749` covers one branch. Measure prevalence before
+  ranking it: `reviewed` 0 and `linkage_confirmed` 0 across 11,082 rows, so it is a latent hole, not an active leak.
+- **A free-string citation list is authority.** `record_finding.supporting_sources` → `classifySource` → `countIndependentClasses` → `deriveStatus`
+  (`confidence.ts:714`, two classes = confirmed). Nothing checks the named tool ran in the thread; one of 25 production findings cites a tool that never ran.
+  The E3 guard (`MEMORY_TOKEN_RE`, `lib/memory-context.ts:18`) only catches tokens starting with `memory`.
+- **A display merge can become stored data.** The quarantine-release writer (`ResourcesPanel.tsx:957`) writes `{...meta, ...patch}` from the DEDUPED item,
+  so whatever `dedupeArtifacts` (`useThreadArtifacts.ts:70-99`) merged in is persisted onto the surviving row. Trace every writer that reads a view-model.
+- **Parallel subagents in one clone clobber `FETCH_HEAD`.** Read PR heads by SHA (`git show <sha>:path`), never `FETCH_HEAD`.
+- **Verify an agent-authored plan item by item before building it.** The Lovable free-tool prompt asked for C2 (skip a provider on 401/402), which already
+  existed at `circuit.ts:474-492`; an auto-dispatch engine that does not exist; a call "before finalize" (inside the finalize window); and public URL
+  submission on every URL (OPSEC). Each needed a separate ruling.
+- **An outside reviewer caught four of my own overstatements.** An agent-reported credit shortage is a dated report, not a verified fact. An MX lookup
+  discloses the domain to the DoH resolver. Number-to-string repair cannot restore leading zeros or precision, so repair only when unambiguous. "Blocked
+  on money, not code" was false while three integrity defects were open. Label causes and money claims with their source and date.
+- **When Codex is out of quota, review with subagents that must reproduce.** Ask for a failing test or a file:line trace per claim; a review answered from
+  reading alone gives plausible findings you then have to re-verify yourself.
+- **Merge one PR at a time.** After each: main CI green (the `e2e` job runs on push only), Vercel production READY on the new SHA, then the next one.
+
 ## 2026-10-13
 - **A read-only DB trace beats inference.** Two separate corrections came only from queries: the thread holds THREE runs (not two), and the three cache hits in run 1 came from a different thread started 15s earlier. Ask for the data path before reasoning about it.
 - **`agent_memory` has no writer or provenance column, and the browser's analyst lesson and the model's `memory_save` use the same `save_agent_memories` RPC.** Analyst authorship can only be inferred from wording; never claim it. The upsert overwrites `source_thread_id`, ratchets confidence, keeps the longer content and bumps `hit_count`/`last_used_at`, so those columns are not recall evidence.
