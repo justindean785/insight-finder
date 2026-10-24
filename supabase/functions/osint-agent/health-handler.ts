@@ -64,6 +64,7 @@ import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
 import { analystAuthorityBoundarySelfTest } from "./lib/analyst-authority-keys.ts";
 import { archiveOriginRuleSelfTest, breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 import { memoryInputNormalizationSelfTest } from "./lib/memory-input-normalization.ts";
+import { indiciaPersonOptInSelfTest } from "./costs.ts";
 import { exactBooleanRepairSelfTest } from "./lib/exact-boolean-repair.ts";
 import { malformedJsonRepairSelfTest } from "./lib/malformed-json-repair.ts";
 import { inputCoercionSelfTest, inputKindInferenceSelfTest } from "./lib/tool-input-coercion.ts";
@@ -622,6 +623,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Is a boolean parameter sent as the EXACT string "true"/"false" repaired instead of burning the step, while every other
   // string and every consent flag stays rejected? Pure. PRESENCE proves the deployed bundle; ok:false = failed its own probe.
   r.checks.exact_boolean_repair = exactBooleanRepairSelfTest();
+  // Is indicia_person's missing-first-name search an explicit boolean opt-in (default off, never repaired from a string),
+  // ledgered through the per-call cost seam (multiplier 1)? Pure; `switch` reports INDICIA_MISSING_FIRST_NAME_DISABLED. PRESENCE proves the bundle.
+  r.checks.indicia_person_opt_in = indiciaPersonOptInSelfTest();
   // Is a call whose JSON text did not parse repaired only by dropping one enclosing code fence and trailing commas, never
   // by closing a truncation? Pure; `switch` reports MALFORMED_JSON_REPAIR_DISABLED. PRESENCE proves the deployed bundle.
   r.checks.malformed_json_repair = malformedJsonRepairSelfTest();

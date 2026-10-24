@@ -47,6 +47,7 @@ import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { fetchT } from "../fetch_retry.ts";
 import { parseStructuredName } from "../name-parse.ts";
+import { indiciaMissingFirstNameDisabled } from "../costs.ts";
 
 const INDICIA_BASE = "https://api.indicia.app";
 // Under the 32s per-tool cap set for indicia_* in cache.ts TOOL_TIMEOUT_OVERRIDE_MS,
@@ -353,20 +354,26 @@ export const indicia_phone = tool({
 /** Name + city/state (US) → person records. 1 token/call. Broker/lead tier. */
 export const indicia_person = tool({
   description:
-    "Indicia person search (api.indicia.app) — US people-search/broker records for a full name, optionally narrowed by city + state. Same-name collision risk: LEAD until a selector overlaps, never confirmed alone. 1 token/call.",
+    "Indicia person search (api.indicia.app) — US people-search/broker records for a full name, optionally narrowed by city + state. Same-name collision risk: LEAD until a selector overlaps, never confirmed alone. 1 token/call. " +
+    "A name WITHOUT a first name is refused by the provider unless allowMissingFirstName is true; that opt-in is priced as a normal person search per Indicia's pricing (1 credit) but is a broader, lower-precision search — set it only when the analyst's seed really has no first name, never by default.",
   inputSchema: z.object({
     name: z.string().min(2).describe("Full name."),
     city: z.string().optional().describe("US city to narrow the search."),
     state: z.string().optional().describe("US state (2-letter or full) to narrow the search."),
+    allowMissingFirstName: z.boolean().optional().describe(
+      "Opt-in, default false. Permit a name with no first name. Broader, lower-precision search; never set unless the seed has no first name.",
+    ),
   }),
-  execute: async ({ name, city, state }, opts) => {
+  execute: async ({ name, city, state, allowMissingFirstName }, opts) => {
     // Broker/public-record seeds often arrive as "LAST, FIRST MIDDLE[, ST]"
     // (LEADS/CSV export style). Reorder to natural "First … Last" and lift a
     // trailing state code so the person API isn't fed a comma-inverted query.
     const parsed = parseStructuredName(name);
     const resolvedName = parsed.name || name;
     const resolvedState = state ?? parsed.state;
-    const query = { name: resolvedName, city, state: resolvedState };
+    // Sent ONLY on an explicit boolean true (and not under the kill switch); an absent/false flag leaves the body unchanged.
+    const optIn = allowMissingFirstName === true && !indiciaMissingFirstNameDisabled();
+    const query = { name: resolvedName, city, state: resolvedState, ...(optIn ? { allowMissingFirstName: true } : {}) };
     return indiciaRequest("/v1/search/intelligence/person", "person", query, query, getSignal(opts));
   },
 });
