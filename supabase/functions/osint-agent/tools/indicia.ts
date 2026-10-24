@@ -355,13 +355,13 @@ export const indicia_phone = tool({
 export const indicia_person = tool({
   description:
     "Indicia person search (api.indicia.app) — US people-search/broker records for a full name, optionally narrowed by city + state. Same-name collision risk: LEAD until a selector overlaps, never confirmed alone. 1 token/call. " +
-    "A name WITHOUT a first name is refused by the provider unless allowMissingFirstName is true; that opt-in is a broader, COSTLIER search (logged at 2x the normal price) — set it only when the analyst's seed really has no first name, never by default.",
+    "A name WITHOUT a first name is refused by the provider unless allowMissingFirstName is true; that opt-in is priced as a normal person search per Indicia's pricing (1 credit) but is a broader, lower-precision search — set it only when the analyst's seed really has no first name, never by default.",
   inputSchema: z.object({
     name: z.string().min(2).describe("Full name."),
     city: z.string().optional().describe("US city to narrow the search."),
     state: z.string().optional().describe("US state (2-letter or full) to narrow the search."),
     allowMissingFirstName: z.boolean().optional().describe(
-      "Opt-in, default false. Permit a name with no first name. Costs more (2x); never set unless the seed has no first name.",
+      "Opt-in, default false. Permit a name with no first name. Broader, lower-precision search; never set unless the seed has no first name.",
     ),
   }),
   execute: async ({ name, city, state, allowMissingFirstName }, opts) => {

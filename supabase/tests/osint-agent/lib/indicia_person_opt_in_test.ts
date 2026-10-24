@@ -1,5 +1,5 @@
 // lib/indicia_person_opt_in_test.ts — indicia_person's missing-first-name search is an explicit boolean opt-in:
-// default off, never auto-set, never repaired from a string, ledgered at its real (2x) cost. Synthetic names only.
+// default off, never auto-set, never repaired from a string, ledgered through the per-call cost seam (multiplier 1 per Indicia /v1/pricing). Synthetic names only.
 import { assert, assertEquals, assertFalse } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { indicia_person } from "../../../functions/osint-agent/tools/indicia.ts";
 import {
@@ -50,7 +50,7 @@ Deno.test("a string is never accepted for the flag, and the exact-boolean repair
   assertEquals(repairExactBooleanInput('{"name":"Example","allowMissingFirstName":"true"}', err), null);
 });
 
-Deno.test("ledger cost: 2x only for an opted-in indicia_person; every other call is the list price", () => {
+Deno.test("ledger cost: only an opted-in indicia_person goes through the multiplier (currently 1 = list price, per /v1/pricing); every other call is the list price", () => {
   const base = costForTool("indicia_person");
   assertEquals(costForToolCall("indicia_person", { name: "x" }), base);
   assertEquals(costForToolCall("indicia_person", { allowMissingFirstName: false }), base);
@@ -58,6 +58,10 @@ Deno.test("ledger cost: 2x only for an opted-in indicia_person; every other call
   assertEquals(costForToolCall("indicia_person", { allowMissingFirstName: true }), base * INDICIA_MISSING_FIRST_NAME_COST_MULTIPLIER);
   assertEquals(costForToolCall("indicia_email", { allowMissingFirstName: true }), costForTool("indicia_email"));
   assertEquals(costForToolCall("indicia_person", null), base);
+});
+
+Deno.test("the multiplier matches Indicia's published price: person is 1 credit and there is no surcharge entry", () => {
+  assertEquals(INDICIA_MISSING_FIRST_NAME_COST_MULTIPLIER, 1);
 });
 
 Deno.test("kill switch: the flag is not sent and the cost is the list price", async () => {

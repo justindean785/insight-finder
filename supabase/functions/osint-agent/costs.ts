@@ -208,8 +208,12 @@ export function indiciaMissingFirstNameDisabled(): boolean {
   return (deno?.env.get("INDICIA_MISSING_FIRST_NAME_DISABLED") ?? "").trim().toLowerCase() === "true";
 }
 
-/** Multiplier on indicia_person's list price when the analyst-visible opt-in is set (the brief: 2 credits, source 2). */
-export const INDICIA_MISSING_FIRST_NAME_COST_MULTIPLIER = 2;
+/**
+ * Multiplier on indicia_person's list price when the opt-in is set. 1 = no surcharge: Indicia's GET /v1/pricing (read
+ * 2026-10-23) lists `person: 1` and no separate entry for allowMissingFirstName. The seam stays so a published surcharge
+ * is a one-constant change that the ledger picks up.
+ */
+export const INDICIA_MISSING_FIRST_NAME_COST_MULTIPLIER = 1;
 
 /**
  * The list price of ONE call, given its input. Only indicia_person with an explicit boolean `allowMissingFirstName: true`
@@ -235,7 +239,7 @@ export function indiciaPersonOptInSelfTest(): { ok: boolean; switch: string; det
     costForToolCall("indicia_person", { allowMissingFirstName: true }) === base * INDICIA_MISSING_FIRST_NAME_COST_MULTIPLIER &&
     costForToolCall("indicia_email", { allowMissingFirstName: true }) === costForTool("indicia_email");
   return ok
-    ? { ok: true, switch: `${sw}=false`, detail: "indicia_person accepts a missing first name only on an explicit boolean allowMissingFirstName (default off, never auto-set); an opted-in call is ledgered at 2x the list price" }
+    ? { ok: true, switch: `${sw}=false`, detail: "indicia_person accepts a missing first name only on an explicit boolean allowMissingFirstName (default off, never auto-set); an opted-in call is ledgered at list price x INDICIA_MISSING_FIRST_NAME_COST_MULTIPLIER (1 per /v1/pricing)" }
     : { ok: false, switch: `${sw}=false`, detail: "indicia opt-in costing misbehaving" };
 }
 
