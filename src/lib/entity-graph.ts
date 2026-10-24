@@ -58,6 +58,8 @@ export interface GraphNode {
   group: Group;
   confidence: number; // 0-100 (seed = 100)
   isSeed: boolean;
+  /** An artifact whose own value IS the seed's selector: the seed's record, not a separate entity or lead. */
+  seedRecord: boolean;
   conflict: boolean; // collision / conflict / breach — restrained destructive accent
   clusterId: string | null;
   degree: number;
@@ -94,7 +96,8 @@ export interface EntityGraph {
     realEdgeCount: number; // identity + co-record + shared-infra (excludes seed-discovery fallback)
     clusterCount: number;
     bridgeCount: number;
-    isolatedCount: number; // nodes only tied to the seed by the discovery fallback
+    isolatedCount: number; // nodes only tied to the seed by the discovery fallback (seed records excluded)
+    seedRecordCount: number; // records that merely repeat the seed's own selector; inspectable, never a relationship or a lead
   };
 }
 
@@ -254,6 +257,7 @@ export function buildEntityGraph(
         group: groupForKind(seedType ?? ""),
         confidence: 100,
         isSeed: true,
+        seedRecord: false,
         conflict: false,
         clusterId: null,
         degree: 0,
@@ -275,6 +279,7 @@ export function buildEntityGraph(
       group: groupForKind(a.kind),
       confidence: effectiveConfidenceOrZero(a),
       isSeed: false,
+      seedRecord: false,
       conflict: isConflict(a, reviews?.[a.id]),
       clusterId: clusterOf.get(a.id) ?? null,
       degree: 0,
@@ -290,6 +295,7 @@ export function buildEntityGraph(
   // Collision/false-positive artifacts may still appear as (conflict) nodes,
   // but must NOT seed identity edges — exactly the clustering rule.
   const selectorMembers = new Map<string, { kind: SelectorKind; raw: string; ids: string[] }>();
+  const seedOwnKeys = new Set<string>();
   const addSelectors = (id: string, sels: Selector[]) => {
     for (const s of sels) {
       const bucket = selectorMembers.get(s.key) ?? { kind: s.kind, raw: s.raw, ids: [] };
@@ -298,6 +304,7 @@ export function buildEntityGraph(
     }
   };
   if (seedNode && seedValue) {
+    for (const s of selectorsFor(seedType ?? "", seedValue, null)) seedOwnKeys.add(s.key);
     const seedSels = selectorsFor(seedType ?? "", seedValue, null);
     // The seed also anchors any artifact tagged with it as a parent pointer.
     seedSels.push({ key: `parent:${seedValue.trim().toLowerCase()}`, kind: "parent", raw: seedValue });
@@ -328,12 +335,30 @@ export function buildEntityGraph(
     }
   };
 
-  for (const [, bucket] of selectorMembers) {
+  for (const [bucketKey, bucket] of selectorMembers) {
     if (bucket.ids.length < 2) continue;
     // Hero = highest confidence (ties broken by id for determinism).
     const hero = [...bucket.ids].sort((a, b) => conf(b) - conf(a) || (a < b ? -1 : 1))[0];
     const infra = INFRA_KINDS.has(bucket.kind);
     const isParent = bucket.kind === "parent";
+    if (!isParent && bucket.ids.includes(SEED_ID) && seedOwnKeys.has(bucketKey)) {
+      // The seed's own selector. An artifact whose PRIMARY value is that selector is the seed's record (same
+      // entity: tied below as provenance, never as a relationship); two such records still link to each other. An
+      // artifact that merely CARRIES the selector in metadata is a different entity and links to the seed.
+      const isRecord = (id: string) => {
+        const a = nodeById.get(id)?.art;
+        return !!a && selectorsFor(a.kind, a.value, null).some((sel) => sel.key === bucketKey);
+      };
+      const records = bucket.ids.filter((id) => id !== SEED_ID && isRecord(id)).sort((x, y) => conf(y) - conf(x) || (x < y ? -1 : 1));
+      const carriers = bucket.ids.filter((id) => id !== SEED_ID && !isRecord(id));
+      const type: EdgeType = infra ? "shared-infra" : "identity";
+      const reason = infra
+        ? `Shares ${bucket.kind} ${bucket.raw} — shared infrastructure, not an identity match`
+        : `Shares ${bucket.kind} ${bucket.raw}`;
+      for (const id of carriers) upsertEdge(SEED_ID, id, type, reason, SELECTOR_STRENGTH[bucket.kind]);
+      for (const id of records.slice(1)) upsertEdge(records[0], id, type, reason, SELECTOR_STRENGTH[bucket.kind]);
+      continue;
+    }
     for (const id of bucket.ids) {
       if (id === hero) continue;
       let type: EdgeType;
@@ -369,6 +394,23 @@ export function buildEntityGraph(
         `CO_RECORD: ${link.field} (${link.sourceId} -> ${link.targetKind.toLowerCase()} ${link.targetValue}) — named in the same record; groups, does not confirm`,
         CO_RECORD_STRENGTH,
       );
+    }
+  }
+
+  // Seed-record association: an artifact whose own value is the seed's selector is the seed's record, the
+  // same entity. It is drawn as the faint provenance edge, never as an identity link, and the record keeps
+  // its own node, authority and evidence. Real links between distinct entities are untouched.
+  const seedRecordIds = new Set<string>();
+  if (seedNode && seedOwnKeys.size > 0) {
+    for (const a of sorted) {
+      // Conflict / quarantined / rejected rows are kept out of every other index here; they get no "own record" tie either
+      // and fall through to the ordinary discovery fallback exactly as before.
+      if (isConflict(a, reviews?.[a.id])) continue;
+      if (!selectorsFor(a.kind, a.value, null).some((sel) => seedOwnKeys.has(sel.key))) continue;
+      seedRecordIds.add(a.id);
+      const rec = nodeById.get(a.id);
+      if (rec) rec.seedRecord = true;
+      upsertEdge(SEED_ID, a.id, "seed-discovery", `Same ${seedNode.kind} as the seed — the seed's own record, not a separate relationship`, SELECTOR_STRENGTH.parent);
     }
   }
 
@@ -419,7 +461,7 @@ export function buildEntityGraph(
     m.set(e.target, (m.get(e.target) ?? 0) + 1);
   }
   const isolatedCount = nodes.filter(
-    (n) => !n.isSeed && (realDeg.get(n.id) ?? 0) === 0 && (fallbackDeg.get(n.id) ?? 0) > 0,
+    (n) => !n.isSeed && !n.seedRecord && (realDeg.get(n.id) ?? 0) === 0 && (fallbackDeg.get(n.id) ?? 0) > 0,
   ).length;
 
   return {
@@ -434,9 +476,31 @@ export function buildEntityGraph(
       clusterCount: clusterReport.clusters.length,
       bridgeCount: edges.filter((e) => e.bridge).length,
       isolatedCount,
+      seedRecordCount: seedRecordIds.size,
     },
   };
 }
+
+/** Nodes with at least one REAL relationship (identity or shared infrastructure). */
+export function linkedNodeIds(graph: EntityGraph): Set<string> {
+  const ids = new Set<string>();
+  for (const e of graph.edges) {
+    if (e.type === "seed-discovery") continue;
+    ids.add(e.source);
+    ids.add(e.target);
+  }
+  return ids;
+}
+
+/**
+ * ONE definition of an isolated lead, shared by the toggle count, the list section and the canvas filter: a non-seed
+ * entity with no real relationship that is not the seed's own record. Seed records stay visible and inspectable
+ * (their own section / always drawn) but are neither a lead nor a relationship.
+ */
+export function isIsolatedLead(n: GraphNode, linked: Set<string>): boolean {
+  return !n.isSeed && !n.seedRecord && !linked.has(n.id);
+}
+
 
 /* A rendered node chip is ~190px wide and ~34px tall. Every spacing constant
  * below is derived from that, because the previous layout packed 24 nodes onto

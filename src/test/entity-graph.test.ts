@@ -143,10 +143,12 @@ describe("buildEntityGraph — honest, deterministic edge derivation", () => {
     expect(g.stats.isolatedCount).toBe(1);
   });
 
-  it("connects the seed to an artifact that carries the seed value", () => {
+  it("ties an artifact that carries the seed value to the seed as its OWN record — not an identity relationship", () => {
     const g = buildEntityGraph([A({ id: "z", kind: "email", value: "x@y.com", confidence: 70 })], "x@y.com", "email");
     const e = edgeBetween(g, SEED_ID, "z");
-    expect(e!.type).toBe("identity");
+    expect(e!.type).toBe("seed-discovery");
+    expect(g.stats.realEdgeCount).toBe(0);
+    expect(g.stats.isolatedCount).toBe(0); // the seed's own record is not an isolated lead
     expect(g.stats.nodeCount).toBe(1); // seed excluded from nodeCount
   });
 

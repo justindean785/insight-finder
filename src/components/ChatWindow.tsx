@@ -1257,6 +1257,16 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             <span>Agent</span>
             {timeLabel && <span className="chat-card__header-time">{timeLabel}</span>}
           </div>
+          {(hasStatedLabel(prose) || unadjudicated) && (
+            // Above the prose, not below it: a footer is read after the claims have already landed, and a hover
+            // title never reaches a touch reader. Wording only; no figure here is computed by the engine.
+            <div role="note" data-narrative-notice className="border-b border-white/[0.06] px-4 py-2 text-[12.5px] leading-snug text-muted-foreground">
+              <span className="font-medium text-foreground/85">AI narrative — claims need evidence review.</span>{" "}
+              {unadjudicated
+                ? "No finding rows were adjudicated for this run; labels and scores in this text are the model\u2019s own writing, not computed results."
+                : "Labels and scores in this text are written by the model. Computed confidence and analyst review are in Evidence."}
+            </div>
+          )}
           <div className="chat-card__body">
             <div className="chat-prose">
               <MarkdownBlock content={prose} />

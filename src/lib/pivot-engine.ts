@@ -54,6 +54,12 @@ export type DisplayPivot = Pivot & {
   prompt: string;
   score: number;
   decision?: PivotDecision;
+  /**
+   * A report-recommended handle read from bare prose that the case does not
+   * know: a candidate, not a selector. It validates as "choose a target" and
+   * cannot be run.
+   */
+  unconfirmedTarget?: boolean;
 };
 
 export type ComputePivotsInput = {
@@ -175,6 +181,16 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
     if (parent) parentSet.add(normalizeTarget(parent));
     if (KIND_TO_PIVOT[a.kind.toLowerCase()]) existingValueSet.add(normalizeTarget(a.value));
   }
+  // A handle recorded in another artifact's metadata (an email row carrying `metadata.handle`) is observed, so it
+  // grounds an unmarked report handle. Deliberately NOT in existingValueSet: that set also marks pivots "searched".
+  const metaHandleSet = new Set<string>();
+  for (const a of artifacts) {
+    const meta = (a.metadata ?? {}) as Record<string, unknown>;
+    for (const key of ["handle", "username"]) {
+      const v = meta[key];
+      if (typeof v === "string" && v.trim()) metaHandleSet.add(normalizeTarget(v));
+    }
+  }
 
   // Newest-first recency index: later created_at ⇒ larger index ⇒ higher score.
   const ordered = [...artifacts].sort((a, b) =>
@@ -243,6 +259,15 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
   }
 
   const recommended = toDisplayPivots(reportPivots);
+  // NOT queriedSet: the tool-log reader (`useThreadQueriedTargets`) keeps every logged call's input whatever its outcome,
+  // so a failed or empty lookup on a bogus token (`to`) would ground itself. A queried token that nothing recorded stays
+  // unconfirmed; it still reads as "searched" below.
+  const isKnownSelector = (value: string): boolean => {
+    const k = normalizeTarget(value);
+    const ek = entityKey(value);
+    return k === seedKey || metaHandleSet.has(k) || metaHandleSet.has(ek) || existingValueSet.has(k) || existingValueSet.has(ek) ||
+      parentSet.has(k) || parentSet.has(ek);
+  };
 
   const candidates: Candidate[] = [];
   const consumed = new Set<string>();
@@ -256,12 +281,15 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
     const key = canonicalKey(rec);
     if (consumed.has(key)) return; // an earlier recommendation already covered this target
     const finding = findingByKey.get(key);
-    const detail: RecommendedDisplay = {
+    const detail: RecommendedDisplay & { unconfirmedTarget?: boolean } = {
       priority: meta.priority,
       actionLabel: meta.actionLabel,
       reason: meta.reason,
       detail: meta.detail,
       prompt: meta.prompt,
+      // Grounded by the case itself: a recorded artifact, the seed, a parent
+      // pointer or a tool-log selector. Anything else stays a candidate.
+      ...(meta.ungrounded && !finding && !isKnownSelector(rec.value) ? { unconfirmedTarget: true } : {}),
     };
     if (finding) {
       consumed.add(key);

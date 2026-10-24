@@ -23,6 +23,8 @@ import {
   type EdgeType,
   type EntityGraph,
   type GraphNode as EntityNodeModel,
+  isIsolatedLead,
+  linkedNodeIds,
 } from "@/lib/entity-graph";
 import { ConfidenceMeter } from "@/components/investigation/primitives";
 import { CopyButton } from "@/components/ui/workspace-primitives";
@@ -196,20 +198,9 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
 
 const nodeTypes = { entity: EntityNode };
 
-/** Nodes with at least one REAL relationship (identity or shared infrastructure). */
-function linkedNodeIds(graph: EntityGraph): Set<string> {
-  const ids = new Set<string>();
-  for (const e of graph.edges) {
-    if (e.type === "seed-discovery") continue;
-    ids.add(e.source);
-    ids.add(e.target);
-  }
-  return ids;
-}
-
 function toRfNodes(graph: EntityGraph, hidden: Set<Group>, showIsolated = true): Node<EntityNodeData>[] {
   const linked = linkedNodeIds(graph);
-  const visible = graph.nodes.filter((n) => (n.isSeed || !hidden.has(n.group)) && (showIsolated || n.isSeed || linked.has(n.id)));
+  const visible = graph.nodes.filter((n) => (n.isSeed || !hidden.has(n.group)) && (showIsolated || n.isSeed || n.seedRecord || linked.has(n.id)));
   const parts = splitSharedSuffixes(visible.map((n) => n.label));
   return visible
     .map((n) => ({
@@ -239,7 +230,7 @@ function toRfEdges(graph: EntityGraph, hidden: Set<Group>, selected: string | nu
   const linked = linkedNodeIds(graph);
   const visible = new Set(
     graph.nodes
-      .filter((n) => (n.isSeed || !hidden.has(n.group)) && (showIsolated || n.isSeed || linked.has(n.id)))
+      .filter((n) => (n.isSeed || !hidden.has(n.group)) && (showIsolated || n.isSeed || n.seedRecord || linked.has(n.id)))
       .map((n) => n.id),
   );
   return graph.edges
@@ -426,7 +417,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
   const selectedAuthority = selectedNode?.art ? authorityFor(selectedNode.art, review.get(selectedNode.art.id)) : null;
   const linkedIds = useMemo(() => linkedNodeIds(graph), [graph]);
   const isolatedCount = useMemo(
-    () => graph.nodes.filter((n) => !n.isSeed && !linkedIds.has(n.id)).length,
+    () => graph.nodes.filter((n) => isIsolatedLead(n, linkedIds)).length,
     [graph, linkedIds],
   );
   const connections = useMemo(() => {
@@ -702,7 +693,7 @@ export function GraphTab({ threadId }: { threadId: string }) {
         <div className="ml-auto flex items-center gap-3">
           <span className="inline-flex items-center gap-2 text-data text-muted-foreground/70">
             <Activity className="h-3.5 w-3.5" />
-            {graph.stats.nodeCount} entit{graph.stats.nodeCount === 1 ? "y" : "ies"} · {graph.stats.realEdgeCount} real link{graph.stats.realEdgeCount === 1 ? "" : "s"} · {graph.stats.clusterCount} cluster{graph.stats.clusterCount === 1 ? "" : "s"}
+            {graph.stats.nodeCount - graph.stats.seedRecordCount} entit{graph.stats.nodeCount - graph.stats.seedRecordCount === 1 ? "y" : "ies"}{graph.stats.seedRecordCount > 0 && <> + {graph.stats.seedRecordCount} seed record{graph.stats.seedRecordCount > 1 ? "s" : ""}</>} · {graph.stats.realEdgeCount} real link{graph.stats.realEdgeCount === 1 ? "" : "s"} · {graph.stats.clusterCount} cluster{graph.stats.clusterCount === 1 ? "" : "s"}
             {graph.stats.bridgeCount > 0 && <> · {graph.stats.bridgeCount} bridge{graph.stats.bridgeCount > 1 ? "s" : ""}</>}
           </span>
         </div>
@@ -742,7 +733,8 @@ function GraphList({
   const byId = new Map(graph.nodes.map((n) => [n.id, n] as const));
   const visible = graph.nodes.filter((n) => !n.isSeed && !hidden.has(n.group));
   const linked = visible.filter((n) => linkedIds.has(n.id));
-  const isolated = visible.filter((n) => !linkedIds.has(n.id));
+  const isolated = visible.filter((n) => isIsolatedLead(n, linkedIds));
+  const seedRecords = visible.filter((n) => n.seedRecord);
 
   const row = (n: EntityNodeModel) => {
     const view = n.art ? authorityFor(n.art, review(n.art.id)) : null;
@@ -781,11 +773,20 @@ function GraphList({
           Linked entities <span className="font-mono tabular-nums">{linked.length}</span>
         </h3>
         {linked.length === 0 ? (
-          <p className="px-4 py-3 text-[13px] text-muted-foreground">No entity shares a selector with another yet. Corroborating pivots form links.</p>
+          <p className="px-4 py-3 text-[13px] text-muted-foreground">No relationships between distinct entities established. A record that only repeats the seed is the seed itself, not a link; corroborating pivots form links.</p>
         ) : (
           <ul className="divide-y divide-white/[0.06]">{linked.map(row)}</ul>
         )}
       </section>
+      {seedRecords.length > 0 && (
+        <section aria-labelledby="graph-list-seed-record" className="border-t border-white/[0.06]">
+          <h3 id="graph-list-seed-record" className="px-4 py-2 text-data font-medium text-muted-foreground">
+            Seed record <span className="font-mono tabular-nums">{seedRecords.length}</span>
+            <span className="ml-2 font-normal">— repeats the seed itself; not a relationship</span>
+          </h3>
+          <ul className="divide-y divide-white/[0.06]">{seedRecords.map(row)}</ul>
+        </section>
+      )}
       {isolated.length > 0 && (
         <section aria-labelledby="graph-list-isolated" className="border-t border-white/[0.06]">
           <h3 id="graph-list-isolated" className="px-4 py-2 text-data font-medium text-muted-foreground">
