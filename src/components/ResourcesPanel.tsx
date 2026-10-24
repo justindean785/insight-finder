@@ -40,7 +40,7 @@ import {
 import { displayConfidence, effectiveConfidence, effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { analystConfirmedLabel, isAnalystConfirmed } from "@/lib/analyst-confirmed";
 import { AnalystConfirmedMark } from "@/components/AnalystConfirmedMark";
-import { bandCluster, isProseValue, provenanceOf as provFor } from "@/lib/evidence-bands";
+import { bandCluster, isProseValue, provenanceOf as provFor, splitUrlDescriptor } from "@/lib/evidence-bands";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { humanizeArtifactMetadata } from "@/lib/artifact-metadata";
 import {
@@ -566,7 +566,7 @@ function ArtifactsList({
                         <div className="flex items-center gap-1.5 bg-white/[0.012] px-2.5 py-0.5 pl-7">
                           <span className="h-px w-2 shrink-0 bg-white/15" aria-hidden />
                           <span
-                            className="truncate font-mono text-micro text-muted-foreground/75"
+                            className="ledger-meta truncate"
                             title={band.prov || undefined}
                           >
                             {band.prov ? readableSourceLabel(band.prov) : "source not recorded"}
@@ -672,9 +672,9 @@ function BulkCorpusGroupRow({
       </span>
       <span className="min-w-0" data-ledger-col="status">
         <AuthorityChip view={authority} />
-        <span className="mt-0.5 truncate text-eyebrow text-muted-foreground/70">{authority.basis}</span>
+        <span className="ledger-meta mt-0.5 block truncate">{authority.basis}</span>
       </span>
-      <span className="min-w-0 truncate font-mono text-eyebrow text-muted-foreground/60" data-ledger-col="source" title={group.source ?? undefined}>
+      <span className="ledger-meta min-w-0 truncate" data-ledger-col="source" title={group.source ?? undefined}>
         {!hideProv && group.source ? readableSourceLabel(group.source) : ""}
       </span>
       <span className="flex shrink-0 items-center justify-end gap-0.5" data-ledger-col="confidence">
@@ -711,6 +711,7 @@ export function ArtifactRow({
     ? "hsl(var(--authority-quarantine))"
     : "hsl(var(--foreground) / 0.92)";
   const prov = provFor(a);
+  const urlParts = splitUrlDescriptor(a.value);
   const prose = isProseValue(a.value) || isBulkCorpusHarvestArtifact(a);
   const bulkPreview = isBulkCorpusHarvestArtifact(a) ? harvestedIdentityPreview(a, 4) : [];
   const authority = authorityFor(a, rState);
@@ -749,7 +750,7 @@ export function ArtifactRow({
 
           {/* Value +, when there is one, the recorded reason it is not stronger. */}
           <span className="min-w-0" data-ledger-col="value">
-            <span className={cn("flex gap-1.5", prose ? "items-start" : "items-center")}>
+            <span className={cn("flex gap-1.5", prose || urlParts ? "items-start" : "items-center")}>
               {rState === "confirmed" && <CheckCircle2 className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-high))]" aria-hidden />}
               {rState === "key" && <Star className="h-3 w-3 shrink-0 text-primary" aria-hidden />}
               {rState === "recheck" && <ShieldQuestion className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-mid))]" aria-hidden />}
@@ -762,6 +763,14 @@ export function ArtifactRow({
                   appears in ZERO of 31 records"), and truncating the most
                   important row in a case to forty monospace characters is how
                   it went unread. Prose wraps to two lines in the reading face. */}
+              {urlParts ? (
+                // A link with its descriptor: what it IS reads first, in the reading face; the URL keeps the mono,
+                // one-line, select-all treatment beneath. The copy button below still copies the whole recorded value.
+                <span className={cn("flex min-w-0 flex-col", fp && "line-through opacity-70")} title={a.value}>
+                  <span className="text-[12.5px] leading-[1.4] text-foreground/90 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">{urlParts.descriptor}</span>
+                  <span className="mono-value truncate text-micro text-muted-foreground">{urlParts.url}</span>
+                </span>
+              ) : (
               <span
                 className={cn(
                   prose
@@ -773,6 +782,7 @@ export function ArtifactRow({
               >
                 {a.value}
               </span>
+              )}
               {bulkPreview.length > 0 && (
                 <span className="mt-0.5 block truncate font-mono text-data text-muted-foreground/80">
                   {bulkPreview.join(" · ")}
@@ -807,7 +817,7 @@ export function ArtifactRow({
           <span className="min-w-0" data-ledger-col="status">
             <AuthorityChip view={authority} />
             <span
-              className="mt-0.5 flex items-center gap-1 truncate text-eyebrow text-muted-foreground/70"
+              className="ledger-meta mt-0.5 flex items-center gap-1 truncate"
               title={authority.state === "quarantined" ? `${authority.underlyingLabel} · ${authority.basis}` : authority.basis}
             >
               <UnderlyingStrength view={authority} />
@@ -816,7 +826,7 @@ export function ArtifactRow({
             </span>
           </span>
 
-          <span className="min-w-0 truncate font-mono text-eyebrow text-muted-foreground/60" data-ledger-col="source" title={prov || undefined}>
+          <span className="ledger-meta min-w-0 truncate" data-ledger-col="source" title={prov || undefined}>
             {!hideProv && prov ? readableSourceLabel(prov) : ""}
           </span>
 
