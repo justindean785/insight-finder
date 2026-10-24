@@ -203,7 +203,9 @@ export function costForTool(name: string): number {
  * not sent to the provider and does not raise the logged cost.
  */
 export function indiciaMissingFirstNameDisabled(): boolean {
-  return (Deno.env.get("INDICIA_MISSING_FIRST_NAME_DISABLED") ?? "").trim().toLowerCase() === "true";
+  // globalThis.Deno, not bare `Deno`: the frontend bundle/typecheck imports this module (lessons.md, 2026-10-13).
+  const deno = (globalThis as { Deno?: { env: { get(k: string): string | undefined } } }).Deno;
+  return (deno?.env.get("INDICIA_MISSING_FIRST_NAME_DISABLED") ?? "").trim().toLowerCase() === "true";
 }
 
 /** Multiplier on indicia_person's list price when the analyst-visible opt-in is set (the brief: 2 credits, source 2). */
