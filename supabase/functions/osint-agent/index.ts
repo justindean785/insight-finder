@@ -87,9 +87,14 @@ import {
 import { crossCaseLogEvent, crossCaseReviewsDisabled, invalidateCrossCaseIndex } from "./lib/cross-case-reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 import { repairExactBooleanInput } from "./lib/exact-boolean-repair.ts";
+import { repairMalformedJsonInput } from "./lib/malformed-json-repair.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
+import {
+  buildResumeBrief, loadBriefInputs, nextPivotBriefDisabled, nextPivotBriefEvent,
+  type BriefArtifact, type BriefUsageRow, type Page,
+} from "./lib/next-pivot.ts";
 import { buildTools, TOOL_NAME_ALIASES } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
 import { isMessageSchemaError, classifyStreamProviderError, describeStreamError } from "./stream-error-classify.ts";
@@ -953,6 +958,27 @@ Deno.serve(async (req) => {
     // #238: older-result cap tightened 3000→1500 (selector-preserving summary keeps
     // the pivot fuel; only the raw envelope shrinks). Recent stays 12000 raw.
     const STEP_OLDER_CHARS = 1500;
+    // RESUME BRIEF (lib/next-pivot.ts): start the two persisted-row reads NOW so they overlap the
+    // attachment intake and the review load below; the brief is built right after the analyst-decisions
+    // block. `loadBriefInputs` never rejects and carries its own 2.5 s deadline, so a slow or failing read
+    // costs the run nothing but the brief. Kill switch NEXT_PIVOT_BRIEF_DISABLED is read here, at call time.
+    // Structural pre-gate (same test buildResumeBrief applies): a first turn has no assistant message, so skip the reads.
+    const hasPriorAssistantMessage = ((messages ?? []) as Array<{ role?: string }>).some((m) => m?.role === "assistant");
+    const resumeBriefReads = nextPivotBriefDisabled() || !hasPriorAssistantMessage ? null : loadBriefInputs({
+      artifacts: async (from, to) => (await supabaseAdmin
+        .from("artifacts")
+        .select("id,kind,value,source,confidence,metadata,created_at", from === 0 ? { count: "exact" } : undefined)
+        .eq("thread_id", threadId)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to)) as unknown as Page<BriefArtifact>,
+      usage: async (from, to) => (await supabaseAdmin
+        .from("tool_usage_log")
+        .select("outcome,input_json", from === 0 ? { count: "exact" } : undefined)
+        .eq("thread_id", threadId)
+        .order("created_at", { ascending: true })
+        .range(from, to)) as unknown as Page<BriefUsageRow>,
+    });
     // Resolve the attachment intake started above (it overlapped the preflight
     // + setup). Its summary must be present before the system prompt is built.
     const intake = await intakePromise;
@@ -1011,6 +1037,32 @@ Deno.serve(async (req) => {
       )));
     }
     const baseSystemPrompt = assembleBaseSystemPrompt({ detectedSeedType, visionIntakeSummary, analystDecisionsBlock });
+    // ---- RESUME BRIEF (lib/next-pivot.ts) ---------------------------------------------------------
+    // A server-ranked "best next pivot" + correlation summary for a RESUMED turn, built from persisted
+    // rows and the verdicts loaded above (`turnReviews`). Appended ONLY to `intermediateSystem` in
+    // prepareStep, AFTER the cached base: `baseSystemPrompt`, the finalize prompt and the salvage prompt
+    // stay byte-identical, and the Anthropic cache prefix is untouched. It is not a message, so
+    // `capTotalToBudget` can neither elide nor count it (an assistant-role note is cut to 200 chars).
+    // Unreadable review state, an incomplete read, a first turn, a bare-selector message or an error all
+    // mean NO block; the run is never affected. Logged as counts and a key hash, never a value.
+    let resumeBriefBlock = "";
+    if (resumeBriefReads) {
+      const briefInputs = await resumeBriefReads;
+      const briefOutcome = buildResumeBrief({
+        messages: (messages ?? []) as Array<{ role?: string; parts?: Array<{ type?: string; text?: string }> }>,
+        inputs: briefInputs,
+        reviews: turnReviews,
+        seedType: detectedSeedType,
+        availableTools: new Set(Object.keys(tools)),
+      });
+      console.log(JSON.stringify(nextPivotBriefEvent(threadId, briefOutcome, {
+        ms: briefInputs.ms,
+        artifactsRead: briefInputs.artifacts.length,
+        usageRowsRead: briefInputs.usage.length,
+        readReason: briefInputs.reason,
+      })));
+      if (briefOutcome.text) resumeBriefBlock = `\n\n${briefOutcome.text}`;
+    }
     // ---- Prompt-size instrument (A1) -----------------------------------------
     // `approxPromptChars` above stays exactly as it is: it is an INPUT TO PROVIDER
     // ROUTING (the MiniMax pre-pivot and the DeepSeek safety budget), so inflating
@@ -1169,6 +1221,9 @@ Deno.serve(async (req) => {
       return text ? Boolean(detectSeedServer(text)) : false;
     })();
 
+    // Opsis runs replayed in the latest step's history that nothing has read yet. Refreshed
+    // every step; read by the cache wrapper's search-side guard (lib/opsis-search-guard.ts).
+    let latestPendingOpsisRuns: ReturnType<typeof pendingOpsisRuns> = [];
     const prepareStep: NonNullable<Parameters<typeof streamText>[0]["prepareStep"]> =
       async ({ messages: stepMessages, stepNumber }) => {
         const { data: threadState } = await supabase
@@ -1294,6 +1349,7 @@ Deno.serve(async (req) => {
         // that removed the "stream updates, then summarize" behavior. Left out so the
         // model concludes on its own, as it did days ago.
         const elapsedMsNow = Date.now() - runStartedAt;
+        latestPendingOpsisRuns = pendingOpsisRuns(stepMessages as Array<{ content?: unknown }>);
         // BOUNDED correlation deferral. `shouldDeferFinalizeForCorrelate` is now
         // gated by BOTH a per-run counter (max 1) and a hard wall-clock floor, so a
         // run whose model never issues a correlate call can no longer suppress the
@@ -1397,7 +1453,7 @@ Deno.serve(async (req) => {
         // directive to record already-supported findings now (don't wait for correlate,
         // don't fabricate). Counts come from THIS request's stepMessages and the latch
         // is a closure local, so the nudge state is request-scoped by construction.
-        let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective();
+        let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective() + resumeBriefBlock;
         // A provider suppressed for the run (401/402 in this or an earlier invocation,
         // 429/5xx/timeouts for the window) is withheld from the step's tool set, so the
         // model cannot spend a step asking for a tool that can only answer with a
@@ -1520,6 +1576,10 @@ Deno.serve(async (req) => {
         // The opsis_results exemptions in cache.ts hold only while prepareStep has the run
         // in the collect phase (orchestrator-finalize.ts) — never for a model-initiated read.
         collectPhaseActive: () => finalizePhase === "collect",
+        // Opsis search-side guard inputs (lib/opsis-search-guard.ts): the runs the history
+        // already shows as un-read, and the live remaining wall-clock.
+        pendingOpsisRuns: () => latestPendingOpsisRuns,
+        remainingRunMs: () => ORCHESTRATOR_WALL_CLOCK_MS - (Date.now() - runStartedAt),
         // See cache.ts's ctx field comment: the correlate exemption in the
         // finalize-window live-call guard is conditional on this, not automatic.
         // Recomputed live (not the stale elapsed captured at the last prepareStep)
@@ -1543,7 +1603,14 @@ Deno.serve(async (req) => {
           // sent for a boolean field (lib/exact-boolean-repair.ts); the SDK re-validates the result against the
           // unchanged schema. Anything else returns null and is reported as a failed call, as before.
           const fixed = repairExactBooleanInput(toolCall.input, error);
-          if (!fixed) return null;
+          if (!fixed) {
+            // JSON text that never parsed: only a code fence / trailing commas are repaired, never a truncation
+            // (lib/malformed-json-repair.ts). Re-validated by the SDK against the unchanged schema.
+            const json = repairMalformedJsonInput(toolCall.input, error);
+            if (!json) return null;
+            console.warn(`[malformed-json-repair] ${toolCall.toolName}: ${json.fixes.join(", ")}`);
+            return { ...toolCall, input: json.input };
+          }
           console.warn(`[exact-boolean-repair] ${toolCall.toolName}: ${fixed.fields.join(", ")}`);
           return { ...toolCall, input: fixed.input };
         }

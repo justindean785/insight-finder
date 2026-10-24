@@ -25,8 +25,10 @@ import { anthropicFallbackEligible, selectOrchestratorProvider, type Orchestrato
 import { anthropicModelRejectsForcedToolChoice, anthropicOrchestratorHealth } from "./anthropic-orchestrator.ts";
 import { anthropicFallbackDisabled, orchestratorFallbackHealth } from "./lib/orchestrator-fallback.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
-import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn } from "./lib/opsis.ts";
+import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn, opsisStartClassificationSelfTest } from "./lib/opsis.ts";
 import { opsisFinalizeCollectSelfTest } from "./orchestrator-finalize.ts";
+import { opsisResultsHintSelfTest, opsisSearchGuardSelfTest } from "./lib/opsis-search-guard.ts";
+import { nextPivotBriefSelfTest } from "./lib/next-pivot.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
@@ -66,8 +68,12 @@ import { userSuppliedStatusSelfTest } from "./lib/user-supplied-status.ts";
 import { analystAuthorityBoundarySelfTest } from "./lib/analyst-authority-keys.ts";
 import { archiveOriginRuleSelfTest, breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 import { memoryInputNormalizationSelfTest } from "./lib/memory-input-normalization.ts";
+import { indiciaPersonOptInSelfTest } from "./costs.ts";
 import { exactBooleanRepairSelfTest } from "./lib/exact-boolean-repair.ts";
+import { malformedJsonRepairSelfTest } from "./lib/malformed-json-repair.ts";
 import { inputCoercionSelfTest, inputKindInferenceSelfTest } from "./lib/tool-input-coercion.ts";
+import { socialfetchCoercionSelfTest } from "./lib/socialfetch-input.ts";
+import { correlateSeedDefaultSelfTest } from "./lib/thread-seed.ts";
 import { detectSeedServer } from "./validation.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
 
@@ -531,6 +537,16 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // network call. Its PRESENCE is the behavioural proof that the build carrying
   // the opsis_* tools is live; the detail says whether they can run.
   r.checks.opsis = opsisHealthDetail(!!OPSIS_API_KEY, opsisKillSwitchOn(), !opsisCreditHintDisabled());
+  // Is a paid opsis_search refused (free) while runs await reading or when the run cannot
+  // read it before the report? Pure probe of lib/opsis-search-guard.ts; PRESENCE proves the
+  // build. The wrapper wiring is pinned by opsis_search_guard_test.ts in CI, not by this probe.
+  r.checks.opsis_search_guard = opsisSearchGuardSelfTest();
+  // Does a refused opsis_results run id name a replacement only when exactly one un-read run in the thread has the exact
+  // selector, else point at the paid opsis_search without starting it? Pure; PRESENCE proves the deployed bundle.
+  r.checks.opsis_results_hint = opsisResultsHintSelfTest();
+  // Is a start POST that never answered classified (timeout | caller_abort | network), flagged charge_unknown and never
+  // retried? Pure; `switch` reports OPSIS_START_CLASSIFY_DISABLED. PRESENCE proves the deployed bundle.
+  r.checks.opsis_start_classification = opsisStartClassificationSelfTest();
   // Is a paid opsis_search still pending at finalize read (one bounded opsis_results step)
   // before persist → memory → report? Pure. PRESENCE proves the deployed bundle.
   // Kill switch: OPSIS_FINALIZE_COLLECT_DISABLED.
@@ -601,9 +617,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.history_label = historyLabelSelfTest();
   r.checks.historical_memory = historicalMemorySelfTest();
   r.checks.user_supplied_status = userSuppliedStatusSelfTest();
-  // A1: can a model-supplied artifact metadata blob carry the analyst's review / release /
-  // dismissal keys? Pure. PRESENCE proves the build that strips them is live; ok:false means
-  // the boundary failed its own probe.
+  // A1: can a model-supplied metadata blob carry the analyst's review / release / dismissal /
+  // provenance keys? Pure probe of the strip module. PRESENCE (and the reserved-key count in the
+  // detail) proves which build is live; ok:false means the module failed its own probe. It does NOT
+  // prove the record tools still call the module — that wiring is pinned in CI by
+  // analyst_authority_boundary_test.ts, and the detail says so.
   r.checks.analyst_authority_boundary = analystAuthorityBoundarySelfTest();
 
   // Is a memory_save / minimax_correlate call that is right in substance but wrong in SHAPE re-shaped (and only when
@@ -613,11 +631,30 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Is a boolean parameter sent as the EXACT string "true"/"false" repaired instead of burning the step, while every other
   // string and every consent flag stays rejected? Pure. PRESENCE proves the deployed bundle; ok:false = failed its own probe.
   r.checks.exact_boolean_repair = exactBooleanRepairSelfTest();
+  // Is indicia_person's missing-first-name search an explicit boolean opt-in (default off, never repaired from a string),
+  // ledgered through the per-call cost seam (multiplier 1)? Pure; `switch` reports INDICIA_MISSING_FIRST_NAME_DISABLED. PRESENCE proves the bundle.
+  r.checks.indicia_person_opt_in = indiciaPersonOptInSelfTest();
+  // Is a call whose JSON text did not parse repaired only by dropping one enclosing code fence and trailing commas, never
+  // by closing a truncation? Pure; `switch` reports MALFORMED_JSON_REPAIR_DISABLED. PRESENCE proves the deployed bundle.
+  r.checks.malformed_json_repair = malformedJsonRepairSelfTest();
+  // Does a RESUMED turn get a bounded, server-ranked brief (best next selector + why, what is connected), built only from
+  // persisted rows, withholding rejected and quarantined selectors, failing closed on unreadable review state, appended to
+  // intermediate steps only? Pure probe of the module; `switch` reports NEXT_PIVOT_BRIEF_DISABLED. PRESENCE proves the deployed
+  // bundle; it does NOT prove index.ts still appends the block (pinned in CI by next_pivot_wiring_test.ts).
+  r.checks.next_pivot_brief = nextPivotBriefSelfTest();
 
   // Is a near-miss tool input (kind alias, query→seed, numeric string, number→string, stray whitespace) coerced INSIDE
   // the schema when — and only when — the result validates? Pure. PRESENCE proves the deployed bundle; `switch` reports
   // INPUT_COERCION_DISABLED; ok:false = a rule failed its own probe.
   r.checks.input_coercion = inputCoercionSelfTest();
+  // Does socialfetch_lookup accept username/identifier/url as `handle` and read `platform` off an exact supported host,
+  // while rejecting conflicting aliases and a platform that disagrees with the URL host? Pure; `switch` reports
+  // SOCIALFETCH_COERCION_DISABLED. PRESENCE proves the deployed bundle.
+  r.checks.socialfetch_coercion = socialfetchCoercionSelfTest();
+  // Does a minimax_correlate call with no seed fall back to the request's own seed (person seed,
+  // then the first message's selector, never prose)? Pure probe of lib/thread-seed.ts; PRESENCE
+  // proves the build. The execute wiring is pinned by correlate_seed_default_test.ts in CI.
+  r.checks.correlate_seed_default = correlateSeedDefaultSelfTest();
   r.checks.input_kind_inference = inputKindInferenceSelfTest(detectSeedServer);
 
   // breach_exposure needs a breach-class tool that RAN in the case and a non-zero result (record_artifacts), and

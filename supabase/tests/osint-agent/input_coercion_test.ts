@@ -106,6 +106,79 @@ Deno.test("PRODUCTION oathnet_lookup type alias spellings validate; value number
   assertEquals(ok("oathnet_lookup", { type: "email", value: "  a@example.invalid " }).value, "a@example.invalid");
 });
 
+// ── PRODUCTION rejections measured on thread 0ea52455 (2026-10-21, build aae1152 LIVE) ─────────
+
+Deno.test("PRODUCTION oathnet_lookup `{identifierType, value}` (the Serus spelling) validates as `{type, value}`; identifier/identifierValue carry the value", () => {
+  const a = ok("oathnet_lookup", { identifierType: "email", value: "synthetic.person@example.test" });
+  assertEquals(a.type, "email");
+  assertEquals(a.value, "synthetic.person@example.test");
+  assertFalse("identifierType" in a);
+  const b = ok("oathnet_lookup", { identifierType: "Username", identifierValue: " synthetic_handle " });
+  assertEquals(b.type, "username");
+  assertEquals(b.value, "synthetic_handle");
+  const c = ok("oathnet_lookup", { type: "domain", identifier: "example.test" });
+  assertEquals(c.value, "example.test");
+  // A sent `type` always wins over the alias; an unknown type is still rejected.
+  assertEquals(ok("oathnet_lookup", { type: "ip", identifierType: "email", value: "203.0.113.9" }).type, "ip");
+  rejected("oathnet_lookup", { identifierType: "planet", value: "x" });
+});
+
+Deno.test("REPRO google_dorks `{query}` on a PERSON name: the rename DID run live — no kind could be inferred, so the RAW input was rejected and the log read 'seed undefined'. Designed outcome, kept", async () => {
+  // The measured shape: a two-word name as `query`, nothing else. The rename to `seed` runs, no
+  // structural kind fits, the coerced value fails validation, and the RAW input is what the SDK
+  // reports on — so the issue set is the strict schema's (seed undefined + kind), i.e. the live text.
+  // It stays rejected on purpose: detectSeedServer labels any few-word prose `person`, so a name
+  // cannot be told from prose (input_kind_inference_test.ts pins "a name is not guessed from prose").
+  const input = { query: "Synthetic Person" };
+  const now = rejected("google_dorks", input).error!.issues.map((i) => `${i.path.join(".")}:${i.code}`).sort();
+  const strict = await withEnv(SWITCH, "true", () =>
+    rejected("google_dorks", input).error!.issues.map((i) => `${i.path.join(".")}:${i.code}`).sort());
+  assertEquals(now, strict);
+  assert(now.includes("seed:invalid_type"), now.join(","));
+  assert(now.some((i) => i.startsWith("kind:")), now.join(","));
+  // The same call with a structural selector as `query` IS rescued — the rename is not broken.
+  assertEquals(ok("google_dorks", { query: "synthetic.person@example.test" }).kind, "email");
+  assertEquals(ok("google_dorks", { query: "synthetic_handle" }).kind, "username");
+  assertFalse("query" in ok("google_dorks", { query: "synthetic_handle" }));
+});
+
+Deno.test("REPRO google_dorks `{query}` that is a DORK STRING (quotes/operators) is still rejected, with the SAME issues the strict schema reports (seed undefined, kind)", async () => {
+  // This is what the live rejection looks like for a query no structural rule can type; it is
+  // correct to refuse it (uncharged) rather than guess a kind from prose.
+  const input = { query: '"Synthetic Person" site:example.test' };
+  const now = rejected("google_dorks", input).error!.issues.map((i) => `${i.path.join(".")}:${i.code}`).sort();
+  const strict = await withEnv(SWITCH, "true", () =>
+    rejected("google_dorks", input).error!.issues.map((i) => `${i.path.join(".")}:${i.code}`).sort());
+  assertEquals(now, strict);
+  assert(now.includes("seed:invalid_type"), now.join(","));
+  assert(now.some((i) => i.startsWith("kind:")), now.join(","));
+});
+
+Deno.test("PRODUCTION minimax_correlate `{artifacts}` with NO seed now validates (the seed resolves in execute, lib/thread-seed.ts); a stringified artifacts array still parses", () => {
+  const out = ok("minimax_correlate", { artifacts: '[{"kind":"email","value":"synthetic.person@example.test"}]' });
+  assert(Array.isArray(out.artifacts));
+  assertEquals((out.artifacts as Rec[])[0].kind, "email");
+  assertFalse("seed" in out);
+  assertEquals(ok("minimax_correlate", { seed: 12345, artifacts: [] }).seed, "12345");
+});
+
+Deno.test("PRODUCTION rapidapi_breach_search: a quoted, padded email is trimmed and validates (already built); a value that is not an email is still rejected", () => {
+  assertEquals(ok("rapidapi_breach_search", { email: " 'synthetic.person@example.test' " }).email, "synthetic.person@example.test");
+  rejected("rapidapi_breach_search", { email: "synthetic_handle" });
+});
+
+Deno.test("rapidapi_breach_search email: cleanup is spelling-only — each outer-quote pair and padding is removed, but an internal space, a mismatched quote or a malformed address is still REJECTED, and a lone quote is never stripped", () => {
+  for (const sent of ['"a@example.invalid"', "'a@example.invalid'", "`a@example.invalid`", "  \"a@example.invalid\"\n"]) {
+    assertEquals(ok("rapidapi_breach_search", { email: sent }).email, "a@example.invalid", sent);
+  }
+  for (const sent of [" 'a @example.invalid' ", "a@ example.invalid", '"a@example.invalid\'', "a@@example.invalid", "a@", "'a@example.invalid' extra"]) {
+    rejected("rapidapi_breach_search", { email: sent });
+  }
+  // A LONE quote is a legal local-part character, so the schema accepts it — and the cleanup must not "fix" it by
+  // stripping: only a matching OUTER pair is removed.
+  assertEquals(ok("rapidapi_breach_search", { email: "'a@example.invalid" }).email, "'a@example.invalid");
+});
+
 Deno.test("PRODUCTION (prior audit) minimax_correlate seed sent as a number validates as its string", () => {
   const d = ok("minimax_correlate", { seed: 6175550100, artifacts: [{ kind: "phone", value: "6175550100" }] });
   assertStrictEquals(d.seed, "6175550100");

@@ -170,6 +170,9 @@ export interface PivotEligibility {
 export const BULK_QUEUE_UNAVAILABLE =
   "Bulk queue is unavailable: runs have no server-side idempotency contract, so queued pivots could run twice or be dropped. Run pivots one at a time.";
 
+/** The one warning an ordinary report-only pivot carries (no recorded row yet). */
+export const REPORT_ONLY_WARNING = "Suggested by the agent's report text, not by a recorded artifact.";
+
 export function pivotEligibility(
   pivot: RunnablePivot,
   ctx: { artifactsById: ReadonlyMap<string, Artifact>; review: (id: string) => ReviewState },
@@ -211,7 +214,7 @@ export function pivotEligibility(
     linkage = "unproven";
     warnings.push("Its source row is not in the loaded evidence.");
   } else {
-    warnings.push("Suggested by the agent's report text, not by a recorded artifact.");
+    warnings.push(REPORT_ONLY_WARNING);
   }
 
   const rerun = pivot.status === "searched";

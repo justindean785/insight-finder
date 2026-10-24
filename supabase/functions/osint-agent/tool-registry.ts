@@ -50,6 +50,7 @@ import { loadReviewsForThread, dropRejectedAndDerived, dropRejectedArtifacts, en
 import { applyMemorySupersession, refuseConflictingMemoryWrites, rejectedSelectorsFromRows, type MemoryRow } from "./lib/memory-supersession.ts";
 import { autoRecallHint, recallAuthorityFields, renderPlannerMemoryHint, tagMemoryProvenance } from "./lib/memory-provenance.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
+import { resolveCorrelateSeed } from "./lib/thread-seed.ts";
 
 /**
  * TOOL_NAME_ALIASES — DeepSeek (and occasionally other providers) hallucinate a
@@ -127,6 +128,7 @@ import { normalizeMemoryEntry, parseStringArtifactElements, wrapFlatMemoryEntry 
 import {
   applyInputCoercion, GENERIC_SELECTOR_SPEC, inferSelectorKind, inputCoercionDisabled, mergeInputSpecs, type InputCoercionSpec,
 } from "./lib/tool-input-coercion.ts";
+import { socialfetchCustomCoercion } from "./lib/socialfetch-input.ts";
 import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
@@ -607,6 +609,11 @@ const ADDRESS_KIND_GATE = (k: string) => k !== "address" || !inputCoercionDisabl
 const ADDRESS_KIND_GATE_MSG = { message: "kind \"address\" is not accepted while INPUT_COERCION_DISABLED=true" };
 const QUERY_TO_SEED = [{ to: "seed", from: "query", coercion: "seed_from_query" as const }];
 // A missing google_dorks `kind` is read off the seed's SHAPE (free tool, so a bare token may read as a username).
+// NOT a person name: measured 2026-10-21 (thread 0ea52455) `{query: "<two-word name>"}` was renamed to `seed`, no
+// kind could be inferred, the coerced value failed validation and the RAW input was rejected — the log read "seed
+// undefined" although the rename had run. That rejection is the designed outcome, kept: detectSeedServer labels ANY
+// few-word prose `person` ("look into this for me" included), so mapping it to the `name` kind would route prose
+// into the name dork family. Pinned by input_kind_inference_test.ts ("a name is not guessed from prose").
 const DORK_KIND_FROM_SEED = {
   kind: {
     from: "seed",
@@ -1048,7 +1055,10 @@ export function buildTools(ctx: ToolContext) {
       description:
         "Have MiniMax correlate and rescore a batch of artifacts. Pass the relevant artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after at least three meaningful new artifacts or before final verification. A repeat call after a successful pass is skipped (no cost) if fewer than three new artifacts have been recorded since — keep gathering evidence first.",
       inputSchema: memoSchema("minimax_correlate", () => coercedSchema("minimax_correlate", { stringFields: ["seed"], trimFields: ["seed"], jsonFields: ["artifacts"] }, z.object({
-        seed: z.string().describe("Original seed identifier"),
+        // Optional at the SCHEMA so a call that omits it is not rejected before execute (measured
+        // 2026-10-21: `{artifacts}` alone). execute resolves it from the request (lib/thread-seed.ts)
+        // or returns the uncharged skip below saying what was tried.
+        seed: z.string().optional().describe("Original seed identifier. If omitted, the request's own seed is used."),
         // Models frequently pass `artifacts` as a JSON STRING; coerce to an
         // array before validating (same as record_artifacts) so a stringified
         // batch doesn't fail correlation and lose the run's findings.
@@ -1061,21 +1071,36 @@ export function buildTools(ctx: ToolContext) {
           metadata: z.unknown().optional(),
         })).max(200)),
       }))),
-      execute: async ({ seed, artifacts }, opts) => {
+      execute: async ({ seed: seedIn, artifacts }, opts) => {
         // Input guard: never spend a paid MiniMax call on an empty/invalid
         // payload. The counter check below tracks how many NEW artifacts were
         // recorded, but the model can still invoke this with no seed or an
         // empty / malformed `artifacts` array — correlating nothing is pure
         // waste. Gate on the actual inputs, not just the counter.
-        const cleanSeed = typeof seed === "string" ? seed.trim() : "";
+        // A missing seed is resolved from the REQUEST (lib/thread-seed.ts): the person seed,
+        // then the first user message's selector. Disclosed in the result as `seed_source`.
+        const resolved = resolveCorrelateSeed({
+          seed: seedIn,
+          subjectName: ctx.getSubjectSeedName?.() ?? "",
+          messages: messages as unknown as Array<{ role?: string; parts?: Array<{ type?: string; text?: string }> }>,
+          detect: detectSeedServer,
+        });
+        const seed = resolved.seed;
+        const cleanSeed = seed;
+        if (resolved.source && resolved.source !== "input") {
+          console.log(JSON.stringify({ event: "correlate_seed_defaulted", thread_id: threadId, source: resolved.source }));
+        }
         const validArtifacts = Array.isArray(artifacts)
           ? artifacts.filter((a) => a && typeof a.value === "string" && a.value.trim().length > 0)
           : [];
         if (!cleanSeed || validArtifacts.length === 0) {
+          const seedWord = cleanSeed
+            ? "present"
+            : `missing — not sent, and no fallback resolved (tried: ${resolved.tried.join(", ") || "none"})`;
           return skipStub(
             "minimax_correlate",
-            `no valid inputs to correlate (seed=${cleanSeed ? "present" : "empty"}, ${validArtifacts.length} valid artifacts). Pass the seed and the artifacts gathered so far.`,
-            { seedProvided: !!cleanSeed, validArtifactCount: validArtifacts.length },
+            `no valid inputs to correlate (seed ${seedWord}; ${validArtifacts.length} valid artifacts). Pass \`seed\` (the investigation's seed value) and \`artifacts\` as an ARRAY of {kind, value, …} objects.`,
+            { seedProvided: !!cleanSeed, seedSource: resolved.source, validArtifactCount: validArtifacts.length },
           );
         }
         try {
@@ -1098,7 +1123,7 @@ export function buildTools(ctx: ToolContext) {
           });
           const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
           resetCorrelateCycle();
-          return { ok: r.ok, status: r.status, analysis: parsed };
+          return { ok: r.ok, status: r.status, analysis: parsed, ...(resolved.source && resolved.source !== "input" ? { seed_source: resolved.source } : {}) };
         } catch (e) { return { error: String(e) }; }
       },
     }),
@@ -1581,6 +1606,14 @@ export function buildTools(ctx: ToolContext) {
        "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain/NAME, or geo+ASN on an IP. For a person's full NAME pass type:'name' (searched as a free-text query across the breach corpus — expect same-name collisions, so treat name-only hits as [VERIFY] until a selector overlaps). A first-class breach source: run it on the seed AND on high-value selectors/names discovered mid-investigation.",
       inputSchema: memoSchema("oathnet_lookup", () => coercedSchema("oathnet_lookup", {
         enumFields: { type: ["email", "username", "phone", "ip", "domain", "name"] },
+        // The Serus spelling of the same two fields: measured 2026-10-21 (thread 0ea52455), three parallel
+        // `{identifierType, value}` calls rejected on `type`. Spelling only; the value still has to be one of
+        // the enum values above and is re-validated.
+        renames: [
+          { to: "type", from: "identifierType", coercion: "field_alias" },
+          { to: "value", from: "identifierValue", coercion: "field_alias" },
+          { to: "value", from: "identifier", coercion: "field_alias" },
+        ],
         stringFields: ["value"],
         trimFields: ["value"],
       }, z.object({
@@ -1917,11 +1950,13 @@ export function buildTools(ctx: ToolContext) {
     socialfetch_lookup: tool({
       description:
         "Query SocialFetch for normalized public social PROFILES and their content. SUPPORTED platforms: 'tiktok' | 'instagram' | 'twitter' | 'facebook'. kind='profile' (default) = profile metadata; 'videos' (tiktok) / 'posts' (instagram) / 'tweets' (twitter) = a profile's content collection; 'video' (tiktok) = one video by URL/id (pass it as `handle`). Use platform='facebook' with a full profile URL; otherwise pass a bare handle. Returns { ok, found, status, lookupStatus, data, meta, error }; on profile routes lookupStatus is 'found'|'private'|'not_found' — treat 'private'/'not_found' as a NORMAL negative, not an error. For a HARD-BLOCKED host that is NOT one of these four structured platforms (youtube, twitch, reddit, or an arbitrary evidence page), use `socialfetch_web_read` — it fetches server-side, unlike `jina_reader_scrape`, which those origins block. Jina remains the reader for non-blocked hosts. SocialFetch quota is LOW — don't re-burn calls on a nothing-result. Unsupported platforms return an informative no-op instead of crashing.",
-      inputSchema: memoSchema("socialfetch_lookup", () => z.object({
+      // Strict near-miss repair (lib/socialfetch-input.ts): username/identifier/url → handle, platform read off an exact
+      // supported host; conflicting aliases or a platform that disagrees with the URL host are rejected.
+      inputSchema: memoSchema("socialfetch_lookup", () => coercedSchema("socialfetch_lookup", { custom: socialfetchCustomCoercion }, z.object({
         platform: z.string(),
         handle: z.string().describe("Username/handle, full URL for facebook, or video URL/id for tiktok kind='video'"),
         kind: z.enum(["profile", "videos", "posts", "tweets", "video"]).default("profile"),
-      })),
+      }))),
       execute: async ({ platform, handle, kind }) => {
         // Normalize common aliases BEFORE the support check. Without this, the
         // single most likely spelling of the platform — `x`, the site's actual
@@ -3220,7 +3255,7 @@ export function buildTools(ctx: ToolContext) {
     // signal is forwarded so its cap can end a poll early.
     opsis_search: tool({
       description:
-        "Opsis: find accounts for a username, email or domain across ~700 platforms. PAID (1 credit). Returns within ~25s; a run still going returns partial results plus a run_id, so fetch the rest with opsis_results and never search the same selector again. Hits are unverified account leads.",
+        "Opsis: find accounts for a username, email or domain across ~700 platforms. PAID (1 credit). Start searches EARLY in a turn: a search is refused (free) while 2 runs from this thread are still un-read, or when the run cannot read it before the report — read pending runs with opsis_results first. Returns within ~25s; a run still going returns partial results plus a run_id, so fetch the rest with opsis_results and never search the same selector again. Hits are unverified account leads.",
       inputSchema: memoSchema("opsis_search", () => z.object({
         kind: z.enum(["username", "email", "domain"]),
         value: z.string().min(1),
@@ -6373,7 +6408,21 @@ export function buildTools(ctx: ToolContext) {
         metadata: z.record(z.unknown()).optional(),
       })),
       execute: async ({ classification, kind, value, source, source_url, confidence, notes, metadata }) => {
-        const meta = { ...(metadata ?? {}), ...(notes ? { notes } : {}) };
+        // A1 (defense in depth): the same boundary as record_artifacts / record_artifact. This writes the
+        // model's metadata to evidence_log._metadata (and its JSON into the content snapshot); nothing reads
+        // the reserved keys there today, but a custody row is the one place a forged "reviewed" would read
+        // as an attestation if a reader ever appeared. Stripped before the snapshot is built; disclosed by
+        // key NAME on the row, in the log and in this result — never the values.
+        const authority = stripAnalystAuthorityKeys(metadata);
+        if (authority.stripped.length > 0) {
+          console.warn(JSON.stringify({
+            event: "analyst_authority_stripped",
+            thread_id: threadId,
+            tool: "record_evidence",
+            keys: authority.stripped,
+          }));
+        }
+        const meta = { ...(authority.metadata ?? {}), ...(notes ? { notes } : {}) };
         const { data, error } = await supabase.rpc("append_evidence", {
           _thread_id: threadId,
           _artifact_id: null,
@@ -6405,7 +6454,16 @@ export function buildTools(ctx: ToolContext) {
             archived = { sha256: arch.sha256, bytes: arch.bytes };
           }
         }
-        return { ok: true, id: row?.id, seq: row?.seq, chain_hash: row?.chain_hash, ...(archived ? { archived } : {}) };
+        return {
+          ok: true,
+          id: row?.id,
+          seq: row?.seq,
+          chain_hash: row?.chain_hash,
+          ...(archived ? { archived } : {}),
+          ...(authority.stripped.length > 0
+            ? { analyst_authority_stripped: authority.stripped, analyst_authority_note: ANALYST_AUTHORITY_NOTE }
+            : {}),
+        };
       },
     }),
   };

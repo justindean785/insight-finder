@@ -10,11 +10,15 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import type { Tool } from "npm:ai@6";
 import { hashInput, normalizeForHash, sanitizeToolOutput, stripNulCharacters, TOOL_CACHE_LRU } from "./safety.ts";
 import { tierForTool, modelForTool, type Tier } from "./models.ts";
-import { costForTool } from "./costs.ts";
+import { costForTool, costForToolCall } from "./costs.ts";
 import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL_MS } from "./validation.ts";
 import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome, isProvenEmptyResult } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
+import {
+  OPSIS_GUARD_SKIP_PREFIX, OPSIS_RESULTS_HINT_CODES, decideOpsisSearch, findPendingForSelector, noteOpsisResultsOutcome, noteOpsisSearchOutcome,
+  opsisResultsHint, opsisResultsHintDisabled, opsisSearchGuardDisabled, uncollectedOpsisRuns,
+} from "./lib/opsis-search-guard.ts";
 // Union of both sides. #519 replaced this file's quarantine read with the paged
 // `loadRefusedArtifacts`, which absorbs what `buildRefusedKeys` did here, so that
 // symbol is deliberately NOT re-imported — it is unused in this module after the
@@ -706,6 +710,12 @@ export function wrapToolsWithCache(
     // a model-initiated read on a path where the collect decision declined (wall-clock
     // trigger, exhausted budget) stays a finalize-window skip, as before.
     collectPhaseActive?: () => boolean;
+    /** Opsis searches replayed in the latest step's history that no opsis_results has read yet
+     *  (orchestrator-finalize.ts pendingOpsisRuns: run id, kind, value). The search-side guard
+     *  (lib/opsis-search-guard.ts) unions these with the runs it saw start this request. */
+    pendingOpsisRuns?: () => Array<{ run_id: string; kind: string; value: string }>;
+    /** Run wall-clock remaining right now (ms); recomputed live, like hasCorrelateDispatchBudget. */
+    remainingRunMs?: () => number;
     onHeartbeat?: () => void;
   },
 ) {
@@ -1056,8 +1066,10 @@ export function wrapToolsWithCache(
         ? (isProvenEmptyResult(name, resultForOutcome) ? "empty" : "ok")
         : classifyToolOutcome(errorMsg, statusCode);
       const okStored = outcome !== "failed";
-      const cost = (cached || freeCall) ? 0 : baseCost;
-      const charged = creditsCharged({ ok, cached, free: freeCall, baseCost });
+      // Per-call list price: an opted-in indicia_person (allowMissingFirstName) is ledgered at its real, higher cost.
+      const callCost = costForToolCall(name, (inputJson as { input?: unknown } | null)?.input);
+      const cost = (cached || freeCall) ? 0 : callCost;
+      const charged = creditsCharged({ ok, cached, free: freeCall, baseCost: callCost });
       if (charged > 0) ctx.onCost?.(charged);
       const row: Record<string, unknown> = {
         user_id: ctx.userId,
@@ -1566,6 +1578,63 @@ export function wrapToolsWithCache(
           }
         }
 
+        // ---- Opsis search-side guard (lib/opsis-search-guard.ts) --------------
+        // A paid opsis_search is admitted only when the run can still READ it before the
+        // report, and only while at most MAX_UNCOLLECTED_OPSIS_RUNS runs await reading.
+        // Measured: 7 of 11 paid searches in one case were never read. Checked here —
+        // after cache hits (a completed run still replays free) and BEFORE the paid slot
+        // is reserved — so a refusal costs nothing and burns no budget. Legible: ok:false,
+        // skipped, provider_attempted:false, with the pending run ids so the model can read
+        // them. opsis_results is never gated here. Kill switch: OPSIS_SEARCH_GUARD_DISABLED.
+        if (name === "opsis_search" && !opsisSearchGuardDisabled()) {
+          const pending = uncollectedOpsisRuns(ctx.investigationId, ctx.pendingOpsisRuns?.() ?? []);
+          const asked = (input ?? {}) as { kind?: unknown; value?: unknown };
+          const remainingMs = ctx.remainingRunMs ? ctx.remainingRunMs() : null;
+          const decision = decideOpsisSearch({
+            uncollected: pending.length,
+            remainingMs,
+            sameSelectorRun: findPendingForSelector(pending, asked.kind, asked.value),
+          });
+          if (!decision.allow) {
+            const rejection = `opsis_${decision.reason}`;
+            console.warn(JSON.stringify({
+              event: "opsis_search_refused",
+              thread_id: ctx.investigationId,
+              reason: decision.reason,
+              uncollected_runs: decision.uncollected,
+              remaining_ms: decision.remaining_ms,
+              needed_ms: decision.needed_ms,
+            }));
+            // The error text's constant head is named in tool-outcome.ts SKIP_RE: the row logs
+            // `skipped` (charged 0), never `failed`, so a refusal cannot read as an Opsis outage.
+            await logUsage(false, false, Date.now() - t0, `${OPSIS_GUARD_SKIP_PREFIX} ${decision.reason}`, null, true, {
+              input: inputJson,
+              runtime: { ...runtimeMetaBase, rejection_reason: rejection, rejection_source: "opsis_guard", stale_cache: !!staleRecord },
+            });
+            return attachRuntimeMeta({
+              ok: false,
+              skipped: true,
+              provider_attempted: false,
+              opsis_guard: decision.reason,
+              uncollected_runs: decision.uncollected,
+              pending_run_ids: pending.map((r) => r.run_id),
+              ...(decision.pending_run
+                ? { pending_run_id: decision.pending_run.run_id, read_with: { tool: "opsis_results", ...decision.pending_run } }
+                : {}),
+              remaining_ms: decision.remaining_ms,
+              needed_ms: decision.needed_ms,
+              reason: decision.note,
+              error: `${OPSIS_GUARD_SKIP_PREFIX} ${decision.reason} — opsis_search not started, no credit spent`,
+            }, {
+              ...runtimeMetaBase,
+              rejection_reason: rejection,
+              stage: "TARGETED_PIVOT",
+              cache_layer: "miss",
+              stale_cache: !!staleRecord,
+            });
+          }
+        }
+
         // ---- Per-run tool-call cap (graceful) ----
         // Once the run has made MAX_TOOL_CALLS_PER_RUN genuine live executions, stop
         // STARTING new lookups: return a schema-safe skip (like a governor rejection)
@@ -1812,6 +1881,22 @@ export function wrapToolsWithCache(
           });
           ok = deriveOk(result);
           if (!ok) errInfo = extractToolError(result);
+          // Opsis search-side guard bookkeeping: a PARTIAL search is a run awaiting a read;
+          // any opsis_results read retires it (lib/opsis-search-guard.ts).
+          if (name === "opsis_search") noteOpsisSearchOutcome(ctx.investigationId, result, input as { kind?: unknown; value?: unknown });
+          if (name === "opsis_results") {
+            // A refused run id (another selector's, or unknown) gets a HINT from this thread's own un-read runs — computed
+            // BEFORE the retire below. The refusal itself is untouched; see opsisResultsHint.
+            const asked = (input ?? {}) as { kind?: unknown; value?: unknown; run_id?: unknown };
+            const r = result as Record<string, unknown> | null;
+            if (!opsisResultsHintDisabled() && r && typeof r === "object" && r.ok === false && typeof r.code === "string" &&
+              OPSIS_RESULTS_HINT_CODES.includes(r.code)) {
+              const hint = opsisResultsHint(uncollectedOpsisRuns(ctx.investigationId, ctx.pendingOpsisRuns?.() ?? []), asked.kind, asked.value, asked.run_id);
+              console.log(JSON.stringify({ event: "opsis_results_hint", thread_id: ctx.investigationId, code: r.code, run_hint: hint.run_hint }));
+              result = { ...r, ...hint };
+            }
+            noteOpsisResultsOutcome(ctx.investigationId, result, asked.run_id);
+          }
           // PAID-CALL ACCOUNTING — the only place the reserved paid slot is
           // released. `startCall` reserves at admission (atomically, so a parallel
           // batch cannot overshoot); a tool that declined BEFORE contacting the

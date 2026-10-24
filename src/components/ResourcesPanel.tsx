@@ -12,6 +12,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "
 import { Button } from "@/components/ui/button";
 import { HoverCard, HoverCardTrigger, HoverCardContent } from "@/components/ui/hover-card";
 import { ConfidenceExplain } from "@/components/ConfidenceExplain";
+import { ArtifactPivotAction } from "@/components/pivots/ArtifactPivotAction";
 import { SourceBadge } from "@/components/SourceBadge";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -856,7 +857,7 @@ export function ArtifactRow({
 }
 
 function ArtifactDrawer({
-  artifact, onClose, onChanged, reviewGet, reviewSet, threadId,
+  artifact, onClose, onChanged, reviewGet, reviewSet, threadId, allArtifacts,
 }: {
   artifact: Artifact | null;
   onClose: () => void;
@@ -864,6 +865,8 @@ function ArtifactDrawer({
   reviewGet: (id: string) => ReviewState;
   reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => Promise<ReviewWriteResult>;
   threadId: string;
+  /** Every loaded row, so "Pivot on this" can ask the pivot engine about this one. */
+  allArtifacts: Artifact[];
 }) {
   // (component body unchanged below)
   if (!artifact) return null;
@@ -876,12 +879,13 @@ function ArtifactDrawer({
       reviewGet={reviewGet}
       reviewSet={reviewSet}
       threadId={threadId}
+      allArtifacts={allArtifacts}
     />
   );
 }
 
 function ArtifactDrawerInner({
-  artifact, onClose, onChanged, reviewGet, reviewSet, threadId,
+  artifact, onClose, onChanged, reviewGet, reviewSet, threadId, allArtifacts,
 }: {
   artifact: Artifact;
   onClose: () => void;
@@ -889,6 +893,7 @@ function ArtifactDrawerInner({
   reviewGet: (id: string) => ReviewState;
   reviewSet: (id: string, s: ReviewState | null, ctx?: { value?: string; kind?: string; confidence?: number; source?: string }) => Promise<ReviewWriteResult>;
   threadId: string;
+  allArtifacts: Artifact[];
 }) {
   const meta = (artifact.metadata ?? {}) as Record<string, unknown>;
   // Stored, cap, effective and every applicable ceiling — the drawer is the one
@@ -1208,6 +1213,7 @@ function ArtifactDrawerInner({
               pivots, dispatch, clustering, synthesis, the report and the agent's
               next run. Legacy rows that carry the flag still read as rejected
               (see analyst-decisions.ts isRejectedArtifact) and show the chip. */}
+          <ArtifactPivotAction threadId={threadId} artifact={artifact} artifacts={allArtifacts} />
           <div className="grid grid-cols-2 gap-2">
             <Button size="sm" variant="outline" onClick={() => copy(artifact.value, "Value copied")} className="gap-1.5"><Copy className="w-3.5 h-3.5" /> Copy value</Button>
             <Button size="sm" variant="outline" onClick={() => copy(citation, "Citation copied")} className="gap-1.5"><Copy className="w-3.5 h-3.5" /> Copy citation</Button>
@@ -1456,6 +1462,7 @@ export function EvidenceBoard({
         reviewGet={review.get}
         reviewSet={review.set}
         threadId={threadId}
+        allArtifacts={items}
       />
     </>
   );
