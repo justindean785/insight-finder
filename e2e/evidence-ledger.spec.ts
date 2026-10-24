@@ -65,4 +65,23 @@ test.describe("evidence ledger", () => {
       expect(x.clipped, "authority basis clipped with an ellipsis").toBe(false);
     }
   });
+
+  test("when NO row prints a source the board is three columns and Confidence stays on the row's own line", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "894x617", "four-column layout needs >= 900px");
+    await openEvidence(page);
+    // Force the state a case with uniform provenance produces: every Source cell empty.
+    await page.evaluate(() => {
+      document.querySelectorAll('.ledger-row [data-ledger-col="source"]').forEach((c) => { c.textContent = ""; });
+    });
+    const g = await page.evaluate(() => {
+      const row = document.querySelector(".ledger-row")!;
+      const val = row.querySelector('[data-ledger-col="value"]')!.getBoundingClientRect();
+      const conf = row.querySelector('[data-ledger-col="confidence"]')!.getBoundingClientRect();
+      const head = document.querySelector('.ledger-head [data-ledger-col="confidence"]')!.getBoundingClientRect();
+      return { valTop: val.top, confTop: conf.top, valBottom: val.bottom, confLeft: conf.left, headLeft: head.left, cols: getComputedStyle(row).gridTemplateColumns.split(" ").length };
+    });
+    expect(g.cols, "three columns once Source is gone").toBe(3);
+    expect(g.confTop, "Confidence shares the value's grid row").toBeLessThan(g.valBottom);
+    expect(Math.abs(g.confLeft - g.headLeft), "and sits under its header").toBeLessThanOrEqual(1);
+  });
 });

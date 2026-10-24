@@ -98,6 +98,11 @@ describe("ledger stylesheet contract", () => {
     expect(css).toMatch(/\.ledger-row \[data-ledger-col="source"\]:empty\s*\{\s*display:\s*none;/);
     expect(css).toMatch(/\.ledger-row \[data-ledger-col="status"\]:has\(\+ \[data-ledger-col="source"\]:empty\)\s*\{\s*grid-column:\s*span 2;/);
   });
+  it("the three-column layout resets the per-row authority span (Codex P2 on #870)", () => {
+    expect(css).toMatch(/\.ledger:not\(:has\(\.ledger-row \[data-ledger-col="source"\]:not\(:empty\)\)\) \.ledger-row \[data-ledger-col="status"\]\s*\{\s*grid-column:\s*auto;/);
+    // ...and it must come AFTER the span rule so it wins at equal-or-higher specificity.
+    expect(css.indexOf('[data-ledger-col="status"]:has(+')).toBeLessThan(css.lastIndexOf("grid-column: auto;"));
+  });
   it("the ledger confidence figure is a plain 15px/600 tabular figure; the global serif figure is untouched", () => {
     expect(css).toMatch(/\.ledger-row \.conf-figure\s*\{[^}]*font-weight:\s*600;[^}]*font-size:\s*15px;/s);
     expect(css).toMatch(/\.conf-figure\s*\{\s*font-family:\s*"Newsreader"/);

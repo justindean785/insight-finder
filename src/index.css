@@ -1965,6 +1965,11 @@ All colors MUST be HSL.
   .ledger:not(:has(.ledger-row [data-ledger-col="source"]:not(:empty))) [data-ledger-col="source"] {
     display: none;
   }
+  /* In the three-column layout the freed width is already Authority's own column; the per-row span above would make
+     Value and Authority consume all three and push Confidence onto a second grid row. */
+  .ledger:not(:has(.ledger-row [data-ledger-col="source"]:not(:empty))) .ledger-row [data-ledger-col="status"] {
+    grid-column: auto;
+  }
 }
 [data-density-card] {
   padding: var(--density-card-py) var(--density-card-px) !important;
