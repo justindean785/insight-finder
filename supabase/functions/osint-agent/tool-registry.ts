@@ -49,6 +49,7 @@ import { renderPivotChecklistForPrompt } from "./pivot-checklists.ts";
 import { loadReviewsForThread, dropRejectedAndDerived, dropRejectedArtifacts, enforcedRejectedRows, isRejectedByReview, type ReviewDb } from "./reviews.ts";
 import { applyMemorySupersession, refuseConflictingMemoryWrites, rejectedSelectorsFromRows, type MemoryRow } from "./lib/memory-supersession.ts";
 import { unknownToolNudge } from "./unknown-tool-guard.ts";
+import { resolveCorrelateSeed } from "./lib/thread-seed.ts";
 
 /**
  * TOOL_NAME_ALIASES — DeepSeek (and occasionally other providers) hallucinate a
@@ -606,6 +607,11 @@ const ADDRESS_KIND_GATE = (k: string) => k !== "address" || !inputCoercionDisabl
 const ADDRESS_KIND_GATE_MSG = { message: "kind \"address\" is not accepted while INPUT_COERCION_DISABLED=true" };
 const QUERY_TO_SEED = [{ to: "seed", from: "query", coercion: "seed_from_query" as const }];
 // A missing google_dorks `kind` is read off the seed's SHAPE (free tool, so a bare token may read as a username).
+// NOT a person name: measured 2026-10-21 (thread 0ea52455) `{query: "<two-word name>"}` was renamed to `seed`, no
+// kind could be inferred, the coerced value failed validation and the RAW input was rejected — the log read "seed
+// undefined" although the rename had run. That rejection is the designed outcome, kept: detectSeedServer labels ANY
+// few-word prose `person` ("look into this for me" included), so mapping it to the `name` kind would route prose
+// into the name dork family. Pinned by input_kind_inference_test.ts ("a name is not guessed from prose").
 const DORK_KIND_FROM_SEED = {
   kind: {
     from: "seed",
@@ -1047,7 +1053,10 @@ export function buildTools(ctx: ToolContext) {
       description:
         "Have MiniMax correlate and rescore a batch of artifacts. Pass the relevant artifacts gathered so far; it returns identity clusters, dedup mapping, confidence rescoring, and contradiction flags. Run after at least three meaningful new artifacts or before final verification. A repeat call after a successful pass is skipped (no cost) if fewer than three new artifacts have been recorded since — keep gathering evidence first.",
       inputSchema: memoSchema("minimax_correlate", () => coercedSchema("minimax_correlate", { stringFields: ["seed"], trimFields: ["seed"], jsonFields: ["artifacts"] }, z.object({
-        seed: z.string().describe("Original seed identifier"),
+        // Optional at the SCHEMA so a call that omits it is not rejected before execute (measured
+        // 2026-10-21: `{artifacts}` alone). execute resolves it from the request (lib/thread-seed.ts)
+        // or returns the uncharged skip below saying what was tried.
+        seed: z.string().optional().describe("Original seed identifier. If omitted, the request's own seed is used."),
         // Models frequently pass `artifacts` as a JSON STRING; coerce to an
         // array before validating (same as record_artifacts) so a stringified
         // batch doesn't fail correlation and lose the run's findings.
@@ -1060,21 +1069,36 @@ export function buildTools(ctx: ToolContext) {
           metadata: z.unknown().optional(),
         })).max(200)),
       }))),
-      execute: async ({ seed, artifacts }, opts) => {
+      execute: async ({ seed: seedIn, artifacts }, opts) => {
         // Input guard: never spend a paid MiniMax call on an empty/invalid
         // payload. The counter check below tracks how many NEW artifacts were
         // recorded, but the model can still invoke this with no seed or an
         // empty / malformed `artifacts` array — correlating nothing is pure
         // waste. Gate on the actual inputs, not just the counter.
-        const cleanSeed = typeof seed === "string" ? seed.trim() : "";
+        // A missing seed is resolved from the REQUEST (lib/thread-seed.ts): the person seed,
+        // then the first user message's selector. Disclosed in the result as `seed_source`.
+        const resolved = resolveCorrelateSeed({
+          seed: seedIn,
+          subjectName: ctx.getSubjectSeedName?.() ?? "",
+          messages: messages as unknown as Array<{ role?: string; parts?: Array<{ type?: string; text?: string }> }>,
+          detect: detectSeedServer,
+        });
+        const seed = resolved.seed;
+        const cleanSeed = seed;
+        if (resolved.source && resolved.source !== "input") {
+          console.log(JSON.stringify({ event: "correlate_seed_defaulted", thread_id: threadId, source: resolved.source }));
+        }
         const validArtifacts = Array.isArray(artifacts)
           ? artifacts.filter((a) => a && typeof a.value === "string" && a.value.trim().length > 0)
           : [];
         if (!cleanSeed || validArtifacts.length === 0) {
+          const seedWord = cleanSeed
+            ? "present"
+            : `missing — not sent, and no fallback resolved (tried: ${resolved.tried.join(", ") || "none"})`;
           return skipStub(
             "minimax_correlate",
-            `no valid inputs to correlate (seed=${cleanSeed ? "present" : "empty"}, ${validArtifacts.length} valid artifacts). Pass the seed and the artifacts gathered so far.`,
-            { seedProvided: !!cleanSeed, validArtifactCount: validArtifacts.length },
+            `no valid inputs to correlate (seed ${seedWord}; ${validArtifacts.length} valid artifacts). Pass \`seed\` (the investigation's seed value) and \`artifacts\` as an ARRAY of {kind, value, …} objects.`,
+            { seedProvided: !!cleanSeed, seedSource: resolved.source, validArtifactCount: validArtifacts.length },
           );
         }
         try {
@@ -1097,7 +1121,7 @@ export function buildTools(ctx: ToolContext) {
           });
           const parsed = safeJson<Record<string, unknown>>(r.content) ?? { raw: r.content };
           resetCorrelateCycle();
-          return { ok: r.ok, status: r.status, analysis: parsed };
+          return { ok: r.ok, status: r.status, analysis: parsed, ...(resolved.source && resolved.source !== "input" ? { seed_source: resolved.source } : {}) };
         } catch (e) { return { error: String(e) }; }
       },
     }),
@@ -1585,6 +1609,14 @@ export function buildTools(ctx: ToolContext) {
        "Query OathNet v2 for breach correlation on a high-value email/username/phone/domain/NAME, or geo+ASN on an IP. For a person's full NAME pass type:'name' (searched as a free-text query across the breach corpus — expect same-name collisions, so treat name-only hits as [VERIFY] until a selector overlaps). A first-class breach source: run it on the seed AND on high-value selectors/names discovered mid-investigation.",
       inputSchema: memoSchema("oathnet_lookup", () => coercedSchema("oathnet_lookup", {
         enumFields: { type: ["email", "username", "phone", "ip", "domain", "name"] },
+        // The Serus spelling of the same two fields: measured 2026-10-21 (thread 0ea52455), three parallel
+        // `{identifierType, value}` calls rejected on `type`. Spelling only; the value still has to be one of
+        // the enum values above and is re-validated.
+        renames: [
+          { to: "type", from: "identifierType", coercion: "field_alias" },
+          { to: "value", from: "identifierValue", coercion: "field_alias" },
+          { to: "value", from: "identifier", coercion: "field_alias" },
+        ],
         stringFields: ["value"],
         trimFields: ["value"],
       }, z.object({
