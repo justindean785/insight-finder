@@ -431,15 +431,43 @@ function summarizeMessagePartsIncrementally(
 }
 
 /**
+ * Compact an OLD `record_artifacts` tool-call INPUT (budget pressure, outside the recent window only).
+ *
+ * Measured 2026-10-24: tool-call inputs were the one category no trimmer touched (100% kept at every
+ * depth) and the dominant term of the prompt on long threads (59% by step 120 in the repro; production
+ * initial context grows ~35k chars per resumed turn and 30% of invocations start over the 220k budget).
+ * Each artifact is already persisted by the call itself, so the model only needs WHAT it recorded
+ * (kind + value) to avoid re-recording, not the notes/metadata/source it attached. `confidence` is
+ * dropped too: the persisted confidence is server-computed and capped, so a model-asserted number here
+ * is not evidence. The input stays a plain object holding a non-empty `artifacts` array (#765: a
+ * non-object tool input 400s the Anthropic fallback). Anything unrecognised is returned untouched.
+ */
+export const RECORD_ARTIFACTS_COMPACT_FLOOR = 600;
+function compactRecordArtifactsCall(part: TrimPart): TrimPart {
+  if (part.toolName !== "record_artifacts") return part;
+  const input = (part as { input?: unknown }).input;
+  if (!input || typeof input !== "object" || Array.isArray(input)) return part;
+  const arts = (input as { artifacts?: unknown }).artifacts;
+  if (!Array.isArray(arts) || arts.length === 0) return part;
+  if (JSON.stringify(input).length <= RECORD_ARTIFACTS_COMPACT_FLOOR) return part;
+  const slim = arts.map((a) => {
+    const o = (a && typeof a === "object" ? a : {}) as { kind?: unknown; value?: unknown };
+    return { kind: typeof o.kind === "string" ? o.kind : "other", value: typeof o.value === "string" ? o.value : String(o.value ?? "") };
+  });
+  return { ...part, input: { artifacts: slim } } as TrimPart;
+}
+
+/**
  * Elide one message's oversized tool-result outputs and text parts in place.
  * Shared by both passes of capTotalToBudget so the recent-window pass cannot
  * drift from the older-message pass — in particular so BOTH preserve the
  * tool-result output discriminator and neither ever removes a part.
  * Returns the message unchanged (same object) when nothing was elidable.
  */
-function elideMessageParts(m: ModelMessage): ModelMessage {
+function elideMessageParts(m: ModelMessage, compactInputs = false): ModelMessage {
   if ((m.role !== "tool" && m.role !== "assistant") || !Array.isArray(m.content)) return m;
   m.content = (m.content as TrimPart[]).map((part: TrimPart) => {
+    if (compactInputs && part?.type === "tool-call") return compactRecordArtifactsCall(part);
     if (part?.type === "tool-result" && part.output != null && JSON.stringify(part.output).length > RESULT_ELIDE_FLOOR) {
       // Preserve the tool-result output's discriminator. The AI SDK validates each
       // output against a typed union ({ type:'json'|'text'|…, value }); a bare
@@ -505,6 +533,7 @@ export function capTotalToBudget(
   budget: number,
   keepRecent: number,
   hardCeiling = true,
+  compactInputs = true,
 ): ModelMessage[] {
   msgs = capUserTextToBudget(msgs);
   // O(n), not O(n^2): serialize each message's length ONCE and keep a running
@@ -519,7 +548,7 @@ export function capTotalToBudget(
   // Reprice only the message we just elided and fold the delta into the
   // running total (subtract its old serialized length, add the new one).
   const elideAt = (i: number) => {
-    elideMessageParts(out[i]);
+    elideMessageParts(out[i], compactInputs);
     const newLen = JSON.stringify(out[i]).length;
     total += newLen - lengths[i];
     lengths[i] = newLen;

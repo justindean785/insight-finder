@@ -22,6 +22,7 @@ import {
   anthropicGateway, ANTHROPIC_MODEL_ID, ANTHROPIC_THINKING, ANTHROPIC_EFFORT, ANTHROPIC_RUN_LIMITS,
   degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
   promptBudgetHardCeilingEnabled,
+  recordArtifactsInputCompactEnabled,
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
@@ -358,6 +359,7 @@ Deno.serve(async (req) => {
     });
     trimmedMessages = capTotalToBudget(
       trimmedMessages, TOTAL_PROMPT_CHAR_BUDGET, RECENT_WINDOW, promptBudgetHardCeilingEnabled(),
+      recordArtifactsInputCompactEnabled(),
     );
     // Bound individual tool-result outputs (a few giant results were holding the
     // prompt at the ~250k schema/length ceiling) and then HARD-GUARANTEE the
@@ -1268,6 +1270,7 @@ Deno.serve(async (req) => {
         // a mid-run trim can't sever a tool-call/result pair and wedge the run.
         const budgeted = capTotalToBudget(
           trimmed, TOTAL_PROMPT_CHAR_BUDGET, STEP_RECENT_WINDOW, promptBudgetHardCeilingEnabled(),
+          recordArtifactsInputCompactEnabled(),
         );
         const stepMessagesOut = sanitizeModelMessages(
           capToolResultOutputs(budgeted, MAX_TOOL_RESULT_CHARS),

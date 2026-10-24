@@ -114,6 +114,14 @@ export function promotionQuarantineEnabled(): boolean {
 export function promptBudgetHardCeilingEnabled(): boolean {
   return (Deno.env.get("PROMPT_BUDGET_HARD_CEILING_DISABLED") ?? "").trim().toLowerCase() !== "true";
 }
+/**
+ * Kill switch for compacting OLD record_artifacts tool-call inputs under budget pressure
+ * (orchestrator-budget.ts). Read at CALL TIME. `RECORD_ARTIFACTS_INPUT_COMPACT_DISABLED=true`
+ * restores the previous behaviour (inputs never trimmed) without a deploy.
+ */
+export function recordArtifactsInputCompactEnabled(): boolean {
+  return (Deno.env.get("RECORD_ARTIFACTS_INPUT_COMPACT_DISABLED") ?? "").trim().toLowerCase() !== "true";
+}
 export const lovableGateway = LOVABLE_API_KEY
   ? createOpenAICompatible({
       name: "lovable-ai-gateway",
