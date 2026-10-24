@@ -54,6 +54,12 @@ export type DisplayPivot = Pivot & {
   prompt: string;
   score: number;
   decision?: PivotDecision;
+  /**
+   * A report-recommended handle read from bare prose that the case does not
+   * know: a candidate, not a selector. It validates as "choose a target" and
+   * cannot be run.
+   */
+  unconfirmedTarget?: boolean;
 };
 
 export type ComputePivotsInput = {
@@ -243,6 +249,12 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
   }
 
   const recommended = toDisplayPivots(reportPivots);
+  const isKnownSelector = (value: string): boolean => {
+    const k = normalizeTarget(value);
+    const ek = entityKey(value);
+    return k === seedKey || existingValueSet.has(k) || existingValueSet.has(ek) ||
+      parentSet.has(k) || parentSet.has(ek) || queriedSet.has(k) || queriedSet.has(ek);
+  };
 
   const candidates: Candidate[] = [];
   const consumed = new Set<string>();
@@ -256,12 +268,15 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
     const key = canonicalKey(rec);
     if (consumed.has(key)) return; // an earlier recommendation already covered this target
     const finding = findingByKey.get(key);
-    const detail: RecommendedDisplay = {
+    const detail: RecommendedDisplay & { unconfirmedTarget?: boolean } = {
       priority: meta.priority,
       actionLabel: meta.actionLabel,
       reason: meta.reason,
       detail: meta.detail,
       prompt: meta.prompt,
+      // Grounded by the case itself: a recorded artifact, the seed, a parent
+      // pointer or a tool-log selector. Anything else stays a candidate.
+      ...(meta.ungrounded && !finding && !isKnownSelector(rec.value) ? { unconfirmedTarget: true } : {}),
     };
     if (finding) {
       consumed.add(key);

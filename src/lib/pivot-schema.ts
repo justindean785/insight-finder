@@ -61,8 +61,16 @@ export const pivotSuggestionSchema = z.object({
   prompt: z.string().trim().min(1),
   status: z.enum(["new", "searched"]),
   estimate: estimateSchema.optional(),
+  unconfirmedTarget: z.boolean().optional(),
 }).strict().superRefine((p, ctx) => {
   const target = p.target.trim();
+  if (p.unconfirmedTarget) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["target"],
+      message: `choose a target — “${target}” was read from the sentence, not marked as a handle, and nothing in this case contains it`,
+    });
+  }
   for (const b of BOILERPLATE) {
     if (b.re.test(target)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["target"], message: `target ${b.problem}` });
   }
@@ -140,6 +148,7 @@ export function pivotSuggestionInput(p: DisplayPivot): Record<string, unknown> {
     basis: fromReport ? "Recommended in the agent's report text" : `Recorded ${p.type} from ${p.source || "a tool result"}`,
     prompt: p.prompt,
     status: p.status,
+    ...(p.unconfirmedTarget ? { unconfirmedTarget: true } : {}),
   };
 }
 

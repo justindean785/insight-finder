@@ -12,6 +12,13 @@ export type RecommendedPivot = {
   prompt: string;
   value: string;
   type: PivotType;
+  /**
+   * The value was read from bare prose after a selector-class word ("username
+   * sweep", "username to real name") with nothing marking it as a handle. It
+   * is a CANDIDATE, not an observed selector: `computePivots` makes it
+   * runnable only when the case already knows the value.
+   */
+  ungrounded?: boolean;
 };
 
 const HEADING_RE = /recommended\s+(?:next\s+)?pivots?/i;
@@ -65,7 +72,7 @@ const COLLISION_RE = /\b(excluded|collision|namesake|unrelated|wrong person|not 
  * SINGLE-TOKEN KINDS ONLY. `name` is deliberately absent: a name is several
  * words, so "the name Jordan Vale" would be truncated to "Jordan".
  */
-const KIND_LED_RE = /\b(username|handle|alias|email|domain|wallet|ip|phone)\s+(?:address\s+|number\s+|for\s+|of\s+|:\s*)?["\u2018\u2019'`@]?([^\s,;:"'`]+)/i;
+const KIND_LED_RE = /\b(username|handle|alias|email|domain|wallet|ip|phone)(?:\s+|(?=:))((?:address\s+|number\s+|for\s+|of\s+|:\s*)?)(["\u201c\u2018\u2019'`@]?)([^\s,;:"\u201d'`]+)/i;
 
 const KIND_LED_TYPE: Record<string, PivotTargetType> = {
   username: "username", handle: "username", alias: "username",
@@ -158,7 +165,21 @@ function firstBareDomain(label: string): string | undefined {
   return undefined;
 }
 
-function extractTarget(rawLabel: string): string {
+/**
+ * Is a token that follows a username-class word actually presented as a handle?
+ * Quotes, backticks, an `@`, an explicit colon, or any handle-only character
+ * (digit, `_`, `.`, `-`) say so. A bare run of letters does not: "username to
+ * real name" and "username sweep" are grammar, and a shape check cannot tell
+ * them from the handle "jordan" (measured 2026-10-24: runnable usernames `to`
+ * and `sweep`). Letters-only candidates are therefore returned UNGROUNDED and
+ * confirmed against the case's known selectors, not against a word list —
+ * a real handle `to` is accepted the moment the case contains it.
+ */
+function isMarkedHandle(sep: string, prefix: string, candidate: string): boolean {
+  return prefix !== "" || sep.includes(":") || !/^[\p{L}\p{M}]+$/u.test(candidate);
+}
+
+function extractTargetWithBasis(rawLabel: string): { value: string; ungrounded: boolean } {
   const label = withoutExamples(rawLabel);
   const directIdentifier =
     label.match(EMAIL_RE)?.[0] ??
@@ -169,16 +190,18 @@ function extractTarget(rawLabel: string): string {
     label.match(STREET_RE)?.[0] ??
     label.match(WALLET_RE)?.[0] ??
     firstBareDomain(label);
-  if (directIdentifier) return stripTrailingPunctuation(directIdentifier);
+  if (directIdentifier) return { value: stripTrailingPunctuation(directIdentifier), ungrounded: false };
 
   // The line names its own selector class — take the token after it, but only
   // if that token is actually well-formed FOR that class, so "Verify email
   // ownership" does not yield the selector "ownership".
   const led = label.match(KIND_LED_RE);
   if (led) {
-    const candidate = stripTrailingPunctuation(led[2]);
+    const candidate = stripTrailingPunctuation(led[4]);
     const ledType = KIND_LED_TYPE[led[1].toLowerCase()];
-    if (ledType && isWellFormedTarget(ledType, candidate)) return candidate;
+    if (ledType && isWellFormedTarget(ledType, candidate)) {
+      return { value: candidate, ungrounded: ledType === "username" && !isMarkedHandle(led[2], led[3], candidate) };
+    }
   }
 
   // Two additions here, both of which decide whether a pivot can EVER be marked
@@ -197,13 +220,16 @@ function extractTarget(rawLabel: string): string {
   const action = label.match(
     /^(?:investigate|pivot on|verify|cross-reference|check|review|corroborate|confirm|compare)\s+(?:(?:lead|leads)\s*[:—–-]?\s*)?(.+?)(?:\s+[—–-]\s+|\s+\b(?:with|against|via|using|through|from)\b|$)/i,
   )?.[1];
-  return stripTrailingPunctuation(
-    (action ?? label)
-      .replace(/^(?:excluded collision|collision|excluded)\s+/i, "")
-      .replace(/['’]s\b.*$/i, "")
-      .replace(/^["'`]|["'`]$/g, "")
-      .trim(),
-  );
+  return {
+    value: stripTrailingPunctuation(
+      (action ?? label)
+        .replace(/^(?:excluded collision|collision|excluded)\s+/i, "")
+        .replace(/['’]s\b.*$/i, "")
+        .replace(/^["'`]|["'`]$/g, "")
+        .trim(),
+    ),
+    ungrounded: false,
+  };
 }
 
 function isAddressLike(value: string, label: string): boolean {
@@ -350,12 +376,12 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
     // Defense-in-depth: drop any first-person reasoning line that survived
     // block stripping (e.g. a malformed/unterminated think block).
     if (looksLikeReasoning(line)) continue;
-    // Verb list kept in sync with extractTarget()'s — a pivot line that happens
+    // Verb list kept in sync with extractTargetWithBasis()'s — a pivot line that happens
     // to end with ":" (e.g. "Corroborate the PO Box:") must not be mistaken for a
     // section heading and stop extraction early.
     if (line.endsWith(":") && !/^(?:investigate|pivot|verify|cross-reference|check|review|corroborate|confirm|compare)\b/i.test(line)) break;
 
-    const value = extractTarget(line);
+    const { value, ungrounded } = extractTargetWithBasis(line);
     const key = line.toLowerCase();
     if (seen.has(key) || isBlockedRecommendation(line, value)) continue;
     seen.add(key);
@@ -384,6 +410,7 @@ export function extractRecommendedPivots(text: string): RecommendedPivot[] {
       prompt: `Run this ${priority}-priority pivot.\n\nAction: ${actionLabel}\nTarget: ${value}\nType: ${type}\nReason: ${reason}\n\nUse authorized public-source methods only. Corroborate with independent sources when possible. RECORD every confirmed or observed finding via record_artifacts BEFORE you summarize — never report a case-graph change you have not recorded. Then give source URLs and a confidence tier for each finding.`,
       value,
       type,
+      ...(ungrounded ? { ungrounded: true } : {}),
     });
     if (pivots.length >= 6) break;
   }
