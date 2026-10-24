@@ -10,7 +10,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import type { Tool } from "npm:ai@6";
 import { hashInput, normalizeForHash, sanitizeToolOutput, stripNulCharacters, TOOL_CACHE_LRU } from "./safety.ts";
 import { tierForTool, modelForTool, type Tier } from "./models.ts";
-import { costForTool } from "./costs.ts";
+import { costForTool, costForToolCall } from "./costs.ts";
 import { DEFAULT_TOOL_TTL_MS, NO_CACHE_TOOLS, redactSensitiveToolInput, TOOL_TTL_MS } from "./validation.ts";
 import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome, isProvenEmptyResult } from "./tool-outcome.ts";
@@ -1066,8 +1066,10 @@ export function wrapToolsWithCache(
         ? (isProvenEmptyResult(name, resultForOutcome) ? "empty" : "ok")
         : classifyToolOutcome(errorMsg, statusCode);
       const okStored = outcome !== "failed";
-      const cost = (cached || freeCall) ? 0 : baseCost;
-      const charged = creditsCharged({ ok, cached, free: freeCall, baseCost });
+      // Per-call list price: an opted-in indicia_person (allowMissingFirstName) is ledgered at its real, higher cost.
+      const callCost = costForToolCall(name, (inputJson as { input?: unknown } | null)?.input);
+      const cost = (cached || freeCall) ? 0 : callCost;
+      const charged = creditsCharged({ ok, cached, free: freeCall, baseCost: callCost });
       if (charged > 0) ctx.onCost?.(charged);
       const row: Record<string, unknown> = {
         user_id: ctx.userId,

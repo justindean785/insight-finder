@@ -198,6 +198,45 @@ export function costForTool(name: string): number {
   return TOOL_COSTS_MICRO_USD[name] ?? DEFAULT_TOOL_COST_MICRO_USD;
 }
 
+/**
+ * Kill switch, read at call time: `INDICIA_MISSING_FIRST_NAME_DISABLED=true` makes `allowMissingFirstName` inert — it is
+ * not sent to the provider and does not raise the logged cost.
+ */
+export function indiciaMissingFirstNameDisabled(): boolean {
+  return (Deno.env.get("INDICIA_MISSING_FIRST_NAME_DISABLED") ?? "").trim().toLowerCase() === "true";
+}
+
+/** Multiplier on indicia_person's list price when the analyst-visible opt-in is set (the brief: 2 credits, source 2). */
+export const INDICIA_MISSING_FIRST_NAME_COST_MULTIPLIER = 2;
+
+/**
+ * The list price of ONE call, given its input. Only indicia_person with an explicit boolean `allowMissingFirstName: true`
+ * differs from the per-tool price; everything else is `costForTool`. Used for the usage-log cost/charge so the ledger
+ * carries the real cost of an opted-in search. (Admission/budget tiering still uses the base price.)
+ */
+export function costForToolCall(name: string, input: unknown): number {
+  const base = costForTool(name);
+  if (name === "indicia_person" && !indiciaMissingFirstNameDisabled() && (input as { allowMissingFirstName?: unknown } | null)?.allowMissingFirstName === true) {
+    return base * INDICIA_MISSING_FIRST_NAME_COST_MULTIPLIER;
+  }
+  return base;
+}
+
+/** /health → checks.indicia_person_opt_in. Pure; presence proves this build. */
+export function indiciaPersonOptInSelfTest(): { ok: boolean; switch: string; detail: string } {
+  const sw = "INDICIA_MISSING_FIRST_NAME_DISABLED";
+  if (indiciaMissingFirstNameDisabled()) return { ok: true, switch: `${sw}=true`, detail: `LEGACY via ${sw} (the flag is ignored and never sent)` };
+  const base = costForTool("indicia_person");
+  const ok = costForToolCall("indicia_person", {}) === base &&
+    costForToolCall("indicia_person", { allowMissingFirstName: false }) === base &&
+    costForToolCall("indicia_person", { allowMissingFirstName: "true" }) === base &&
+    costForToolCall("indicia_person", { allowMissingFirstName: true }) === base * INDICIA_MISSING_FIRST_NAME_COST_MULTIPLIER &&
+    costForToolCall("indicia_email", { allowMissingFirstName: true }) === costForTool("indicia_email");
+  return ok
+    ? { ok: true, switch: `${sw}=false`, detail: "indicia_person accepts a missing first name only on an explicit boolean allowMissingFirstName (default off, never auto-set); an opted-in call is ledgered at 2x the list price" }
+    : { ok: false, switch: `${sw}=false`, detail: "indicia opt-in costing misbehaving" };
+}
+
 export function microUsdToDollars(micro: number): string {
   const usd = micro / 1_000_000;
   if (usd < 0.01) return `$${usd.toFixed(4)}`;

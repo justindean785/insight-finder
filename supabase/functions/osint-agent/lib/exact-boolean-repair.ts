@@ -23,8 +23,8 @@ export function exactBooleanRepairDisabled(): boolean {
   return (Deno.env.get("EXACT_BOOLEAN_REPAIR_DISABLED") ?? "").trim().toLowerCase() === "true";
 }
 
-/** Consent / authorization flags: their LAST path segment must be a real boolean. */
-const NEVER_REPAIR = new Set(["confirm"]);
+/** Consent / authorization / cost-raising opt-in flags: their LAST path segment must be a real boolean. */
+const NEVER_REPAIR = new Set(["confirm", "allowMissingFirstName"]);
 const UNSAFE_SEGMENTS = new Set(["__proto__", "constructor", "prototype"]);
 const MAX_FIELDS = 12;
 
