@@ -337,7 +337,9 @@ Deno.test("wiring: the guard sits after cache hits and BEFORE the paid slot; ind
   assert(guardAt < cache.indexOf("reserveToolCall(ctx.toolCallBudget"), "guard before the paid slot is reserved");
   assert(guardAt > cache.lastIndexOf("isCacheableToolResult(output)"), "guard after the cache-hit reads, so a completed run still replays free");
   assert(cache.includes('if (name === "opsis_search") noteOpsisSearchOutcome(ctx.investigationId, result, input as { kind?: unknown; value?: unknown });'));
-  assert(cache.includes('if (name === "opsis_results") noteOpsisResultsOutcome(ctx.investigationId, result'));
+  // opsis_results: the hint (opsis_results_hint_test.ts) is computed BEFORE the run is retired as read.
+  const resultsAt = cache.indexOf('if (name === "opsis_results") {');
+  assert(resultsAt > 0 && cache.indexOf("noteOpsisResultsOutcome(ctx.investigationId, result, asked.run_id);") > cache.indexOf("opsisResultsHint(", resultsAt));
   const index = await Deno.readTextFile(new URL("../../functions/osint-agent/index.ts", import.meta.url));
   assert(index.includes("pendingOpsisRuns: () => latestPendingOpsisRuns,"));
   assert(index.includes("remainingRunMs: () => ORCHESTRATOR_WALL_CLOCK_MS - (Date.now() - runStartedAt),"));

@@ -234,6 +234,81 @@ export function clearOpsisGuardThread(threadId: string): void {
   THREADS.delete(threadId);
 }
 
+// ---- opsis_results: a run id that does not belong to the named selector ------------------
+// The mismatch check in lib/opsis.ts stays FAIL-CLOSED (a run is only ever returned for the selector it was
+// started with). This adds a HINT to the refusal, from the same thread's own un-read runs, and nothing more:
+//   • exactly ONE un-read run whose kind + value equal the asked selector (trimmed, case-folded) → name it;
+//   • zero or several → no run id at all, only a pointer to opsis_search, which is PAID and never auto-started.
+// The hinted run id is not trusted: following it is an ordinary opsis_results call, which runs the same mismatch check.
+// Kill switch, read at call time: OPSIS_RESULTS_HINT_DISABLED=true removes the hint (the refusal is unchanged).
+
+export function opsisResultsHintDisabled(env: EnvGet = readEnvSafe): boolean {
+  return (env("OPSIS_RESULTS_HINT_DISABLED") ?? "").trim().toLowerCase() === "true";
+}
+
+/** Result codes a hint applies to: a run id that is another selector's, or one Opsis does not know. */
+export const OPSIS_RESULTS_HINT_CODES: readonly string[] = ["selector_mismatch", "not_found"];
+
+export type OpsisResultsHint =
+  | { run_hint: "use_run"; replacement_run_id: string; read_with: { tool: "opsis_results"; run_id: string; kind: string; value: string }; note: string }
+  | { run_hint: "search_needed"; note: string };
+
+export const OPSIS_HINT_NOTE_USE_RUN =
+  "That run_id is not the run for this selector. This thread has exactly one un-read Opsis run for it: read that one (free).";
+export const OPSIS_HINT_NOTE_SEARCH =
+  "No single un-read Opsis run for this selector is known in this thread. If it was never searched, opsis_search starts one " +
+  "(PAID, 1 credit; it is not started for you). If it was already searched and read, reuse those results instead.";
+
+/** Pure. `pending` is this thread's un-read runs; `requestedRunId` is excluded (it is the one that just failed). */
+export function opsisResultsHint(
+  pending: readonly OpsisPendingRun[],
+  kind: unknown,
+  value: unknown,
+  requestedRunId: unknown,
+): OpsisResultsHint {
+  const k = String(kind ?? "").trim().toLowerCase();
+  const v = String(value ?? "").trim().toLowerCase();
+  const asked = String(requestedRunId ?? "").trim();
+  const matches = !k || !v ? [] : pending.filter((r) =>
+    String(r.kind ?? "").trim().toLowerCase() === k && String(r.value ?? "").trim().toLowerCase() === v && r.run_id && r.run_id !== asked
+  );
+  const ids = new Set(matches.map((r) => r.run_id));
+  if (ids.size === 1) {
+    const r = matches[0];
+    return {
+      run_hint: "use_run",
+      // NOT `run_id`: a top-level run_id on an opsis_results result retires that run as "read" (noteOpsisResultsOutcome,
+      // pendingOpsisRuns), and the replacement has not been read.
+      replacement_run_id: r.run_id,
+      read_with: { tool: "opsis_results", run_id: r.run_id, kind: r.kind, value: r.value },
+      note: OPSIS_HINT_NOTE_USE_RUN,
+    };
+  }
+  return { run_hint: "search_needed", note: OPSIS_HINT_NOTE_SEARCH };
+}
+
+/** /health → checks.opsis_results_hint. Pure; PRESENCE proves the build. */
+export function opsisResultsHintSelfTest(): { ok: boolean; switch: string; detail: string } {
+  const sw = "OPSIS_RESULTS_HINT_DISABLED";
+  if (opsisResultsHintDisabled()) return { ok: true, switch: `${sw}=true`, detail: `LEGACY via ${sw} (no hint on a refused run id)` };
+  const a: OpsisPendingRun = { run_id: "r1", kind: "username", value: "Example_User" };
+  const b: OpsisPendingRun = { run_id: "r2", kind: "username", value: "other_user" };
+  const c: OpsisPendingRun = { run_id: "r3", kind: "username", value: "example_user" };
+  const one = opsisResultsHint([a, b], "username", " example_user ", "bad");
+  const none = opsisResultsHint([b], "username", "example_user", "bad");
+  const many = opsisResultsHint([a, c], "username", "example_user", "bad");
+  const self = opsisResultsHint([a], "username", "example_user", "r1");
+  const ok = one.run_hint === "use_run" && one.replacement_run_id === "r1" && none.run_hint === "search_needed" &&
+    many.run_hint === "search_needed" && self.run_hint === "search_needed" && !JSON.stringify(none).includes("run_id");
+  return ok
+    ? {
+      ok: true,
+      switch: `${sw}=false`,
+      detail: "a refused opsis_results run id names a replacement only when exactly one un-read run in this thread has the exact selector; otherwise it points at opsis_search (paid, never auto-started)",
+    }
+    : { ok: false, switch: `${sw}=false`, detail: "opsis results hint misbehaving" };
+}
+
 /** /health → checks.opsis_search_guard. Pure; PRESENCE proves the build, ok proves the rule. */
 export function opsisSearchGuardSelfTest(): { ok: boolean; detail: string } {
   if (opsisSearchGuardDisabled()) return { ok: true, detail: "LEGACY via OPSIS_SEARCH_GUARD_DISABLED" };

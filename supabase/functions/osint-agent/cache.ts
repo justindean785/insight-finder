@@ -16,8 +16,8 @@ import { creditsCharged } from "./billing.ts";
 import { classifyToolOutcome, isProvenEmptyResult } from "./tool-outcome.ts";
 import * as circuit from "./circuit.ts";
 import {
-  OPSIS_GUARD_SKIP_PREFIX, decideOpsisSearch, findPendingForSelector, noteOpsisResultsOutcome, noteOpsisSearchOutcome,
-  opsisSearchGuardDisabled, uncollectedOpsisRuns,
+  OPSIS_GUARD_SKIP_PREFIX, OPSIS_RESULTS_HINT_CODES, decideOpsisSearch, findPendingForSelector, noteOpsisResultsOutcome, noteOpsisSearchOutcome,
+  opsisResultsHint, opsisResultsHintDisabled, opsisSearchGuardDisabled, uncollectedOpsisRuns,
 } from "./lib/opsis-search-guard.ts";
 // Union of both sides. #519 replaced this file's quarantine read with the paged
 // `loadRefusedArtifacts`, which absorbs what `buildRefusedKeys` did here, so that
@@ -1882,7 +1882,19 @@ export function wrapToolsWithCache(
           // Opsis search-side guard bookkeeping: a PARTIAL search is a run awaiting a read;
           // any opsis_results read retires it (lib/opsis-search-guard.ts).
           if (name === "opsis_search") noteOpsisSearchOutcome(ctx.investigationId, result, input as { kind?: unknown; value?: unknown });
-          if (name === "opsis_results") noteOpsisResultsOutcome(ctx.investigationId, result, (input as { run_id?: unknown } | null)?.run_id);
+          if (name === "opsis_results") {
+            // A refused run id (another selector's, or unknown) gets a HINT from this thread's own un-read runs — computed
+            // BEFORE the retire below. The refusal itself is untouched; see opsisResultsHint.
+            const asked = (input ?? {}) as { kind?: unknown; value?: unknown; run_id?: unknown };
+            const r = result as Record<string, unknown> | null;
+            if (!opsisResultsHintDisabled() && r && typeof r === "object" && r.ok === false && typeof r.code === "string" &&
+              OPSIS_RESULTS_HINT_CODES.includes(r.code)) {
+              const hint = opsisResultsHint(uncollectedOpsisRuns(ctx.investigationId, ctx.pendingOpsisRuns?.() ?? []), asked.kind, asked.value, asked.run_id);
+              console.log(JSON.stringify({ event: "opsis_results_hint", thread_id: ctx.investigationId, code: r.code, run_hint: hint.run_hint }));
+              result = { ...r, ...hint };
+            }
+            noteOpsisResultsOutcome(ctx.investigationId, result, asked.run_id);
+          }
           // PAID-CALL ACCOUNTING — the only place the reserved paid slot is
           // released. `startCall` reserves at admission (atomically, so a parallel
           // batch cannot overshoot); a tool that declined BEFORE contacting the
