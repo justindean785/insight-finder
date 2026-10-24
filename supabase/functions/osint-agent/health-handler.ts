@@ -65,6 +65,7 @@ import { analystAuthorityBoundarySelfTest } from "./lib/analyst-authority-keys.t
 import { archiveOriginRuleSelfTest, breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 import { memoryInputNormalizationSelfTest } from "./lib/memory-input-normalization.ts";
 import { exactBooleanRepairSelfTest } from "./lib/exact-boolean-repair.ts";
+import { malformedJsonRepairSelfTest } from "./lib/malformed-json-repair.ts";
 import { inputCoercionSelfTest, inputKindInferenceSelfTest } from "./lib/tool-input-coercion.ts";
 import { correlateSeedDefaultSelfTest } from "./lib/thread-seed.ts";
 import { detectSeedServer } from "./validation.ts";
@@ -614,6 +615,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Is a boolean parameter sent as the EXACT string "true"/"false" repaired instead of burning the step, while every other
   // string and every consent flag stays rejected? Pure. PRESENCE proves the deployed bundle; ok:false = failed its own probe.
   r.checks.exact_boolean_repair = exactBooleanRepairSelfTest();
+  // Is a call whose JSON text did not parse repaired only by dropping one enclosing code fence and trailing commas, never
+  // by closing a truncation? Pure; `switch` reports MALFORMED_JSON_REPAIR_DISABLED. PRESENCE proves the deployed bundle.
+  r.checks.malformed_json_repair = malformedJsonRepairSelfTest();
 
   // Is a near-miss tool input (kind alias, query→seed, numeric string, number→string, stray whitespace) coerced INSIDE
   // the schema when — and only when — the result validates? Pure. PRESENCE proves the deployed bundle; `switch` reports

@@ -85,6 +85,7 @@ import {
 import { crossCaseLogEvent, crossCaseReviewsDisabled, invalidateCrossCaseIndex } from "./lib/cross-case-reviews.ts";
 import { repairUnknownTool } from "./unknown-tool-guard.ts";
 import { repairExactBooleanInput } from "./lib/exact-boolean-repair.ts";
+import { repairMalformedJsonInput } from "./lib/malformed-json-repair.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
@@ -1547,7 +1548,14 @@ Deno.serve(async (req) => {
           // sent for a boolean field (lib/exact-boolean-repair.ts); the SDK re-validates the result against the
           // unchanged schema. Anything else returns null and is reported as a failed call, as before.
           const fixed = repairExactBooleanInput(toolCall.input, error);
-          if (!fixed) return null;
+          if (!fixed) {
+            // JSON text that never parsed: only a code fence / trailing commas are repaired, never a truncation
+            // (lib/malformed-json-repair.ts). Re-validated by the SDK against the unchanged schema.
+            const json = repairMalformedJsonInput(toolCall.input, error);
+            if (!json) return null;
+            console.warn(`[malformed-json-repair] ${toolCall.toolName}: ${json.fixes.join(", ")}`);
+            return { ...toolCall, input: json.input };
+          }
           console.warn(`[exact-boolean-repair] ${toolCall.toolName}: ${fixed.fields.join(", ")}`);
           return { ...toolCall, input: fixed.input };
         }
