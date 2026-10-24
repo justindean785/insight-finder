@@ -47,6 +47,13 @@ describe("best pivot", () => {
     if (rerun.kind === "pivot" && rerun.eligibility) expect(requiresPreview(rerun.eligibility)).toBe(true);
     expect(isAutoRunnable(rerun)).toBe(false);
   });
+
+  it("a report-only pivot with any OTHER warning must be previewed", () => {
+    const e = item();
+    if (e.kind !== "pivot" || !e.eligibility) throw new Error("fixture");
+    expect(requiresPreview({ ...e.eligibility, warnings: [...e.eligibility.warnings, "Its source row is marked as a conflict with the case."] })).toBe(true);
+    expect(requiresPreview({ ...e.eligibility, warnings: ["Something else entirely."] })).toBe(true);
+  });
 });
 
 describe("Auto-run pivot choice", () => {

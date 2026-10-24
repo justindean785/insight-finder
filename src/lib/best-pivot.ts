@@ -1,5 +1,5 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import type { PivotEligibility, RunnablePivot } from "@/lib/pivot-schema";
+import { REPORT_ONLY_WARNING, type PivotEligibility, type RunnablePivot } from "@/lib/pivot-schema";
 import type { NextStepItem } from "@/components/pivots/NextSteps";
 
 /**
@@ -56,7 +56,8 @@ export function pickBestPivot(items: NextStepItem[]): Extract<NextStepItem, { ki
  */
 export function requiresPreview(e: PivotEligibility): boolean {
   if (e.rerun || e.linkage === "unproven") return true;
-  if (e.linkage === "report") return e.warnings.length > 1;
+  // A report-only pivot may carry that one ordinary warning and nothing else.
+  if (e.linkage === "report") return e.warnings.some((w) => w !== REPORT_ONLY_WARNING);
   return e.warnings.length > 0;
 }
 
