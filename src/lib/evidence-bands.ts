@@ -70,6 +70,17 @@ export function isProseValue(value: string): boolean {
   return value.length > PROSE_VALUE_MIN && /\s/.test(value.slice(0, PROSE_VALUE_MIN));
 }
 
+/**
+ * "<url> — <descriptor>": the extractor writes a link and what it is into one `value`
+ * ("https://… — X/Twitter avatar for @name"). Neither half is lost: the descriptor reads in the sans face on its own
+ * line and the URL keeps the mono, single-line, selectable treatment. Returns null for anything else, including a URL
+ * with no descriptor and a descriptor that is not separated by a spaced dash, so ordinary values are untouched.
+ */
+export function splitUrlDescriptor(value: string): { url: string; descriptor: string } | null {
+  const m = /^(https?:\/\/\S+)\s+[\u2014\u2013-]\s+(\S[\s\S]*)$/.exec(value.trim());
+  return m ? { url: m[1], descriptor: m[2].trim() } : null;
+}
+
 /** The fields banding needs. Structural, so a full `Artifact` or a projection both fit. */
 export interface BandRow {
   confidence?: number | null;
