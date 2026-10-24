@@ -600,9 +600,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   r.checks.breach_origin_cap = breachOriginCapSelfTest();
   r.checks.memory_context = memoryContextSelfTest();
   r.checks.user_supplied_status = userSuppliedStatusSelfTest();
-  // A1: can a model-supplied artifact metadata blob carry the analyst's review / release /
-  // dismissal keys? Pure. PRESENCE proves the build that strips them is live; ok:false means
-  // the boundary failed its own probe.
+  // A1: can a model-supplied metadata blob carry the analyst's review / release / dismissal /
+  // provenance keys? Pure probe of the strip module. PRESENCE (and the reserved-key count in the
+  // detail) proves which build is live; ok:false means the module failed its own probe. It does NOT
+  // prove the record tools still call the module — that wiring is pinned in CI by
+  // analyst_authority_boundary_test.ts, and the detail says so.
   r.checks.analyst_authority_boundary = analystAuthorityBoundarySelfTest();
 
   // Is a memory_save / minimax_correlate call that is right in substance but wrong in SHAPE re-shaped (and only when

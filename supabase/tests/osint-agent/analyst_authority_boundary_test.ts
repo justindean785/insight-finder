@@ -18,6 +18,7 @@ type Row = Record<string, unknown>;
  */
 function makeRuntime(ranBreachTools: string[] = []) {
   const inserted: Row[] = [];
+  const rpcCalls: Array<{ fn: string; args: Row }> = [];
   const builder: Record<string, unknown> = {
     then: (resolve: (value: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(resolve),
   };
@@ -41,7 +42,8 @@ function makeRuntime(ranBreachTools: string[] = []) {
         update: () => builder,
       };
     },
-    rpc() {
+    rpc(fn: string, args: Row) {
+      rpcCalls.push({ fn, args });
       return Promise.resolve({ data: [{ id: "evidence", seq: 1, chain_hash: "hash" }], error: null });
     },
   };
@@ -55,7 +57,7 @@ function makeRuntime(ranBreachTools: string[] = []) {
     messages: [],
     manualOverrideSelector: null,
   } as unknown as ToolContext;
-  return { inserted, tools: buildTools(ctx).tools };
+  return { inserted, rpcCalls, tools: buildTools(ctx).tools };
 }
 
 const exec = (tools: unknown, name: string) =>
@@ -72,7 +74,18 @@ const IMPERSONATION: Row = {
   analyst_review: "key",
   attested: true,
   human_verified: true,
+  user_provided: true,
+  analyst_provided: true,
 };
+
+const custodyRow = (metadata?: Row) => ({
+  classification: "hard" as const,
+  kind: "email",
+  value: "synthetic.person@example.com",
+  source: "oathnet_lookup",
+  confidence: 90,
+  ...(metadata ? { metadata } : {}),
+});
 
 const SERVER_AUTHORITY_FIELDS = ["status", "source_category", "confidence_cap_applied", "reason_for_confidence", "reason_not_confirmed"];
 
@@ -297,9 +310,81 @@ Deno.test("kill switch ANALYST_AUTHORITY_STRIP_DISABLED restores legacy pass-thr
     const shim = makeRuntime();
     await exec(shim.tools, "record_artifact")(breachEmail({ reviewed: true }), {});
     assertEquals((shim.inserted[0].metadata as Row).reviewed, true);
+    const custody = makeRuntime();
+    await exec(custody.tools, "record_evidence")(custodyRow({ reviewed: true }), {});
+    assertEquals((custody.rpcCalls[0].args._metadata as Row).reviewed, true);
   } finally {
     Deno.env.delete("ANALYST_AUTHORITY_STRIP_DISABLED");
   }
+});
+
+Deno.test("record_evidence: the custody log cannot carry the analyst's keys either (defense in depth, #827 review finding 4)", async () => {
+  const rt = makeRuntime();
+  const result = await exec(rt.tools, "record_evidence")(custodyRow({ ...IMPERSONATION, note: "kept" }), {}) as Row;
+  assertEquals(rt.rpcCalls.length, 1);
+  assertEquals(rt.rpcCalls[0].fn, "append_evidence");
+  const args = rt.rpcCalls[0].args;
+  const meta = args._metadata as Row;
+  for (const k of RESERVED_ANALYST_AUTHORITY_KEYS) assert(!(k in meta), `${k} must not reach evidence_log._metadata`);
+  assertEquals(meta[ANALYST_AUTHORITY_DISCLOSURE_KEY], [...RESERVED_ANALYST_AUTHORITY_KEYS].sort());
+  assertEquals(meta.note, "kept");
+  // The content snapshot is the metadata's JSON. A forged key must not survive there AS A KEY, and its value never
+  // does; the key NAMES do appear once, as values inside the disclosure array — that is the audit record.
+  const snapshot = String(args._content_snapshot);
+  for (const k of RESERVED_ANALYST_AUTHORITY_KEYS) assert(!snapshot.includes(`"${k}":`), `${k} must not reach the content snapshot as a key`);
+  assert(snapshot.includes(`"${ANALYST_AUTHORITY_DISCLOSURE_KEY}":`), "the disclosure is part of the snapshot");
+  assert(!snapshot.includes("2099-01-01"));
+  // Nothing else about the row changes.
+  assertEquals(args._kind, "email");
+  assertEquals(args._value, "synthetic.person@example.com");
+  assertEquals(args._source, "oathnet_lookup");
+  assertEquals(args._confidence, 90);
+  assertEquals(args._classification, "hard");
+  // Told, not hidden.
+  assertEquals(result.ok, true);
+  assertEquals(result.analyst_authority_stripped, [...RESERVED_ANALYST_AUTHORITY_KEYS].sort());
+  assert(typeof result.analyst_authority_note === "string");
+});
+
+Deno.test("record_evidence: notes still land, a clean call gets no disclosure, and the impersonation is logged by name only", async () => {
+  const clean = makeRuntime();
+  const cleanResult = await exec(clean.tools, "record_evidence")({ ...custodyRow({ note: "x" }), notes: "collected" }, {}) as Row;
+  const cleanMeta = clean.rpcCalls[0].args._metadata as Row;
+  assertEquals(cleanMeta, { note: "x", notes: "collected" });
+  assert(!("analyst_authority_stripped" in cleanResult));
+  assert(!("analyst_authority_note" in cleanResult));
+
+  const rt = makeRuntime();
+  const logged: string[] = [];
+  const orig = console.warn;
+  console.warn = (...a: unknown[]) => { logged.push(a.map(String).join(" ")); };
+  try {
+    await exec(rt.tools, "record_evidence")({ ...custodyRow({ user_provided: "VALUE-MUST-NOT-LOG" }), notes: "n" }, {});
+  } finally {
+    console.warn = orig;
+  }
+  const line = logged.find((l) => l.includes("analyst_authority_stripped"));
+  assert(line, "a structured analyst_authority_stripped event must be emitted");
+  const evt = JSON.parse(line!) as Row;
+  assertEquals(evt.tool, "record_evidence");
+  assertEquals(evt.keys, ["user_provided"]);
+  assertEquals(evt.thread_id, "authority-thread");
+  assert(!line!.includes("VALUE-MUST-NOT-LOG"));
+  // `notes` is a schema field, not model metadata: it is never mistaken for a reserved key.
+  assertEquals((rt.rpcCalls[0].args._metadata as Row).notes, "n");
+});
+
+Deno.test("the name-conflict anchor cannot be chosen by the model on the live artifact path", async () => {
+  const rt = makeRuntime();
+  const result = await exec(rt.tools, "record_artifacts")({
+    artifacts: [{ kind: "name", value: "Synthetic Person", confidence: 60, source: "exa_search (example.com)", metadata: { user_provided: true, analyst_provided: true } }],
+  }, {}) as Row;
+  assertEquals(rt.inserted.length, 1);
+  const meta = rt.inserted[0].metadata as Row;
+  assert(!("user_provided" in meta));
+  assert(!("analyst_provided" in meta));
+  assertEquals(meta[ANALYST_AUTHORITY_DISCLOSURE_KEY], ["analyst_provided", "user_provided"]);
+  assertEquals(result.analyst_authority_stripped, ["analyst_provided", "user_provided"]);
 });
 
 Deno.test("the strip also covers metadata that reaches the row through the memory-context path", async () => {
@@ -312,9 +397,9 @@ Deno.test("the strip also covers metadata that reaches the row through the memor
   assertEquals(meta.context_from_memory, true);
 });
 
-Deno.test("wiring (source-level): both model entry points strip BEFORE the metadata is used, and /health reports the rule", async () => {
+Deno.test("wiring (source-level): all three model entry points strip BEFORE the metadata is used, and /health reports the rule", async () => {
   const src = await Deno.readTextFile(new URL("../../functions/osint-agent/tool-registry.ts", import.meta.url));
-  assertEquals((src.match(/stripAnalystAuthorityKeys\(/g) ?? []).length, 2, "exactly the two model-metadata entry points");
+  assertEquals((src.match(/stripAnalystAuthorityKeys\(/g) ?? []).length, 3, "exactly the three model-metadata entry points");
   const batchStart = src.indexOf("record_artifacts: tool({");
   const shimStart = src.indexOf("record_artifact: tool({");
   assert(batchStart > 0 && shimStart > batchStart);
@@ -329,6 +414,14 @@ Deno.test("wiring (source-level): both model entry points strip BEFORE the metad
   const shimStrip = shimBody.indexOf("stripAnalystAuthorityKeys(");
   assert(shimStrip > 0, "the shim must strip");
   assert(shimStrip < shimBody.indexOf("applyMemoryContext("), "shim strips before any other use");
+  const evidenceStart = shimEnd;
+  const evidenceEnd = src.indexOf("serus_darkweb_scan = serus_darkweb_scan;", evidenceStart);
+  assert(evidenceEnd > evidenceStart, "record_evidence body ends before the late-injected tools");
+  const evidenceBody = src.slice(evidenceStart, evidenceEnd);
+  const evidenceStrip = evidenceBody.indexOf("stripAnalystAuthorityKeys(");
+  assert(evidenceStrip > 0, "record_evidence must strip");
+  assert(evidenceStrip < evidenceBody.indexOf('supabase.rpc("append_evidence"'), "record_evidence strips before the custody RPC");
+  assert(evidenceStrip < evidenceBody.indexOf("_content_snapshot"), "record_evidence strips before the content snapshot is built");
   const h = await Deno.readTextFile(new URL("../../functions/osint-agent/health-handler.ts", import.meta.url));
   assert(h.includes("analystAuthorityBoundarySelfTest()"));
   assert(h.includes("checks.analyst_authority_boundary"));

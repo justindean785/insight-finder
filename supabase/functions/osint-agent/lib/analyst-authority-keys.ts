@@ -6,8 +6,15 @@
 //   • `linkage_confirmed === true`  → an analyst release of a subject_unlinked quarantine
 //                                      (src/lib/quarantine.ts, reviews.ts, lib/dispatch-quarantine.ts)
 //   • `false_positive === true`     → an analyst dismissal → FAILED / "Excluded from findings"
+//   • `user_provided === true` /
+//     `analyst_provided === true` → "this name came from the analyst" (src/lib/name-conflict.ts
+//                                      isAnalystSupplied): the ANCHOR every other name is compared
+//                                      against, so a model could pick which name the conflict
+//                                      banner treats as the analyst's. Banner impact, not confidence.
 // The record tools build a row's metadata as `{ ...modelMetadata, <server-derived fields> }`, so
 // every key the server does not itself overwrite was persisted exactly as the model wrote it.
+// `record_evidence` writes the model's metadata to `evidence_log._metadata` the same way; nothing
+// reads these keys there today, so it is stripped for defense in depth, not for a reproduced defect.
 // Reproduced 2026-10-13 on main 32f5ddb: a single-source BREACH email recorded with
 // `metadata.reviewed = true` rendered as "Analyst-confirmed · single-source · breach".
 //
@@ -52,6 +59,10 @@ export const RESERVED_ANALYST_AUTHORITY_KEYS: readonly string[] = [
   "analyst_review",
   "attested",
   "human_verified",
+  // "whose is this name?" — read by src/lib/name-conflict.ts as the analyst's anchor (#827 review, finding 3).
+  // No writer exists in the product (0 rows in production on 2026-10-23); reserved so none can be forged.
+  "user_provided",
+  "analyst_provided",
 ];
 
 /** The audit key this module writes. It is reserved too, so a model cannot forge its own record. */
@@ -110,19 +121,32 @@ export function stripAnalystAuthorityKeys<T>(
 
 /** The sentence returned to the model when a call carried reserved keys: told, not hidden. */
 export const ANALYST_AUTHORITY_NOTE =
-  "Some metadata keys are reserved for the analyst (reviewed, linkage_confirmed, false_positive and similar) and were ignored. " +
+  "Some metadata keys are reserved for the analyst (reviewed, linkage_confirmed, false_positive, user_provided and similar) and were ignored. " +
   "A model cannot record an analyst review, confirmation, release or dismissal — the analyst does that in the UI. " +
   "Express your own confidence through `confidence` and `source`, and doubts through `contradictions` / `reason_not_confirmed`.";
 
-/** /health self-test; PRESENCE of the key proves the build. */
+/**
+ * /health self-test. What it PROVES: the build carrying this module (and this reserved list) is the one
+ * serving `/health`, and the pure strip behaves. What it does NOT prove: that the three model entry points
+ * (`record_artifacts`, `record_artifact`, `record_evidence`) still call it — that wiring is pinned by
+ * analyst_authority_boundary_test.ts in CI, not by this probe (#827 independent review, finding 2). The
+ * detail says so, and names the reserved-key count so a widened list reads as a new build.
+ */
 export function analystAuthorityBoundarySelfTest(): { ok: boolean; detail: string } {
   if (analystAuthorityStripDisabled()) return { ok: true, detail: "LEGACY via ANALYST_AUTHORITY_STRIP_DISABLED" };
-  const probe = stripAnalystAuthorityKeys({ reviewed: true, linkage_confirmed: true, false_positive: true, note: "x" });
+  const probe = stripAnalystAuthorityKeys({
+    reviewed: true, linkage_confirmed: true, false_positive: true, user_provided: true, analyst_provided: true, note: "x",
+  });
   const clean = stripAnalystAuthorityKeys({ note: "x" });
   const m = probe.metadata as Record<string, unknown>;
   const ok = !("reviewed" in m) && !("linkage_confirmed" in m) && !("false_positive" in m) &&
-    m.note === "x" && probe.stripped.length === 3 && clean.stripped.length === 0;
+    !("user_provided" in m) && !("analyst_provided" in m) &&
+    m.note === "x" && probe.stripped.length === 5 && clean.stripped.length === 0;
   return ok
-    ? { ok: true, detail: "model-supplied metadata cannot carry analyst review/release/dismissal keys (stripped and disclosed by name)" }
+    ? {
+      ok: true,
+      detail: `strip module present, ${RESERVED_ANALYST_AUTHORITY_KEYS.length} reserved keys (pure probe: analyst review/release/dismissal/provenance keys removed and disclosed by name); ` +
+        "the record_artifacts/record_artifact/record_evidence wiring is pinned by CI (analyst_authority_boundary_test.ts), not by this probe",
+    }
     : { ok: false, detail: "analyst-authority boundary misbehaving" };
 }

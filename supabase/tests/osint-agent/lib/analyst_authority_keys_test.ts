@@ -28,6 +28,7 @@ function deepFreeze<T>(o: T): T {
 Deno.test("the reserved list is pinned — widening or narrowing it is a deliberate, reviewed change", () => {
   assertEquals([...RESERVED_ANALYST_AUTHORITY_KEYS].sort(), [
     "analyst_confirmed",
+    "analyst_provided",
     "analyst_review",
     "attested",
     "false_positive",
@@ -36,7 +37,16 @@ Deno.test("the reserved list is pinned — widening or narrowing it is a deliber
     "linkage_confirmed_at",
     "review_state",
     "reviewed",
+    "user_provided",
   ]);
+});
+
+Deno.test("the name-conflict anchor keys are reserved: a model cannot say a name came from the analyst", () => {
+  // src/lib/name-conflict.ts isAnalystSupplied reads these as "the analyst typed this name" and makes
+  // that row the anchor every other name is compared against (#827 review, finding 3).
+  const out = stripAnalystAuthorityKeys({ user_provided: true, analyst_provided: true, kind_hint: "name" });
+  assertEquals(out.stripped, ["analyst_provided", "user_provided"]);
+  assertEquals(out.metadata, { kind_hint: "name", [ANALYST_AUTHORITY_DISCLOSURE_KEY]: ["analyst_provided", "user_provided"] });
 });
 
 Deno.test("every reserved key is stripped whatever the model wrote as its value", () => {
@@ -156,8 +166,16 @@ Deno.test("process env kill switch is read at CALL time and ships OFF", () => {
   assertEquals(stripAnalystAuthorityKeys({ reviewed: true }).stripped, ["reviewed"]);
 });
 
-Deno.test("health self-test passes with the rule on and states what it proves", () => {
+Deno.test("health self-test passes with the rule on and states what it proves — and what it does not", () => {
   const t = analystAuthorityBoundarySelfTest();
   assert(t.ok, t.detail);
   assert(/analyst/i.test(t.detail));
+  // #827 review, finding 2: the probe exercises the pure function only. The detail must not read as a
+  // wiring proof, must say where the wiring IS pinned, and must carry the reserved-key count so a
+  // widened list is visible as a new build from one /health read.
+  assert(/pure probe/i.test(t.detail), t.detail);
+  assert(/not by this probe/i.test(t.detail), t.detail);
+  assert(t.detail.includes("analyst_authority_boundary_test.ts"), t.detail);
+  assert(t.detail.includes(`${RESERVED_ANALYST_AUTHORITY_KEYS.length} reserved keys`), t.detail);
+  assert(t.detail.includes("record_evidence"), t.detail);
 });
