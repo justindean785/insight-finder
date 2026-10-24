@@ -66,6 +66,7 @@ import { archiveOriginRuleSelfTest, breachOriginCapSelfTest, negativeSourceQuali
 import { memoryInputNormalizationSelfTest } from "./lib/memory-input-normalization.ts";
 import { exactBooleanRepairSelfTest } from "./lib/exact-boolean-repair.ts";
 import { inputCoercionSelfTest, inputKindInferenceSelfTest } from "./lib/tool-input-coercion.ts";
+import { socialfetchCoercionSelfTest } from "./lib/socialfetch-input.ts";
 import { correlateSeedDefaultSelfTest } from "./lib/thread-seed.ts";
 import { detectSeedServer } from "./validation.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
@@ -619,6 +620,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // the schema when — and only when — the result validates? Pure. PRESENCE proves the deployed bundle; `switch` reports
   // INPUT_COERCION_DISABLED; ok:false = a rule failed its own probe.
   r.checks.input_coercion = inputCoercionSelfTest();
+  // Does socialfetch_lookup accept username/identifier/url as `handle` and read `platform` off an exact supported host,
+  // while rejecting conflicting aliases and a platform that disagrees with the URL host? Pure; `switch` reports
+  // SOCIALFETCH_COERCION_DISABLED. PRESENCE proves the deployed bundle.
+  r.checks.socialfetch_coercion = socialfetchCoercionSelfTest();
   // Does a minimax_correlate call with no seed fall back to the request's own seed (person seed,
   // then the first message's selector, never prose)? Pure probe of lib/thread-seed.ts; PRESENCE
   // proves the build. The execute wiring is pinned by correlate_seed_default_test.ts in CI.
