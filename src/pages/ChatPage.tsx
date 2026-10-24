@@ -6,7 +6,7 @@ import { WorkspaceHeader, MobileCaseStrip } from "@/components/workspace/Workspa
 import { WorkspaceTabs, type WorkspaceTab } from "@/components/workspace/WorkspaceTabs";
 import { CaseSnapshotProvider } from "@/components/workspace/CaseSnapshotProvider";
 import { RecoveryBanner } from "@/components/workspace/RecoveryBanner";
-import { CaseSheet } from "@/components/workspace/CaseSheet";
+import { Workbench } from "@/components/workspace/Workbench";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { ShellTopBar } from "@/components/shell/AppShell";
 // Non-default tabs are code-split: Chat (default) loads eagerly; the heavier
@@ -239,7 +239,7 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
                 <TooltipContent side="left" className="text-xs">Hide case sheet</TooltipContent>
               </Tooltip>
               <ErrorBoundary>
-                <CaseSheet threadId={threadId} />
+                <Workbench threadId={threadId} />
               </ErrorBoundary>
             </>
           )}

@@ -17,6 +17,7 @@ import "reactflow/dist/style.css";
 import { supabase } from "@/integrations/supabase/client";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { GROUP_LABEL, type Group, type ReviewAdjustment } from "@/lib/intel";
+import { publishSelectedEntity } from "@/lib/workbench-selection";
 import { useReviewStates, type ReviewState } from "@/lib/review";
 import {
   buildEntityGraph,
@@ -295,6 +296,8 @@ export function GraphTab({ threadId }: { threadId: string }) {
   }, [threadId]);
 
   useEffect(() => { setSelected(null); setHidden(new Set()); }, [threadId]);
+  // Hand the selection to the Workbench's Connections tab (a different tab, so it is not mounted beside this one).
+  useEffect(() => { if (selected) publishSelectedEntity(threadId, selected); }, [threadId, selected]);
 
   // The real link-analysis model: edges from genuinely shared selectors
   // (email/phone/handle/ip/…), identity clusters, cross-cluster bridges, and a
