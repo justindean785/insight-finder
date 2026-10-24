@@ -522,6 +522,20 @@ Deno.test("the block reads in order: NEXT, THEN, CONNECTED (links under it), WIT
   assert(at("NEXT BEST PIVOT") < at("THEN:") && at("THEN:") < at("CONNECTED:") && at("CONNECTED:") < at("WITHHELD") && at("WITHHELD") < at("The analyst's latest message wins"));
 });
 
+Deno.test("wording is grammatical on real data: zero corroborating classes, and 'an email' / 'a username'", () => {
+  // `ai_summary` sources are non-corroborating, so a selector resting only on them has ZERO independent classes (seen on a live thread).
+  const out = build([row("email", "admin@example.test", { source: "exa_search (privacy policy page)", confidence: 55, meta: { sources: ["exa_search"] } })]);
+  assert(out.text);
+  assertStringIncludes(out.text, "no independent source class yet, so a first one would corroborate it");
+  assertStringIncludes(out.text, "an email usually reaches");
+  assertFalse(out.text.includes("only 0"));
+  assertFalse(out.text.includes("a email"));
+  assertFalse(out.text.includes("an username"));
+  const solo = build([row("username", "plain_user", { source: "github_user" })]);
+  assertStringIncludes(solo.text ?? "", "a username usually reaches");
+  assertStringIncludes(solo.text ?? "", "only 1 independent source class so far");
+});
+
 Deno.test("worst case stays within the cap: 80-char values, three named links, every reason, quarantine suffix", () => {
   const long = (i: number) => `${"a".repeat(60)}${i}@example.test`;
   const rows: BriefArtifact[] = [];

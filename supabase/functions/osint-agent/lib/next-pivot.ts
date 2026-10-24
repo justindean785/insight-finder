@@ -653,9 +653,13 @@ function reasonWords(p: RankedPivot): string {
     else if (r === "analyst_key") parts.push("analyst-marked KEY");
     else if (r === "analyst_recheck") parts.push("analyst asked for a re-check");
     else if (r === "single_source") {
-      parts.push(`only ${p.independentClasses} independent source class${p.independentClasses === 1 ? "" : "es"} so far, so a second would corroborate it`);
+      parts.push(
+        p.independentClasses === 0
+          ? "no independent source class yet, so a first one would corroborate it"
+          : `only ${p.independentClasses} independent source class so far, so a second would corroborate it`,
+      );
     } else if (r === "linked") parts.push("already tied to the subject's cluster");
-    else if (r === "wide_fan_out") parts.push(`a ${p.type} usually reaches the most linked accounts`);
+    else if (r === "wide_fan_out") parts.push(`${p.type === "email" ? "an" : "a"} ${p.type} usually reaches the most linked accounts`);
     if (parts.length === 3) break;
   }
   const tail = p.alsoOnDenied ? ` (also seen on ${p.alsoOnDenied} quarantined/excluded row${p.alsoOnDenied === 1 ? "" : "s"}, not counted)` : "";
