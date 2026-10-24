@@ -346,7 +346,8 @@ describe("examples and Markdown are never selectors", () => {
   it("a backticked real address is extracted clean, with an honest label", () => {
     const pivots = extractRecommendedPivots(REPORT);
     const email = pivots.find((p) => p.type === "email");
-    expect(email).toMatchObject({ value: "contact@site.example", actionLabel: "Investigate email", priority: "high" });
+    // "Breach check on …" names its own method, so the card says so (it used to read "Investigate email").
+    expect(email).toMatchObject({ value: "contact@site.example", actionLabel: "Breach-check email", priority: "high" });
     // Nothing that could get a Run button carries Markdown. The thesis line has
     // no observed selector left, so it falls back to its sentence — which the
     // shared shape table refuses, so the panel discloses it as "needs repair"
@@ -411,3 +412,66 @@ describe("examples and Markdown are never selectors", () => {
     expect(extractRecommendedPivots(text)[0]).toMatchObject({ value: "site.example", type: "domain" });
   });
 });
+
+describe("action label follows the recommendation's own method, not just its target type", () => {
+  // The six "Recommended Next Pivots" lines of the 2026-10-24 decint.tools report (capture of thread 1ad8313a).
+  const REPORT = `
+## Recommended Next Pivots
+- **Breach-check** \`admin@decint.tools\` via \`rapidapi_breach_search\` + \`breach_check\` — could surface the operator's real identity if this email was reused elsewhere.
+- **SSL certificate transparency on** \`api.decint.tools\` — the separate Zurich API server may have different cert SANs revealing additional subdomains.
+- **Co-hosted domain investigation** ( \`lennlucy.ch\`, \`alumni-hafl.bfh.ch\` ) — determine if these are just shared-hosting neighbors or have an operator connection.
+- **Google dorks for cached pages / mentions** — \`"decint.tools"\` site:dorks for GitHub, LinkedIn, forums, or review sites that may surface the operator identity.
+- **DNS history / passive DNS** on \`decint.tools\` — check for prior IP assignments or subdomain changes since Jan 2026 registration.
+`;
+  const byValue = () => Object.fromEntries(extractRecommendedPivots(REPORT).map((p) => [p.value, p]));
+
+  it("names the method the agent proposed, with the target type unchanged", () => {
+    const out = byValue();
+    expect(out["admin@decint.tools"]).toMatchObject({ actionLabel: "Breach-check email", type: "email" });
+    expect(out["api.decint.tools"]).toMatchObject({ actionLabel: "Check certificate transparency", type: "domain" });
+    expect(out["lennlucy.ch"]).toMatchObject({ actionLabel: "Check co-hosted domains", type: "domain" });
+    const decint = extractRecommendedPivots(REPORT).filter((p) => p.value === "decint.tools").map((p) => p.actionLabel);
+    expect(decint).toEqual(["Run search dorks", "Check DNS history"]);
+  });
+
+  it("a Wayback / web-archive headline names the archive, not the domain footprint", () => {
+    const [p] = extractRecommendedPivots(`
+## Recommended Next Pivots
+- **Wayback Machine check of** \`decint.tools\` — compare the 2026-10-01 capture with today's contact page.
+`);
+    expect(p).toMatchObject({ actionLabel: "Check web archive", type: "domain", value: "decint.tools" });
+  });
+
+  it("runs the pivot under that label (the agent is told the method, not 'Review domain footprint')", () => {
+    const dork = extractRecommendedPivots(REPORT).find((p) => p.actionLabel === "Run search dorks")!;
+    expect(dork.prompt).toContain("Action: Run search dorks");
+    expect(dork.prompt).not.toContain("Review domain footprint");
+  });
+
+  it("reads only the headline: a method mentioned in the REASON does not rename the card", () => {
+    const [p] = extractRecommendedPivots(`
+## Recommended Next Pivots
+- Investigate admin@example.test — a wayback capture and a dorks pass may corroborate; breach-check later
+`);
+    expect(p.actionLabel).toBe("Investigate email");
+  });
+
+  it("a headline that names no method keeps its type label (no regression)", () => {
+    const labels = extractRecommendedPivots(`
+## Recommended Next Pivots
+- Investigate sam.cole@example.com — same person
+- Review domain footprint ceroconstruction.com — subject's own domain
+- Check 925-642-7442 — corroborate line ownership
+`).map((p) => p.actionLabel);
+    expect(labels).toEqual(["Investigate email", "Review domain footprint", "Check phone association"]);
+  });
+
+  it("the collision label still wins over a method word", () => {
+    const [p] = extractRecommendedPivots(`
+## Recommended Next Pivots
+- Run dorks on excluded collision hawkcapo — would only find namesakes
+`);
+    expect(p.actionLabel).toBe("Review excluded collision");
+  });
+});
+

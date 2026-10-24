@@ -249,8 +249,37 @@ function splitReason(label: string): { title: string; reason: string } {
   };
 }
 
+/**
+ * The METHOD a recommendation names in its own headline, ahead of the type of its target.
+ *
+ * The label used to come from the target's type alone, so every domain-shaped target read "Review domain
+ * footprint": "Google dorks for cached pages" on `decint.tools`, "Co-hosted domain investigation" and "DNS
+ * history" all became the same card, hiding what the agent actually proposed to run (measured 2026-10-24,
+ * capture of thread 1ad8313a). Only the HEADLINE (text before the first dash) is read — the reason may
+ * mention a method in passing ("could surface breach exposure") without being one. First match wins; a
+ * headline that names none falls through to the type labels unchanged.
+ */
+const METHOD_LABELS: ReadonlyArray<readonly [RegExp, string | ((type: PivotType) => string)]> = [
+  [/\bdorks?\b/i, "Run search dorks"],
+  [/\bwayback\b|\bweb archive\b|\barchive\.org\b/i, "Check web archive"],
+  [/\bco-?host(?:ed|ing)?\b|\bshared[- ]host/i, "Check co-hosted domains"],
+  [/\bcert(?:ificate)?s?[- ]transparency\b|\bcrt\.sh\b|\bcert(?:ificate)? SANs?\b/i, "Check certificate transparency"],
+  [/\bpassive dns\b|\bdns history\b|\bhistorical dns\b/i, "Check DNS history"],
+  [/\bbreach[- ]?check\b|\bbreach (?:lookup|search)\b/i, (type) => (type === "name" || type === "url" ? "Breach-check" : `Breach-check ${type}`)],
+];
+
+function methodLabel(label: string, type: PivotType): string | null {
+  const headline = splitReason(label).title;
+  for (const [re, name] of METHOD_LABELS) {
+    if (re.test(headline)) return typeof name === "function" ? name(type) : name;
+  }
+  return null;
+}
+
 function actionLabelForRecommendation(label: string, value: string, type: PivotType): string {
   if (COLLISION_RE.test(label)) return "Review excluded collision";
+  const method = methodLabel(label, type);
+  if (method) return method;
   // "Investigate", not "Verify … ownership": the run is a lookup (breach,
   // profile, provider) and none of those proves who owns the address.
   if (type === "email") return "Investigate email";
