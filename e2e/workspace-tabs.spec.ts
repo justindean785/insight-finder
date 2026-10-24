@@ -126,7 +126,7 @@ test.describe("workspace tab strip", () => {
     test.skip(testInfo.project.name !== "894x617", "overflow is only expected at the narrow viewport");
     await openWorkspace(page);
     const maxScrollLeft = await page.evaluate(() => {
-      const list = document.querySelector('[role="tab"]')!.closest('[role="tablist"]')!;
+      const list = document.querySelector('[role="tablist"][aria-label="Investigation workspace"]')!;
       const scroller = list.parentElement as HTMLElement;
       return scroller.scrollWidth - scroller.clientWidth;
     });
@@ -140,7 +140,7 @@ test.describe("workspace tab strip", () => {
     test.skip(testInfo.project.name !== "894x617", "the reported viewport");
     await openWorkspace(page, { constrain: false });
     const g = await page.evaluate(() => {
-      const list = document.querySelector('[role="tab"]')!.closest('[role="tablist"]')!;
+      const list = document.querySelector('[role="tablist"][aria-label="Investigation workspace"]')!;
       const scroller = list.parentElement as HTMLElement;
       const rail = document.querySelector('aside[aria-label="Cases"]')!.getBoundingClientRect().width;
       return { overflow: scroller.scrollWidth - scroller.clientWidth, rail };
@@ -153,14 +153,14 @@ test.describe("workspace tab strip", () => {
     await openWorkspace(page);
 
     const geometry = await page.evaluate(() => {
-      const first = document.querySelector('[role="tab"]')!;
-      const list = first.closest('[role="tablist"]')!;
+      // The workspace strip only: the right-hand Workbench has its own tablist (hidden below xl).
+      const list = document.querySelector('[role="tablist"][aria-label="Investigation workspace"]')!;
       const scroller = list.parentElement as HTMLElement;
       const scrollerBox = scroller.getBoundingClientRect();
       return {
         scrollWidth: scroller.scrollWidth,
         maxScrollLeft: scroller.scrollWidth - scroller.clientWidth,
-        tabs: Array.from(document.querySelectorAll('[role="tab"]')).map((el) => {
+        tabs: Array.from(list.querySelectorAll('[role="tab"]')).map((el) => {
           const b = el.getBoundingClientRect();
           return {
             label: (el.textContent || "").trim(),

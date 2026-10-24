@@ -186,8 +186,9 @@ describe("case sheet — ChatPage wiring", () => {
 
   it("renders the sheet LAST in the content container, after every panel", () => {
     const content = src.slice(src.indexOf('<div key="workspace-content"'), src.indexOf("// ONE layout tree"));
-    expect(content.indexOf("<CaseSheet")).toBeGreaterThan(content.indexOf('panel("tools"'));
-    expect(content.indexOf("<ChatWindow")).toBeLessThan(content.indexOf("<CaseSheet"));
+    // The column is the Workbench now (its default tab is the case sheet); the placement contract is unchanged.
+    expect(content.indexOf("<Workbench")).toBeGreaterThan(content.indexOf('panel("tools"'));
+    expect(content.indexOf("<ChatWindow")).toBeLessThan(content.indexOf("<Workbench"));
   });
 
   it("shows only beside the transcript and the report, never on mobile", () => {
