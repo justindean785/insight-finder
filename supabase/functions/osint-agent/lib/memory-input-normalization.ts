@@ -8,7 +8,9 @@
 // What it does — every rule is a pure re-SHAPING of data the model already sent, never a decision about it:
 //   • memory_save, flat entry:   {kind, subject, content, …}  →  {entries: [{kind, subject, content, …}]}
 //       only when `entries` is ABSENT, `scope` is the only other key, and kind/subject/content are all present;
-//   • memory_save, element field names: type→kind, text|learning|note→content, value|selector→subject
+//   • memory_save, root field names: memories|memory_items|items→entries
+//       only when `entries` is absent, exactly one such key is present, and its value is a non-empty array of plain objects;
+//   • memory_save, element field names: type→kind, text|learning|note|notes→content, value|selector→subject
 //       only when the canonical field is absent AND exactly one alias for it is present;
 //   • memory_save, element `content` that is an array of non-empty strings → the strings joined with a space
 //       (a list of sentences is the same text; anything else — object, number, mixed array — is left to be rejected);
@@ -36,9 +38,11 @@ const isPlain = (v: unknown): v is Rec => !!v && typeof v === "object" && !Array
 /** canonical field → the field names a model has been seen to use instead. */
 const ENTRY_ALIASES: Record<string, string[]> = {
   kind: ["type"],
-  content: ["text", "learning", "note"],
+  content: ["text", "learning", "note", "notes"],
   subject: ["value", "selector"],
 };
+/** Root field names a model has been seen to use for the `entries` array (measured on tool_usage_log, 2026-10-15..24). */
+const ENTRIES_ROOT_ALIASES = ["memories", "memory_items", "items"];
 const ENTRY_FIELDS = new Set(["kind", "subject", "subject_kind", "related_values", "content", "confidence"]);
 const MAX_JOINED_SENTENCES = 8;
 
@@ -69,6 +73,18 @@ export function normalizeMemoryEntry(entry: unknown): unknown {
  */
 export function wrapFlatMemoryEntry(raw: unknown): unknown {
   if (memoryInputNormalizationDisabled() || !isPlain(raw) || "entries" in raw) return raw;
+  // `entries` sent under another root name: rename it, only when exactly one such key is present and its value is already a
+  // non-empty array of plain objects (a string, a lone object or an array of strings is left for the schema, as before).
+  const rootAliases = ENTRIES_ROOT_ALIASES.filter((a) => a in raw);
+  if (rootAliases.length === 1) {
+    const list = raw[rootAliases[0]];
+    if (Array.isArray(list) && list.length > 0 && list.every(isPlain)) {
+      const { [rootAliases[0]]: _renamed, ...others } = raw;
+      void _renamed;
+      return { ...others, entries: list };
+    }
+    return raw;
+  }
   const { scope, ...rest } = raw;
   const entry = normalizeMemoryEntry(rest);
   if (!isPlain(entry)) return raw;
@@ -105,6 +121,10 @@ export function memoryInputNormalizationSelfTest(): { ok: boolean; detail: strin
   if (normalizeMemoryEntry(ambiguous) !== ambiguous) wrong.push("an ambiguous alias was guessed");
   const synonym = { kind: "insight", subject: "s", content: "abc" };
   if ((normalizeMemoryEntry(synonym) as Rec).kind !== "insight") wrong.push("a kind value was rewritten");
+  const renamed = wrapFlatMemoryEntry({ memories: [{ kind: "lesson", subject: "s", content: "abc" }] }) as { entries?: unknown[]; memories?: unknown };
+  if (renamed.entries?.length !== 1 || "memories" in renamed) wrong.push("a root `memories` array was not renamed to entries");
+  const twoRoots = { memories: [{ kind: "lesson", subject: "s", content: "abc" }], items: [{ kind: "lesson", subject: "s", content: "abc" }] };
+  if (wrapFlatMemoryEntry(twoRoots) !== twoRoots) wrong.push("two root aliases for entries were guessed between");
   const withEntries = { entries: [], kind: "lesson", subject: "s", content: "abc" };
   if (wrapFlatMemoryEntry(withEntries) !== withEntries) wrong.push("an input that already has entries was rewritten");
   return wrong.length

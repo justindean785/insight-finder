@@ -222,3 +222,50 @@ Deno.test("SCOPE: the memory write gates are untouched, and the module sets no a
   assert(reg.includes("refuseConflictingMemoryWrites(toPersist"), "the analyst gate still runs");
   assert(reg.includes("reviewMemoryBatch("), "the C-2 consolidation review still runs");
 });
+
+// ── root `entries` aliases and `notes` (measured 2026-10-24, thread ed68091e) ─────────────────────────────────────────
+
+Deno.test("`notes` is a content alias (like `note`); both together stay ambiguous", () => {
+  assertEquals(normalizeMemoryEntry({ kind: "lesson", subject: "s", notes: "abc" }), { kind: "lesson", subject: "s", content: "abc" });
+  const both = { kind: "lesson", subject: "s", note: "a", notes: "b" };
+  assertStrictEquals(normalizeMemoryEntry(both), both);
+});
+
+Deno.test("`memories` / `memory_items` / `items` holding an array of objects are renamed to `entries`; scope rides along", () => {
+  const list = [{ kind: "lesson", subject: "s", content: "abc" }];
+  for (const key of ["memories", "memory_items", "items"]) {
+    assertEquals(wrapFlatMemoryEntry({ [key]: list, scope: "case" }), { scope: "case", entries: list }, key);
+  }
+});
+
+Deno.test("root aliases are left UNCHANGED when ambiguous: two aliases, a string/object/empty/mixed value, or `entries` present", () => {
+  const e = { kind: "lesson", subject: "s", content: "abc" };
+  const cases: Rec[] = [
+    { memories: [e], items: [e] },
+    { memory_items: JSON.stringify([e]) },
+    { items: e },
+    { memories: [] },
+    { memories: [e, "x"] },
+    { entries: [e], memories: [e] },
+  ];
+  for (const c of cases) assertStrictEquals(wrapFlatMemoryEntry(c), c, JSON.stringify(c));
+});
+
+Deno.test("REAL memory_save schema: an aliased root array validates; values are still never rewritten", () => {
+  const schema = realTools().memory_save.inputSchema;
+  const r = schema.safeParse({ memories: [{ kind: "lesson", subject: "synthetic.handle", notes: "One. Two." }] });
+  assert(r.success);
+  assertEquals(r.data, { entries: [{ kind: "lesson", subject: "synthetic.handle", content: "One. Two.", confidence: 60 }], scope: "global" });
+  assertFalse(schema.safeParse({ memories: [{ kind: "insight", subject: "s", notes: "abc" }] }).success, "no kind synonyms");
+  // The 2026-10-24 flat call still fails on its string-typed confidence / related_values: those are values, not shape.
+  assertFalse(schema.safeParse({ scope: "case", kind: "lesson", subject: "s", related_values: "a, b", confidence: "high", notes: "abc" }).success);
+});
+
+Deno.test("KILL SWITCH also disables the root aliases and `notes`", async () => {
+  const input = { memories: [{ kind: "lesson", subject: "s", content: "abc" }] };
+  await withEnv(SWITCH, "true", () => {
+    assertStrictEquals(wrapFlatMemoryEntry(input), input);
+    const e = { kind: "lesson", subject: "s", notes: "abc" };
+    assertStrictEquals(normalizeMemoryEntry(e), e);
+  });
+});
