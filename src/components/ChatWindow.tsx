@@ -45,7 +45,7 @@ import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import { computePivots } from "@/lib/pivot-engine";
 import { buildEntityGraph } from "@/lib/entity-graph";
 import { summarizeConnections } from "@/lib/connection-summary";
-import { isAutoRunnable, pickBestPivot } from "@/lib/best-pivot";
+import { pickAutoPivot } from "@/lib/best-pivot";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
 import { scrollBehavior } from "@/lib/motion";
 import { fetchWithRetry } from "@/lib/fetch-retry";
@@ -1500,6 +1500,7 @@ function ChatWindowInner({
   const decisionSetsRef = useRef(decisionSets);
   decisionSetsRef.current = decisionSets;
   const [seedValue, setSeedValue] = useState<string | null>(null);
+  const [seedType, setSeedType] = useState<string | null>(null);
   // The Next-steps ranking depends on the seed and on analyst verdicts, both
   // loaded asynchronously. Rendering before they land reshuffled the list a
   // second after load — the row an analyst reached for could move or vanish.
@@ -1527,12 +1528,14 @@ function ChatWindowInner({
     let alive = true;
     supabase
       .from("threads")
-      .select("seed_value")
+      .select("seed_value, seed_type")
       .eq("id", threadId)
       .maybeSingle()
       .then(({ data }) => {
         if (!alive) return;
-        setSeedValue((data as { seed_value: string | null } | null)?.seed_value ?? null);
+        const row = data as { seed_value: string | null; seed_type?: string | null } | null;
+        setSeedValue(row?.seed_value ?? null);
+        setSeedType(row?.seed_type ?? null);
         setSeedLoaded(true);
       });
     return () => { alive = false; };
@@ -2822,8 +2825,8 @@ function ChatWindowInner({
       const r = review.map[a.id];
       if (r && r !== "new") reviews[a.id] = r;
     }
-    return summarizeConnections(buildEntityGraph(artifacts, seedValue, null, reviews), artifacts);
-  }, [artifacts, seedValue, review.map]);
+    return summarizeConnections(buildEntityGraph(artifacts, seedValue, seedType, reviews), artifacts);
+  }, [artifacts, seedValue, seedType, review.map]);
 
   // Build suggested next-step replies after the agent stops streaming.
   // Memoized — without this the IIFE re-runs on every streamed token because
@@ -2905,12 +2908,9 @@ function ChatWindowInner({
   // The pivot Auto-run would start next. Read from a ref at cycle time, because
   // the cycle effect fires between renders. A pivot Auto-run already sent this
   // session is not sent again while the tool log catches up to it.
-  autoPivotRef.current = (() => {
-    const best = pickBestPivot(suggestions);
-    if (!best || best.validation.status !== "valid" || !isAutoRunnable(best)) return null;
-    return autoSentRef.current.has(best.key) ? null : best.validation.pivot;
-  })();
-  autoPivotKeyRef.current = pickBestPivot(suggestions)?.key ?? null;
+  const autoPick = pickAutoPivot(suggestions, autoSentRef.current);
+  autoPivotRef.current = autoPick?.pivot ?? null;
+  autoPivotKeyRef.current = autoPick?.key ?? null;
 
   return (
     <div className="chat-stage relative h-full min-w-0 overflow-hidden bg-background">

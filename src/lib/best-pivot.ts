@@ -59,3 +59,21 @@ export function requiresPreview(e: PivotEligibility): boolean {
   if (e.linkage === "report") return e.warnings.length > 1;
   return e.warnings.length > 0;
 }
+
+/**
+ * The pivot Auto-run starts next: the highest-ranked one that is safe to start
+ * unattended (see `isAutoRunnable`) and has not already been sent. A warning-bearing
+ * or already-sent pivot is skipped, not a reason to abandon the ranking, so a safe
+ * pivot further down is still found. Null means fall back to the generic continue.
+ */
+export function pickAutoPivot(
+  items: NextStepItem[],
+  sentKeys: ReadonlySet<string>,
+): { key: string; pivot: RunnablePivot } | null {
+  for (const item of items) {
+    if (item.kind !== "pivot" || item.validation.status !== "valid") continue;
+    if (sentKeys.has(item.key) || !isAutoRunnable(item)) continue;
+    return { key: item.key, pivot: item.validation.pivot };
+  }
+  return null;
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { explainPivot, isAutoRunnable, pickBestPivot, requiresPreview } from "@/lib/best-pivot";
+import { explainPivot, isAutoRunnable, pickAutoPivot, pickBestPivot, requiresPreview } from "@/lib/best-pivot";
 import { summarizeConnections } from "@/lib/connection-summary";
 import { pivotEligibility, validatePivotSuggestion } from "@/lib/pivot-schema";
 import type { NextStepItem } from "@/components/pivots/NextSteps";
@@ -46,6 +46,27 @@ describe("best pivot", () => {
     const rerun = item({ status: "searched" });
     if (rerun.kind === "pivot" && rerun.eligibility) expect(requiresPreview(rerun.eligibility)).toBe(true);
     expect(isAutoRunnable(rerun)).toBe(false);
+  });
+});
+
+describe("Auto-run pivot choice", () => {
+  const safe = (key: string, target: string) => {
+    const it = item({ id: `email:${target}:a`, target, sourceArtifactIds: [] }, key);
+    // A recorded-row pivot with no warnings: force a clean eligibility.
+    if (it.kind === "pivot" && it.eligibility) it.eligibility = { ...it.eligibility, linkage: "linked", warnings: [] };
+    return it;
+  };
+
+  it("skips a warning-bearing or already-sent pivot and still finds the next safe one by rank", () => {
+    const warned = item({ status: "searched" }, "warned");
+    const sent = safe("sent", "s@example.com");
+    const next = safe("next", "n@example.com");
+    expect(pickAutoPivot([warned, sent, next], new Set(["sent"]))?.key).toBe("next");
+  });
+
+  it("returns null, so the generic continue is used, when nothing safe remains", () => {
+    expect(pickAutoPivot([item({ status: "searched" }, "w")], new Set())).toBeNull();
+    expect(pickAutoPivot([safe("a", "a@example.com")], new Set(["a"]))).toBeNull();
   });
 });
 
