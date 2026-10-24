@@ -504,3 +504,60 @@ Deno.test("wiring: reportBudgetCeiling is called AFTER sanitize at BOTH index.ts
     "reportBudgetCeiling must not measure `budgeted` — that is the pre-sanitize array",
   );
 });
+
+// ---- record_artifacts input compaction (2026-10-24) -------------------------------
+function recordCall(i: number, n: number): ModelMessage {
+  return {
+    role: "assistant",
+    content: [{
+      type: "tool-call", toolCallId: `ra_${i}`, toolName: "record_artifacts",
+      input: { artifacts: Array.from({ length: n }, (_, k) => ({
+        kind: "email", value: `p${i}_${k}@ex.com`, confidence: 99, source: "s".repeat(80),
+        metadata: { reason_for_confidence: "m".repeat(300), status: "verified" },
+      })) },
+    }],
+  } as unknown as ModelMessage;
+}
+function recordPair(i: number, n: number): ModelMessage[] {
+  return [recordCall(i, n), {
+    role: "tool",
+    content: [{ type: "tool-result", toolCallId: `ra_${i}`, toolName: "record_artifacts", output: { type: "json", value: "ok" } }],
+  } as unknown as ModelMessage];
+}
+const history = (pairs: number) => [
+  { role: "user", content: "investigate x" } as ModelMessage,
+  ...Array.from({ length: pairs }, (_, i) => recordPair(i, 10)).flat(),
+];
+
+Deno.test("capTotalToBudget: old record_artifacts inputs shrink to kind+value under pressure, input stays an object", () => {
+  const msgs = history(40);
+  const out = capTotalToBudget(msgs, 60_000, 4);
+  assert(approxMsgChars(out) < approxMsgChars(msgs) / 2);
+  const first = (out[1].content as Array<{ input: { artifacts: Array<Record<string, unknown>> } }>)[0];
+  assertEquals(typeof first.input, "object");
+  assertEquals(Object.keys(first.input.artifacts[0]).sort(), ["kind", "value"]);
+  assertEquals(first.input.artifacts.length, 10);
+  assertEquals(first.input.artifacts[3].value, "p0_3@ex.com");
+});
+
+Deno.test("capTotalToBudget: record_artifacts inputs in the recent window and under budget keep metadata", () => {
+  const msgs = history(40);
+  assertEquals(capTotalToBudget(msgs, 10_000_000, 4), msgs);
+  const out = capTotalToBudget(msgs, 60_000, 4);
+  const last = (out[out.length - 2].content as Array<{ input: { artifacts: Array<Record<string, unknown>> } }>)[0];
+  assert("metadata" in last.input.artifacts[0]);
+});
+
+Deno.test("capTotalToBudget: kill switch (compactInputs=false) leaves inputs untouched", () => {
+  const msgs = history(40);
+  const out = capTotalToBudget(msgs, 60_000, 4, true, false);
+  const first = (out[1].content as Array<{ input: { artifacts: Array<Record<string, unknown>> } }>)[0];
+  assert("metadata" in first.input.artifacts[0]);
+});
+
+Deno.test("capTotalToBudget: only record_artifacts inputs are compacted", () => {
+  const other = { role: "assistant", content: [{ type: "tool-call", toolCallId: "z", toolName: "username_sweep", input: { username: "a".repeat(3000) } }] } as unknown as ModelMessage;
+  const msgs = [other, ...history(40)];
+  const out = capTotalToBudget(msgs, 60_000, 4);
+  assertEquals((out[0].content as Array<{ input: { username: string } }>)[0].input.username.length, 3000);
+});

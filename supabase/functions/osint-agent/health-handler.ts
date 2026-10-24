@@ -19,6 +19,7 @@ import {
   ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY,
   lovableGateway, geminiDirectGateway, ALLOW_LOVABLE_FALLBACK,
   promptBudgetHardCeilingEnabled,
+  recordArtifactsInputCompactEnabled,
 } from "./env.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { anthropicFallbackEligible, selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
@@ -469,6 +470,18 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       detail: hardCeiling
         ? `hard ceiling ${TOTAL_PROMPT_CHAR_BUDGET} chars, tail=summarize`
         : `DISABLED via PROMPT_BUDGET_HARD_CEILING_DISABLED — tail exempt above ${TOTAL_PROMPT_CHAR_BUDGET} chars`,
+    };
+  }
+
+  // Are OLD record_artifacts tool-call inputs compacted to kind+value under budget pressure
+  // (orchestrator-budget.ts)? Pure. PRESENCE proves the deployed bundle; `ok` tracks the kill switch.
+  {
+    const on = recordArtifactsInputCompactEnabled();
+    r.checks.record_artifacts_input_compact = {
+      ok: on,
+      detail: on
+        ? "older record_artifacts inputs shrink to kind+value only while over the prompt budget; recent window and every other tool input untouched"
+        : "DISABLED via RECORD_ARTIFACTS_INPUT_COMPACT_DISABLED — old record_artifacts inputs are never trimmed",
     };
   }
 
