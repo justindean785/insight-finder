@@ -58,6 +58,8 @@ export interface GraphNode {
   group: Group;
   confidence: number; // 0-100 (seed = 100)
   isSeed: boolean;
+  /** An artifact whose own value IS the seed's selector: the seed's record, not a separate entity or lead. */
+  seedRecord: boolean;
   conflict: boolean; // collision / conflict / breach — restrained destructive accent
   clusterId: string | null;
   degree: number;
@@ -94,7 +96,8 @@ export interface EntityGraph {
     realEdgeCount: number; // identity + co-record + shared-infra (excludes seed-discovery fallback)
     clusterCount: number;
     bridgeCount: number;
-    isolatedCount: number; // nodes only tied to the seed by the discovery fallback
+    isolatedCount: number; // nodes only tied to the seed by the discovery fallback (seed records excluded)
+    seedRecordCount: number; // records that merely repeat the seed's own selector; inspectable, never a relationship or a lead
   };
 }
 
@@ -254,6 +257,7 @@ export function buildEntityGraph(
         group: groupForKind(seedType ?? ""),
         confidence: 100,
         isSeed: true,
+        seedRecord: false,
         conflict: false,
         clusterId: null,
         degree: 0,
@@ -275,6 +279,7 @@ export function buildEntityGraph(
       group: groupForKind(a.kind),
       confidence: effectiveConfidenceOrZero(a),
       isSeed: false,
+      seedRecord: false,
       conflict: isConflict(a, reviews?.[a.id]),
       clusterId: clusterOf.get(a.id) ?? null,
       degree: 0,
@@ -403,6 +408,8 @@ export function buildEntityGraph(
       if (isConflict(a, reviews?.[a.id])) continue;
       if (!selectorsFor(a.kind, a.value, null).some((sel) => seedOwnKeys.has(sel.key))) continue;
       seedRecordIds.add(a.id);
+      const rec = nodeById.get(a.id);
+      if (rec) rec.seedRecord = true;
       upsertEdge(SEED_ID, a.id, "seed-discovery", `Same ${seedNode.kind} as the seed — the seed's own record, not a separate relationship`, SELECTOR_STRENGTH.parent);
     }
   }
@@ -454,7 +461,7 @@ export function buildEntityGraph(
     m.set(e.target, (m.get(e.target) ?? 0) + 1);
   }
   const isolatedCount = nodes.filter(
-    (n) => !n.isSeed && !seedRecordIds.has(n.id) && (realDeg.get(n.id) ?? 0) === 0 && (fallbackDeg.get(n.id) ?? 0) > 0,
+    (n) => !n.isSeed && !n.seedRecord && (realDeg.get(n.id) ?? 0) === 0 && (fallbackDeg.get(n.id) ?? 0) > 0,
   ).length;
 
   return {
@@ -469,9 +476,31 @@ export function buildEntityGraph(
       clusterCount: clusterReport.clusters.length,
       bridgeCount: edges.filter((e) => e.bridge).length,
       isolatedCount,
+      seedRecordCount: seedRecordIds.size,
     },
   };
 }
+
+/** Nodes with at least one REAL relationship (identity or shared infrastructure). */
+export function linkedNodeIds(graph: EntityGraph): Set<string> {
+  const ids = new Set<string>();
+  for (const e of graph.edges) {
+    if (e.type === "seed-discovery") continue;
+    ids.add(e.source);
+    ids.add(e.target);
+  }
+  return ids;
+}
+
+/**
+ * ONE definition of an isolated lead, shared by the toggle count, the list section and the canvas filter: a non-seed
+ * entity with no real relationship that is not the seed's own record. Seed records stay visible and inspectable
+ * (their own section / always drawn) but are neither a lead nor a relationship.
+ */
+export function isIsolatedLead(n: GraphNode, linked: Set<string>): boolean {
+  return !n.isSeed && !n.seedRecord && !linked.has(n.id);
+}
+
 
 /* A rendered node chip is ~190px wide and ~34px tall. Every spacing constant
  * below is derived from that, because the previous layout packed 24 nodes onto

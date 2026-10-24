@@ -2,7 +2,7 @@
 // identity edge counted as "1 real link" (measured 2026-10-24, audited case). Seed-record association is provenance,
 // not a relationship; real links between distinct entities must survive.
 import { describe, expect, it } from "vitest";
-import { buildEntityGraph, SEED_ID } from "@/lib/entity-graph";
+import { buildEntityGraph, isIsolatedLead, linkedNodeIds, SEED_ID } from "@/lib/entity-graph";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 
 const A = (o: Partial<Artifact>): Artifact => ({
@@ -94,5 +94,35 @@ describe("seed ↔ same-selector artifact", () => {
       expect(g.stats.realEdgeCount).toBe(0);
       expect(g.nodes.find((n) => n.id === art.id)?.clusterId).toBeNull();
     }
+  });
+});
+
+describe("isolated-lead membership is ONE definition (toggle count, list section, stat)", () => {
+  const arts = [
+    A({ id: "rec" }), // the seed's own record
+    A({ id: "phone", kind: "phone", value: "925-813-9324" }), // a genuine isolated lead
+    A({ id: "u1", kind: "username", value: "shared_one" }),
+    A({ id: "u2", kind: "username", value: "@Shared_One" }), // linked pair
+  ];
+  const g = buildEntityGraph(arts, "x@y.com", "email");
+  const linked = linkedNodeIds(g);
+
+  it("seed record is flagged, counted once, and is neither an isolated lead nor linked", () => {
+    expect(g.nodes.find((n) => n.id === "rec")?.seedRecord).toBe(true);
+    expect(g.stats.seedRecordCount).toBe(1);
+    expect(linked.has("rec")).toBe(false);
+    expect(isIsolatedLead(g.nodes.find((n) => n.id === "rec")!, linked)).toBe(false);
+  });
+
+  it("the toggle count, the list section and stats.isolatedCount agree (only the phone)", () => {
+    const toggle = g.nodes.filter((n) => isIsolatedLead(n, linked)).map((n) => n.id);
+    expect(toggle).toEqual(["phone"]);
+    expect(g.stats.isolatedCount).toBe(toggle.length);
+  });
+
+  it("the footer's entity count excludes seed records; the record stays an inspectable node", () => {
+    expect(g.stats.nodeCount - g.stats.seedRecordCount).toBe(3);
+    expect(g.nodes.some((n) => n.id === "rec" && n.art?.id === "rec")).toBe(true);
+    expect(g.stats.realEdgeCount).toBe(1); // only the u1–u2 identity link
   });
 });
