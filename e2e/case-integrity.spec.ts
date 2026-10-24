@@ -228,7 +228,7 @@ test.describe("next steps", () => {
     await expect(repair.getByRole("button")).toHaveCount(0);
   });
 
-  test("Run opens a preview inside the app; nothing starts from the row", async ({ page }) => {
+  test("Preview opens a preview inside the app; nothing starts until Start", async ({ page }) => {
     const posts: string[] = [];
     page.on("request", (r) => { if (r.method() === "POST") posts.push(r.url()); });
     await open(page, THREAD);
@@ -237,7 +237,7 @@ test.describe("next steps", () => {
     // after hydration; a click in that window can land beside the moving button
     // (seen in a trace). Retry only while the row is still closed, so a click
     // that DID open the preview is never undone by the retry.
-    const run = steps.getByRole("button", { name: /^Run Verify/ }).first();
+    const run = steps.getByRole("button", { name: /^Preview Verify/ }).first();
     await expect(async () => {
       if ((await run.getAttribute("aria-expanded")) !== "true") await run.click();
       await expect(steps.getByText("Before this pivot runs")).toBeVisible({ timeout: 1000 });
