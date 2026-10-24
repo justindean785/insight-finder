@@ -127,6 +127,7 @@ import { normalizeMemoryEntry, parseStringArtifactElements, wrapFlatMemoryEntry 
 import {
   applyInputCoercion, GENERIC_SELECTOR_SPEC, inferSelectorKind, inputCoercionDisabled, mergeInputSpecs, type InputCoercionSpec,
 } from "./lib/tool-input-coercion.ts";
+import { socialfetchCustomCoercion } from "./lib/socialfetch-input.ts";
 import type { Artifact as ClusterArtifact } from "./lib/cluster.ts";
 
 import { minimaxChat, minimaxChatWithFallback, safeJson, geminiGroundedSearch, perplexitySearch } from "./providers.ts";
@@ -1953,11 +1954,13 @@ export function buildTools(ctx: ToolContext) {
     socialfetch_lookup: tool({
       description:
         "Query SocialFetch for normalized public social PROFILES and their content. SUPPORTED platforms: 'tiktok' | 'instagram' | 'twitter' | 'facebook'. kind='profile' (default) = profile metadata; 'videos' (tiktok) / 'posts' (instagram) / 'tweets' (twitter) = a profile's content collection; 'video' (tiktok) = one video by URL/id (pass it as `handle`). Use platform='facebook' with a full profile URL; otherwise pass a bare handle. Returns { ok, found, status, lookupStatus, data, meta, error }; on profile routes lookupStatus is 'found'|'private'|'not_found' — treat 'private'/'not_found' as a NORMAL negative, not an error. For a HARD-BLOCKED host that is NOT one of these four structured platforms (youtube, twitch, reddit, or an arbitrary evidence page), use `socialfetch_web_read` — it fetches server-side, unlike `jina_reader_scrape`, which those origins block. Jina remains the reader for non-blocked hosts. SocialFetch quota is LOW — don't re-burn calls on a nothing-result. Unsupported platforms return an informative no-op instead of crashing.",
-      inputSchema: memoSchema("socialfetch_lookup", () => z.object({
+      // Strict near-miss repair (lib/socialfetch-input.ts): username/identifier/url → handle, platform read off an exact
+      // supported host; conflicting aliases or a platform that disagrees with the URL host are rejected.
+      inputSchema: memoSchema("socialfetch_lookup", () => coercedSchema("socialfetch_lookup", { custom: socialfetchCustomCoercion }, z.object({
         platform: z.string(),
         handle: z.string().describe("Username/handle, full URL for facebook, or video URL/id for tiktok kind='video'"),
         kind: z.enum(["profile", "videos", "posts", "tweets", "video"]).default("profile"),
-      })),
+      }))),
       execute: async ({ platform, handle, kind }) => {
         // Normalize common aliases BEFORE the support check. Without this, the
         // single most likely spelling of the platform — `x`, the site's actual

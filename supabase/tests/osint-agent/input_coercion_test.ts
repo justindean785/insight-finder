@@ -167,6 +167,18 @@ Deno.test("PRODUCTION rapidapi_breach_search: a quoted, padded email is trimmed 
   rejected("rapidapi_breach_search", { email: "synthetic_handle" });
 });
 
+Deno.test("rapidapi_breach_search email: cleanup is spelling-only — each outer-quote pair and padding is removed, but an internal space, a mismatched quote or a malformed address is still REJECTED, and a lone quote is never stripped", () => {
+  for (const sent of ['"a@example.invalid"', "'a@example.invalid'", "`a@example.invalid`", "  \"a@example.invalid\"\n"]) {
+    assertEquals(ok("rapidapi_breach_search", { email: sent }).email, "a@example.invalid", sent);
+  }
+  for (const sent of [" 'a @example.invalid' ", "a@ example.invalid", '"a@example.invalid\'', "a@@example.invalid", "a@", "'a@example.invalid' extra"]) {
+    rejected("rapidapi_breach_search", { email: sent });
+  }
+  // A LONE quote is a legal local-part character, so the schema accepts it — and the cleanup must not "fix" it by
+  // stripping: only a matching OUTER pair is removed.
+  assertEquals(ok("rapidapi_breach_search", { email: "'a@example.invalid" }).email, "'a@example.invalid");
+});
+
 Deno.test("PRODUCTION (prior audit) minimax_correlate seed sent as a number validates as its string", () => {
   const d = ok("minimax_correlate", { seed: 6175550100, artifacts: [{ kind: "phone", value: "6175550100" }] });
   assertStrictEquals(d.seed, "6175550100");
