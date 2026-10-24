@@ -259,11 +259,14 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
   }
 
   const recommended = toDisplayPivots(reportPivots);
+  // NOT queriedSet: the tool-log reader (`useThreadQueriedTargets`) keeps every logged call's input whatever its outcome,
+  // so a failed or empty lookup on a bogus token (`to`) would ground itself. A queried token that nothing recorded stays
+  // unconfirmed; it still reads as "searched" below.
   const isKnownSelector = (value: string): boolean => {
     const k = normalizeTarget(value);
     const ek = entityKey(value);
     return k === seedKey || metaHandleSet.has(k) || metaHandleSet.has(ek) || existingValueSet.has(k) || existingValueSet.has(ek) ||
-      parentSet.has(k) || parentSet.has(ek) || queriedSet.has(k) || queriedSet.has(ek);
+      parentSet.has(k) || parentSet.has(ek);
   };
 
   const candidates: Candidate[] = [];

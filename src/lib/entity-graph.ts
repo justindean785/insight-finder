@@ -398,6 +398,9 @@ export function buildEntityGraph(
   const seedRecordIds = new Set<string>();
   if (seedNode && seedOwnKeys.size > 0) {
     for (const a of sorted) {
+      // Conflict / quarantined / rejected rows are kept out of every other index here; they get no "own record" tie either
+      // and fall through to the ordinary discovery fallback exactly as before.
+      if (isConflict(a, reviews?.[a.id])) continue;
       if (!selectorsFor(a.kind, a.value, null).some((sel) => seedOwnKeys.has(sel.key))) continue;
       seedRecordIds.add(a.id);
       upsertEdge(SEED_ID, a.id, "seed-discovery", `Same ${seedNode.kind} as the seed — the seed's own record, not a separate relationship`, SELECTOR_STRENGTH.parent);

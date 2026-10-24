@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
 import { computePivots } from "@/lib/pivot-engine";
 import { extractRecommendedPivots } from "@/lib/recommended-pivots";
+import { describeRepair } from "@/lib/pivot-repair-copy";
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion } from "@/lib/pivot-schema";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 
@@ -112,6 +113,24 @@ describe("a handle recorded in another artifact's metadata grounds an unmarked r
     };
     expect(verdictFor(held)).toBe("valid");
     expect(verdictFor()).toBe("invalid");
+  });
+});
+
+describe("a past tool-log query cannot ground a bogus token", () => {
+  it("`to` already queried (failed/empty sweep) stays unconfirmed, and reads as searched", () => {
+    const ranked = computePivots({
+      artifacts: [], seedValue: "seed@example.com",
+      reportPivots: extractRecommendedPivots(report("Link username to real name — Search public profiles for corroboration")),
+      skipSet: new Set(), queriedSet: new Set(["to"]),
+    });
+    const p = ranked.find((x) => x.value === "to")!;
+    expect(p.unconfirmedTarget).toBe(true);
+    expect(validatePivotSuggestion(pivotSuggestionInput(p)).status).toBe("invalid");
+  });
+
+  it("the repair copy says what to do next", () => {
+    const [item] = itemsFor(report("Username sweep — Search the distinctive handles on public platforms"));
+    expect(item.kind === "pivot" && item.validation.status === "invalid" && describeRepair(item.validation.problems)).toMatch(/composer.*quotes|record it as evidence/);
   });
 });
 

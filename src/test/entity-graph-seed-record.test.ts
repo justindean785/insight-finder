@@ -79,4 +79,20 @@ describe("seed ↔ same-selector artifact", () => {
     );
     expect(identity(g).map((e) => [e.source, e.target].sort().join())).toEqual([[SEED_ID, "mail"].sort().join()]);
   });
+
+  it("a quarantined / analyst-rejected row with the seed's value gets NO 'own record' tie and no authority from one", () => {
+    for (const art of [
+      A({ id: "q", metadata: { subject_unlinked: true } }),
+      A({ id: "r" }),
+    ]) {
+      const reviews = art.id === "r" ? { r: "dismissed" as never } : undefined;
+      const g = buildEntityGraph([art], "x@y.com", "email", reviews);
+      const tie = g.edges.find((e) => [e.source, e.target].includes(art.id));
+      expect(tie?.type).toBe("seed-discovery");
+      expect(tie?.reason).toMatch(/Discovered while investigating/); // the ordinary fallback, not "own record"
+      expect(tie?.reason).not.toMatch(/own record/);
+      expect(g.stats.realEdgeCount).toBe(0);
+      expect(g.nodes.find((n) => n.id === art.id)?.clusterId).toBeNull();
+    }
+  });
 });
