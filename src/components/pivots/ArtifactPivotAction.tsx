@@ -19,20 +19,34 @@ import type { RunnablePivot } from "@/lib/pivot-schema";
  * this adds is the way in: before, a selector in the Evidence list could only be
  * pivoted by retyping it into the composer.
  */
-export function ArtifactPivotAction({
-  threadId,
-  artifact,
-  artifacts,
-  onStarted,
-}: {
+export function ArtifactPivotAction(props: {
   threadId: string;
   artifact: Artifact;
   artifacts: Artifact[];
   onStarted?: () => void;
 }) {
+  // One thread-log read and subscription per mounted action. A surface that shows many of these at once reads the
+  // log itself and uses ArtifactPivotActionWith, so N actions do not mean N reads.
+  const queriedSet = useThreadQueriedTargets(props.threadId);
+  return <ArtifactPivotActionWith {...props} queriedSet={queriedSet} />;
+}
+
+export function ArtifactPivotActionWith({
+  threadId,
+  artifact,
+  artifacts,
+  queriedSet,
+  onStarted,
+}: {
+  threadId: string;
+  artifact: Artifact;
+  artifacts: Artifact[];
+  /** The thread's already-queried selectors, read ONCE by the caller. */
+  queriedSet: Set<string>;
+  onStarted?: () => void;
+}) {
   const caseApi = useOptionalCaseSnapshot();
   const seedValue = caseApi?.snapshot ? caseApi.snapshot.seed.value : null;
-  const queriedSet = useThreadQueriedTargets(threadId);
   const review = useReviewStates(threadId);
   const [open, setOpen] = useState(false);
   const [sent, setSent] = useState(false);

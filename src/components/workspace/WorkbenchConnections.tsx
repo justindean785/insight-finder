@@ -6,12 +6,16 @@ import { buildEntityGraph, SEED_ID, type EdgeType } from "@/lib/entity-graph";
 import type { ReviewAdjustment } from "@/lib/intel";
 import { authorityFor } from "@/lib/authority";
 import { AuthorityChip } from "@/components/ui/authority";
-import { ArtifactPivotAction } from "@/components/pivots/ArtifactPivotAction";
+import { ArtifactPivotActionWith } from "@/components/pivots/ArtifactPivotAction";
+import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { connectionsView, linksOf } from "@/lib/workbench-connections";
 import { readSelectedEntity, SELECT_ENTITY_EVENT } from "@/lib/workbench-selection";
 import { cn } from "@/lib/utils";
 
 const ISOLATED_LIMIT = 12;
+
+const REVIEWS_UNAVAILABLE =
+  "Your review decisions couldn't be loaded, so connections are withheld — they could otherwise show a link through a row you already rejected.";
 
 const EDGE_WORDS: Record<EdgeType, string> = {
   identity: "Shared selector",
@@ -30,6 +34,8 @@ const EDGE_WORDS: Record<EdgeType, string> = {
 export function WorkbenchConnections({ threadId }: { threadId: string }) {
   const { snapshot } = useCaseSnapshot();
   const review = useReviewStates(threadId);
+  // Read ONCE and shared by every pivot action below (each used to open its own full-log read and subscription).
+  const queriedTargets = useThreadQueriedTargets(threadId);
   const items = snapshot?.items ?? [];
   const seed = snapshot?.seed ?? { value: null, type: null };
   const [selected, setSelected] = useState<string | null>(() => readSelectedEntity(threadId));
@@ -57,8 +63,14 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
   const node = selected ? graph.nodes.find((n) => n.id === selected) ?? null : null;
   const links = useMemo(() => (node ? linksOf(graph, node.id) : []), [graph, node]);
 
-  if (!snapshot?.hydrated) {
+  // Relationships and pivots are decided BY the analyst's verdicts (a dismissed row must not read as a link or a lead),
+  // so both fail closed like the case sheet: wait for the read, and say so when it failed instead of treating an unread
+  // verdict as "new".
+  if (!snapshot?.hydrated || review.availability === "unknown") {
     return <div className="space-y-3 p-5" aria-busy="true"><div className="h-12 animate-pulse rounded-md bg-surface-2 motion-reduce:animate-none" aria-hidden /></div>;
+  }
+  if (review.availability === "unavailable") {
+    return <p role="status" className="px-5 py-4 text-[13px] leading-snug text-muted-foreground">{REVIEWS_UNAVAILABLE}</p>;
   }
   if (items.length === 0) {
     return <p className="px-5 py-4 text-[13px] text-muted-foreground">No entities yet. Connections appear as the investigation records selectors.</p>;
@@ -86,7 +98,7 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
             {node.art && <AuthorityChip view={authorityFor(node.art, review.map[node.art.id] ?? "new")} />}
           </div>
           {node.art && !node.seedRecord && (
-            <ArtifactPivotAction threadId={threadId} artifact={node.art} artifacts={items} />
+            <ArtifactPivotActionWith queriedSet={queriedTargets} threadId={threadId} artifact={node.art} artifacts={items} />
           )}
           {links.length === 0 ? (
             <p className="text-[13px] text-muted-foreground">
@@ -108,7 +120,7 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
                   <p className="mt-0.5 text-[12px] leading-snug text-muted-foreground">{edge.reason}</p>
                   {other.art && (
                     <div className="mt-2">
-                      <ArtifactPivotAction threadId={threadId} artifact={other.art} artifacts={items} />
+                      <ArtifactPivotActionWith queriedSet={queriedTargets} threadId={threadId} artifact={other.art} artifacts={items} />
                     </div>
                   )}
                 </li>

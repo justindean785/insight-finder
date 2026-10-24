@@ -96,8 +96,15 @@ export function WorkbenchNext({ threadId }: { threadId: string }) {
     [artifacts, seed.value, seed.type, reviews],
   );
 
-  if (!snapshot?.hydrated) {
+  if (!snapshot?.hydrated || review.availability === "unknown") {
     return <div className="space-y-3 p-5" aria-busy="true"><div className="h-20 animate-pulse rounded-md bg-surface-2 motion-reduce:animate-none" aria-hidden /></div>;
+  }
+  if (review.availability === "unavailable") {
+    return (
+      <p role="status" className="px-5 py-4 text-[13px] leading-snug text-muted-foreground">
+        Your review decisions couldn't be loaded, so pivots are withheld — they could otherwise offer a selector you already rejected.
+      </p>
+    );
   }
   if (items.length === 0) {
     return <p className="px-5 py-4 text-[13px] text-muted-foreground">No pivot is waiting. New ones appear as the investigation records selectors or the agent recommends them.</p>;

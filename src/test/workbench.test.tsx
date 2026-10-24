@@ -19,6 +19,28 @@ vi.mock("@/integrations/supabase/client", () => {
   return { supabase: { from: () => chain, channel: () => chain, removeChannel: () => Promise.resolve(), auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), getSession: async () => ({ data: { session: null }, error: null }) } } };
 });
 
+const harness = vi.hoisted(() => ({ availability: null as null | "unknown" | "unavailable", queriedMounts: 0 }));
+vi.mock("@/lib/review", async (orig) => {
+  const actual = await orig<typeof import("@/lib/review")>();
+  return {
+    ...actual,
+    useReviewStates: (threadId: string) => {
+      const real = actual.useReviewStates(threadId);
+      return harness.availability ? { ...real, availability: harness.availability } : real;
+    },
+  };
+});
+vi.mock("@/hooks/useThreadQueriedTargets", async () => {
+  const React = await import("react");
+  const stable = new Set<string>();
+  return {
+    useThreadQueriedTargets: () => {
+      React.useEffect(() => { harness.queriedMounts += 1; return () => { harness.queriedMounts -= 1; }; }, []);
+      return stable;
+    },
+  };
+});
+
 import { CaseSnapshotContext, type CaseSnapshotApi } from "@/hooks/useCaseSnapshot";
 import { Workbench } from "@/components/workspace/Workbench";
 
@@ -46,7 +68,7 @@ const renderWorkbench = (items: Artifact[]) =>
   );
 
 let unregister: () => void;
-beforeEach(() => { n = 0; sessionStorage.clear(); unregister = registerPivotRunner(T); });
+beforeEach(() => { n = 0; harness.availability = null; harness.queriedMounts = 0; sessionStorage.clear(); unregister = registerPivotRunner(T); });
 afterEach(() => { cleanup(); unregister(); });
 
 describe("connections model", () => {
@@ -202,5 +224,45 @@ describe("Connections tab", () => {
     const selected = screen.getByRole("region", { name: "Selected entity" });
     expect(within(selected).getByText(/only repeats the seed/)).toBeTruthy();
     expect(within(selected).queryByRole("button", { name: "Pivot on this" })).toBeNull();
+  });
+});
+
+describe("review verdicts gate the Workbench (Codex P2 on #869)", () => {
+  it("while verdicts are still being read, neither panel interprets them as 'new'", () => {
+    harness.availability = "unknown";
+    renderWorkbench([art("username", "lone_handle")]);
+    fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
+    expect(document.querySelector("[data-workbench-connections]")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Next" }));
+    expect(document.querySelector("[data-workbench-next]")).toBeNull();
+  });
+
+  it("when the verdicts could not be loaded both panels withhold their results and say why", () => {
+    harness.availability = "unavailable";
+    renderWorkbench([art("username", "lone_handle")]);
+    fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
+    expect(screen.getByText(/review decisions couldn't be loaded, so connections are withheld/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Pivot on this" })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Next" }));
+    expect(screen.getByText(/so pivots are withheld/)).toBeTruthy();
+    expect(screen.queryByTestId("best-pivot")).toBeNull();
+  });
+});
+
+describe("neighbour pivots share one thread-log read (Codex P2 on #869)", () => {
+  it("an entity with several neighbours mounts ONE queried-targets reader, not one per pivot button", () => {
+    const hub = art("username", "hub_handle", null, 90);
+    const items = [
+      hub,
+      art("email", "one@example.test", { handle: "hub_handle" }),
+      art("email", "two@example.test", { handle: "hub_handle" }),
+      art("email", "three@example.test", { handle: "hub_handle" }),
+    ];
+    renderWorkbench(items);
+    fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
+    act(() => { publishSelectedEntity(T, hub.id); });
+    const selected = screen.getByRole("region", { name: "Selected entity" });
+    expect(within(selected).getAllByRole("button", { name: "Pivot on this" }).length).toBeGreaterThanOrEqual(4);
+    expect(harness.queriedMounts).toBe(1);
   });
 });
