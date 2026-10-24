@@ -25,7 +25,7 @@ import { anthropicFallbackEligible, selectOrchestratorProvider, type Orchestrato
 import { anthropicModelRejectsForcedToolChoice, anthropicOrchestratorHealth } from "./anthropic-orchestrator.ts";
 import { anthropicFallbackDisabled, orchestratorFallbackHealth } from "./lib/orchestrator-fallback.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
-import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn } from "./lib/opsis.ts";
+import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn, opsisStartClassificationSelfTest } from "./lib/opsis.ts";
 import { opsisFinalizeCollectSelfTest } from "./orchestrator-finalize.ts";
 import { opsisResultsHintSelfTest, opsisSearchGuardSelfTest } from "./lib/opsis-search-guard.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
@@ -66,6 +66,7 @@ import { archiveOriginRuleSelfTest, breachOriginCapSelfTest, negativeSourceQuali
 import { memoryInputNormalizationSelfTest } from "./lib/memory-input-normalization.ts";
 import { exactBooleanRepairSelfTest } from "./lib/exact-boolean-repair.ts";
 import { inputCoercionSelfTest, inputKindInferenceSelfTest } from "./lib/tool-input-coercion.ts";
+import { socialfetchCoercionSelfTest } from "./lib/socialfetch-input.ts";
 import { correlateSeedDefaultSelfTest } from "./lib/thread-seed.ts";
 import { detectSeedServer } from "./validation.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
@@ -537,6 +538,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Does a refused opsis_results run id name a replacement only when exactly one un-read run in the thread has the exact
   // selector, else point at the paid opsis_search without starting it? Pure; PRESENCE proves the deployed bundle.
   r.checks.opsis_results_hint = opsisResultsHintSelfTest();
+  // Is a start POST that never answered classified (timeout | caller_abort | network), flagged charge_unknown and never
+  // retried? Pure; `switch` reports OPSIS_START_CLASSIFY_DISABLED. PRESENCE proves the deployed bundle.
+  r.checks.opsis_start_classification = opsisStartClassificationSelfTest();
   // Is a paid opsis_search still pending at finalize read (one bounded opsis_results step)
   // before persist → memory → report? Pure. PRESENCE proves the deployed bundle.
   // Kill switch: OPSIS_FINALIZE_COLLECT_DISABLED.
@@ -622,6 +626,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // the schema when — and only when — the result validates? Pure. PRESENCE proves the deployed bundle; `switch` reports
   // INPUT_COERCION_DISABLED; ok:false = a rule failed its own probe.
   r.checks.input_coercion = inputCoercionSelfTest();
+  // Does socialfetch_lookup accept username/identifier/url as `handle` and read `platform` off an exact supported host,
+  // while rejecting conflicting aliases and a platform that disagrees with the URL host? Pure; `switch` reports
+  // SOCIALFETCH_COERCION_DISABLED. PRESENCE proves the deployed bundle.
+  r.checks.socialfetch_coercion = socialfetchCoercionSelfTest();
   // Does a minimax_correlate call with no seed fall back to the request's own seed (person seed,
   // then the first message's selector, never prose)? Pure probe of lib/thread-seed.ts; PRESENCE
   // proves the build. The execute wiring is pinned by correlate_seed_default_test.ts in CI.

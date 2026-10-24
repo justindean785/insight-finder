@@ -122,9 +122,21 @@ export type CoercionKind =
   | "unquoted" // one pair of enclosing quotes removed ("'a@b.c'" → "a@b.c")
   | "root_json" // the WHOLE input arrived as a JSON string and parsed to an object
   | "array_wrapped" // the whole input arrived as a bare array and was wrapped under `wrapArrayAs`
-  | "json_parsed"; // a field expecting an object/array arrived as a JSON string
+  | "json_parsed" // a field expecting an object/array arrived as a JSON string
+  | "platform_from_url" // a missing `platform` read off the exact supported host of a profile URL (socialfetch_lookup)
+  | "handle_from_url"; // the profile handle read off a profile URL's path (socialfetch_lookup)
 
 export type CoercionRecord = { field: string; coercion: CoercionKind };
+
+/**
+ * Result of a tool's own `custom` hook. `reject` is for an input that must NOT pass even though the raw object might
+ * validate (two aliases that disagree): its `value` is what the SDK is handed instead, with the conflicting fields
+ * removed, and `reason` is a value-free code for the log.
+ */
+export type CustomInputRepair =
+  | { kind: "none" }
+  | { kind: "repair"; value: Record<string, unknown>; records: CoercionRecord[] }
+  | { kind: "reject"; reason: string; value: Record<string, unknown> };
 
 export interface InputCoercionSpec {
   /** field → the field's own enum values (the alias target must be one of these). */
@@ -152,6 +164,12 @@ export interface InputCoercionSpec {
   jsonFields?: readonly string[];
   /** A bare top-level ARRAY is wrapped as `{ [wrapArrayAs]: array }` (memory_save sent `[{…}]` for `{entries:[{…}]}`). */
   wrapArrayAs?: string;
+  /**
+   * One tool-specific pure repair over the (already generically trimmed) input object, run before the enum rules. Must
+   * not throw; a throw is treated as "no repair". Use it only for rules the declarative options cannot express
+   * (conflict rejection, deriving one field from another's URL host).
+   */
+  custom?: (input: Record<string, unknown>) => CustomInputRepair;
 }
 
 /**
@@ -230,7 +248,7 @@ export function resolveKindSpelling(raw: unknown, allowed: readonly string[]): {
 }
 
 /** Pure: compute the coerced input and what was done. Never throws; returns the input unchanged when nothing applies. */
-export function coerceToolInput(raw: unknown, spec: InputCoercionSpec): { value: unknown; records: CoercionRecord[] } {
+export function coerceToolInput(raw: unknown, spec: InputCoercionSpec): { value: unknown; records: CoercionRecord[]; rejected?: string } {
   const records: CoercionRecord[] = [];
   // The whole input as a JSON STRING (a GLM/Anthropic-replay shape: `"{\"artifacts\":[…]}"`) or as a bare ARRAY
   // where the schema wants `{ field: array }`. Both are container-shape fixes, never a change of substance.
@@ -299,6 +317,16 @@ export function coerceToolInput(raw: unknown, spec: InputCoercionSpec): { value:
         out[f] = n;
         records.push({ field: f, coercion: "numeric_string" });
       }
+    }
+  }
+  if (spec.custom) {
+    let r: CustomInputRepair = { kind: "none" };
+    try { r = spec.custom(out); } catch { r = { kind: "none" }; }
+    if (r.kind === "reject") return { value: r.value, records: [], rejected: r.reason };
+    if (r.kind === "repair") {
+      for (const k of Object.keys(out)) delete out[k];
+      Object.assign(out, r.value);
+      records.push(...r.records);
     }
   }
   for (const [f, allowed] of Object.entries(spec.enumFields ?? {})) {
@@ -373,7 +401,11 @@ export function applyInputCoercion(
 ): unknown {
   try {
     if (inputCoercionDisabled()) return raw;
-    const { value, records } = coerceToolInput(raw, spec);
+    const { value, records, rejected } = coerceToolInput(raw, spec);
+    if (rejected) {
+      console.log(JSON.stringify({ event: "tool_input_rejected", tool, reason: rejected }));
+      return value;
+    }
     if (!records.length) return raw;
     if (!validates(value)) return raw;
     for (const r of records) {
@@ -459,6 +491,8 @@ export function inputCoercionSelfTest(): { ok: boolean; switch: string; detail: 
   if ((c.value as Record<string, unknown>).maxChars !== 15000 || (c.value as Record<string, unknown>).n !== "15k") wrong.push("numeric-string rule wrong");
   const d = coerceToolInput({ email: " 'a@example.com' ", seed: 12345 }, GENERIC_SELECTOR_SPEC).value as Record<string, unknown>;
   if (d.email !== "a@example.com" || d.seed !== "12345") wrong.push("quote/number rule wrong");
+  const sf = coerceToolInput({ x: 1 }, { custom: () => ({ kind: "reject", reason: "probe", value: {} }) });
+  if (sf.rejected !== "probe") wrong.push("custom hook rejection not honoured");
   const e = coerceToolInput('{"artifacts":"[{\\"kind\\":\\"email\\"}]"}', { jsonFields: ["artifacts"] }).value as Record<string, unknown>;
   if (!Array.isArray(e.artifacts) || (e.artifacts[0] as Record<string, unknown>)?.kind !== "email") wrong.push("stringified JSON not parsed");
   const f = coerceToolInput([{ kind: "lesson" }], { wrapArrayAs: "entries" }).value as Record<string, unknown>;
