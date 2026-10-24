@@ -181,6 +181,16 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
     if (parent) parentSet.add(normalizeTarget(parent));
     if (KIND_TO_PIVOT[a.kind.toLowerCase()]) existingValueSet.add(normalizeTarget(a.value));
   }
+  // A handle recorded in another artifact's metadata (an email row carrying `metadata.handle`) is observed, so it
+  // grounds an unmarked report handle. Deliberately NOT in existingValueSet: that set also marks pivots "searched".
+  const metaHandleSet = new Set<string>();
+  for (const a of artifacts) {
+    const meta = (a.metadata ?? {}) as Record<string, unknown>;
+    for (const key of ["handle", "username"]) {
+      const v = meta[key];
+      if (typeof v === "string" && v.trim()) metaHandleSet.add(normalizeTarget(v));
+    }
+  }
 
   // Newest-first recency index: later created_at ⇒ larger index ⇒ higher score.
   const ordered = [...artifacts].sort((a, b) =>
@@ -252,7 +262,7 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
   const isKnownSelector = (value: string): boolean => {
     const k = normalizeTarget(value);
     const ek = entityKey(value);
-    return k === seedKey || existingValueSet.has(k) || existingValueSet.has(ek) ||
+    return k === seedKey || metaHandleSet.has(k) || metaHandleSet.has(ek) || existingValueSet.has(k) || existingValueSet.has(ek) ||
       parentSet.has(k) || parentSet.has(ek) || queriedSet.has(k) || queriedSet.has(ek);
   };
 

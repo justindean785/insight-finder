@@ -55,4 +55,28 @@ describe("seed ↔ same-selector artifact", () => {
     expect(g.stats.realEdgeCount).toBe(0);
     expect(g.stats.isolatedCount).toBe(1); // the phone, not the seed's own record
   });
+
+  it("a DIFFERENT entity carrying the seed's selector in metadata keeps its link to the seed (Codex P2 on #866)", () => {
+    const g = buildEntityGraph(
+      [A({ id: "mail", kind: "email", value: "jordan@example.com", metadata: { handle: "jordan" } })],
+      "jordan",
+      "username",
+    );
+    const e = g.edges.find((x) => x.type === "identity");
+    expect(e).toBeTruthy();
+    expect([e!.source, e!.target].sort()).toEqual([SEED_ID, "mail"].sort());
+    expect(g.stats.realEdgeCount).toBe(1);
+  });
+
+  it("the seed's own record and a metadata carrier of the same selector: only the carrier is a relationship", () => {
+    const g = buildEntityGraph(
+      [
+        A({ id: "rec", kind: "username", value: "jordan" }),
+        A({ id: "mail", kind: "email", value: "jordan@example.com", metadata: { handle: "jordan" } }),
+      ],
+      "jordan",
+      "username",
+    );
+    expect(identity(g).map((e) => [e.source, e.target].sort().join())).toEqual([[SEED_ID, "mail"].sort().join()]);
+  });
 });

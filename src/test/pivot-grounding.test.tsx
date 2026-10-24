@@ -102,6 +102,19 @@ describe("computePivots + schema: an unmarked token needs the case to know it", 
   });
 });
 
+describe("a handle recorded in another artifact's metadata grounds an unmarked report handle (Codex P2 on #866)", () => {
+  it("email row with metadata.handle makes `username jordan` runnable", () => {
+    const held = [art({ id: "m", kind: "email", value: "jordan@example.com", metadata: { handle: "jordan" } })];
+    const line = report("Corroborate username jordan across platforms — Check public profiles");
+    const verdictFor = (artifacts?: Artifact[]) => {
+      const it = itemsFor(line, artifacts).find((i) => i.kind === "pivot" && i.validation.status === "valid" ? i.validation.pivot.target === "jordan" : i.kind === "pivot" && i.validation.status === "invalid" && i.validation.target === "jordan");
+      return it && it.kind === "pivot" ? it.validation.status : "missing";
+    };
+    expect(verdictFor(held)).toBe("valid");
+    expect(verdictFor()).toBe("invalid");
+  });
+});
+
 describe("rendered controls and dispatch boundary", () => {
   it("a malformed pivot renders no Run/Preview control and cannot dispatch", () => {
     const onRunPivot = vi.fn();

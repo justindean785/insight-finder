@@ -299,13 +299,11 @@ export function buildEntityGraph(
     }
   };
   if (seedNode && seedValue) {
-    // The seed's OWN selector is not a second holder of that selector: an artifact carrying the same
-    // email/handle IS the seed's record, so indexing the seed there joined two copies of one entity with
-    // an identity edge counted as "1 real link" (measured 2026-10-24). Only the parent pointer anchors
-    // the seed in the index; seed-record association is added below as a non-relationship edge.
     for (const s of selectorsFor(seedType ?? "", seedValue, null)) seedOwnKeys.add(s.key);
+    const seedSels = selectorsFor(seedType ?? "", seedValue, null);
     // The seed also anchors any artifact tagged with it as a parent pointer.
-    addSelectors(SEED_ID, [{ key: `parent:${seedValue.trim().toLowerCase()}`, kind: "parent", raw: seedValue }]);
+    seedSels.push({ key: `parent:${seedValue.trim().toLowerCase()}`, kind: "parent", raw: seedValue });
+    addSelectors(SEED_ID, seedSels);
   }
   for (const a of sorted) {
     // ANY conflict row (collision / false-positive / metadata.conflict / breach
@@ -332,12 +330,30 @@ export function buildEntityGraph(
     }
   };
 
-  for (const [, bucket] of selectorMembers) {
+  for (const [bucketKey, bucket] of selectorMembers) {
     if (bucket.ids.length < 2) continue;
     // Hero = highest confidence (ties broken by id for determinism).
     const hero = [...bucket.ids].sort((a, b) => conf(b) - conf(a) || (a < b ? -1 : 1))[0];
     const infra = INFRA_KINDS.has(bucket.kind);
     const isParent = bucket.kind === "parent";
+    if (!isParent && bucket.ids.includes(SEED_ID) && seedOwnKeys.has(bucketKey)) {
+      // The seed's own selector. An artifact whose PRIMARY value is that selector is the seed's record (same
+      // entity: tied below as provenance, never as a relationship); two such records still link to each other. An
+      // artifact that merely CARRIES the selector in metadata is a different entity and links to the seed.
+      const isRecord = (id: string) => {
+        const a = nodeById.get(id)?.art;
+        return !!a && selectorsFor(a.kind, a.value, null).some((sel) => sel.key === bucketKey);
+      };
+      const records = bucket.ids.filter((id) => id !== SEED_ID && isRecord(id)).sort((x, y) => conf(y) - conf(x) || (x < y ? -1 : 1));
+      const carriers = bucket.ids.filter((id) => id !== SEED_ID && !isRecord(id));
+      const type: EdgeType = infra ? "shared-infra" : "identity";
+      const reason = infra
+        ? `Shares ${bucket.kind} ${bucket.raw} — shared infrastructure, not an identity match`
+        : `Shares ${bucket.kind} ${bucket.raw}`;
+      for (const id of carriers) upsertEdge(SEED_ID, id, type, reason, SELECTOR_STRENGTH[bucket.kind]);
+      for (const id of records.slice(1)) upsertEdge(records[0], id, type, reason, SELECTOR_STRENGTH[bucket.kind]);
+      continue;
+    }
     for (const id of bucket.ids) {
       if (id === hero) continue;
       let type: EdgeType;
