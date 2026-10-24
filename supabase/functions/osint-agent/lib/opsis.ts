@@ -68,6 +68,8 @@ export interface OpsisDeps {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   now: () => number;
   sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** Test seam: the cap on the start POST (defaults to OPSIS_REQUEST_TIMEOUT_MS). */
+  startTimeoutMs?: number;
   /** The tool wrapper's timeout signal; aborting it ends the call early. */
   signal?: AbortSignal;
 }
@@ -91,6 +93,15 @@ function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
 /** The kill switch, read at CALL time. */
 export function opsisKillSwitchOn(env: (k: string) => string | undefined = (k) => Deno.env.get(k)): boolean {
   return (env(OPSIS_DISABLED_ENV) ?? "").trim().toLowerCase() === "true";
+}
+
+/**
+ * Kill switch, read at CALL TIME: `OPSIS_START_CLASSIFY_DISABLED=true` restores the single generic start-failure
+ * result (no `start_failure` class, no `charge_unknown` note).
+ */
+export const OPSIS_START_CLASSIFY_DISABLED_ENV = "OPSIS_START_CLASSIFY_DISABLED";
+export function opsisStartClassifyDisabled(env: (k: string) => string | undefined = (k) => Deno.env.get(k)): boolean {
+  return (env(OPSIS_START_CLASSIFY_DISABLED_ENV) ?? "").trim().toLowerCase() === "true";
 }
 
 export function opsisCreditHintDisabled(env: (k: string) => string | undefined = (k) => Deno.env.get(k)): boolean {
@@ -224,6 +235,42 @@ async function creditState(deps: OpsisDeps): Promise<Out> {
   }
 }
 
+export type OpsisStartFailure = "timeout" | "caller_abort" | "network";
+
+/** A request that produced no response. Carries only the class — no message, URL or provider text. */
+export class OpsisRequestError extends Error {
+  constructor(readonly failure: OpsisStartFailure) {
+    super(`opsis request ${failure}`);
+    this.name = "OpsisRequestError";
+  }
+}
+
+/** The result of a POST /v1/searches that never answered. The POST is NEVER retried: it may already be a paid run. */
+export function startFailureResult(failure: OpsisStartFailure, classify = !opsisStartClassifyDisabled()): Out {
+  if (!classify) {
+    return {
+      ok: false,
+      error: failure === "caller_abort" ? "opsis search start was cancelled" : "opsis search start request failed",
+      code: "start_failed",
+    };
+  }
+  const error = failure === "timeout"
+    ? "opsis search start request timed out"
+    : failure === "caller_abort"
+    ? "opsis search start was cancelled"
+    : "opsis search start request failed";
+  return {
+    ok: false,
+    error,
+    code: "start_failed",
+    start_failure: failure,
+    // No response arrived, so whether Opsis accepted (and charged) the search is unknown. Said plainly, bounded.
+    charge_unknown: true,
+    note: "No response arrived, so the search may or may not have started and been charged. It was not retried. " +
+      "Do not start the same search again this turn; opsis_balance (free) shows whether a credit was spent.",
+  };
+}
+
 /** One request, never retried (a retried POST is a second paid search). */
 async function request(
   deps: OpsisDeps,
@@ -235,7 +282,8 @@ async function request(
   const onAbort = () => ctrl.abort();
   if (deps.signal?.aborted) ctrl.abort();
   else deps.signal?.addEventListener("abort", onAbort, { once: true });
-  const t = setTimeout(() => ctrl.abort(), Math.max(1, timeoutMs));
+  let timedOut = false;
+  const t = setTimeout(() => { timedOut = true; ctrl.abort(); }, Math.max(1, timeoutMs));
   try {
     return await deps.fetch(`${OPSIS_BASE_URL}${path}`, {
       method: init.method,
@@ -247,6 +295,10 @@ async function request(
       ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
       signal: ctrl.signal,
     });
+  } catch {
+    // The cause is classified here, where the timer and the caller's signal are both visible. Never the raw error:
+    // a fetch error message can carry the request URL, and nothing here needs it.
+    throw new OpsisRequestError(deps.signal?.aborted ? "caller_abort" : timedOut ? "timeout" : "network");
   } finally {
     clearTimeout(t);
     deps.signal?.removeEventListener("abort", onAbort);
@@ -423,13 +475,9 @@ export async function opsisSearch(
     res = await request(deps, "/v1/searches", {
       method: "POST",
       body: { type: kind, query: value, wait: false, premium },
-    }, OPSIS_REQUEST_TIMEOUT_MS);
-  } catch {
-    return {
-      ok: false,
-      error: deps.signal?.aborted ? "opsis search start was cancelled" : "opsis search start request failed",
-      code: "start_failed",
-    };
+    }, deps.startTimeoutMs ?? OPSIS_REQUEST_TIMEOUT_MS);
+  } catch (e) {
+    return startFailureResult(e instanceof OpsisRequestError ? e.failure : deps.signal?.aborted ? "caller_abort" : "network");
   }
   if (!res.ok) {
     const failure = await httpFailure(res);
@@ -514,4 +562,23 @@ export async function opsisAccount(which: "balance" | "status", deps: OpsisDeps)
   const data: Out = {};
   for (const f of fields) if (f in body) data[f] = body[f];
   return { ok: true, source: "opsis", data };
+}
+
+/** /health → checks.opsis_start_classification. Pure; presence proves this build; ok:false = a rule failed its own probe. */
+export function opsisStartClassificationSelfTest(): { ok: boolean; switch: string; detail: string } {
+  const sw = OPSIS_START_CLASSIFY_DISABLED_ENV;
+  if (opsisStartClassifyDisabled()) return { ok: true, switch: `${sw}=true`, detail: `LEGACY via ${sw} (one generic start failure)` };
+  const wrong: string[] = [];
+  for (const f of ["timeout", "caller_abort", "network"] as const) {
+    const r = startFailureResult(f);
+    if (r.start_failure !== f || r.charge_unknown !== true || r.ok !== false || r.code !== "start_failed") wrong.push(`${f} not classified`);
+  }
+  if (startFailureResult("timeout").error === startFailureResult("network").error) wrong.push("timeout reads as a network error");
+  return wrong.length
+    ? { ok: false, switch: `${sw}=false`, detail: wrong.join("; ") }
+    : {
+      ok: true,
+      switch: `${sw}=false`,
+      detail: "a start POST with no response is classified timeout | caller_abort | network, flagged charge_unknown, and never retried",
+    };
 }
