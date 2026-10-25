@@ -102,7 +102,7 @@ function CreditChip({ credits }: { credits: UserCredits | null }) {
     <div
       className={cn(
         "flex items-center gap-1.5 text-xs",
-        depleted ? "text-destructive" : low ? "text-amber-400" : "text-muted-foreground",
+        depleted ? "text-destructive" : low ? "text-warning" : "text-muted-foreground",
       )}
       title={depleted ? "Out of beta credits" : "Remaining beta credits"}
     >
