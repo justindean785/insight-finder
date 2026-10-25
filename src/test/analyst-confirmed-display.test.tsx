@@ -182,7 +182,10 @@ describe("Evidence board row — the confidence slot", () => {
     expect(slot.querySelector(".conf-figure")?.textContent).toBe("50");
     expect(slot.querySelector(".conf-rule")).not.toBeNull();
     expect(slot.textContent).not.toContain(ANALYST_CONFIRMED_TEXT);
-    expect(row.getAttribute("aria-label")).toContain("50% confidence");
+    // Stage 1b: the aria-label was updated from "50% confidence" to the
+    // honest hedge "confidence score 50 out of 100, uncalibrated" so screen
+    // readers hear the uncalibrated qualifier beside the figure.
+    expect(row.getAttribute("aria-label")).toContain("confidence score 50 out of 100, uncalibrated");
   });
 
   for (const verdict of ["confirmed", "key"] as const) {
