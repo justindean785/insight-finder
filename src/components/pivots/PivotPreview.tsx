@@ -41,6 +41,12 @@ export function PivotPreview({
 
   const canStart = eligibility.runnable && (!eligibility.rerun || rerunOk) && !busy;
 
+  // First sentence of the reason — gives a screen reader enough to decide
+  // whether to drill in without reading the entire pane.
+  const reasonSummary = (() => {
+    const match = pivot.reason.match(/^[^.!?]{1,160}[.!?]?/);
+    return (match?.[0] ?? pivot.reason).trim();
+  })();
   return (
     <div
       role="group"
@@ -48,6 +54,13 @@ export function PivotPreview({
       className="ws-panel-enter mt-2 rounded-lg border border-white/[0.09] bg-surface-2/70 p-3"
       onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onCancel(); } }}
     >
+      {/* Audit §7 — the preview needs a polite live-region announcement so a
+          screen-reader user hears what pivot just opened, including the target
+          and the first-sentence rationale. The visible pane title is the group
+          label; this duplicate is sr-only so sighted users don't see it. */}
+      <span role="status" aria-live="polite" className="sr-only">
+        {`Pivot preview opened: ${TYPE_LABEL[pivot.targetType]} ${pivot.target}. ${reasonSummary}`}
+      </span>
       <div id={titleId} className="text-data font-semibold text-foreground">Before this pivot runs</div>
       <dl className="mt-2 grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-[13px] leading-snug">
         <dt className="text-muted-foreground">Target</dt>

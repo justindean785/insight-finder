@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { supabase } from "@/integrations/supabase/client";
 import {
@@ -25,7 +25,7 @@ import {
   AuthorityChip, AuthorityCaveat, UnderlyingStrength,
 } from "@/components/ui/authority";
 import {
-  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, startRecheck,
+  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, REVIEW_LABEL, startRecheck,
   type ReviewState, type ReviewWriteResult,
 } from "@/lib/review";
 import { CACHE_LAYER_LABEL, CACHE_LAYER_CLASS } from "@/lib/intel";
@@ -113,8 +113,33 @@ export function ArtifactInspector({
 
   const citation = `\`${artifact.value}\` (${artifact.kind}${artifact.source ? `, via ${artifact.source}` : ""}${shownArtifact.effective != null ? `, ${shownArtifact.effective}%` : ""})`;
 
+  // Polite live-region announcement used by assistive tech on inspector open
+  // AND after review-state writes. Audit §7 confirmed this surface was missing
+  // the announcement; without it a screen-reader user can't tell when a
+  // selection has opened a detail view or when a Confirm/Dismiss took effect.
+  const [liveMessage, setLiveMessage] = useState<string>("");
+  useEffect(() => {
+    const confText = shownArtifact.effective != null
+      ? ` Confidence score ${shownArtifact.effective} out of 100, uncalibrated.`
+      : "";
+    const authText = drawerAuthority.label ? ` ${drawerAuthority.label}.` : "";
+    setLiveMessage(
+      `Evidence detail opened: ${artifact.value}. ${artifact.kind}.${confText}${authText}`,
+    );
+    // Keyed on artifact.id so the message re-fires only when the selection
+    // actually changes, not on an unrelated prop change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [artifact.id]);
+  const announceReview = (next: ReviewState | null) => {
+    const label = next ? REVIEW_LABEL[next] : REVIEW_LABEL.new;
+    setLiveMessage(`Review for ${artifact.value}: ${label}.`);
+  };
+
   return (
     <div className="flex flex-col h-full" data-inspector data-artifact-id={artifact.id}>
+      <span role="status" aria-live="polite" className="sr-only">
+        {liveMessage}
+      </span>
       <div className="border-b border-white/[0.08] px-5 py-5">
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
@@ -266,7 +291,7 @@ export function ArtifactInspector({
               {falsePositive && <Chip tone="bg-destructive/15 text-destructive border-destructive/40" mono>false positive</Chip>}
             </div>
             <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] p-2">
-              <ReviewBtn current={rState} target="confirmed" onClick={() => reviewSet(artifact.id, "confirmed", rctx)}>
+              <ReviewBtn current={rState} target="confirmed" onClick={() => { void reviewSet(artifact.id, "confirmed", rctx); announceReview("confirmed"); }}>
                 <CheckCircle2 className="w-3 h-3" /> Confirm
               </ReviewBtn>
               <ReviewBtn
@@ -280,6 +305,7 @@ export function ArtifactInspector({
                     ctx: rctx,
                   }).then((r) => {
                     if (!r.ok) return;
+                    announceReview("recheck");
                     toast.success("Rechecking in chat…");
                     onClose();
                   });
@@ -287,13 +313,13 @@ export function ArtifactInspector({
               >
                 <ShieldQuestion className="w-3 h-3" /> Recheck
               </ReviewBtn>
-              <ReviewBtn current={rState} target="dismissed" onClick={() => reviewSet(artifact.id, "dismissed", rctx)}>
+              <ReviewBtn current={rState} target="dismissed" onClick={() => { void reviewSet(artifact.id, "dismissed", rctx); announceReview("dismissed"); }}>
                 <XCircle className="w-3 h-3" /> Dismiss
               </ReviewBtn>
-              <ReviewBtn current={rState} target="key" onClick={() => reviewSet(artifact.id, "key", rctx)}>
+              <ReviewBtn current={rState} target="key" onClick={() => { void reviewSet(artifact.id, "key", rctx); announceReview("key"); }}>
                 <Star className="w-3 h-3" /> Key
               </ReviewBtn>
-              <Button size="sm" variant="ghost" className="col-span-2 h-7 px-2 gap-1 text-data" onClick={() => reviewSet(artifact.id, null, rctx)}>
+              <Button size="sm" variant="ghost" className="col-span-2 h-7 px-2 gap-1 text-data" onClick={() => { void reviewSet(artifact.id, null, rctx); announceReview(null); }}>
                 Reset
               </Button>
             </div>

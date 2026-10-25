@@ -57,7 +57,7 @@ import {
   AuthorityChip, AuthorityCaveat, AuthorityLegend, AuthoritySpine, RuleLabel, UnderlyingStrength,
 } from "@/components/ui/authority";
 import {
-  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, startRecheck,
+  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, REVIEW_LABEL, startRecheck,
   type ReviewState, type ReviewWriteResult,
 } from "@/lib/review";
 
@@ -952,6 +952,14 @@ function ArtifactDrawerInner({
   const drawerAuthority = authorityFor(artifact, rState);
   const review = useReviewStates(threadId);
   const [noteDraft, setNoteDraft] = useState(review.getNote(artifact.id));
+  // Audit §7 — sr-only live-region announcement of review-state writes so a
+  // screen-reader user hears the Confirm/Dismiss/Key/Recheck/Reset take effect
+  // alongside the existing toast.
+  const [reviewLive, setReviewLive] = useState<string>("");
+  const announceReview = (next: ReviewState | null) => {
+    const label = next ? REVIEW_LABEL[next] : REVIEW_LABEL.new;
+    setReviewLive(`Review for ${artifact.value}: ${label}.`);
+  };
   // `onChanged` fed the metadata false-positive toggle #534 removed (the review
   // verdict is the one False contract). It is wired again for exactly one caller:
   // the linkage release below — the drawer's only remaining metadata write, and
@@ -1157,7 +1165,7 @@ function ArtifactDrawerInner({
               {falsePositive && <Chip tone="bg-destructive/15 text-destructive border-destructive/40" mono>false positive</Chip>}
             </div>
             <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] p-2">
-              <ReviewBtn current={rState} target="confirmed" onClick={() => reviewSet(artifact.id, "confirmed", rctx)}>
+              <ReviewBtn current={rState} target="confirmed" onClick={() => { void reviewSet(artifact.id, "confirmed", rctx); announceReview("confirmed"); }}>
                 <CheckCircle2 className="w-3 h-3" /> Confirm
               </ReviewBtn>
               <ReviewBtn
@@ -1174,6 +1182,7 @@ function ArtifactDrawerInner({
                     ctx: rctx,
                   }).then((r) => {
                     if (!r.ok) return;
+                    announceReview("recheck");
                     toast.success("Rechecking in chat…");
                     onClose();
                   });
@@ -1181,16 +1190,17 @@ function ArtifactDrawerInner({
               >
                 <ShieldQuestion className="w-3 h-3" /> Recheck
               </ReviewBtn>
-              <ReviewBtn current={rState} target="dismissed" onClick={() => reviewSet(artifact.id, "dismissed", rctx)}>
+              <ReviewBtn current={rState} target="dismissed" onClick={() => { void reviewSet(artifact.id, "dismissed", rctx); announceReview("dismissed"); }}>
                 <XCircle className="w-3 h-3" /> Dismiss
               </ReviewBtn>
-              <ReviewBtn current={rState} target="key" onClick={() => reviewSet(artifact.id, "key", rctx)}>
+              <ReviewBtn current={rState} target="key" onClick={() => { void reviewSet(artifact.id, "key", rctx); announceReview("key"); }}>
                 <Star className="w-3 h-3" /> Key
               </ReviewBtn>
-              <Button size="sm" variant="ghost" className="col-span-2 h-7 px-2 gap-1 text-data" onClick={() => reviewSet(artifact.id, null, rctx)}>
+              <Button size="sm" variant="ghost" className="col-span-2 h-7 px-2 gap-1 text-data" onClick={() => { void reviewSet(artifact.id, null, rctx); announceReview(null); }}>
                 Reset
               </Button>
             </div>
+            <span role="status" aria-live="polite" className="sr-only">{reviewLive}</span>
           </Field>
           <Field label="Note">
             <textarea
