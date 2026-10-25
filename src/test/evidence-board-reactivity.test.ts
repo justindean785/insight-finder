@@ -17,6 +17,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const SRC = readFileSync(resolve(__dirname, "../components/ResourcesPanel.tsx"), "utf8");
+const INSPECTOR_SRC = readFileSync(resolve(__dirname, "../components/workspace/ArtifactInspector.tsx"), "utf8");
 
 describe("EvidenceBoard memo dependencies", () => {
   it("the quick-filter counts recompute on review.revision", () => {
@@ -35,6 +36,7 @@ describe("EvidenceBoard memo dependencies", () => {
     // The separate `metadata.false_positive` writer is gone: one visible False
     // contract, reaching every consumer through artifact_reviews.
     expect(SRC).not.toMatch(/updateMeta\(\{\s*false_positive/);
-    expect(SRC).toMatch(/target="dismissed"/);
+    expect(INSPECTOR_SRC).not.toMatch(/updateMeta\(\{\s*false_positive/);
+    expect(SRC + INSPECTOR_SRC).toMatch(/target="dismissed"/);
   });
 });

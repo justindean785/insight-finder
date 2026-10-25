@@ -201,6 +201,7 @@ describe("wiring — no surface may render its own number", () => {
   // artifact's own number; it deliberately says nothing about aggregates.
   const SURFACES = [
     "components/ResourcesPanel.tsx",
+    "components/workspace/ArtifactInspector.tsx",
     "components/panel/EvidenceMatrixTab.tsx",
     "components/workspace/OverviewTab.tsx",
     "components/panel/CaseReport.tsx",
@@ -372,7 +373,7 @@ describe("wiring — no surface may render its own number", () => {
     // `analyst_feedback_events.confidence_before` — the model's prediction at the
     // moment of the decision. Logging the raw column would make every calibration
     // band measure a figure the product never displayed.
-    for (const f of ["components/ResourcesPanel.tsx", "components/panel/EvidenceMatrixTab.tsx"]) {
+    for (const f of ["components/workspace/ArtifactInspector.tsx", "components/panel/EvidenceMatrixTab.tsx"]) {
       const live = read(f).split("\n").filter((l) => !/^\s*(\/\/|\*)/.test(l)).join("\n");
       expect(live, `${f} must not log raw confidence as ground truth`)
         .not.toMatch(/confidence: (a|artifact)\.confidence,/);
