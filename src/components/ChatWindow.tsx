@@ -37,6 +37,7 @@ import {
 import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
+import { countWorkbenchRunnablePivots } from "@/lib/next-step-queue";
 import { registerPivotRunner } from "@/lib/pivot-runner";
 import { DEFAULT_CONTROLS, evaluatePreflight, type PreflightControls } from "@/lib/composer-preflight";
 import { TargetChip } from "@/components/composer/ComposerPreflight";
@@ -2921,6 +2922,14 @@ function ChatWindowInner({
     return [...out.slice(0, 4), ...repair];
   }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability]);
 
+  // The Workbench's Next-tab runnable count — the number the transcript's
+  // compact handoff line prints. Different from `suggestions.length` because
+  // the Workbench caps at WORKBENCH_RUNNABLE_LIMIT (5) and never injects the
+  // transcript's "Summarize / Breach check / Find more" fallback actions.
+  const workbenchRunnableCount = useMemo(() => countWorkbenchRunnablePivots({
+    artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets, reviews: review.map,
+  }), [artifacts, seedValue, reportPivots, pivotSkip, queriedTargets, review.map]);
+
   // The pivot Auto-run would start next. Read from a ref at cycle time, because
   // the cycle effect fires between renders. A pivot Auto-run already sent this
   // session is not sent again while the tool log catches up to it.
@@ -3106,17 +3115,21 @@ function ChatWindowInner({
               // Workbench's Next tab owns the live queue. In the transcript we
               // show a quiet handoff — the exact pivot cards, Run buttons and
               // Preview flow live on the right so the analyst isn't offered
-              // the same action twice. Below xl the full NextSteps renders
-              // (see the fallback branch) because the Workbench is hidden.
+              // the same action twice. The number names the Workbench Next
+              // tab's exact runnable count (via `countWorkbenchRunnablePivots`),
+              // not the local `suggestions` list which also carries generic
+              // fallback actions ("Summarize", "Find more") the Workbench
+              // doesn't offer. Below xl the full NextSteps renders (fallback)
+              // because the Workbench is hidden.
               <aside
                 aria-label="Next pivots summary"
                 className="rounded-lg border border-border-subtle bg-surface-2/60 px-4 py-3"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-data text-muted-foreground">
-                    {suggestions.length === 1
+                    {workbenchRunnableCount === 1
                       ? "1 next pivot ranked"
-                      : `${suggestions.length} next pivots ranked`}
+                      : `${workbenchRunnableCount} next pivots ranked`}
                     <span className="mx-1.5 text-faint-foreground">·</span>
                     open the workbench to Preview and Run
                   </span>

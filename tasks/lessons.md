@@ -4,6 +4,28 @@ Running log of non-obvious gotchas learned while working in this repo. Newest fi
 
 ## 2026-10-25 (workspace Stage 1 correction pass)
 
+### E-1 — Next-steps count divergence (transcript 4, Workbench Next 5)
+
+Two near-copies of the same engine computation, each with its own cap and
+its own fallback behaviour:
+
+| Surface | File | Pivot cap | Generic fallback actions |
+|---|---|---|---|
+| Transcript (`ChatWindow.suggestions`) | `src/components/ChatWindow.tsx` ~:2882 | 3 runnable | "Summarize findings", "Check for breaches", "Find more pivots" (injected to fill slots up to 4) |
+| Workbench Next (`WorkbenchNext.items`) | `src/components/workspace/WorkbenchNext.tsx` ~:65 | 5 runnable | None |
+
+The transcript also gated on `hasReportShape(latestText)` — a chat concern,
+not an application-wide gate. The Workbench does not gate on message shape.
+
+Converged by extracting `countWorkbenchRunnablePivots` /
+`WORKBENCH_RUNNABLE_LIMIT` to `src/lib/next-step-queue.ts`. WorkbenchNext
+now imports the shared cap; the transcript's compact "N next pivots ranked"
+summary reads the shared count rather than the local `suggestions.length`,
+which still includes the chat-only generic actions for the sub-xl fallback
+NextSteps render. Different lists for different purposes; one count on
+the summary line.
+
+
 ### Count-scope map — what each number on the workspace actually counts
 
 JD screenshot-audited the harness and listed six numbers from one case view:
