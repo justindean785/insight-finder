@@ -662,16 +662,19 @@ function BulkCorpusGroupRow({
       <AuthoritySpine state={authority.state} />
       <span className="min-w-0" data-ledger-col="value">
         <span className="flex items-start gap-1.5">
-          <span className="text-[12.5px] leading-[1.45] text-foreground/90">
+          <span className="text-[12.5px] leading-[1.35] text-foreground/90">
             <span className="font-medium">{group.artifacts.length} {group.label}</span>
             {preview && (
-              <span className="mt-0.5 block truncate font-mono text-data text-muted-foreground/80">
+              <span className="mt-px block truncate font-mono text-data text-muted-foreground/80">
                 {preview}{more > 0 ? ` · +${more} more` : ""}
               </span>
             )}
           </span>
         </span>
-        <AuthorityCaveat view={authority} className="mt-0.5 line-clamp-2" />
+        {/* E-5 density: one-line caveat clamp (was 2) — the full caveat is
+            always in the inspector, so a second line in the ledger just
+            squeezes rows and lowers findings-per-viewport. */}
+        <AuthorityCaveat view={authority} className="mt-px line-clamp-1" />
       </span>
       <span className="min-w-0" data-ledger-col="status">
         <AuthorityChip view={authority} />
@@ -811,7 +814,10 @@ export function ArtifactRow({
                 <Copy className="h-3 w-3" aria-hidden />
               </button>
             </span>
-            <AuthorityCaveat view={authority} className="mt-0.5" />
+            {/* E-5 density: one-line clamp; the full caveat is in the
+                inspector. Previously allowed to wrap to two lines, which
+                drove row heights to ~76px. */}
+            <AuthorityCaveat view={authority} className="mt-px line-clamp-1" />
           </span>
 
           {/* Authority — chip, then BOTH axes on one sub-line: how strong the
