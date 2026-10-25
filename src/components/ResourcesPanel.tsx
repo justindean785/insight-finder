@@ -887,7 +887,7 @@ export function ArtifactRow({
   );
 }
 
-export function ArtifactDrawer({
+function ArtifactDrawer({
   artifact, onClose, onChanged, reviewGet, reviewSet, threadId, allArtifacts,
 }: {
   artifact: Artifact | null;
@@ -1387,6 +1387,12 @@ export function EvidenceBoard({
     if (a) {
       ui.rememberOpener(`evidence-row-${a.id}`);
       ui.select(a.id);
+    } else {
+      // Closing on the modal path too — route through the provider's clear() so
+      // the opener row regains focus (the Radix sheet otherwise returns focus
+      // to the first interactive element inside the panel, which disappears
+      // when the sheet closes, leaving focus on <body> or a stray button).
+      ui.clear();
     }
   }, [ui]);
 
