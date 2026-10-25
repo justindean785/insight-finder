@@ -229,7 +229,7 @@ export function EvidenceMatrixTab({
               onClick={() => handleSelect(a.id)}
               role="button"
               tabIndex={0}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleSelect(a.id); } }}
+              onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); handleSelect(a.id); } }}
               aria-pressed={isSelected}
             >
               <div className="flex items-start justify-between gap-2">
@@ -409,7 +409,7 @@ export function EvidenceMatrixTab({
         {/* Left: filter bar + tile list */}
         <div className={cn(
           "min-h-0",
-          isWide && selectedArtifact ? "flex-1 overflow-y-auto border-r border-border" : "h-full",
+          isWide && selectedArtifact ? "flex-1 min-w-0 border-r border-border" : "h-full",
         )}>
           {filterBar}
           {tileList}
@@ -418,7 +418,7 @@ export function EvidenceMatrixTab({
         {/* Right: persistent inspector at ≥1024px */}
         {isWide && selectedArtifact && (
           <aside
-            className="w-[440px] shrink-0 overflow-y-auto border-l border-white/[0.08] bg-[hsl(var(--surface-0))]"
+            className="w-[440px] shrink-0 sticky top-0 self-start max-h-[100dvh] overflow-y-auto border-l border-white/[0.08] bg-[hsl(var(--surface-0))]"
             aria-label="Evidence inspector"
           >
             <ArtifactInspector
