@@ -759,7 +759,7 @@ export function ArtifactRow({
             authority.caveat ?? "",
             attested
               ? analystConfirmedLabel(shown)
-              : shown.effective != null ? `${conf}% confidence` : "",
+              : shown.effective != null ? `confidence score ${conf} out of 100, uncalibrated` : "",
           ].filter(Boolean).join(". ")}
           data-density-row
           className={cn(
@@ -862,7 +862,10 @@ export function ArtifactRow({
             {attested ? (
               <AnalystConfirmedMark shown={shown} className="text-right" />
             ) : shown.effective != null && (
-              <span className="flex flex-col items-end gap-1">
+              <span
+                className="flex flex-col items-end gap-1"
+                title={`Confidence score ${conf}/100 — uncalibrated`}
+              >
                 <span className="conf-figure" style={{ color: confColor }}>{conf}</span>
                 {/* The magnitude. A 2px rule whose LENGTH is the score — the
                     one honest way to show a number at a glance. */}

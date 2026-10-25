@@ -135,16 +135,28 @@ export function ArtifactInspector({
           </button>
         </div>
         <div className="flex flex-wrap items-center gap-2 pt-1">
-          <span className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] text-muted-foreground">
+          <Chip
+            tone="border-white/10 bg-white/[0.04] text-muted-foreground"
+            mono
+          >
             {artifact.kind}
-          </span>
+          </Chip>
           {shownArtifact.effective != null && (
-            <span className="rounded-md border border-[hsl(var(--confidence-mid)/0.35)] bg-[hsl(var(--confidence-mid)/0.1)] px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] text-[hsl(var(--confidence-mid))]">
-              {shownArtifact.effective}% confidence
-            </span>
+            <Chip
+              tone="border-[hsl(var(--confidence-mid)/0.35)] bg-[hsl(var(--confidence-mid)/0.1)] text-[hsl(var(--confidence-mid))]"
+              mono
+              title={`Confidence score ${shownArtifact.effective}/100 — uncalibrated. Evidence caps may apply.`}
+            >
+              {shownArtifact.effective}/100
+            </Chip>
           )}
           <Chip tone={REVIEW_CLASS[rState]} mono>{REVIEW_SHORT[rState]}</Chip>
         </div>
+        {shownArtifact.effective != null && (
+          <p className="mt-2 text-micro leading-snug text-muted-foreground">
+            Confidence score {shownArtifact.effective}/100 — uncalibrated. Evidence caps may apply.
+          </p>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto">
