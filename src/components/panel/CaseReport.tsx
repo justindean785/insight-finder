@@ -38,7 +38,7 @@ import {
   type ConfLabel,
   type ReviewAdjustment,
 } from "@/lib/intel";
-import { formatArtifactDisplayValue, buildIdentityRows, isClusterIneligible, isNullResultValue, isSubjectAuthorityEligible, type IdentityRow } from "@/lib/report-hygiene";
+import { formatArtifactDisplayValue, buildIdentityRows, isClusterIneligible, isNullResultValue, isSubjectAuthorityEligible, pickSubjectName, type IdentityRow } from "@/lib/report-hygiene";
 import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
@@ -1101,6 +1101,13 @@ export function CaseReport({
 
   const audit = buildToolAudit(artifacts);
 
+  // The engine's accepted subject — the same selector CaseSheet reads. When
+  // this is null the engine has refused to adopt a name (quarantined,
+  // collision-flagged, or analyst-rejected), yet the model's prose below may
+  // still assert one. The callout surfaces that disagreement at the top of
+  // the report so the analyst doesn't have to compare against the Sheet.
+  const engineSubject = useMemo(() => pickSubjectName(artifacts, reviews), [artifacts, reviews]);
+
   // Evidence-strength buckets per the new audit rules.
   const buckets = useMemo(() => {
     const g: Record<string, Artifact[]> = { confirmed: [], probable: [], lead: [], contradiction: [], excluded: [] };
@@ -1130,6 +1137,26 @@ export function CaseReport({
     <article id="case-report-print-root" className="case-report-doc text-data leading-relaxed text-foreground/95">
       {draftMark && <DraftMarking readinessPct={draftMark.readinessPct} reasons={draftMark.reasons} position="top" />}
       <VerdictBanner verdict={verdict} confCount={confidenceFindings.length} indepCount={independenceFindings.length} />
+      {engineSubject === null && artifacts.length > 0 && (
+        // Register item 10: reuse the Sheet's exact copy so a Report that
+        // narrates a subject the engine has not accepted still shows the
+        // engine's refusal in-line. The narrative notice on the chat prose
+        // (ChatWindow.tsx) is per-message; this banner is per-report.
+        <aside
+          role="note"
+          data-report-subject-refused
+          className="mt-3 rounded-xl border border-[hsl(var(--warning)/0.35)] bg-[hsl(var(--warning)/0.08)] px-4 py-3 text-data leading-snug text-foreground/90"
+        >
+          <div className="font-semibold text-[hsl(var(--warning))]">
+            No established subject name.
+          </div>
+          <p className="mt-1 text-muted-foreground">
+            No name holds for the subject yet. Quarantined and rejected names
+            are never used here. Any name in the narrative below is model-written,
+            not engine-adjudicated — reconcile against Evidence before adopting it.
+          </p>
+        </aside>
+      )}
       {/* Header */}
       <header className="report-cover relative overflow-hidden rounded-2xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.72] p-4 sm:p-5">
         <div className="relative z-10 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
