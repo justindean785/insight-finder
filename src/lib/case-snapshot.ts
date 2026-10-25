@@ -66,8 +66,16 @@ export const CASE_THREAD_COLUMNS =
  */
 export type CaseRunState = "draft" | "running" | "completed" | "interrupted" | "stopped";
 
+/**
+ * Visible labels for the five authoritative run states. State keys never move;
+ * only the label a renderer shows changes. "Ready" is the idle label for `draft`
+ * — never used to replace Running, Interrupted, Stopped, Complete, or any
+ * future state the backend may add. (A note for a future reviewer: "Finalizing"
+ * does not exist here. The backend has no mid-run finalize state — don't invent
+ * a label for one.)
+ */
 export const RUN_STATE_LABEL: Record<CaseRunState, string> = {
-  draft: "Draft",
+  draft: "Ready",
   running: "Running",
   completed: "Complete",
   interrupted: "Interrupted",
