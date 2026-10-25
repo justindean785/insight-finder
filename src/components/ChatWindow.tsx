@@ -23,6 +23,7 @@ import { buildDecisionSets, isManualDispatchRefused } from "@/lib/analyst-decisi
 import { KIND_TO_PIVOT } from "@/lib/intel";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
+import { useThreadPivotAttempts } from "@/hooks/useThreadPivotAttempts";
 import { isSubmitBlocked, submitRefusal, submitRefusalMessage } from "@/lib/submit-guard";
 import { messageIntegrity, narrativeIsUnadjudicated } from "@/lib/message-integrity";
 import { RunChips, RunMenu } from "@/components/pivots/RunControls";
@@ -1498,6 +1499,8 @@ function ChatWindowInner({
   // Targets tools have already been run against — the "already investigated"
   // signal that stops the rail re-suggesting a pivot that's already been run.
   const queriedTargets = useThreadQueriedTargets(threadId);
+  // Prior tool attempts per selector — read-only input to the adaptive ranking.
+  const pivotAttempts = useThreadPivotAttempts(threadId);
   // Analyst decisions. They shape the "Next steps" rail (a rejected selector is
   // never suggested, a Key one ranks first, a Recheck one is a verification
   // task) and they GATE the pivot bus: a "Run this pivot" on a rejected
@@ -2873,7 +2876,7 @@ function ChatWindowInner({
     // still-actionable ("new") pivots; already-searched ones sink to the Pivots
     // tab. Each is VALIDATED before it may carry a Run button — a malformed
     // suggestion (a table row, a report footer) stays visible as "needs repair".
-    const ranked = computePivots({ artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets, reviews: review.map });
+    const ranked = computePivots({ artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets, reviews: review.map, attempts: pivotAttempts });
     // Three RUNNABLE pivots, not the top three candidates. Validation used to
     // run after the slice, so a report whose recommendations were partly
     // unparseable filled two of three slots with "needs repair" cards and
@@ -2898,6 +2901,7 @@ function ChatWindowInner({
         key: dedupe,
         validation,
         eligibility: pivotEligibility(validation.pivot, { artifactsById, review: reviewOf }),
+        rationale: p.rationale,
       });
     }
     // Always include 1-2 generic next steps as fallback.
@@ -2913,7 +2917,7 @@ function ChatWindowInner({
       out.push({ kind: "action", key: `action:${g.title}`, title: g.title, detail: g.detail, prompt: g.prompt });
     }
     return [...out.slice(0, 4), ...repair];
-  }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability]);
+  }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, pivotAttempts, review.map, review.availability]);
 
   // The pivot Auto-run would start next. Read from a ref at cycle time, because
   // the cycle effect fires between renders. A pivot Auto-run already sent this
