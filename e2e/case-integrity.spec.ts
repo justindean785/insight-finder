@@ -347,9 +347,15 @@ test.describe("case sheet → Evidence handoff", () => {
     const value = (await card.locator("[title]").first().getAttribute("title")) ?? "";
     expect(value).not.toBe("");
     await card.getByRole("button", { name: /Decide in Evidence/ }).click();
-    const drawer = page.getByRole("dialog");
-    await expect(drawer).toBeVisible();
-    await expect(drawer).toContainText(value);
+    // At xl+ the detail surface is the shared Workbench inspector, not the
+    // Board's modal drawer. The Workbench Sheet tab surfaces the selected
+    // artifact; before this change the Board opened a `role="dialog"`,
+    // which doubled up with the Workbench at xl+ (two detail surfaces).
+    // Exactly one detail surface at every width is the invariant now; here
+    // we assert the inspector appears in the Workbench with the right value.
+    const inspector = page.locator("[data-inspector]").first();
+    await expect(inspector).toBeVisible();
+    await expect(inspector).toContainText(value);
   });
 });
 
