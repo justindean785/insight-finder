@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useToolbarSlot } from "@/hooks/useToolbarSlot";
 import { CompactFilter, FilterPopover, MenuSelect, type CompactOption } from "@/components/ui/compact-controls";
+import { Chip } from "@/components/ui/chip";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Globe, User as UserIcon, Network, ShieldAlert, Image as ImgIcon, Tag,
@@ -1029,9 +1030,7 @@ function ArtifactDrawerInner({
                 {shownArtifact.effective}% confidence
               </span>
             )}
-            <span className={"rounded-md border px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] " + REVIEW_CLASS[rState]}>
-              {REVIEW_SHORT[rState]}
-            </span>
+            <Chip tone={REVIEW_CLASS[rState]} mono>{REVIEW_SHORT[rState]}</Chip>
           </div>
         </SheetHeader>
 
@@ -1151,10 +1150,8 @@ function ArtifactDrawerInner({
           </Field>
           <Field label="Review">
             <div className="mb-2 flex items-center gap-2 flex-wrap text-xs">
-              <span className={"px-2 py-0.5 rounded-full border font-mono text-eyebrow uppercase tracking-wider " + REVIEW_CLASS[rState]}>
-                {REVIEW_SHORT[rState]}
-              </span>
-              {falsePositive && <span className="px-2 py-0.5 rounded-full bg-destructive/15 text-destructive border border-destructive/40 text-eyebrow uppercase">false positive</span>}
+              <Chip tone={REVIEW_CLASS[rState]} mono>{REVIEW_SHORT[rState]}</Chip>
+              {falsePositive && <Chip tone="bg-destructive/15 text-destructive border-destructive/40" mono>false positive</Chip>}
             </div>
             <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] p-2">
               <ReviewBtn current={rState} target="confirmed" onClick={() => reviewSet(artifact.id, "confirmed", rctx)}>

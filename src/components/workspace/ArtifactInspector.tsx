@@ -5,6 +5,7 @@ import {
   Copy, CheckCircle2, XCircle, Star, ShieldQuestion, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Chip } from "@/components/ui/chip";
 import { toast } from "sonner";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -142,9 +143,7 @@ export function ArtifactInspector({
               {shownArtifact.effective}% confidence
             </span>
           )}
-          <span className={"rounded-md border px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] " + REVIEW_CLASS[rState]}>
-            {REVIEW_SHORT[rState]}
-          </span>
+          <Chip tone={REVIEW_CLASS[rState]} mono>{REVIEW_SHORT[rState]}</Chip>
         </div>
       </div>
 
@@ -251,10 +250,8 @@ export function ArtifactInspector({
           </Field>
           <Field label="Review">
             <div className="mb-2 flex items-center gap-2 flex-wrap text-xs">
-              <span className={"px-2 py-0.5 rounded-full border font-mono text-eyebrow uppercase tracking-wider " + REVIEW_CLASS[rState]}>
-                {REVIEW_SHORT[rState]}
-              </span>
-              {falsePositive && <span className="px-2 py-0.5 rounded-full bg-destructive/15 text-destructive border border-destructive/40 text-eyebrow uppercase">false positive</span>}
+              <Chip tone={REVIEW_CLASS[rState]} mono>{REVIEW_SHORT[rState]}</Chip>
+              {falsePositive && <Chip tone="bg-destructive/15 text-destructive border-destructive/40" mono>false positive</Chip>}
             </div>
             <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] p-2">
               <ReviewBtn current={rState} target="confirmed" onClick={() => reviewSet(artifact.id, "confirmed", rctx)}>

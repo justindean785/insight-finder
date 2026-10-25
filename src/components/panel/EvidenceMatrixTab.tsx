@@ -8,6 +8,7 @@ import {
 // the same `effective` value as every other surface. See lib/display-confidence.ts.
 import { displayConfidence, effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { ANALYST_CONFIRMED_TEXT, isAnalystConfirmed, machineScoreText } from "@/lib/analyst-confirmed";
+import { Chip } from "@/components/ui/chip";
 import { AnalystConfirmedMark } from "@/components/AnalystConfirmedMark";
 import {
   useReviewStates, REVIEW_CLASS, REVIEW_SHORT, REVIEW_STATES, REVIEW_HELP,
@@ -249,9 +250,7 @@ export function EvidenceMatrixTab({
                       </Tooltip>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <span className={"px-1.5 py-0.5 rounded border font-mono text-eyebrow uppercase tracking-wider " + REVIEW_CLASS[rState]}>
-                            {REVIEW_SHORT[rState]}
-                          </span>
+                          <Chip tone={REVIEW_CLASS[rState]} mono>{REVIEW_SHORT[rState]}</Chip>
                         </TooltipTrigger>
                         <TooltipContent side="left" className="max-w-[240px] text-xs">
                           {REVIEW_HELP[rState]}
