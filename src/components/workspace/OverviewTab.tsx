@@ -274,29 +274,65 @@ export function OverviewTab({ threadId }: { threadId: string }) {
             Previously the first panel on the Overview was the decision
             queue; a case with a long queue read as a list of problems
             before anything supported was visible. */}
-        <section className="panel panel-flat overflow-hidden" data-overview-lead="strongest">
-          <RuleLabel right={<span className="text-micro tabular-nums text-muted-foreground/70">{strongest.length} of {tally.verified + tally.infrastructure + tally.probable}</span>}>
-            Strongest supported findings
-          </RuleLabel>
-          {strongest.length === 0 ? (
-            <p className="p-3 text-data text-muted-foreground">No corroborated findings yet. The decision queue below is a good place to start.</p>
-          ) : (
-            <ul>
-              {strongest.slice(0, 4).map(({ a, v }) => (
-                <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
-                  <AuthoritySpine state={v.state} />
-                  <ArtifactValue value={a.value} className="min-w-0" />
-                  <AuthorityChip view={v} />
-                </li>
-              ))}
-            </ul>
-          )}
-          {strongest.length > 4 && (
-            <p className="border-t border-border-subtle px-3 py-1.5 text-micro text-muted-foreground">
-              +{strongest.length - 4} more below in the full list.
-            </p>
-          )}
-        </section>
+        {/* G-3: "The case, at a glance" two-card lead. Left: compact
+            working assessment (what the engine supports). Right: what
+            could change the case (strongest open contradiction). Both
+            cards read from the same selectors the fuller sections below
+            use, so the two can never disagree. */}
+        <div className="grid gap-4 md:grid-cols-2" data-overview-lead="case-at-a-glance">
+          <section className="panel panel-flat overflow-hidden" data-overview-card="working-assessment">
+            <RuleLabel right={<span className="text-micro tabular-nums text-muted-foreground/70">{strongest.length} of {tally.verified + tally.infrastructure + tally.probable}</span>}>
+              Working assessment
+            </RuleLabel>
+            {strongest.length === 0 ? (
+              <p className="p-3 text-data text-muted-foreground">No corroborated findings yet. The decision queue below is a good place to start.</p>
+            ) : (
+              <ul>
+                {strongest.slice(0, 4).map(({ a, v }) => (
+                  <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
+                    <AuthoritySpine state={v.state} />
+                    <ArtifactValue value={a.value} className="min-w-0" />
+                    <AuthorityChip view={v} />
+                  </li>
+                ))}
+              </ul>
+            )}
+            {strongest.length > 4 && (
+              <p className="border-t border-border-subtle px-3 py-1.5 text-micro text-muted-foreground">
+                +{strongest.length - 4} more supported findings below.
+              </p>
+            )}
+          </section>
+
+          <section className="panel panel-flat overflow-hidden" data-overview-card="what-could-change">
+            <RuleLabel right={unresolved.length > 0 ? <span className="text-micro tabular-nums text-muted-foreground/70">{unresolved.length}</span> : undefined}>
+              What could change the case
+            </RuleLabel>
+            {unresolved.length === 0 ? (
+              <p className="p-3 text-data text-muted-foreground">
+                No open contradictions. New disputes will appear here as the investigation records them.
+              </p>
+            ) : (
+              <ul>
+                {unresolved.slice(0, 2).map(({ a, v }) => (
+                  <li key={a.id} className="relative border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
+                    <AuthoritySpine state={v.state} />
+                    <div className="flex items-start gap-2">
+                      <ArtifactValue value={a.value} className="min-w-0 flex-1" />
+                      <AuthorityChip view={v} />
+                    </div>
+                    <AuthorityCaveat view={v} className="mt-0.5 line-clamp-2 text-micro" />
+                  </li>
+                ))}
+                {unresolved.length > 2 && (
+                  <li className="px-3 py-1.5 text-micro text-muted-foreground">
+                    +{unresolved.length - 2} more awaiting your call below.
+                  </li>
+                )}
+              </ul>
+            )}
+          </section>
+        </div>
 
         {/* ── Needs a decision ───────────────────────────────────────── */}
         <section className="panel panel-primary overflow-hidden">

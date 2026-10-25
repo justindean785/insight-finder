@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { useThreadArtifacts, type Artifact } from "@/hooks/useThreadArtifacts";
 import { useOptionalWorkspaceUIState } from "@/hooks/useWorkspaceUIState";
 import { useIsWorkbenchViewport } from "@/hooks/useIsWorkbenchViewport";
+import { CompareCandidatesDialog } from "@/components/workspace/CompareCandidatesDialog";
 import {
   groupForKind, GROUP_LABEL, GROUP_ORDER, type Group,
   extractSourceInfo, CACHE_LAYER_LABEL, CACHE_LAYER_CLASS,
@@ -600,6 +601,18 @@ function ArtifactsList({
           </section>
         );
       })}
+      {items.length > 0 && (
+        /* G-4: Honest-data disclosure. Group headers and expandable
+           repeats compress the display; this line affirms that every
+           underlying source record is retained. Reinforces the breach-reveal
+           rail: raw provenance stays available in the inspector. */
+        <p
+          data-ledger-foot
+          className="border-t border-border-subtle px-4 py-2 text-micro leading-snug text-muted-foreground"
+        >
+          Repeated observations grouped. Every source record retained.
+        </p>
+      )}
     </div>
   );
 }
@@ -1484,6 +1497,24 @@ export function EvidenceBoard({
     </>
   ) : null;
 
+  // G-2: pick the first open conflict as the banner's target. The "two
+  // candidates" are: the conflict row itself (A) and the strongest
+  // same-kind sibling with a different value (B) — the common one-phone-
+  // two-names case. The dialog is a view over existing data; nothing
+  // here re-adjudicates.
+  const [compareOpen, setCompareOpen] = useState(false);
+  const compareCandidates = useMemo(() => {
+    const conflictA = items.find((a) => authorityFor(a, review.get(a.id)).state === "conflict");
+    if (!conflictA) return null;
+    const siblings = items
+      .filter((o) => o.id !== conflictA.id && o.kind === conflictA.kind && o.value !== conflictA.value)
+      .sort((x, y) => (effectiveConfidenceOrZero(y) - effectiveConfidenceOrZero(x)));
+    const conflictB = siblings[0] ?? null;
+    const view = authorityFor(conflictA, review.get(conflictA.id));
+    const reason = view.caveat || "The engine flagged this as a conflict. Review the two candidates side by side.";
+    return { conflictA, conflictB, reason };
+  }, [items, review]);
+
   return (
     <>
       {controls && (slot
@@ -1500,6 +1531,33 @@ export function EvidenceBoard({
         loading={loading}
         error={error}
         onRetry={retry}
+      />
+      {compareCandidates && (
+        <div
+          data-conflict-banner
+          className="flex flex-wrap items-center justify-between gap-2 border-t border-[hsl(var(--authority-conflict)/0.35)] bg-[hsl(var(--authority-conflict)/0.08)] px-4 py-2 text-[12.5px]"
+        >
+          <span className="text-foreground">
+            <span className="font-semibold text-[hsl(var(--authority-conflict))]">One connection needs explanation</span>
+            <span className="ml-2 text-muted-foreground">— two candidates compete for the same selector.</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setCompareOpen(true)}
+            className="inline-flex h-7 items-center rounded-md border border-border-subtle bg-surface-3 px-2.5 text-[12.5px] font-medium text-foreground transition-colors hover:bg-surface-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Compare candidates →
+          </button>
+        </div>
+      )}
+      <CompareCandidatesDialog
+        open={compareOpen}
+        onOpenChange={setCompareOpen}
+        candidateA={compareCandidates?.conflictA ?? null}
+        candidateB={compareCandidates?.conflictB ?? null}
+        reason={compareCandidates?.reason ?? ""}
+        reviewOf={review.get}
+        onFocusNextPivots={() => window.dispatchEvent(new CustomEvent("swarmbot:workbench-tab", { detail: { tab: "next" } }))}
       />
       <ArtifactDrawer
         artifact={workbenchHandlesDetail ? null : selected}

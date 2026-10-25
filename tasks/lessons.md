@@ -4,6 +4,29 @@ Running log of non-obvious gotchas learned while working in this repo. Newest fi
 
 ## 2026-10-25 (workspace Stage 1 correction pass)
 
+### G-items NOT ADDED (fail honest-data check — explicit follow-ups)
+
+JD's final addendum listed four presentation items that look harmless but
+would print numbers the backend does not actually compute. They are
+recorded here as follow-ups, not implemented in this pass:
+
+- **"+12 linkage" delta** from the prototype — needs an assessment-history
+  schema (and a `prev_effective` column, or an append-only
+  `assessment_events` table). Without that, any delta the UI shows is
+  derived from client state and will drift the moment the page reloads.
+- **Separate "Finding support %" vs "Subject linkage %"** — the backend
+  carries ONE confidence scalar (`displayConfidence(a).effective`).
+  Showing two numbers requires a backend-side split; this UI stage
+  collapses to the one honest value.
+- **Agent "suggested quick-reply" chips** — requires model generation on
+  the chat path; adding chips UI without the generation surface would
+  print blanks or placeholders.
+- **"Simulated live session" badge** — the prototype used this to label
+  the fixtures. It would read as live-session marketing in prod and
+  misrepresent an idle run. Omitted.
+
+Each belongs to a separately-approved backend or model-generation stage.
+
 ### E-6 — "floating panel clipping at far left" could not be reproduced from source scan
 
 JD's screenshot audit reported a partially clipped floating panel at the far

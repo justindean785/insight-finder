@@ -1556,6 +1556,21 @@ export function CaseReport({
         </>
       ))}
 
+      {/* G-5 section 2: Supported observations.
+          Umbrella header over the Confirmed / Probable / Leads buckets.
+          The content below is the same `buckets.*` the previous flat
+          structure rendered; the header gives JD's four-section
+          vocabulary a visible anchor in the report.
+
+          Important honest-data caveat (preserved from CLAUDE.md): the
+          numbers inside these BucketTable rows are what `record_finding`
+          persisted, not what the model's prose asserts. If a narrative
+          elsewhere disagrees, trust these. */}
+      <SectionHeader>Supported observations</SectionHeader>
+      <p className="mt-1 mb-2 text-[12.5px] leading-snug text-muted-foreground">
+        What the collected evidence supports today — from strongest (confirmed) to weakest (leads).
+      </p>
+
       {/* 4. Confirmed findings */}
       <SectionHeader right={<StatusLegend />}>Confirmed Findings</SectionHeader>
       <BucketTable rows={buckets.confirmed} empty="No findings meet the confirmation threshold (official + independent corroboration)." reviews={reviews} />
@@ -1576,18 +1591,28 @@ export function CaseReport({
         </>
       )}
 
-      {/* 9. Contradictions */}
+      {/* G-5 section 3: Contradictions and gaps.
+          The existing "Contradictions & Data Quality Problems" bucket is
+          the content; the header rename matches the four-section vocabulary
+          JD specified ("Executive summary · Supported observations ·
+          Contradictions and gaps · Next investigative question"). */}
       {buckets.contradiction.length > 0 && (
         <>
-          <SectionHeader>Contradictions &amp; Data Quality Problems</SectionHeader>
+          <SectionHeader>Contradictions and gaps</SectionHeader>
           <BucketTable rows={buckets.contradiction} empty="—" reviews={reviews} />
         </>
       )}
 
-      {/* 14. Recommended next pivots */}
+      {/* G-5 section 4: Next investigative question.
+          The existing "Recommended Next Pivots" list is the content; the
+          header asks the investigative question the pivots are proposed
+          to answer. */}
       {nextPivots.length > 0 && (
         <>
-          <SectionHeader>Recommended Next Pivots</SectionHeader>
+          <SectionHeader>Next investigative question</SectionHeader>
+          <p className="mt-1 mb-2 text-[12.5px] leading-snug text-muted-foreground">
+            What should the next pivot establish? Each line is a target with its reason — ranked by expected case value, not record volume.
+          </p>
           <ul className="space-y-1.5 list-disc pl-5 text-foreground/90 font-mono text-data">
             {nextPivots.map((p, i) => <li key={i}>{p}</li>)}
           </ul>
