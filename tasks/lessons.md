@@ -4,6 +4,21 @@ Running log of non-obvious gotchas learned while working in this repo. Newest fi
 
 ## 2026-10-25 (workspace Stage 1 correction pass)
 
+### E-6 — "floating panel clipping at far left" could not be reproduced from source scan
+
+JD's screenshot audit reported a partially clipped floating panel at the far
+left edge of the Board (now Ledger) view. Grepped the full ResourcesPanel,
+EvidenceMatrixTab, ClustersTab, and the ledger CSS; found no
+`position:absolute` with a negative `left` offset, no `overflow:hidden` on
+the ledger container, and no left-floating pane. The only absolute element
+near the left edge is `.spine` (3px authority stripe at `left:0`, `width:3px`),
+which sits inside the ledger-row's padding area and has no bounds the row
+clips against.
+
+Returning this to the main session's browser pane for a repro screenshot
+with the suspected element inspected — fixing a layout defect without
+being able to see it is how a speculative change ships two defects.
+
 ### E-1 — Next-steps count divergence (transcript 4, Workbench Next 5)
 
 Two near-copies of the same engine computation, each with its own cap and
