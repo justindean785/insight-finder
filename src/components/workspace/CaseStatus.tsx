@@ -91,7 +91,10 @@ export function CaseStatusPill({ snapshot, className }: { snapshot: CaseSnapshot
   // "Interrupted", "Stopped" — unchanged.
   const label = state === "running"
     ? (() => {
-        const elapsed = formatElapsed(nowMs, snapshot.run.startedAt);
+        // `state` can be "running" from this tab's open stream before the row is
+        // re-read; until the row itself says running, `startedAt` is the
+        // PREVIOUS run's start and would print a days-long elapsed.
+        const elapsed = snapshot.run.rowState === "running" ? formatElapsed(nowMs, snapshot.run.startedAt) : null;
         return elapsed ? `Analyzing · ${elapsed}` : "Analyzing";
       })()
     : snapshot.run.label;

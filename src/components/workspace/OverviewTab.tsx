@@ -317,7 +317,8 @@ export function OverviewTab({ threadId }: { threadId: string }) {
 
       <div className="mx-auto max-w-6xl space-y-4 p-3 sm:p-4">
 
-        {latestRun && <LatestRunStrip summary={latestRun} live={snapshot.run.state === "running"} />}
+        {/* rowState, not state: until the row is re-read, startedAt is the previous run's. */}
+        {latestRun && <LatestRunStrip summary={latestRun} live={snapshot.run.rowState === "running"} />}
 
         {/* ── Case assessment leads ─────────────────────────────────────
             Register item 8: lead with what is SUPPORTED (what the engine
