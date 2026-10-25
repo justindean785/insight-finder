@@ -269,7 +269,7 @@ function ArtifactsList({
             <button
               type="button"
               onClick={onShowAll}
-              className="mt-1 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-[12.5px] font-medium text-foreground/90 transition-colors hover:bg-white/10"
+              className="mt-1 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-[12.5px] font-medium text-foreground/90 transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               Show all {items.length}
             </button>

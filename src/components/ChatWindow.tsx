@@ -204,11 +204,21 @@ function CodePanel({
         </span>
         <div className="code-panel__head-actions">
           {isLong && (
-            <button type="button" onClick={() => setExpanded((v) => !v)}>
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+            >
               {expanded ? "Collapse" : "Expand"}
             </button>
           )}
-          <button type="button" onClick={onCopy}>Copy</button>
+          <button
+            type="button"
+            onClick={onCopy}
+            className="rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+          >
+            Copy
+          </button>
         </div>
       </div>
       <div className={cn("code-panel__body", expanded && "code-panel__body--expanded")}>
@@ -336,7 +346,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-4 py-3 text-left"
+        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-4 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
       >
         <span
           className={cn(
