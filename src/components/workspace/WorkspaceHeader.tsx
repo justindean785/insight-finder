@@ -266,11 +266,11 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
       data-thread-id={threadId}
       className="case-bar relative border-b border-white/[0.07]"
     >
-      <div className="flex min-h-[4.25rem] items-center gap-3.5 px-4 py-3 sm:px-6">
+      <div className="flex min-h-[4.25rem] items-center gap-3.5 px-4 py-3 sm:px-6 [@media(max-height:700px)]:min-h-14 [@media(max-height:700px)]:py-2">
         {/* Identity */}
         <div className="flex min-w-0 flex-1 items-center gap-3.5">
           <span
-            className="case-mark grid h-10 w-10 shrink-0 place-items-center rounded-[11px]"
+            className="case-mark grid h-10 w-10 shrink-0 place-items-center rounded-[11px] [@media(max-height:700px)]:h-8 [@media(max-height:700px)]:w-8 [@media(max-height:700px)]:rounded-[9px]"
             title={KIND_LABEL[display.kind]}
           >
             <KindIcon className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
@@ -281,7 +281,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
               {caseName ? (
                 // The analyst's name for the case leads, in the display face; the
                 // selector it started from moves to the line beneath.
-                <h1 className="min-w-0 truncate font-display text-[19px] font-semibold leading-tight tracking-[-0.02em]" title={caseName}>
+                <h1 className="min-w-0 truncate font-display text-[19px] font-semibold leading-tight tracking-[-0.02em] [@media(max-height:700px)]:text-[17px]" title={caseName}>
                   {caseName}
                 </h1>
               ) : display.title ? (
@@ -312,7 +312,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
               )}
               <CaseStatusPill snapshot={snapshot} />
             </div>
-            <div className="mt-1 flex min-w-0 items-center gap-2 text-data">
+            <div className="mt-1 flex min-w-0 items-center gap-2 text-data [@media(max-height:700px)]:mt-0.5">
               {caseName && snapshot?.seed.value && (
                 <>
                   <Tooltip>
@@ -355,15 +355,21 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
             </div>
           )}
           <CaseSyncStatus className="hidden md:flex" />
-          <button
-            onClick={createInvestigation}
-            disabled={creating}
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white px-2.5 text-meta font-semibold text-black shadow-cta transition-colors hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50"
-            aria-label="Start a new investigation"
-          >
-            <Plus className="h-3.5 w-3.5" aria-hidden />
-            <span className="hidden xl:inline">{creating ? "Creating…" : "New"}</span>
-          </button>
+          {/* Secondary on purpose: inside a case the one primary action is
+              Continue / Run. The rail carries the same "New investigation". */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={createInvestigation}
+                disabled={creating}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-muted-foreground transition-colors duration-fast hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+                aria-label="Start a new investigation"
+              >
+                <Plus className="h-4 w-4" aria-hidden />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">{creating ? "Creating…" : "New investigation"}</TooltipContent>
+          </Tooltip>
         </div>
       </div>
     </header>
