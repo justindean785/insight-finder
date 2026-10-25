@@ -1209,7 +1209,7 @@ function ArtifactDrawerInner({
               aria-label="Note — justification or context for this artifact"
               placeholder="Why is this key? Add justification, link, or context…"
               rows={3}
-              className="w-full text-xs font-mono bg-secondary/40 border border-border rounded p-2 outline-none focus:border-primary/60 resize-y"
+              className="w-full text-xs font-mono bg-secondary/40 border border-border rounded p-2 outline-none focus-visible:border-primary/60 focus-visible:ring-2 focus-visible:ring-ring resize-y"
             />
             <div className="flex justify-end mt-1">
               <Button

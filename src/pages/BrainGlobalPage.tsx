@@ -498,7 +498,7 @@ function MemoriesTab({
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search memories..."
             aria-label="Search memories"
-            className="w-full h-9 pl-8 pr-8 rounded-lg bg-surface-1/60 border border-border-subtle text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/60 focus-visible:ring-2 focus-visible:ring-ring/50"
+            className="w-full h-9 pl-8 pr-8 rounded-lg bg-surface-1/60 border border-border-subtle text-xs text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:border-primary/60 focus-visible:ring-2 focus-visible:ring-ring"
           />
           {search && (
             <button
