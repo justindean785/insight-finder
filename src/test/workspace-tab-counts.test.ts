@@ -37,7 +37,7 @@ describe("buildWorkspaceTabCounts", () => {
     const counts = buildWorkspaceTabCounts(0, sheet.queueTotal);
     expect(sheet.queueTotal).toBe(2);
     expect(counts.evidence.value).toBe(sheet.queueTotal);
-    expect(counts.evidence.hint).toMatch(/2 need your call/);
+    expect(counts.evidence.hint).toMatch(/2 awaiting your call/);
   });
 
   it("never carries a dot — breach rows are not 'needs attention'", () => {
@@ -51,7 +51,7 @@ describe("buildWorkspaceTabCounts", () => {
   });
 
   it("uses the singular for one call", () => {
-    expect(buildWorkspaceTabCounts(0, 1).evidence.hint).toMatch(/^1 needs your call/);
+    expect(buildWorkspaceTabCounts(0, 1).evidence.hint).toMatch(/^1 awaiting your call/);
   });
 
   it("Tools prints the persisted tool total the header prints", () => {

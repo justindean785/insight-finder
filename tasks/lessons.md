@@ -2,6 +2,71 @@
 
 Running log of non-obvious gotchas learned while working in this repo. Newest first.
 
+## 2026-10-25 (workspace Stage 1 correction pass)
+
+### Count-scope map — what each number on the workspace actually counts
+
+JD screenshot-audited the harness and listed six numbers from one case view:
+`55 evidence logged`, `Evidence 10`, `Analyst view 42`, `Needs review 36`,
+`Sheet Review 34`, `Needs your call 10`. Different denominators, no scope
+labels — reads as inconsistent. The map below names each number's selector
+so a surface edit can label its scope without changing the counting.
+
+| Surface | Figure | Selector | Scope |
+|---|---|---|---|
+| Case bar header | `55 evidence logged` | `snapshot.counts.artifactsTotal` (all `useThreadArtifacts` items) | Total artifact rows ever persisted to this thread (includes quarantined). |
+| Workspace tab chip | `Evidence 10` | `WorkspaceTabs.tsx` evidence badge | **Review-eligible count** — artifacts whose authority state is in `ANALYST_ACTIONABLE_STATES` (see `src/lib/authority.ts`). Reads "10 waiting on your decision", NOT "10 of 55". |
+| Evidence toolbar filter | `Analyst view 42` | `EvidenceBoard.counts.analyst` (`STATUS_FILTER_GROUPS.analyst`) | Everything excluding leads and excluded rows — the default "work queue" view. 42 of 55. |
+| Evidence toolbar filter | `Needs review 36` | `EvidenceBoard.counts.review` (`STATUS_FILTER_GROUPS.review`) | Review-pending authority states. 36 of 55. |
+| Sheet distribution | `Review 34` | `useCaseSheetModel` distribution bucket (reads review verdicts via `useReviewStates`) | Rows the ANALYST has not yet marked; 2 fewer than toolbar `Needs review` because the Sheet reads verdicts post-review-write while the toolbar reads authority state (which lags one write). |
+| Sheet queue | `Needs your call 10` | `useCaseSheetModel.queue` | Rows whose `authorityFor` + `pickAsk` evaluates to a decision prompt (release, resolve, verify). Subset of `Needs review 36`. |
+
+Rule: no surface may show a figure without naming its scope. "Needs review 36" alone is wrong; "Needs review 36 of 55" or "Review 34 undecided" is right.
+
+### Pivot-ranking address-dispute signal (item 2 — follow-up)
+
+Harness fixtures show pivots targeting emails Overview already describes as
+belonging to other families (unsupported for this subject). Traced through
+`src/lib/pivot-engine.ts` `computePivots`:
+
+- The engine ranks candidates by `TIER_SCORE[priority] + attempt decay`
+  (see `pivot-engine.ts:405-416`, with #873's attempt history inputs).
+- There is NO cross-check against artifact `authorityFor(a).state` on the
+  pivot's target before offering it. A quarantined or dispute-flagged
+  target still enters the ranked list if a pivot kind is defined for its
+  kind.
+- Overview's "belongs to other families" copy comes from a disjoint path
+  (name-collision clustering in `report-hygiene.ts`) that pivot-engine
+  does not consult.
+
+Classification: **likely reproducible ranking defect, not fixture-only.**
+Scope: belongs in a separately-approved pivot-engine stage (per CLAUDE.md
+"Do not re-litigate ranking as a drive-by UI fix"). Fix shape: pass an
+`isActionableForSubject(a)` predicate into `computePivots` and filter
+targets whose authority is `quarantined` or whose dispute signal is set.
+No change made here.
+
+### Report prose vs engine confidence (item 3 — follow-up)
+
+CLAUDE.md section "The report layer bypasses the integrity engine"
+describes this exact pattern. Measured on current main:
+
+- `record_finding` server-side derives true independence count and persists
+  computed confidence (`tool-registry.ts` `countIndependentClasses`).
+- The model's final-turn text retypes a Findings table in prose that is
+  NOT populated from the stored rows — model-written numbers survive.
+- No `{{FINDINGS_TABLE}}` server-side marker exists today; the fix shape
+  CLAUDE.md recommends ("expand the marker server-side before the message
+  is stored, from persisted rows, no markdown parsing of model output,
+  never allowed to fail finalize") is unbuilt.
+
+Classification: **reproducible defect — this is the CLAUDE.md-named
+report-bypass pattern, not a fixture issue.** Scope: belongs in a
+separately-approved report-generation stage. The UI stage can only make
+the contradiction visible (register item 10 — "No established subject name"
+callout beside narrative-asserted subject). No scoring or writer change.
+
+
 ## 2026-10-23 (Opsis guard ship, brendanloza measurements)
 - **A pre-flight refusal's error text must match `tool-outcome.ts` `SKIP_RE`**, or its `tool_usage_log` row logs `failed`
   and counts against the tool's health. Pin it with a captured-row test (`opsis_search_guard_test.ts`).
