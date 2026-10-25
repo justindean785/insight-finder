@@ -71,27 +71,37 @@ The controls look actionable during an active run because:
 2. `hasPivotRunner` is not reactive (snapshot, no subscription)
 3. The existing submit guard (`isSubmitBlocked` in `submit-guard.ts`) uses three inputs — chat `status`, synchronous `locked` ref, and `serverRunActive` from `caseSnapshot.run.state` — but this guard only fires when the `proximity:run-pivot` event reaches ChatWindow and it calls `sendText`. The button appearance does not reflect this.
 4. Even with `caseSnapshot.run.state === "running"` passed as `busy`, the guard's other two inputs (`status` and `locked`) live inside ChatWindow. The button would still look enabled in the "starting" window before `serverRunActive` fires.
-5. When the listener at `ChatWindow.tsx:2248` refuses a dispatch, the refusal is silent — it does not surface to the user. (CLAUDE.md: a refusal must be legible as a refusal.)
 
-**What this is NOT:** The downstream guards DO work. `submitRefusal` will return `"running"` or `"server_running"` when appropriate, and the event handler in ChatWindow will refuse the send. The issue is that the button looks enabled when the action would be refused AND the refusal is not communicated.
+**What this is NOT:** The downstream guards DO work. `submitRefusal` will return `"running"` or `"server_running"` when appropriate, and the event handler in ChatWindow will refuse the send. **The refusal IS surfaced** — `ChatWindow.tsx:2240` shows a toast: `"A run is in progress on this case. Start the pivot when it finishes."` The issue is that the button **looks enabled** when the action would be refused. The visual state (button appearance) does not reflect the runtime guard, so the analyst must click and read the toast to discover the action is blocked.
 
 ### Recommendation
 
-Pass `busy` from a reactive source (e.g., `caseSnapshot.run.state === "running"`) into `NextSteps`. This covers only one of the guard's three inputs; a complete solution would have ChatWindow publish its guard state. Also: when the listener refuses a dispatch, surface the refusal (toast, disabled state, or status text).
+Pass `busy` from a reactive source (e.g., `caseSnapshot.run.state === "running"`) into `NextSteps`. This covers only one of the guard's three inputs; a complete solution would have ChatWindow publish its guard state. The toast refusal already works (`ChatWindow.tsx:2240`); the gap is the button's disabled appearance, not the feedback channel.
 
 ---
 
 ## Finding 3 — Pivot explanation copy could be hedged (Audit area 3)
 
-**Evidence class:** code path confirmed; impact hypothesized (tautology and dismissed-artifact scenarios are structural, not exercised)  
-**Severity:** Low (copy-hedging suggestion; the filter logic is correct by design)  
+**Evidence class:** code path confirmed; Recheck reset exercised (`pivot-engine.ts:411`); dismissed-artifact scenario structural, not exercised  
+**Severity:** Low-Medium (Recheck "No tool has run" is a confirmed explanation defect, not merely hypothetical)  
 **Status:** Reproducible in current source
 
-### "No tool has run against it yet" is true by construction within its context
+### "No tool has run against it yet" is wrong for Recheck candidates
 
-`explainPivot` in `best-pivot.ts:22` emits this text when `pivot.status === "new"`. The `WorkbenchNext.tsx:70` filter keeps only `status === "new"` pivots, so the condition is a tautology in the Workbench context.
+`explainPivot` in `best-pivot.ts:22` emits this text when `pivot.status === "new"`. The `WorkbenchNext.tsx:70` filter keeps only `status === "new"` pivots, so the condition appears tautological — but it is not.
 
-The actual status derivation (`pivot-engine.ts:385-395`) overrides to `"searched"` when the target appears in `parentSet`, `queriedSet`, or `existingValueSet`. A target NOT in any of these gets `"new"`. It is **hypothetically** possible that if `queriedSet` is incomplete (e.g., the tool log was trimmed or the target was queried under a variant spelling), a previously-searched target could be marked "new" again — but this was not exercised.
+`pivot-engine.ts:405-411` explicitly resets candidates flagged for recheck back to `status = "new"`:
+```typescript
+if (decisions.recheckKeys.has(ck)) {
+  decision = "recheck";
+  status = "new";        // ← a previously-searched target becomes "new" again
+  priority = "high";
+  actionLabel = "Re-verify finding";
+```
+
+A recheck candidate has already been searched — the analyst asked for another look. Displaying "No tool has run against it yet" for such a candidate is **factually wrong**, not hypothetical. This is a reproducible explanation defect: any recheck candidate will show the misleading text.
+
+The `queriedSet` incompleteness concern (variant spellings, trimmed tool logs) remains hypothetical but structurally possible.
 
 ### "Running it is how it gets a second source" is a promise, not a fact
 
@@ -138,9 +148,15 @@ System #4 (`computeEffectiveSourceCount`) is used in `CaseReport.tsx:1092` (the 
 
 ### Recommendation
 
-- `explainConfidence` should count source classes (system #2) or effective sources (system #4), not raw token strings
-- The "Multi-source corroborated" badge should use the same honest count
-- `CaseReport.tsx:364` should use `computeEffectiveSourceCount` on breach artifacts, not row count
+**The three honest metrics measure different things — don't conflate them:**
+- **Source classes** (system #2, `independentSourceClasses`): how many independent *categories* of evidence (e.g., breach, social, public record) — the right metric for "independent corroboration"
+- **Effective sources** (system #4, `computeEffectiveSourceCount`): how many truly distinct datasets after collapsing mirrors and aggregators — the right metric for "how many places found this"
+- **Distinct breach corpora**: how many separate breaches contain the data — different from both row count AND effective source count
+
+What is **wrong** is system #1 counting raw provider-label tokens as "independent sources" and system #3 counting artifact rows as "distinct corpora." The fix is:
+- `explainConfidence` should use source classes (system #2) when saying "independent sources" — that is what "independent" means in the product's own authority labels
+- The "Multi-source corroborated" badge should use the same source-class count
+- `CaseReport.tsx:364` breach summary should count distinct breach names (from artifact metadata), not artifact rows — OR use effective sources with language that says "effective sources" rather than "distinct corpora"
 - This is a frontend-only change (the authoritative systems already exist and are correct)
 
 ---
@@ -244,8 +260,8 @@ Change the description in `tool-registry.ts` and `catalog.ts` to match HIBP's ow
 
 ## Finding 8 — Cross-case state leak in WorkbenchNext (Audit area 8)
 
-**Evidence class:** code path confirmed; transient nature confirmed via handler trace  
-**Severity:** Low-Medium (brief visual stale display, not a wrong-subject-run)  
+**Evidence class:** code path confirmed; cross-case dispatch safety NOT established  
+**Severity:** Medium (stale selector from case A could dispatch against case B; needs interaction test)  
 **Status:** Reproducible in current source
 
 ### No `key={threadId}` at mount site
@@ -257,11 +273,13 @@ Change the description in `tool-registry.ts` and `catalog.ts` to match HIBP's ow
 
 React does not reset `useState` when only props change. `WorkbenchNext` at line 31 uses `useState<RecommendedPivot[]>([])` for `reportPivots` and `useState<string | null>(null)` for `open`. When the user switches cases (changing `threadId`), these states persist from the prior case until the `useEffect` at line 35-43 fires and replaces them.
 
-### The stale state IS transient (confirmed)
+### The stale state is transient but NOT proven safe
 
 The `useEffect` dispatches `swarmbot:request-report-pivots` with the new `threadId` (line 41). ChatWindow's handler (`ChatWindow.tsx:2817-2822`) guards on `detail?.threadId !== threadId` — it only responds when the requested thread matches its own. Since ChatWindow's props have already updated to the new case, it responds with its `reportPivots` for the new case (empty or populated), which replaces the stale state in WorkbenchNext.
 
-The `proximity:run-pivot` dispatch at `WorkbenchNext.tsx:114` uses `threadId` from props (already the new case), so even during the stale display window, a "Run now" click dispatches against the correct case. **There is no wrong-subject-run risk.**
+The `proximity:run-pivot` dispatch at `WorkbenchNext.tsx:114` uses `threadId` from props (already the new case). **However, the selector payload (`value`, `type`, `prompt`) comes from `reportPivots` state — which is still the OLD case's data during the stale window.** A click during this window sends `{threadId: caseB, value: <selector from caseA>}` — a cross-case dispatch where a selector from one subject is run against a different subject's case.
+
+**The "no wrong-subject-run risk" claim is NOT established.** The threadId is correct, but the selector's provenance is not. This needs an interaction test (mount with case A pivots, switch threadId to B, verify items list is empty or refreshed before any button is clickable). The `key={threadId}` fix at `ChatPage.tsx:242` addresses this by resetting all component state on case switch.
 
 ### Better fix location: `ChatPage.tsx:242` not `Workbench.tsx:75`
 
@@ -319,8 +337,8 @@ Export (evidence-export reads evidence_log, not prose)
 | 7 | HIBP count mislabeled as corpus count | Medium | code path confirmed | tool-registry.ts:3817, catalog.ts:117 | Edge PR |
 | 2 | Busy state not shown in Workbench controls; silent refusal | Low-Med | code path confirmed | WorkbenchNext.tsx:126, ChatWindow.tsx:2248 | Frontend PR |
 | 6 | Area-code collision overstates "different people" | Low-Med | code path confirmed; downstream hypothesized | intel.ts:3142 | Frontend PR (wording only) |
-| 8 | Cross-case stale display in WorkbenchNext | Low-Med | code path confirmed; transient confirmed | ChatPage.tsx:242 | Frontend PR (1 line) |
-| 3 | Pivot explanation copy could be hedged | Low | code path confirmed; impact hypothesized | best-pivot.ts:22-32 | Frontend PR (copy only) |
+| 8 | Cross-case stale selector dispatch (safety not established) | Medium | code path confirmed; cross-case dispatch NOT proven safe | ChatPage.tsx:242 | Frontend PR (1 line + interaction test) |
+| 3 | Pivot explanation wrong for Recheck; copy could be hedged | Low-Med | code path confirmed; Recheck defect exercised | best-pivot.ts:22-32 | Frontend PR (copy only) |
 
 ---
 
@@ -388,12 +406,13 @@ All tests use synthetic data, never live case data. All PRs require `npm run typ
 ### PR 1
 - `explainPivot({sources: [{id: "a"}]})` → text says "may find" (not "is how it gets")
 - `explainPivot({priority: "high"})` → text says "Marked as high priority" (not "report ranked")
-- WorkbenchNext with `key={threadId}` on parent: mount with threadId A, switch to B, verify `reportPivots` state resets
+- `explainPivot` with a recheck candidate (`decision: "recheck"`) → text does NOT say "No tool has run against it yet"
+- WorkbenchNext with `key={threadId}` on parent: mount with threadId A, switch to B, verify `reportPivots` state resets AND no stale items are clickable before the new case's data arrives (interaction test)
 - NextSteps with `busy=true`: "Run now" button is disabled
 
 ### PR 2
-- Artifact with `source: "LeakCheck+DeHashed"` → `explainConfidence` should NOT say "2 independent sources" if both are aggregators indexing the same breach
-- Three breach artifact rows from one corpus → `CaseReport` breach summary should NOT say "3 distinct corpora"
+- Artifact with `source: "LeakCheck+DeHashed"` → `explainConfidence` should count source classes (system #2), NOT raw tokens; two aggregators of the same breach are one source class
+- Three breach artifact rows from one corpus → `CaseReport` breach summary should count distinct breach names or effective sources, NOT artifact rows
 - Name artifact at confidence 45 with `metadata.dob: "1990-01-01"` and no review → DOB field shows qualification
 - `buildIdentityClusters` with `conflictingAreaCodes=true, dupeName=false` → warning text qualifies (not generic "different people")
 
