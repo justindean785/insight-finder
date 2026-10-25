@@ -111,3 +111,22 @@ Running log of non-obvious gotchas learned while working in this repo. Newest fi
   `package.json` lists `@vercel/speed-insights` will fail `build`/`typecheck` if the parent's
   shared `node_modules` was installed for a branch lacking it. Fix locally with
   `npm install --no-save <pkg>` from the parent — don't touch the lockfile.
+- **Scope corrections are not implementation decisions.** A prior Stage 1 report
+  described the compact Evidence ledger as "deferred" when the corrected brief
+  had explicitly listed it as included. Mis-reading the brief then shipping
+  half of it reads as covert descoping. If a sub-scope seems large, name it in
+  the pre-edit discrepancy report, not after.
+- **`git diff main..HEAD` on a stale local-main branch overstates the PR size.**
+  Local `main` can be far behind `origin/main`, so the diff includes commits
+  that have already landed on origin's main. Always `git fetch origin main`
+  and diff against `origin/main` before quoting a file count or line delta.
+  The fast check: `git log main..origin/main --oneline | wc -l` — if non-zero,
+  diff against origin/main.
+- **A vitest delta is only meaningful against a baseline measured today on the
+  same machine from `origin/main`.** CLAUDE.md baselines drift between PRs and
+  across machines. Measure the baseline, measure the branch, quote both — never
+  quote a delta against a static baseline from a note file.
+- **An inline `# comment` inside a `bash`-tagged code block can reach `git` as a
+  bare argument** when the host surface runs the block through a route that
+  does not evaluate shell syntax. For user-facing blocks with a Run button,
+  put commands on their own lines and keep comments outside the fence.

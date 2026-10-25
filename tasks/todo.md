@@ -170,3 +170,26 @@ PR B design (backward compatible, preview-preserving, additive; separate edge an
 - Historical `verified` rows on `7a2968e1` (F5): remediate through Lovable with an audit row, or leave and document.
 - #612: supersede (recommended) or extend.
 - Which providers to keep (OathNet, Opsis, FOFA, deepfind, reddit) — governs S6 wording.
+
+## 2026-10-25 — Stage 1 (frontend workspace redesign) — scope correction
+
+Stage 1 (branch `claude/insight-finder-frontend-design-5859d5`):
+- DONE: `WorkspaceUIStateProvider` (per-thread selection + note drafts, scoped inside the existing `key={threadId}` boundary).
+- DONE: `ArtifactInspector` lifted from PR #872 with notes hoisted to context and an explicit Close + focus restoration.
+- DONE: Workbench Sheet becomes dual-mode (case summary ↔ inspector); auto-switches to Sheet on selection.
+- DONE: Evidence row-click publishes selection to the shared workbench.
+- DONE (**scope correction, previously mis-deferred**): Compact Evidence ledger (`EvidenceLedgerTab`) is the default/primary Evidence view. Board / Table / Clusters / Timeline / Pivots remain reachable through the lens switcher.
+- DONE: Fast-Refresh warning on the provider resolved (hook split into `src/hooks/useWorkspaceUIState.ts`).
+- DONE: Breakpoint comment corrected to `xl: 1280px` (was mis-labelled 1024px).
+- DONE: Save-flow + cross-case isolation + ChatPage integration tests.
+
+Deferred to Stage 1B:
+- Chat `[R-nnn]` reference → open the referenced finding in the shared workbench.
+- Connections-node → selection into the shared workbench.
+- Composer / progress state restyle in the Investigate tab (keep existing stream behavior intact).
+
+Pending (JD-driven, not fork-driven):
+- Harness screenshots at 390 × 844, 894 × 617, 1440 × 900 — primary ledger, selected inspector, empty Sheet state, long-content scrolling.
+- Manual workspace e2e against the harness URL.
+
+PRs #872 / #873 / #874 untouched; branch not pushed; no PR opened; no merge.
