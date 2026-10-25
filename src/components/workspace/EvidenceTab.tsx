@@ -5,15 +5,17 @@ import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useReviewStates } from "@/lib/review";
 import { tallyAuthority } from "@/lib/authority";
 import { EvidenceBoard } from "@/components/ResourcesPanel";
+import { EvidenceLedgerTab } from "@/components/panel/EvidenceLedgerTab";
 import { EvidenceMatrixTab } from "@/components/panel/EvidenceMatrixTab";
 import { ClustersTab } from "@/components/panel/ClustersTab";
 import { TimelineTab } from "@/components/panel/TimelineTab";
 import { PivotsTab } from "@/components/panel/PivotsTab";
-import { LayoutGrid, Table2, Network, Clock, GitBranch, type LucideIcon } from "lucide-react";
+import { List, LayoutGrid, Table2, Network, Clock, GitBranch, type LucideIcon } from "lucide-react";
 
-type View = "board" | "table" | "clusters" | "timeline" | "pivots";
+type View = "ledger" | "board" | "table" | "clusters" | "timeline" | "pivots";
 
 const VIEWS: { key: View; label: string; icon: LucideIcon }[] = [
+  { key: "ledger", label: "Ledger", icon: List },
   { key: "board", label: "Board", icon: LayoutGrid },
   { key: "table", label: "Table", icon: Table2 },
   { key: "clusters", label: "Clusters", icon: Network },
@@ -28,7 +30,7 @@ const VIEWS: { key: View; label: string; icon: LucideIcon }[] = [
  * clusters, and a chronological timeline. Fills the full main workspace width.
  */
 function isView(v: string): v is View {
-  return v === "board" || v === "table" || v === "clusters" || v === "timeline" || v === "pivots";
+  return v === "ledger" || v === "board" || v === "table" || v === "clusters" || v === "timeline" || v === "pivots";
 }
 
 export function EvidenceTab({
@@ -43,7 +45,7 @@ export function EvidenceTab({
   const { items, updateLocal, hasMore, cap } = useThreadArtifacts(threadId);
   const review = useReviewStates(threadId);
   const [view, setView] = useState<View>(
-    viewRequest && isView(viewRequest.view) ? viewRequest.view : "board",
+    viewRequest && isView(viewRequest.view) ? viewRequest.view : "ledger",
   );
 
   // Honor a requested lens from the command palette (also fires on first mount,
@@ -132,6 +134,14 @@ export function EvidenceTab({
       <div className="flex-1 min-h-0 overflow-y-auto">
         {/* The board reads its own data so it can own the detail drawer; the
             other lenses share the already-loaded artifact set. */}
+        {view === "ledger" && (
+          <EvidenceLedgerTab
+            threadId={threadId}
+            artifacts={items}
+            onLocalUpdate={updateLocal}
+            focusRequest={viewRequest?.artifactId ? { id: viewRequest.artifactId, n: viewRequest.n } : null}
+          />
+        )}
         {view === "board" && (
           <div className="mx-auto max-w-5xl">
             <EvidenceBoard
