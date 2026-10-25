@@ -5,6 +5,7 @@ import { ChatWindow } from "@/components/ChatWindow";
 import { WorkspaceHeader, MobileCaseStrip } from "@/components/workspace/WorkspaceHeader";
 import { WorkspaceTabs, type WorkspaceTab } from "@/components/workspace/WorkspaceTabs";
 import { CaseSnapshotProvider } from "@/components/workspace/CaseSnapshotProvider";
+import { WorkspaceUIStateProvider } from "@/components/workspace/WorkspaceUIStateProvider";
 import { RecoveryBanner } from "@/components/workspace/RecoveryBanner";
 import { Workbench } from "@/components/workspace/Workbench";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
@@ -48,7 +49,9 @@ export default function ChatPage() {
 
   return (
     <CaseSnapshotProvider key={threadId} threadId={threadId}>
-      <ChatWorkspace threadId={threadId} userId={user.id} />
+      <WorkspaceUIStateProvider>
+        <ChatWorkspace threadId={threadId} userId={user.id} />
+      </WorkspaceUIStateProvider>
     </CaseSnapshotProvider>
   );
 }
