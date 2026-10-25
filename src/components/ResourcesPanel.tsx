@@ -17,6 +17,25 @@ import { SourceBadge } from "@/components/SourceBadge";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useThreadArtifacts, type Artifact } from "@/hooks/useThreadArtifacts";
+import { useOptionalWorkspaceUIState } from "@/components/workspace/WorkspaceUIStateProvider";
+
+// Tailwind's `xl` breakpoint, matched to the Workbench's `xl:block` gate in
+// ChatPage. Returns true when the Workbench is visible beside the content.
+function useIsWorkbenchViewport(): boolean {
+  const [match, setMatch] = useState<boolean>(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia("(min-width: 1280px)").matches
+      : false,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mql = window.matchMedia("(min-width: 1280px)");
+    const onChange = () => setMatch(mql.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+  return match;
+}
 import {
   groupForKind, GROUP_LABEL, GROUP_ORDER, type Group,
   extractSourceInfo, CACHE_LAYER_LABEL, CACHE_LAYER_CLASS,
@@ -646,6 +665,7 @@ function BulkCorpusGroupRow({
   const more = group.artifacts.length - 4;
   return (
     <div
+      id={`evidence-row-${lead.id}`}
       role="button"
       tabIndex={0}
       onClick={() => onSelect(lead)}
@@ -723,6 +743,7 @@ export function ArtifactRow({
     <HoverCard openDelay={250} closeDelay={80}>
       <HoverCardTrigger asChild>
         <div
+          id={`evidence-row-${a.id}`}
           role="button"
           tabIndex={0}
           onClick={() => onSelect(a)}
@@ -1352,6 +1373,22 @@ export function EvidenceBoard({
   const review = useReviewStates(threadId);
   const [selected, setSelected] = useState<Artifact | null>(null);
   const [statusFilter, setStatusFilter] = useState<EvidenceStatusFilter>("analyst");
+  // Also publish selection to the shared workspace UI state, so the Workbench's
+  // Sheet tab surfaces the same artifact. On xl+ (where the Workbench is
+  // visible) the drawer stays suppressed so there is exactly ONE right-hand
+  // surface, as the brief requires; below xl the drawer remains the detail
+  // surface (there is no Workbench there). Falls back to the drawer-only
+  // behaviour whenever the provider is not mounted (standalone renders, tests).
+  const ui = useOptionalWorkspaceUIState();
+  const workbenchHandlesDetail = useIsWorkbenchViewport() && !!ui;
+  const handleSelect = useCallback((a: Artifact | null) => {
+    setSelected(a);
+    if (!ui) return;
+    if (a) {
+      ui.rememberOpener(`evidence-row-${a.id}`);
+      ui.select(a.id);
+    }
+  }, [ui]);
 
   // A handoff from the case sheet names a row that the default Analyst view
   // may HIDE (it excludes quarantined rows). Widen to All so the row is in the
@@ -1456,7 +1493,7 @@ export function EvidenceBoard({
       <ArtifactsList
         items={items}
         threadId={threadId}
-        onSelect={setSelected}
+        onSelect={handleSelect}
         review={review}
         statusFilter={statusFilter}
         onShowAll={() => setStatusFilter("all")}
@@ -1466,8 +1503,8 @@ export function EvidenceBoard({
         onRetry={retry}
       />
       <ArtifactDrawer
-        artifact={selected}
-        onClose={() => setSelected(null)}
+        artifact={workbenchHandlesDetail ? null : selected}
+        onClose={() => handleSelect(null)}
         onChanged={(a) => { updateLocal(a); setSelected(a); }}
         reviewGet={review.get}
         reviewSet={review.set}
