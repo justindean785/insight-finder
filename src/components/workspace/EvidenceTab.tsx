@@ -13,9 +13,18 @@ import { LayoutGrid, Table2, Network, Clock, GitBranch, type LucideIcon } from "
 
 type View = "board" | "table" | "clusters" | "timeline" | "pivots";
 
+// Labels are what the lens ACTUALLY renders, not legacy terminology:
+//  - `board` → "Ledger" (compact rows, aligned columns, grouped repeats). It
+//    is already the compact ledger (see commit f5602512 — "Board already IS the
+//    compact ledger"). Keeping the key `board` preserves routes, deep links,
+//    and the e2e specs under `e2e/evidence-ledger.spec.ts`.
+//  - `table` → "Cards" (EvidenceMatrixTab renders rich evidence cards, not a
+//    traditional table).
+// Clusters / Timeline / Pivots keep their names — they already name what they
+// render.
 const VIEWS: { key: View; label: string; icon: LucideIcon }[] = [
-  { key: "board", label: "Board", icon: LayoutGrid },
-  { key: "table", label: "Table", icon: Table2 },
+  { key: "board", label: "Ledger", icon: LayoutGrid },
+  { key: "table", label: "Cards", icon: Table2 },
   { key: "clusters", label: "Clusters", icon: Network },
   { key: "timeline", label: "Timeline", icon: Clock },
   { key: "pivots", label: "Pivots", icon: GitBranch },
