@@ -5,7 +5,7 @@ import type { PivotEligibility, PivotValidation, RunnablePivot } from "@/lib/piv
 import { PivotPreview, RepairNotice } from "@/components/pivots/PivotPreview";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ConnectionSummary } from "@/lib/connection-summary";
-import { explainPivot, pickBestPivot, requiresPreview } from "@/lib/best-pivot";
+import { explainPivot, pickBestPivot } from "@/lib/best-pivot";
 import type { PivotRationale } from "@/lib/pivot-rationale";
 
 /** Queue rows shown before the rest fold behind "N more". */
@@ -252,7 +252,9 @@ function BestPivot({ pivot, eligibility, reasons, rationale, isOpen, busy, onTog
   onToggle: () => void;
   onRunNow: () => void;
 }) {
-  const needsReview = requiresPreview(eligibility);
+  // Every pivot run opens its preview first. There is no one-click path to a
+  // paid run from the best-pivot card: the analyst reads the question, the
+  // selector and the tool before Start is offered (integrity decision 1).
   return (
     <div className="px-4 py-4" data-testid="best-pivot">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-data text-muted-foreground">
@@ -268,25 +270,14 @@ function BestPivot({ pivot, eligibility, reasons, rationale, isOpen, busy, onTog
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button
           type="button"
-          disabled={busy && !needsReview}
-          onClick={needsReview ? onToggle : onRunNow}
-          aria-label={`${needsReview ? "Review and run" : "Run now"}: ${pivot.action} on ${pivot.target}`}
+          onClick={onToggle}
+          aria-expanded={isOpen}
+          aria-label={`${isOpen ? "Close preview for" : "Review and run"}: ${pivot.action} on ${pivot.target}`}
           className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-white px-3.5 text-data font-semibold text-black transition-colors duration-fast hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 [@media(pointer:coarse)]:h-11"
         >
-          {needsReview ? "Review and run" : "Run now"}
+          {isOpen ? "Close preview" : "Review and run"}
           <ArrowRight className="h-3.5 w-3.5" aria-hidden />
         </button>
-        {!needsReview && (
-          <button
-            type="button"
-            onClick={onToggle}
-            aria-expanded={isOpen}
-            aria-label={`${isOpen ? "Close preview for" : "Preview"} ${pivot.action} on ${pivot.target}`}
-            className="inline-flex h-9 items-center rounded-lg px-3 text-data font-medium text-muted-foreground hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11"
-          >
-            {isOpen ? "Close preview" : "Preview"}
-          </button>
-        )}
       </div>
       {isOpen && (
         <PivotPreview pivot={pivot} eligibility={eligibility} busy={busy} onCancel={onToggle} onStart={onRunNow} />
