@@ -1,10 +1,10 @@
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { WorkspaceUIStateProvider } from "@/components/workspace/WorkspaceUIStateProvider";
 import {
-  WorkspaceUIStateProvider,
   useWorkspaceUIState,
   useOptionalWorkspaceUIState,
-} from "@/components/workspace/WorkspaceUIStateProvider";
+} from "@/hooks/useWorkspaceUIState";
 
 /**
  * Unit tests for the per-thread workspace UI state. The invariants under

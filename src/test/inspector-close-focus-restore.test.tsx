@@ -1,9 +1,9 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { WorkspaceUIStateProvider } from "@/components/workspace/WorkspaceUIStateProvider";
 import {
-  WorkspaceUIStateProvider,
   useWorkspaceUIState,
-} from "@/components/workspace/WorkspaceUIStateProvider";
+} from "@/hooks/useWorkspaceUIState";
 
 /**
  * Reproduce + verify PR #872's "no explicit Close + focus restoration"

@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WorkspaceUIStateProvider } from "@/components/workspace/WorkspaceUIStateProvider";
 import {
-  WorkspaceUIStateProvider,
   useWorkspaceUIState,
-} from "@/components/workspace/WorkspaceUIStateProvider";
+} from "@/hooks/useWorkspaceUIState";
 
 /**
  * The Sheet tab's dual-mode contract — tested at the provider seam.

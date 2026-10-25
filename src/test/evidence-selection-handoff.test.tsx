@@ -1,10 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { WorkspaceUIStateProvider } from "@/components/workspace/WorkspaceUIStateProvider";
 import {
-  WorkspaceUIStateProvider,
   useOptionalWorkspaceUIState,
   useWorkspaceUIState,
-} from "@/components/workspace/WorkspaceUIStateProvider";
+} from "@/hooks/useWorkspaceUIState";
 
 /**
  * Evidence row click publishes to the shared Workspace UI state.

@@ -3,7 +3,7 @@ import { ArtifactInspector } from "@/components/workspace/ArtifactInspector";
 import { CaseSheet } from "@/components/workspace/CaseSheet";
 import { WorkbenchConnections } from "@/components/workspace/WorkbenchConnections";
 import { WorkbenchNext } from "@/components/workspace/WorkbenchNext";
-import { useOptionalWorkspaceUIState } from "@/components/workspace/WorkspaceUIStateProvider";
+import { useOptionalWorkspaceUIState, useWorkspaceUIState } from "@/hooks/useWorkspaceUIState";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useReviewStates } from "@/lib/review";

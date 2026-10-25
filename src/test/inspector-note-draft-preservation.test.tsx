@@ -1,15 +1,15 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { WorkspaceUIStateProvider } from "@/components/workspace/WorkspaceUIStateProvider";
 import {
-  WorkspaceUIStateProvider,
   useWorkspaceUIState,
-} from "@/components/workspace/WorkspaceUIStateProvider";
+} from "@/hooks/useWorkspaceUIState";
 
 /**
  * Reproduce + verify PR #872's "notes lost on resize / selection change" regression.
  *
  * In #872 the drawer's note draft lived in a local useState(review.getNote(id)).
- * On any subtree swap (viewport flip across 1024px, selection change, Workbench
+ * On any subtree swap (viewport flip across 1280px / xl, selection change, Workbench
  * tab switch) the drawer remounted and the draft reset to the saved note, so
  * every half-finished reasoning was dropped.
  *
@@ -86,7 +86,7 @@ describe("Inspector note draft — survives subtree swaps", () => {
     expect((screen.getByTestId("draft") as HTMLTextAreaElement).value).toBe("half-finished reasoning");
   });
 
-  it("draft survives a viewport resize across the 1024px breakpoint (subtree remount under same provider)", () => {
+  it("draft survives a viewport resize across the 1280px (xl) breakpoint (subtree remount under same provider)", () => {
     // Simulate a resize: parent re-renders with a different `key`, forcing the
     // inner Harness to remount. The provider stays put, so drafts survive.
     function App({ bp }: { bp: "sm" | "lg" }) {

@@ -29,7 +29,7 @@ import {
 } from "@/lib/review";
 import { CACHE_LAYER_LABEL, CACHE_LAYER_CLASS } from "@/lib/intel";
 import { ArtifactPivotAction } from "@/components/pivots/ArtifactPivotAction";
-import { useWorkspaceUIState } from "@/components/workspace/WorkspaceUIStateProvider";
+import { useWorkspaceUIState } from "@/hooks/useWorkspaceUIState";
 
 /**
  * The right-hand inspector for one selected artifact. Mounted inside the
@@ -40,7 +40,7 @@ import { useWorkspaceUIState } from "@/components/workspace/WorkspaceUIStateProv
  *
  *   1. The note draft is hoisted to {@link WorkspaceUIStateProvider} and keyed
  *      by `artifactId`, so a draft survives switching between artifacts,
- *      Workbench tab switches, and viewport resizes across the 1024px
+ *      Workbench tab switches, and viewport resizes across the 1280px (xl)
  *      breakpoint. The local `useState(review.getNote(id))` the drawer used
  *      lost drafts on every subtree swap.
  *   2. The header gains a visible, keyboard-reachable Close button that calls

@@ -1,4 +1,8 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  WorkspaceUIStateContext,
+  type WorkspaceUIState,
+} from "@/hooks/useWorkspaceUIState";
 
 /**
  * Thread-scoped UI state for the workspace. The ONE place that holds
@@ -14,47 +18,10 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState, type
  * Nothing is persisted to localStorage. Drafts are a WIP buffer; saved
  * notes go through `useReviewStates.setNote` (durable, server-backed).
  * Selection is a session-only pointer; a reload is a fresh view.
+ *
+ * The hooks and the context live in `@/hooks/useWorkspaceUIState` so this
+ * file exports a component only — Fast-Refresh requires that.
  */
-
-export interface WorkspaceUIState {
-  /** The currently inspected artifact, or `null` when the Sheet shows the
-   *  case summary. Setting this to a non-null value asks the Workbench to
-   *  surface the inspector; setting it to `null` returns to the case summary. */
-  readonly selectedArtifactId: string | null;
-  /** Open the inspector on this artifact. */
-  select: (artifactId: string) => void;
-  /** Close the inspector and return to the case summary. Also calls
-   *  `.focus()` on the previously-remembered opener element, if any. */
-  clear: () => void;
-  /** Note draft text for an artifact. Returns `""` when no draft exists. */
-  getDraft: (artifactId: string) => string;
-  /** Update the in-flight note draft for an artifact. Empty string clears it. */
-  setDraft: (artifactId: string, text: string) => void;
-  /** Drop one draft (after it has been saved durably). */
-  clearDraft: (artifactId: string) => void;
-  /** Record the DOM element id of the control that opened the inspector,
-   *  so Close can restore focus to it. */
-  rememberOpener: (elementId: string | null) => void;
-}
-
-const WorkspaceUIStateContext = createContext<WorkspaceUIState | null>(null);
-
-/** The thread-scoped workspace UI state. Must be rendered inside
- *  `WorkspaceUIStateProvider`. */
-export function useWorkspaceUIState(): WorkspaceUIState {
-  const api = useContext(WorkspaceUIStateContext);
-  if (!api) {
-    throw new Error("useWorkspaceUIState must be used inside <WorkspaceUIStateProvider>");
-  }
-  return api;
-}
-
-/** Same as `useWorkspaceUIState`, but returns `null` when no provider is
- *  mounted — for components that also render standalone (tests, read-only
- *  surfaces). A caller that gets `null` must not rely on shared selection. */
-export function useOptionalWorkspaceUIState(): WorkspaceUIState | null {
-  return useContext(WorkspaceUIStateContext);
-}
 
 export function WorkspaceUIStateProvider({ children }: { children: ReactNode }) {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);

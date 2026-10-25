@@ -17,7 +17,7 @@ import { SourceBadge } from "@/components/SourceBadge";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useThreadArtifacts, type Artifact } from "@/hooks/useThreadArtifacts";
-import { useOptionalWorkspaceUIState } from "@/components/workspace/WorkspaceUIStateProvider";
+import { useOptionalWorkspaceUIState } from "@/hooks/useWorkspaceUIState";
 
 // Tailwind's `xl` breakpoint, matched to the Workbench's `xl:block` gate in
 // ChatPage. Returns true when the Workbench is visible beside the content.
@@ -887,7 +887,7 @@ export function ArtifactRow({
   );
 }
 
-function ArtifactDrawer({
+export function ArtifactDrawer({
   artifact, onClose, onChanged, reviewGet, reviewSet, threadId, allArtifacts,
 }: {
   artifact: Artifact | null;
