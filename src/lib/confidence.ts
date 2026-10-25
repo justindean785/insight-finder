@@ -1,6 +1,6 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ReviewState } from "@/lib/review";
-import { extractSourceInfo } from "@/lib/intel";
+import { extractSourceInfo, independentSourceClasses } from "@/lib/intel";
 import { isDateableBreachKind } from "./breach-kinds";
 
 /**
@@ -135,12 +135,23 @@ function badgesFor(
   review?: ReviewState,
 ): TrustBadge[] {
   const out: TrustBadge[] = [];
-  if (src.all.length >= 2) {
-    out.push({ key: "multi-source", label: "Multi-source corroborated", tone: "high",
-      hint: `Observed across ${src.all.length} sources.` });
+  // Honest independence: distinct SOURCE CLASSES that can independently
+  // corroborate, not provider count. Two breach aggregators mirroring one
+  // underlying corpus count as ONE class; a cluster of ai_summary-only
+  // sources counts as ZERO. See src/lib/intel.ts independentSourceClasses.
+  // Previously `src.all.length` labelled "Multi-source corroborated" the
+  // moment two providers echoed the same breach — which is not corroboration.
+  const classes = independentSourceClasses(a);
+  const providerCount = src.all.length;
+  if (classes.length >= 2) {
+    out.push({ key: "multi-source", label: `Independent sources: ${classes.length}`, tone: "high",
+      hint: `${classes.length} distinct source classes corroborate independently (${classes.join(", ")}). Not simply ${providerCount} provider${providerCount === 1 ? "" : "s"} — providers mirroring one corpus count as one class.` });
+  } else if (classes.length === 1 && providerCount >= 2) {
+    out.push({ key: "single-source", label: "One source class", tone: "mid",
+      hint: `${providerCount} providers reported this, but they share one source class (${classes[0]}). Mirrors of one corpus are not independent corroboration.` });
   } else {
     out.push({ key: "single-source", label: "Single-source", tone: "mid",
-      hint: "Only one source so far — promote after corroboration." });
+      hint: "Only one source class so far — promote after independent corroboration." });
   }
 
   // isDateableBreachKind, NOT isBreachKind: a collapsed breach_exposure row spans
