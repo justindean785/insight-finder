@@ -191,7 +191,10 @@ describe("case sheet — ChatPage wiring", () => {
     expect(content.indexOf("<ChatWindow")).toBeLessThan(content.indexOf("<Workbench"));
   });
 
-  it("shows only beside the transcript and the report, never on mobile", () => {
-    expect(src).toMatch(/const showSheet = !isMobile && \(tab === "chat" \|\| tab === "report"\);/);
+  it("shows only beside the surfaces that share the Workbench, never on mobile", () => {
+    // The Workbench is shared across Investigate (chat), Evidence and Report
+    // (JD's "exactly ONE right-hand workbench, shared across Investigate and
+    // Evidence" invariant). Overview, Graph and Tools own full width.
+    expect(src).toMatch(/const showSheet = !isMobile && \(tab === "chat" \|\| tab === "report" \|\| tab === "evidence"\);/);
   });
 });

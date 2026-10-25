@@ -3,7 +3,7 @@ import { ArtifactInspector } from "@/components/workspace/ArtifactInspector";
 import { CaseSheet } from "@/components/workspace/CaseSheet";
 import { WorkbenchConnections } from "@/components/workspace/WorkbenchConnections";
 import { WorkbenchNext } from "@/components/workspace/WorkbenchNext";
-import { useWorkspaceUIState } from "@/components/workspace/WorkspaceUIStateProvider";
+import { useOptionalWorkspaceUIState } from "@/components/workspace/WorkspaceUIStateProvider";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useReviewStates } from "@/lib/review";
@@ -50,13 +50,18 @@ export function Workbench({ threadId }: { threadId: string }) {
     refs.current[TABS[next].key]?.focus();
   };
 
-  const { selectedArtifactId, clear } = useWorkspaceUIState();
+  // Optional: standalone renders (CaseViewPage read-only, tests) have no
+  // provider — the Workbench then degrades to its pre-change single-mode
+  // behaviour (CaseSheet only, no selection path), which is exactly what
+  // those callers used to get.
+  const ui = useOptionalWorkspaceUIState();
+  const selectedArtifactId = ui?.selectedArtifactId ?? null;
+  const clear = ui?.clear ?? (() => {});
   // Auto-switch to Sheet when a selection appears, so Evidence row click
   // doesn't leave the detail hiding behind the Next or Connections tab.
   // Preserve the user's tab choice when selection returns to null.
   useEffect(() => {
     if (selectedArtifactId) select("sheet");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedArtifactId]);
 
   return (
