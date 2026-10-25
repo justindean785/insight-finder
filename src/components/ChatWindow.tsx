@@ -3363,13 +3363,15 @@ function ChatWindowInner({
           >
             {preflight.errors.target
               ? preflight.errors.target
-              : preflight.empty
-                ? primary.kind === "continue"
-                  ? "Continue runs the next best pivots and reports only what is new — or ask anything about this case."
-                  : isFollowUp
-                    ? "Ask about this case, or name a new selector to pivot on."
-                    : "Enter one primary target, then state the question you need answered."
-                : `Target: ${preflight.summary.target}`}
+              : primary.kind === "stop"
+                ? "Agent working — press Stop to end this run."
+                : preflight.empty
+                  ? primary.kind === "continue"
+                    ? "Continue runs the next best pivots and reports only what is new — or ask anything about this case."
+                    : isFollowUp
+                      ? "Ask about this case, or name a new selector to pivot on."
+                      : "Enter one primary target, then state the question you need answered."
+                  : `Target: ${preflight.summary.target}`}
           </p>
         </div>
       </div>
