@@ -278,7 +278,7 @@ export default function BrainGlobalPage() {
             aria-label="Home"
             className="relative shrink-0 rounded-xl"
           >
-            <div className="w-10 h-10 rounded-xl glass-strong grid place-items-center ring-1 ring-primary/40 shadow-[0_0_24px_-6px_hsl(var(--primary)/0.7)] hover:bg-white/[0.04] transition-colors">
+            <div className="w-10 h-10 rounded-xl glass-strong grid place-items-center ring-1 ring-primary/40 hover:bg-white/[0.04] transition-colors">
               <Brain className="w-5 h-5 text-primary" strokeWidth={1.5} />
             </div>
             <Sparkles className="absolute -top-1 -right-1 w-3 h-3 text-primary animate-pulse" />

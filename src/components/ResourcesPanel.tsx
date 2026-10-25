@@ -336,7 +336,7 @@ function ArtifactsList({
                   className="radar-ring absolute h-11 w-11 rounded-full border border-[hsl(var(--intel-blue)/0.5)]"
                   style={{ animation: "radar-ping 3.4s ease-out infinite", animationDelay: "1.7s" }}
                 />
-                <div className="relative grid h-11 w-11 place-items-center rounded-xl border border-[hsl(var(--intel-blue)/0.35)] bg-[linear-gradient(180deg,hsl(var(--surface-3)),hsl(var(--surface-1)))] text-[hsl(var(--intel-blue))] shadow-[0_0_26px_-10px_hsl(var(--intel-blue)/0.7)]">
+                <div className="relative grid h-11 w-11 place-items-center rounded-xl border border-[hsl(var(--intel-blue)/0.35)] bg-[linear-gradient(180deg,hsl(var(--surface-3)),hsl(var(--surface-1)))] text-[hsl(var(--intel-blue))]">
                   <Radar className="h-[18px] w-[18px]" strokeWidth={1.6} />
                 </div>
               </div>
