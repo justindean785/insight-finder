@@ -18,24 +18,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useThreadArtifacts, type Artifact } from "@/hooks/useThreadArtifacts";
 import { useOptionalWorkspaceUIState } from "@/hooks/useWorkspaceUIState";
-
-// Tailwind's `xl` breakpoint, matched to the Workbench's `xl:block` gate in
-// ChatPage. Returns true when the Workbench is visible beside the content.
-function useIsWorkbenchViewport(): boolean {
-  const [match, setMatch] = useState<boolean>(() =>
-    typeof window !== "undefined" && typeof window.matchMedia === "function"
-      ? window.matchMedia("(min-width: 1280px)").matches
-      : false,
-  );
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
-    const mql = window.matchMedia("(min-width: 1280px)");
-    const onChange = () => setMatch(mql.matches);
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, []);
-  return match;
-}
+import { useIsWorkbenchViewport } from "@/hooks/useIsWorkbenchViewport";
 import {
   groupForKind, GROUP_LABEL, GROUP_ORDER, type Group,
   extractSourceInfo, CACHE_LAYER_LABEL, CACHE_LAYER_CLASS,
@@ -1400,15 +1383,19 @@ export function EvidenceBoard({
   // may HIDE (it excludes quarantined rows). Widen to All so the row is in the
   // list, and open its drawer. Applied once per nonce, and only once the row
   // has actually loaded — the board can mount before its artifacts arrive.
+  //
+  // Uses `handleSelect` (not `setSelected`) so the shared workspace UI state
+  // publishes the selection too — otherwise the Workbench Sheet at xl+ would
+  // stay on the case summary while the Board shows the row selected locally.
   const [focusedNonce, setFocusedNonce] = useState<number | null>(null);
   useEffect(() => {
     if (!focusRequest || focusRequest.n === focusedNonce) return;
     const target = items.find((a) => a.id === focusRequest.id);
     if (!target) return;
     setStatusFilter("all");
-    setSelected(target);
+    handleSelect(target);
     setFocusedNonce(focusRequest.n);
-  }, [focusRequest, focusedNonce, items]);
+  }, [focusRequest, focusedNonce, items, handleSelect]);
   const [sortMode, setSortMode] = useState<EvidenceSortMode>("strength");
 
   // Live counts per quick-filter so the analyst sees how much sits in each bucket.

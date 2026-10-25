@@ -28,6 +28,7 @@ import { messageIntegrity, narrativeIsUnadjudicated } from "@/lib/message-integr
 import { RunChips, RunMenu } from "@/components/pivots/RunControls";
 import { composerPrimary } from "@/lib/composer-primary";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useIsWorkbenchViewport } from "@/hooks/useIsWorkbenchViewport";
 import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import {
   AUTO_RUN_MAX_CYCLES, AUTO_RUN_OVERLAP_MAX_WAIT_MS, AUTO_RUN_OVERLAP_POLL_MS, AUTO_RUN_SETTLE_MS, CONTINUE_PROMPT, REPORT_PROMPT,
@@ -2509,6 +2510,11 @@ function ChatWindowInner({
   );
   // Placeholder length only — layout is CSS-responsive and never remounts.
   const isPhone = useIsMobile();
+  // When the Workbench's right-hand Next tab is visible (xl+), the actionable
+  // pivot queue lives there — the transcript shows a compact summary + handoff
+  // button to avoid duplicating Run affordances. Below xl, the Workbench aside
+  // is `display:none`, so the transcript keeps the full NextSteps as fallback.
+  const workbenchVisible = useIsWorkbenchViewport();
   const runControlsVisible = canShowRunControls({
     isLoading,
     hasAssistantTurn: messages.some((m) => m.role === "assistant"),
@@ -3096,17 +3102,46 @@ function ChatWindowInner({
             <FailedRunCard reason={error.message} onRetry={retryLastUser} />
           )}
           {suggestions.length > 0 && (
-            <NextSteps
-              items={suggestions}
-              onRunPivot={runPivotFromRail}
-              onRunAction={(prompt) => void sendText(prompt)}
-              busy={isLoading}
-              openKey={openStep}
-              onOpenChange={setOpenStep}
-              connections={connections}
-              artifactsById={artifactsByIdMemo}
-              onOpenGraph={() => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "graph" } }))}
-            />
+            workbenchVisible ? (
+              // Workbench's Next tab owns the live queue. In the transcript we
+              // show a quiet handoff — the exact pivot cards, Run buttons and
+              // Preview flow live on the right so the analyst isn't offered
+              // the same action twice. Below xl the full NextSteps renders
+              // (see the fallback branch) because the Workbench is hidden.
+              <aside
+                aria-label="Next pivots summary"
+                className="rounded-lg border border-border-subtle bg-surface-2/60 px-4 py-3"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-data text-muted-foreground">
+                    {suggestions.length === 1
+                      ? "1 next pivot ranked"
+                      : `${suggestions.length} next pivots ranked`}
+                    <span className="mx-1.5 text-faint-foreground">·</span>
+                    open the workbench to Preview and Run
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => window.dispatchEvent(new CustomEvent("swarmbot:workbench-tab", { detail: { tab: "next" } }))}
+                    className="inline-flex h-7 items-center rounded-md border border-border-subtle bg-surface-3 px-2.5 text-data font-medium text-foreground transition-colors hover:bg-surface-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    Open Next pivots
+                  </button>
+                </div>
+              </aside>
+            ) : (
+              <NextSteps
+                items={suggestions}
+                onRunPivot={runPivotFromRail}
+                onRunAction={(prompt) => void sendText(prompt)}
+                busy={isLoading}
+                openKey={openStep}
+                onOpenChange={setOpenStep}
+                connections={connections}
+                artifactsById={artifactsByIdMemo}
+                onOpenGraph={() => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "graph" } }))}
+              />
+            )
           )}
           <div ref={endRef} />
         </div>

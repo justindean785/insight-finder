@@ -64,6 +64,25 @@ export function Workbench({ threadId }: { threadId: string }) {
     if (selectedArtifactId) select("sheet");
   }, [selectedArtifactId]);
 
+  // The transcript's compact "Open Next pivots" affordance dispatches this
+  // event so the single actionable queue on the right-hand Workbench gets the
+  // focus without duplicating Run buttons in the chat. See ChatWindow.tsx and
+  // register item 1 ("single Next-steps queue").
+  useEffect(() => {
+    const onJump = (e: Event) => {
+      const detail = (e as CustomEvent<{ tab?: WorkbenchTab }>).detail;
+      const target = detail?.tab;
+      if (target === "sheet" || target === "next" || target === "connections") {
+        select(target);
+        // Hand keyboard focus to the newly-selected tab button so the next
+        // ArrowLeft/ArrowRight keystroke lands in the right place.
+        queueMicrotask(() => refs.current[target]?.focus());
+      }
+    };
+    window.addEventListener("swarmbot:workbench-tab", onJump as EventListener);
+    return () => window.removeEventListener("swarmbot:workbench-tab", onJump as EventListener);
+  }, []);
+
   return (
     <div className="flex h-full min-h-0 flex-col" data-workbench>
       {/* Right padding leaves room for the sheet's own fold button. */}
