@@ -1,0 +1,28 @@
+
+> vite_react_shadcn_ts@0.0.0 test:e2e
+> playwright test stage1b-wcag.spec.ts
+
+
+Running 18 tests using 1 worker
+
+  ✓   1 [894x617] › e2e/stage1b-wcag.spec.ts:133:3 › Stage 1b WCAG static sweep (axe-core) › Investigate tab — 1.4.3 / 1.4.11 / 4.1.2 (1.5s)
+  ✓   2 [894x617] › e2e/stage1b-wcag.spec.ts:140:3 › Stage 1b WCAG static sweep (axe-core) › Evidence Ledger — ordinary row selected (1.5s)
+  -   3 [894x617] › e2e/stage1b-wcag.spec.ts:158:3 › Stage 1b WCAG static sweep (axe-core) › Evidence Ledger — quarantined row selected (release-gate visible)
+  -   4 [894x617] › e2e/stage1b-wcag.spec.ts:187:3 › Stage 1b WCAG static sweep (axe-core) › Compare candidates dialog
+  ✓   5 [894x617] › e2e/stage1b-wcag.spec.ts:199:3 › Stage 1b WCAG static sweep (axe-core) › Modal inspector at phone width (390) (1.5s)
+  ✓   6 [894x617] › e2e/stage1b-wcag.spec.ts:212:3 › Stage 1b WCAG static sweep (axe-core) › Workbench inspector at desktop width (1440) (1.4s)
+  ✓   7 [1280x720] › e2e/stage1b-wcag.spec.ts:133:3 › Stage 1b WCAG static sweep (axe-core) › Investigate tab — 1.4.3 / 1.4.11 / 4.1.2 (1.3s)
+  ✓   8 [1280x720] › e2e/stage1b-wcag.spec.ts:140:3 › Stage 1b WCAG static sweep (axe-core) › Evidence Ledger — ordinary row selected (2.1s)
+  -   9 [1280x720] › e2e/stage1b-wcag.spec.ts:158:3 › Stage 1b WCAG static sweep (axe-core) › Evidence Ledger — quarantined row selected (release-gate visible)
+  -  10 [1280x720] › e2e/stage1b-wcag.spec.ts:187:3 › Stage 1b WCAG static sweep (axe-core) › Compare candidates dialog
+  ✓  11 [1280x720] › e2e/stage1b-wcag.spec.ts:199:3 › Stage 1b WCAG static sweep (axe-core) › Modal inspector at phone width (390) (1.4s)
+  ✓  12 [1280x720] › e2e/stage1b-wcag.spec.ts:212:3 › Stage 1b WCAG static sweep (axe-core) › Workbench inspector at desktop width (1440) (1.4s)
+  ✓  13 [1440x900] › e2e/stage1b-wcag.spec.ts:133:3 › Stage 1b WCAG static sweep (axe-core) › Investigate tab — 1.4.3 / 1.4.11 / 4.1.2 (2.9s)
+  ✓  14 [1440x900] › e2e/stage1b-wcag.spec.ts:140:3 › Stage 1b WCAG static sweep (axe-core) › Evidence Ledger — ordinary row selected (2.2s)
+  -  15 [1440x900] › e2e/stage1b-wcag.spec.ts:158:3 › Stage 1b WCAG static sweep (axe-core) › Evidence Ledger — quarantined row selected (release-gate visible)
+  -  16 [1440x900] › e2e/stage1b-wcag.spec.ts:187:3 › Stage 1b WCAG static sweep (axe-core) › Compare candidates dialog
+  ✓  17 [1440x900] › e2e/stage1b-wcag.spec.ts:199:3 › Stage 1b WCAG static sweep (axe-core) › Modal inspector at phone width (390) (1.4s)
+  ✓  18 [1440x900] › e2e/stage1b-wcag.spec.ts:212:3 › Stage 1b WCAG static sweep (axe-core) › Workbench inspector at desktop width (1440) (1.6s)
+
+  6 skipped
+  12 passed (26.4s)
