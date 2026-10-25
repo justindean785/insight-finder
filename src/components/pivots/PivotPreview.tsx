@@ -60,10 +60,14 @@ export function PivotPreview({
         <dt className="text-muted-foreground">Basis</dt>
         <dd className="min-w-0 text-foreground/90">
           {pivot.basis}
-          <span className="text-muted-foreground"> · linkage {eligibility.linkage === "linked" ? "proven by a recorded row" : eligibility.linkage === "report" ? "not recorded" : "unproven"}</span>
+          <span className="text-muted-foreground"> · {eligibility.linkage === "linked"
+            ? "a recorded row ties this target to the subject; identity linkage is not asserted"
+            : eligibility.linkage === "report"
+              ? "linkage is not recorded (the report proposed this target)"
+              : "linkage to the subject is unproven"}</span>
         </dd>
         <dt className="text-muted-foreground">Scope</dt>
-        <dd className="min-w-0 text-foreground/90">One agent run on this target using public sources. The server caps paid calls per run.</dd>
+        <dd className="min-w-0 text-foreground/90">One agent run on this target using the permitted tools for this pivot. The server caps paid calls per run.</dd>
         <dt className="text-muted-foreground">Estimate</dt>
         <dd className="min-w-0 text-muted-foreground">Unavailable — the backend does not publish per-pivot estimates.</dd>
       </dl>
