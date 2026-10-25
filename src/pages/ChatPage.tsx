@@ -19,6 +19,7 @@ const ToolsTab = lazy(() => import("@/components/workspace/ToolsTab").then((m) =
 const GraphTab = lazy(() => import("@/components/workspace/GraphTab").then((m) => ({ default: m.GraphTab })));
 const ReportTab = lazy(() => import("@/components/panel/ReportTab").then((m) => ({ default: m.ReportTab })));
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useIsWorkbenchViewport } from "@/hooks/useIsWorkbenchViewport";
 import { cn } from "@/lib/utils";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -147,8 +148,22 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
   useEffect(() => {
     try { localStorage.setItem("if:caseSheetCollapsed", sheetCollapsed ? "1" : "0"); } catch { /* ignore */ }
   }, [sheetCollapsed]);
+  // Below lg (768-1023px) there is no room to dock 320px beside the content, so
+  // the sheet stays folded and opens as an overlay. That open state is not
+  // remembered: a reload at this width should not cover the transcript.
+  const docked = useIsWorkbenchViewport();
+  const [overlayOpen, setOverlayOpen] = useState(false);
+  const collapsed = docked ? sheetCollapsed : !overlayOpen;
+  const setCollapsed = (v: boolean) => (docked ? setSheetCollapsed(v) : setOverlayOpen(!v));
+  useEffect(() => {
+    if (docked || !overlayOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOverlayOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [docked, overlayOpen]);
   const besideSheet = (key: WorkspaceTab) =>
-    showSheet && (key === "chat" || key === "report" || key === "evidence") && (sheetCollapsed ? "xl:right-11" : "xl:right-[380px]");
+    showSheet && (key === "chat" || key === "report" || key === "evidence") &&
+    (collapsed ? "md:right-11" : "md:right-11 lg:right-[320px] xl:right-[380px]");
   const queueCount = sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null;
 
   const panel = (key: Exclude<WorkspaceTab, "chat">, body: ReactNode, scroll = false) =>
@@ -196,17 +211,21 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
           id="case-sheet"
           aria-label="Case sheet"
           className={cn(
-            "absolute inset-y-0 right-0 hidden border-l border-border-subtle bg-card xl:block",
-            sheetCollapsed ? "w-11" : "w-[380px]",
+            // Docked at lg+ (keep in step with useIsWorkbenchViewport); a folded
+            // strip that opens as an overlay at md. It used to exist only at xl+,
+            // so a laptop browser had no way to reach it.
+            "absolute inset-y-0 right-0 hidden border-l border-border-subtle bg-card md:block",
+            collapsed ? "w-11" : "w-[320px] xl:w-[380px]",
+            !docked && !collapsed && "z-30 shadow-2xl",
           )}
         >
-          {sheetCollapsed ? (
+          {collapsed ? (
             <div className="flex h-full flex-col items-center gap-2 py-2">
               <Tooltip delayDuration={150}>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    onClick={() => setSheetCollapsed(false)}
+                    onClick={() => setCollapsed(false)}
                     aria-label="Show case sheet"
                     aria-expanded={false}
                     aria-controls="case-sheet"
@@ -220,7 +239,7 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
               {queueCount != null && queueCount > 0 && (
                 <button
                   type="button"
-                  onClick={() => setSheetCollapsed(false)}
+                  onClick={() => setCollapsed(false)}
                   aria-label={`${queueCount} need${queueCount === 1 ? "s" : ""} your call — open case sheet`}
                   title={`${queueCount} need${queueCount === 1 ? "s" : ""} your call`}
                   className="grid min-h-8 min-w-8 place-items-center rounded-full border border-warning/40 bg-warning/10 px-1.5 font-mono text-data tabular-nums text-warning transition-colors hover:bg-warning/15"
@@ -235,7 +254,7 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    onClick={() => setSheetCollapsed(true)}
+                    onClick={() => setCollapsed(true)}
                     aria-label="Hide case sheet"
                     aria-expanded
                     aria-controls="case-sheet"
