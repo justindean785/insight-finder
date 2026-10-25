@@ -41,12 +41,14 @@ export interface CaseThreadRow {
   recovery_reason: string | null;
   run_started_at: string | null;
   last_heartbeat_at: string | null;
+  /** The case's name as the cases list shows it. */
+  title?: string | null;
   updated_at: string | null;
 }
 
 /** The columns to SELECT for a `CaseThreadRow` — kept beside the type so they cannot drift. */
 export const CASE_THREAD_COLUMNS =
-  "id,seed_value,seed_type,status,credits_used,cost_micro_usd,recovered_at,recovery_reason,run_started_at,last_heartbeat_at,updated_at";
+  "id,seed_value,seed_type,status,credits_used,cost_micro_usd,recovered_at,recovery_reason,run_started_at,last_heartbeat_at,updated_at,title";
 
 /**
  * Where the run stands. FIVE states, each a different claim:
@@ -232,7 +234,7 @@ export interface CaseSnapshotCore {
     startedAt: string | null;
     heartbeatAt: string | null;
   };
-  seed: { value: string | null; type: string | null };
+  seed: { value: string | null; type: string | null; caseTitle: string | null };
   evidence: {
     /** Deduped artifact rows — the Evidence tab's count. */
     artifacts: number;
@@ -332,7 +334,7 @@ export function buildCaseSnapshot(input: CaseSnapshotInput): CaseSnapshotCore {
       startedAt: input.thread?.run_started_at ?? null,
       heartbeatAt: input.thread?.last_heartbeat_at ?? null,
     },
-    seed: { value: input.thread?.seed_value ?? null, type: input.thread?.seed_type ?? null },
+    seed: { value: input.thread?.seed_value ?? null, type: input.thread?.seed_type ?? null, caseTitle: input.thread?.title ?? null },
     evidence: {
       artifacts: artifactCount,
       ledger: input.integrity ? input.integrity.total : null,
