@@ -286,3 +286,33 @@ describe("Breach narrative count agrees with the filtered table", () => {
     expect(text).not.toContain("Subject appears in 4 distinct breach corpora");
   });
 });
+
+
+describe("Sensitive Registrations subject authority", () => {
+  function registrations(arts: ReturnType<typeof art>[], reviews: Record<string, string> = {}) {
+    const c = renderReport(arts, reviews);
+    return Array.from(c.querySelectorAll("table")).find(t =>
+      t.querySelector("thead")?.textContent?.includes("Account identifier"))?.textContent ?? "";
+  }
+  it("retains accepted registrations and excludes quarantined, dismissed, rejected-derived and negative rows", () => {
+    const arts = [
+      art({ id: "email", kind: "email", value: "unrelated@example.com" }),
+      breach("accepted", "Accepted", { site: "Accepted", identifier: "subject@example.com" }),
+      breach("quarantine", "Quarantined", { site: "Quarantined", ...UNLINKED }),
+      breach("dismissed", "Dismissed", { site: "Dismissed" }),
+      breach("derived", "Derived", { site: "Derived", parent_selector: "unrelated@example.com" }),
+      art({ id: "negative", value: "No breach hits", metadata: { site: "Negative" } }),
+      art({ id: "account", kind: "account", value: "unrelated", metadata: { site: "RejectedAccount", ...UNLINKED } }),
+    ];
+    const text = registrations(arts, { email: "wrong", dismissed: "dismissed" });
+    expect(text).toContain("Accepted");
+    for (const label of ["Quarantined", "Dismissed", "Derived", "Negative", "RejectedAccount"]) expect(text).not.toContain(label);
+    expect(arts).toHaveLength(7);
+  });
+  it("permits explicitly released linkage while preserving rejection precedence", () => {
+    const arts = [breach("released", "Released", { site: "Released", ...UNLINKED, linkage_confirmed: true })];
+    expect(registrations(arts)).toContain("Released");
+    cleanup();
+    expect(registrations(arts, { released: "wrong" })).not.toContain("Released");
+  });
+});

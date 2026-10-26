@@ -237,3 +237,32 @@ Pending (JD-driven, not fork-driven):
 - Manual workspace e2e against the harness URL.
 
 PRs #872 / #873 / #874 untouched; branch not pushed; no PR opened; no merge.
+
+
+## Production audit repair — 2026-10-25
+
+Authorization: implement repairs and draft PRs; no merge/deploy or production writes.
+Baseline: `750e885cffb0574290abec77bb406d7c2e673927` (remote main verified).
+GitHub API currently returns Forbidden; PR refs #874/#873/#593 fetched read-only.
+#874/#873 overlap queue/preview/ranking; #593 overlaps dedupe and radar. Leave their branches untouched.
+
+- [x] Read AGENTS.md, CLAUDE.md, tasks/lessons.md and inspect overlapping PR diffs.
+- [x] Measure base: lint/typecheck/build pass; frontend 2894 passed, 1 skipped. Edge blocked by network importing deno.land/jsr.io.
+- [x] 1. Reproduce registrations authority leak; audit report and exports; test eligible/excluded/rejected-derived/negative rows; fix first.
+- [ ] 2. Reproduce stale queue/count inputs; case-scoped queue with loading/error, completion/reconnect refresh, late mounts and case switching tests.
+- [ ] 3. Structured recommendations and explicit legacy repair review; preserve strict dispatch validation and distinguish queried from exhausted.
+- [ ] 4. Compact expandable inspector heading, prose layout and review controls; verify 320/380px and laptop heights.
+- [ ] 5. Valid mixed IPv4/IPv6 detection and aliases; classify display versus persisted seeds; test URLs/phones/account IDs.
+- [ ] 6. Trace and label artifact/provider/dataset/source-class counts without changing scoring thresholds.
+- [ ] 7. Reconcile transcript/Tools/Overview outcomes by persisted call ID.
+- [ ] 8. Trace synthesis/finalizer overclaims and cycle delta behavior; isolate backend PR and preserve termination invariants.
+- [ ] 9. Separate generic assistant actions from eligible pivots across responsive layouts.
+- [ ] 10. Typed nested metadata formatting, source labels, review wording and effective versus historical linkage state.
+- [ ] Meaningful failing tests precede behavior changes; targeted tests, lint/typecheck/frontend/build/manual e2e; edge tests for backend changes.
+- [ ] Sanitized multi-run harness QA: mounted completion, late Next, review changes, malformed suggestions, switch/reload and responsive layouts.
+- [ ] Small independent draft PRs, tested SHAs, evidence, gaps and rollback scopes; update lessons/results.
+
+### Results
+Work in progress. No merge, deployment, production mutation, or paid scan performed.
+
+Registration repair: reproduced two failing tests, then 50 targeted tests passed. Export audit: buildReportMarkdown already cascades rejected provenance; audit serializer formats supplied clusters/sources and has no registrations producer. Other subject profile/alias/footprint callers have authority predicates but provenance coverage needs a broader follow-up. Baseline harness: 95 passed, 13 skipped; skipped tests are not verified.

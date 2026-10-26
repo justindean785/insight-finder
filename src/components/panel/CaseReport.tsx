@@ -303,7 +303,11 @@ type RegistrationRow = {
 
 function buildRegistrationRows(artifacts: Artifact[], reviews?: Reviews): RegistrationRow[] {
   const rows: RegistrationRow[] = [];
+  const derived = rejectedDerivedIds(artifacts, reviews);
   for (const a of artifacts) {
+    // Registrations assert subject membership, just like Breach Exposure.
+    // Keep excluded rows in the evidence/review sections, not this table.
+    if (!forSubject(reviews, a) || derived.has(a.id) || isNullResultValue(a.value, a.source)) continue;
     const k = String(a.kind ?? "").toLowerCase();
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
     const site =
