@@ -32,7 +32,12 @@
  */
 
 import type { ModelMessage } from "npm:ai@6";
+import { HISTORICAL_OUTPUT_LABEL } from "./lib/historical-label.ts";
 import { summarizeToolResultValue } from "./message-sanitize.ts";
+
+/** Head-preserving truncation shared by every history/step text trim in index.ts. Exported so tests exercise the real function. */
+export const truncateStr = (s: string, max: number): string =>
+  s.length <= max ? s : s.slice(0, max) + `\n…[truncated ${s.length - max} chars]`;
 
 // ---- Named budget constants -------------------------------------------------
 // Total serialized-char ceiling for the message array handed to the orchestrator.
@@ -421,13 +426,28 @@ function summarizeMessagePartsIncrementally(
       reprice();
       continue;
     }
-    if (part?.type === "text" && typeof part.text === "string" && part.text.length > 200) {
-      parts[p] = { ...part, text: part.text.slice(0, 200) + " …[elided]" } as TrimPart;
-      compacted++;
-      reprice();
+    if (part?.type === "text" && typeof part.text === "string") {
+      const cut = elideAssistantText(part.text);
+      if (cut !== null) {
+        parts[p] = { ...part, text: cut } as TrimPart;
+        compacted++;
+        reprice();
+      }
     }
   }
   return compacted;
+}
+
+/**
+ * Elide an assistant text part to its first 200 chars (+ marker), or null when it is already short.
+ * A leading HISTORICAL_OUTPUT_LABEL is PRESERVED INTACT and not counted against the 200: this is what
+ * lets "earlier assistant turn, not evidence" survive budget trimming. Text without the label is
+ * elided byte-identically to the previous behaviour (slice(0,200) + " …[elided]").
+ */
+export function elideAssistantText(text: string): string | null {
+  const lead = text.startsWith(HISTORICAL_OUTPUT_LABEL) ? HISTORICAL_OUTPUT_LABEL : "";
+  if (text.length - lead.length <= 200) return null;
+  return lead + text.slice(lead.length, lead.length + 200) + " …[elided]";
 }
 
 /**
@@ -483,8 +503,9 @@ function elideMessageParts(m: ModelMessage, compactInputs = false): ModelMessage
         : ref;
       return { ...part, output: nextOutput };
     }
-    if (part?.type === "text" && typeof part.text === "string" && part.text.length > 200) {
-      return { ...part, text: part.text.slice(0, 200) + " …[elided]" };
+    if (part?.type === "text" && typeof part.text === "string") {
+      const cut = elideAssistantText(part.text);
+      if (cut !== null) return { ...part, text: cut };
     }
     return part;
   }) as unknown as typeof m.content;
