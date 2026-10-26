@@ -4,6 +4,41 @@ Plan of record: `docs/plans/REMEDIATION_PLAN_2026-10-10.md`. This file is the ch
 running results. The previous contents (June UI/UX upgrade plan) are preserved verbatim in
 `docs/archive/TODO_2026-06_workspace-ui-plan.md`; its 20 unchecked items belong to retired sub-sections, not current work.
 
+## 2026-10-26 — shared case pivot queue repair
+
+Scope: only the stale Chat / Workbench Next queue, on `repair/case-pivot-queue`,
+base `750e885cffb0574290abec77bb406d7c2e673927`. Registration authority repair
+remains separate in draft PR #881. No merge, deploy, live scan or production write.
+
+- [x] Reproduced before changing production code: sanitized signed-in harness,
+  mounted transcript, run completion with a lost tool-log event, late Workbench.
+  Workbench showed **2**, transcript still promised **3**. The new browser test
+  failed on that exact mismatch against the base (`/tmp/pivot-queue-before.log`).
+- [x] One workspace provider publishes validated, eligible rows and their count;
+  desktop handoff, late Workbench and mobile use that list. The existing engine,
+  authority predicates, cap, preview/run controls and evidence originals remain.
+- [x] Refresh tool history on completion, case reconciliation, reconnect and tab
+  resume; ignore stale responses and old channel callbacks. Unavailable inputs
+  withhold candidates with a visible loading/error state and retry.
+- [x] Nine queue/request-order tests cover late mount, reviews/reversal, skips,
+  report clearing, completion, reconnect, read failure and case switching.
+  Targeted suite: **91 passed**. Final queue-only regression: **9 passed**.
+- [x] Full frontend suite: **2,903 passed / 1 skipped**, 242 files (same-base
+  onboarding baseline: 2,894 passed / 1 skipped). Typecheck and build pass;
+  lint **0 errors / 15 existing warnings**.
+- [x] Full workspace browser suite: **98 passed / 13 skipped** (baseline 95/13).
+  Desktop/mobile visual check has zero page errors; screenshots saved under
+  `/tmp/pivot-queue-after-{desktop,mobile}.png`.
+- [x] Sanitized desktop/mobile before-after sequence passes after repair;
+  no investigation POSTs. Production case and deployed frontend SHA not verified.
+
+History: Workbench added an independent consumer in `70766fc` (#869); `08553ef`
+(#875) shared the count calculation but not its data. The tool-history hook's
+realtime-only refresh predated those changes (`8dd643b`). This supports a newly
+exposed cross-view synchronization defect, not attribution of all audit findings
+to the redesign. Overlapping pivot drafts #873/#874 remain untouched.
+
+
 ## Status: S1a is IMPLEMENTED and DEPLOYED (live `811929c`) but enforcement is DISABLED (`RUN_LEASE_DISABLED=true`)
 
 Four states, kept apart on purpose: **implemented** (merged) → **deployed** (`/health` build moved) → **enabled** (enforcing in production) →

@@ -322,6 +322,23 @@ const SCENARIO =
 
 const mainThread = FIXTURES.threads?.[0] as Record<string, unknown> | undefined;
 const nowIso = () => new Date().toISOString();
+// Sanitized queue regression: a run records a queried selector while the
+// transcript stays mounted and the tool-log realtime notification is lost.
+if (!SNAPSHOT && mainThread && SCENARIO === "pivot-queue") {
+  Object.assign(mainThread, { seed_value: "seed@example.test", status: "active", run_started_at: nowIso(), last_heartbeat_at: nowIso() });
+  FIXTURES.artifacts = ["alpha", "beta", "gamma"].map((name) => ({
+    id: `queue-${name}`, thread_id: THREAD_ID, kind: "email", value: `${name}@example.test`,
+    confidence: 60, source: "hunter_verify", created_at: iso(1), metadata: {},
+  }));
+  FIXTURES.artifact_reviews = [];
+  FIXTURES.tool_usage_log = [];
+  FIXTURES.messages = [{ id: "queue-report", thread_id: THREAD_ID, role: "assistant", created_at: iso(1), parts: text("## Findings report\n\nThree recorded selectors await investigation.") }];
+  (window as unknown as { __harnessFinishPivotRun: () => void }).__harnessFinishPivotRun = () => {
+    FIXTURES.tool_usage_log = [{ ...tool("queue-call", "hunter_verify", true, 100, 0), input_json: { runtime: { selector: "alpha@example.test" } } }];
+    Object.assign(mainThread, { status: "finished", updated_at: nowIso() });
+    emit("threads", "UPDATE", { new: { ...mainThread }, old: {} });
+  };
+}
 if (!SNAPSHOT && mainThread) {
   if (SCENARIO === "running" || SCENARIO === "running-elsewhere") {
     Object.assign(mainThread, { status: "active", run_started_at: new Date(Date.now() - 120_000).toISOString(), last_heartbeat_at: nowIso() });

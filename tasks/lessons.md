@@ -2,6 +2,20 @@
 
 Running log of non-obvious gotchas learned while working in this repo. Newest first.
 
+## 2026-10-26 — a shared count function does not share case state
+
+Chat and a later-mounted Workbench used the same count formula with separately
+loaded queried-target sets. A missed tool-log event left the transcript stale
+while the Workbench's mount read was current. Reproduce with an already-mounted
+transcript, finish the run without that event, then open Next: the base promised
+three leads while showing two. Pure count tests cannot catch this sequence.
+
+Publish the list and count from one workspace owner. Reconcile history after
+completion/reconnect/case refresh; failed reads must not mean an empty queried
+set. Ignore out-of-order responses and callbacks from removed channels. Verify
+review changes, case switches and viewport changes against that same queue.
+
+
 ## 2026-10-25 (workspace Stage 1 correction pass)
 
 ### G-items NOT ADDED (fail honest-data check — explicit follow-ups)

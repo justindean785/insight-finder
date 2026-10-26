@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { normalizeTarget } from "@/lib/next-step-cards";
 
@@ -69,38 +69,64 @@ export const __collectTargets = collectTargets;
  * Stays live via a realtime subscription so the suggestions update as a running
  * investigation queries new targets.
  */
-export function useThreadQueriedTargets(threadId: string): Set<string> {
+export function useThreadQueriedTargetState(threadId: string, enabled = true) {
   const [targets, setTargets] = useState<Set<string>>(() => new Set());
-  const channelIdRef = useRef<number>();
-  if (channelIdRef.current == null) channelIdRef.current = ++channelSeq;
-
-  useEffect(() => {
-    if (!threadId) return;
-    let alive = true;
-    const load = async () => {
-      const { data } = await supabase
-        .from("tool_usage_log")
-        .select("input_json")
-        .eq("thread_id", threadId);
-      if (!alive) return;
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const generation = useRef(0);
+  const invalidate = useCallback(() => { generation.current++; }, []);
+  const load = useCallback(async () => {
+    if (!enabled || !threadId) return;
+    const token = ++generation.current;
+    setStatus("loading");
+    try {
+      const { data, error } = await supabase.from("tool_usage_log").select("input_json").eq("thread_id", threadId);
+      if (token !== generation.current) return;
+      if (error || !Array.isArray(data)) throw new Error("Tool history unavailable");
       const set = new Set<string>();
-      for (const row of (data ?? []) as { input_json: unknown }[]) {
-        collectTargets(row.input_json, set);
-      }
+      for (const row of data as { input_json: unknown }[]) collectTargets(row.input_json, set);
       set.delete("");
       setTargets(set);
+      setStatus("ready");
+    } catch {
+      if (token === generation.current) setStatus("error");
+    }
+  }, [threadId, enabled]);
+  useEffect(() => {
+    if (!enabled || !threadId) return;
+    let active = true;
+    const reload = () => { if (active) void load(); };
+    setTargets(new Set());
+    reload();
+    const ch = supabase.channel(`queried-targets-${threadId}-${++channelSeq}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "tool_usage_log", filter: `thread_id=eq.${threadId}` }, reload)
+      .subscribe((state: string) => {
+        if (!active) return;
+        if (state === "SUBSCRIBED") reload();
+        else if (state === "CHANNEL_ERROR" || state === "TIMED_OUT" || state === "CLOSED") {
+          invalidate();
+          setStatus("error");
+        }
+      });
+    const onRun = (event: Event) => {
+      const d = (event as CustomEvent<{ threadId?: string; running?: boolean }>).detail;
+      if (d?.threadId === threadId && d.running === false) reload();
     };
-    void load();
-    const ch = supabase
-      .channel(`queried-targets-${threadId}-${channelIdRef.current}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "tool_usage_log", filter: `thread_id=eq.${threadId}` },
-        () => void load(),
-      )
-      .subscribe();
-    return () => { alive = false; void supabase.removeChannel(ch); };
-  }, [threadId]);
+    const onVisible = () => { if (document.visibilityState === "visible") reload(); };
+    window.addEventListener("proximity:run-state", onRun);
+    window.addEventListener("online", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      active = false;
+      invalidate();
+      void supabase.removeChannel(ch);
+      window.removeEventListener("proximity:run-state", onRun);
+      window.removeEventListener("online", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [threadId, enabled, load, invalidate]);
+  return { targets, status, refresh: load };
+}
 
-  return targets;
+export function useThreadQueriedTargets(threadId: string, enabled = true): Set<string> {
+  return useThreadQueriedTargetState(threadId, enabled).targets;
 }

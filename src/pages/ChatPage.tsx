@@ -1,3 +1,4 @@
+import { CasePivotQueueProvider } from "@/components/workspace/CasePivotQueueProvider";
 import { useEffect, useState, lazy, Suspense, type ReactNode } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
@@ -50,9 +51,11 @@ export default function ChatPage() {
 
   return (
     <CaseSnapshotProvider key={threadId} threadId={threadId}>
-      <WorkspaceUIStateProvider>
-        <ChatWorkspace threadId={threadId} userId={user.id} />
-      </WorkspaceUIStateProvider>
+      <CasePivotQueueProvider threadId={threadId}>
+        <WorkspaceUIStateProvider>
+          <ChatWorkspace threadId={threadId} userId={user.id} />
+        </WorkspaceUIStateProvider>
+      </CasePivotQueueProvider>
     </CaseSnapshotProvider>
   );
 }
