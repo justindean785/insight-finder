@@ -36,6 +36,7 @@ import {
   autoRunStopMessage, canShowRunControls, decideAutoContinue,
 } from "@/lib/run-controls";
 import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
+import { derivePivotRunViews, pivotRunKey, recordPivotRun, usePivotRuns } from "@/lib/pivot-runs";
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
 import { countWorkbenchRunnablePivots } from "@/lib/next-step-queue";
@@ -1507,6 +1508,10 @@ function ChatWindowInner({
   const caseSnapshot = useOptionalCaseSnapshot();
   const serverRunActive = caseSnapshot?.snapshot?.run.state === "running";
   const serverRunStartedAt = caseSnapshot?.snapshot?.run.startedAt ?? null;
+  // Pivots this tab started: they leave the Next-steps queue and show above it
+  // as Running, then Completed (see lib/pivot-runs.ts).
+  const pivotRuns = usePivotRuns(threadId);
+  const sentPivotKeys = useMemo(() => new Set(pivotRuns.map((r) => r.key)), [pivotRuns]);
   // Read at CALL time (delayed auto-continue, send guards) so a callback built
   // while a run was live does not keep refusing after it ends.
   const serverRunActiveRef = useRef(serverRunActive);
@@ -2206,13 +2211,26 @@ function ChatWindowInner({
       return;
     }
     stoppedByAnalystRef.current = false;
+    // Recorded only past the refusal above, so a cycle that never started is
+    // never shown as a running pivot.
+    const autoPivot = autoPivotRef.current;
+    if (countAsAutoCycle && autoPivot && prompt === autoPivot.prompt) {
+      recordPivotRun(threadId, {
+        key: pivotRunKey(autoPivot.targetType, autoPivot.target),
+        target: autoPivot.target,
+        targetType: autoPivot.targetType,
+        action: autoPivot.action,
+        sentAt: new Date().toISOString(),
+        origin: "auto",
+      });
+    }
     setAutoRun((prev) => ({
       ...prev,
       cyclesRun: countAsAutoCycle ? prev.cyclesRun + 1 : prev.cyclesRun,
       artifactsBefore: artifactsCountRef.current,
     }));
     await sendText(prompt);
-  }, [sendText, status]);
+  }, [sendText, status, threadId]);
   const runContinue = useCallback(() => { void sendCycle(CONTINUE_PROMPT, false); }, [sendCycle]);
   const runWriteReport = useCallback(() => {
     // A report request is the natural end of Auto-run.
@@ -2235,7 +2253,7 @@ function ChatWindowInner({
   // Listen for "run pivot" events dispatched from the Pivots tab.
   useEffect(() => {
     const onRunPivot = (e: Event) => {
-      const detail = (e as CustomEvent<{ threadId: string; value: string; type?: string; prompt?: string }>).detail;
+      const detail = (e as CustomEvent<{ threadId: string; value: string; type?: string; prompt?: string; action?: string }>).detail;
       if (!detail || detail.threadId !== threadId) return;
       // MANUAL DISPATCH GUARD. Every surface that runs a pivot — the Pivots
       // tab, "queue all", the command palette, a Recheck launch — rides this
@@ -2259,6 +2277,15 @@ function ChatWindowInner({
       const prompt = detail.prompt ??
         `Pivot on ${detail.value}${detail.type ? ` (${detail.type})` : ""}. Run the next investigation step on this lead.`;
       toast.success(`Pivot on ${detail.value} sent to the agent`);
+      // Past the dispatch guard and the submit lock: this pivot is starting.
+      recordPivotRun(threadId, {
+        key: pivotRunKey(detail.type, detail.value),
+        target: detail.value,
+        targetType: detail.type ?? "",
+        action: detail.action ?? "Pivot",
+        sentAt: new Date().toISOString(),
+        origin: "manual",
+      });
       void sendText(prompt);
     };
     window.addEventListener("proximity:run-pivot", onRunPivot as EventListener);
@@ -2276,7 +2303,7 @@ function ChatWindowInner({
   // sendText directly and skip that refusal.
   const runPivotFromRail = useCallback((p: RunnablePivot) => {
     window.dispatchEvent(new CustomEvent("proximity:run-pivot", {
-      detail: { threadId, value: p.target, type: p.targetType, prompt: p.prompt },
+      detail: { threadId, value: p.target, type: p.targetType, prompt: p.prompt, action: p.action },
     }));
   }, [threadId]);
 
@@ -2906,7 +2933,7 @@ function ChatWindowInner({
     // collected (bounded) and shown behind one disclosure line by NextSteps.
     const repair: NextStepItem[] = [];
     let runnable = 0;
-    for (const p of ranked.filter((candidate) => candidate.status === "new")) {
+    for (const p of ranked.filter((candidate) => candidate.status === "new" && !sentPivotKeys.has(pivotRunKey(candidate.type, candidate.value)))) {
       if (runnable >= 3) break;
       const dedupe = cardDedupeKey({ title: p.actionLabel, target: p.value });
       if (seenKeys.has(dedupe)) continue;
@@ -2938,7 +2965,11 @@ function ChatWindowInner({
       out.push({ kind: "action", key: `action:${g.title}`, title: g.title, detail: g.detail, prompt: g.prompt });
     }
     return [...out.slice(0, 4), ...repair];
-  }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability]);
+  }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability, sentPivotKeys]);
+  const pivotRunViews = useMemo(
+    () => derivePivotRunViews(pivotRuns, { caseRunning: isLoading || serverRunActive, artifacts }),
+    [pivotRuns, isLoading, serverRunActive, artifacts],
+  );
 
   // The Workbench's Next-tab runnable count — the number the transcript's
   // compact handoff line prints. Different from `suggestions.length` because
@@ -3166,6 +3197,8 @@ function ChatWindowInner({
                 onRunPivot={runPivotFromRail}
                 onRunAction={(prompt) => void sendText(prompt)}
                 busy={isLoading}
+                runs={pivotRunViews}
+                onViewChanges={(artifactId) => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "artifacts", artifactId } }))}
                 openKey={openStep}
                 onOpenChange={setOpenStep}
                 connections={connections}

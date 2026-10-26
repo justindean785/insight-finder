@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { ArrowRight, ChevronRight, Sparkles } from "lucide-react";
+import { ArrowRight, CheckCircle2, ChevronRight, Loader2, Sparkles } from "lucide-react";
+import type { PivotRunView } from "@/lib/pivot-runs";
 import { cn } from "@/lib/utils";
 import type { PivotEligibility, PivotValidation, RunnablePivot } from "@/lib/pivot-schema";
 import { PivotPreview, RepairNotice } from "@/components/pivots/PivotPreview";
@@ -51,6 +52,8 @@ export function NextSteps({
   connections = null,
   artifactsById,
   onOpenGraph,
+  runs = [],
+  onViewChanges,
 }: {
   items: NextStepItem[];
   onRunPivot: (pivot: RunnablePivot) => void;
@@ -65,13 +68,19 @@ export function NextSteps({
   connections?: ConnectionSummary | null;
   artifactsById?: ReadonlyMap<string, Artifact>;
   onOpenGraph?: () => void;
+  /** Pivots this tab started, newest first (`derivePivotRunViews`). The newest
+   *  one is shown above the queue as Running, then Completed with its outcome. */
+  runs?: PivotRunView[];
+  /** Open a row in Evidence. Wired to "View changes" on a completed pivot. */
+  onViewChanges?: (artifactId: string) => void;
 }) {
   const [localOpen, setLocalOpen] = useState<string | null>(null);
   const open = openKey !== undefined ? openKey : localOpen;
   const setOpen = (k: string | null) => { if (onOpenChange) onOpenChange(k); else setLocalOpen(k); };
   const [showRepair, setShowRepair] = useState(false);
   const [showAllQueue, setShowAllQueue] = useState(false);
-  if (items.length === 0) return null;
+  const latestRun = runs[0] ?? null;
+  if (items.length === 0 && !latestRun) return null;
   const isRepair = (item: NextStepItem) => item.kind === "pivot" && item.validation.status === "invalid";
   const runnable = items.filter((item) => !isRepair(item));
   const repair = items.filter(isRepair);
@@ -87,6 +96,7 @@ export function NextSteps({
         Next steps
         <span className="ml-auto font-mono tabular-nums">{runnable.length}</span>
       </header>
+      {latestRun && <PivotRunStrip view={latestRun} onViewChanges={onViewChanges} />}
       {best && best.validation.status === "valid" && best.eligibility && (
         <BestPivot
           pivot={best.validation.pivot}
@@ -264,11 +274,11 @@ function BestPivot({ pivot, eligibility, reasons, isOpen, busy, onToggle, onRunN
           type="button"
           disabled={busy && !needsReview}
           onClick={needsReview ? onToggle : onRunNow}
-          aria-label={`${needsReview ? "Review and run" : "Run now"}: ${pivot.action} on ${pivot.target}`}
+          aria-label={`${needsReview ? "Review and run" : busy ? "Runs after the current pivot" : "Run now"}: ${pivot.action} on ${pivot.target}`}
           className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-white px-3.5 text-data font-semibold text-black transition-colors duration-fast hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 [@media(pointer:coarse)]:h-11"
         >
-          {needsReview ? "Review and run" : "Run now"}
-          <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+          {needsReview ? "Review and run" : busy ? "Waiting for current run" : "Run now"}
+          {!busy && <ArrowRight className="h-3.5 w-3.5" aria-hidden />}
         </button>
         {!needsReview && (
           <button
@@ -284,6 +294,61 @@ function BestPivot({ pivot, eligibility, reasons, isOpen, busy, onToggle, onRunN
       </div>
       {isOpen && (
         <PivotPreview pivot={pivot} eligibility={eligibility} busy={busy} onCancel={onToggle} onStart={onRunNow} />
+      )}
+    </div>
+  );
+}
+
+const clock = (iso: string) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+};
+
+/**
+ * The pivot this tab last started: Running while the case runs, then Completed
+ * with what changed. The count is rows created SINCE it was sent, worded that
+ * way on purpose — the agent can follow other leads in the same run, so this is
+ * a measurement of the window, never a claim about what the pivot found.
+ */
+function PivotRunStrip({ view, onViewChanges }: { view: PivotRunView; onViewChanges?: (artifactId: string) => void }) {
+  const { run, phase, newRows } = view;
+  const n = newRows.length;
+  const rows = `${n} new ${n === 1 ? "record" : "records"}`;
+  const running = phase === "running";
+  return (
+    <div
+      role="status"
+      data-testid="pivot-run"
+      data-phase={phase}
+      className={cn(
+        "flex items-start gap-2.5 border-b border-white/[0.06] px-4 py-3",
+        running ? "bg-[hsl(var(--brand)/0.06)]" : "bg-surface-2/40",
+      )}
+    >
+      {running
+        ? <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-[hsl(var(--brand))] motion-reduce:animate-none" aria-hidden />
+        : <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />}
+      <div className="min-w-0 flex-1">
+        <div className="text-data font-medium text-foreground">
+          {running ? "Running" : "Pivot completed"}
+          <span className="text-muted-foreground"> · {run.action} </span>
+          <span className="inline-block max-w-full truncate align-bottom font-mono text-[12.5px] text-foreground/90" title={run.target}>{run.target}</span>
+        </div>
+        <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+          {running
+            ? `Since ${clock(run.sentAt)} · ${n > 0 ? `${rows} so far` : "no new records yet"}`
+            : n > 0 ? `${rows} since it was sent` : "No new records since it was sent"}
+        </p>
+      </div>
+      {!running && n > 0 && onViewChanges && (
+        <button
+          type="button"
+          onClick={() => onViewChanges(newRows[0].id)}
+          className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-data font-medium text-foreground/90 hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11"
+        >
+          View changes
+          <ArrowRight className="h-3.5 w-3.5 opacity-70" aria-hidden />
+        </button>
       )}
     </div>
   );
