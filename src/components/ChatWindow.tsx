@@ -4,6 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { supabase, SUPABASE_URL } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { useComposerFocus } from "@/hooks/useComposerFocus";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { reflowCollapsedTables } from "@/lib/markdown";
@@ -1457,7 +1458,10 @@ function ChatWindowInner({
   // Preflight around the free-form request: the parsed target and the analyst's
   // correction of its type (see composer-preflight.ts).
   const [controls, setControls] = useState<PreflightControls>(DEFAULT_CONTROLS);
-  const [composerFocused, setComposerFocused] = useState(false);
+  // Focus for the whole composer shell. A blur caused by a click elsewhere is
+  // applied only after that click completes, so the idle collapse below never
+  // moves the transcript under a pointer that is still down (useComposerFocus).
+  const { focused: composerFocused, onFocus: onComposerFocus, onBlur: onComposerBlur } = useComposerFocus();
   // Which Next-steps row has its run preview open (see NextSteps).
   const [openStep, setOpenStep] = useState<string | null>(null);
   const composerIds = { textarea: useId(), help: useId() };
@@ -3227,11 +3231,10 @@ function ChatWindowInner({
             data-compact={compactComposer || undefined}
             // Focus is tracked for the whole shell, not the textarea alone, so
             // tabbing from the box to Continue does not collapse the row under
-            // the keyboard.
-            onFocus={() => setComposerFocused(true)}
-            onBlur={(e) => {
-              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setComposerFocused(false);
-            }}
+            // the keyboard; a click elsewhere collapses it only once the click
+            // has landed (see useComposerFocus).
+            onFocus={onComposerFocus}
+            onBlur={onComposerBlur}
           >
             <input
               ref={fileInputRef}
