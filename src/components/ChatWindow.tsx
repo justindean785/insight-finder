@@ -1015,7 +1015,27 @@ const chatMarkdownComponents: Components = {
   ),
   th: ({ node, children, ...rest }) => <th {...rest}>{children}</th>,
   td: ({ node, children, ...rest }) => <td {...rest}>{wrapChildren(children)}</td>,
+  // Never load a markdown image (audit SEC-05). Model and tool text is
+  // untrusted: `![](https://host/p.png?d=…)` would fetch on paint and hand the
+  // query string to that host. Disclose it as plain text instead, with no link,
+  // so nothing is fetched or one click away. Analyst uploads are a direct <img>
+  // in MessageViewImpl and do not pass through here.
+  img: ({ alt, src }) => <BlockedImage alt={alt} src={src} />,
 };
+
+function BlockedImage({ alt, src }: { alt?: string; src?: string }) {
+  let host = "";
+  try {
+    host = src ? new URL(src).hostname : "";
+  } catch {
+    host = "";
+  }
+  return (
+    <span className="chat-blocked-image text-muted-foreground">
+      [image not loaded{alt ? `: ${alt}` : ""}{host ? ` · ${host}` : ""}]
+    </span>
+  );
+}
 
 const CHAT_REMARK_PLUGINS = [remarkGfm];
 
