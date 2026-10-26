@@ -30,7 +30,7 @@ type Summary = {
 const severityColor: Record<TestResult["severity"], string> = {
   low: "text-muted-foreground border-border bg-secondary/40",
   medium: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/40 bg-[hsl(var(--confidence-mid))]/10",
-  high: "text-amber-400 border-amber-400/40 bg-amber-400/10",
+  high: "text-warning border-warning/40 bg-warning/10",
   critical: "text-destructive border-destructive/40 bg-destructive/10",
 };
 

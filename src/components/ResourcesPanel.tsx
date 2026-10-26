@@ -336,7 +336,7 @@ function ArtifactsList({
                   className="radar-ring absolute h-11 w-11 rounded-full border border-[hsl(var(--intel-blue)/0.5)]"
                   style={{ animation: "radar-ping 3.4s ease-out infinite", animationDelay: "1.7s" }}
                 />
-                <div className="relative grid h-11 w-11 place-items-center rounded-xl border border-[hsl(var(--intel-blue)/0.35)] bg-[linear-gradient(180deg,hsl(var(--surface-3)),hsl(var(--surface-1)))] text-[hsl(var(--intel-blue))] shadow-[0_0_26px_-10px_hsl(var(--intel-blue)/0.7)]">
+                <div className="relative grid h-11 w-11 place-items-center rounded-xl border border-[hsl(var(--intel-blue)/0.35)] bg-[linear-gradient(180deg,hsl(var(--surface-3)),hsl(var(--surface-1)))] text-[hsl(var(--intel-blue))]">
                   <Radar className="h-[18px] w-[18px]" strokeWidth={1.6} />
                 </div>
               </div>
@@ -1209,7 +1209,7 @@ function ArtifactDrawerInner({
               aria-label="Note — justification or context for this artifact"
               placeholder="Why is this key? Add justification, link, or context…"
               rows={3}
-              className="w-full text-xs font-mono bg-secondary/40 border border-border rounded p-2 outline-none focus:border-primary/60 resize-y"
+              className="w-full text-xs font-mono bg-secondary/40 border border-border rounded p-2 outline-none focus-visible:border-primary/60 focus-visible:ring-2 focus-visible:ring-ring resize-y"
             />
             <div className="flex justify-end mt-1">
               <Button

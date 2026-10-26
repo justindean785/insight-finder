@@ -16,6 +16,7 @@ import { buildDecisionQueue } from "@/lib/decision-queue";
 import { RunCockpit } from "@/components/workspace/RunCockpit";
 import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
 import { groupSharedCaveats } from "@/lib/shared-caveats";
+import { summarizeLatestRun, type LatestRunSummary } from "@/lib/latest-run";
 import {
   Unlink, AlertTriangle, XCircle, ShieldCheck, Timer,
   DatabaseZap, Activity, ArrowRight, type LucideIcon,
@@ -115,6 +116,53 @@ function RunStrip({
  * evidence moved to half width. Same predicate, same two modes, so a row reads
  * the same on both surfaces.
  */
+/** What the latest run added, so an analyst returning to a case sees the delta before the totals. */
+function LatestRunStrip({ summary, live }: { summary: LatestRunSummary; live: boolean }) {
+  const { added, supported, conflict, quarantined, other } = summary;
+  const started = new Date(summary.startedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const parts = [
+    supported > 0 && { n: supported, word: "supported", tone: "text-subtle-foreground" },
+    conflict > 0 && { n: conflict, word: "in conflict", tone: "text-[hsl(var(--authority-conflict))]" },
+    quarantined > 0 && { n: quarantined, word: "quarantined", tone: "text-subtle-foreground" },
+    // Review, weak and failed rows, so the parts always sum to `added`.
+    other > 0 && { n: other, word: "other", tone: "text-subtle-foreground" },
+  ].filter(Boolean) as Array<{ n: number; word: string; tone: string }>;
+  return (
+    <section
+      aria-label="Latest run"
+      data-overview-latest-run
+      className="panel panel-flat flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 text-data"
+    >
+      <span className="font-medium text-foreground">Latest run</span>
+      <span className="text-faint-foreground">
+        started <time dateTime={summary.startedAt}>{started}</time>
+      </span>
+      <span aria-hidden className="text-muted-foreground/40">·</span>
+      {added === 0 ? (
+        <span className="text-muted-foreground">No new records{live ? " yet" : ""}</span>
+      ) : (
+        <span className="text-muted-foreground">
+          <span className="font-mono tabular-nums text-foreground">{added}</span> new record{added === 1 ? "" : "s"}{live ? " so far" : ""}
+          {parts.length > 0 && ": "}
+          {parts.map((p, i) => (
+            <span key={p.word}>
+              {i > 0 && ", "}
+              <span className={cn("font-mono tabular-nums", p.tone)}>{p.n}</span> {p.word}
+            </span>
+          ))}
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={() => jump("artifacts")}
+        className="ml-auto inline-flex h-7 items-center rounded-md px-2 text-micro font-medium text-muted-foreground transition-colors duration-fast hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        Open Evidence
+      </button>
+    </section>
+  );
+}
+
 function ArtifactValue({ value, className }: { value: string; className?: string }) {
   const prose = isProseValue(value);
   return (
@@ -235,6 +283,11 @@ export function OverviewTab({ threadId }: { threadId: string }) {
     return [...c.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
   }, [items]);
 
+  const latestRun = useMemo(
+    () => summarizeLatestRun(items, snapshot?.run.startedAt ?? null, (a) => authorityFor(a, review.get(a.id)).state),
+    [items, snapshot?.run.startedAt, review],
+  );
+
   const maxDist = Math.max(1, ...DIST.map((d) => tally[d.state]));
 
   // Until every source has answered, no tile may print a number: a "0 verified"
@@ -263,6 +316,9 @@ export function OverviewTab({ threadId }: { threadId: string }) {
       <h2 className="sr-only">Overview — {total} artifact{total === 1 ? "" : "s"}, {activity.persistedTotal} tool call{activity.persistedTotal === 1 ? "" : "s"}</h2>
 
       <div className="mx-auto max-w-6xl space-y-4 p-3 sm:p-4">
+
+        {/* rowState, not state: until the row is re-read, startedAt is the previous run's. */}
+        {latestRun && <LatestRunStrip summary={latestRun} live={snapshot.run.rowState === "running"} />}
 
         {/* ── Case assessment leads ─────────────────────────────────────
             Register item 8: lead with what is SUPPORTED (what the engine

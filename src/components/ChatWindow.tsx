@@ -4,6 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { supabase, SUPABASE_URL } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { useComposerFocus } from "@/hooks/useComposerFocus";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { reflowCollapsedTables } from "@/lib/markdown";
@@ -1457,7 +1458,10 @@ function ChatWindowInner({
   // Preflight around the free-form request: the parsed target and the analyst's
   // correction of its type (see composer-preflight.ts).
   const [controls, setControls] = useState<PreflightControls>(DEFAULT_CONTROLS);
-  const [composerFocused, setComposerFocused] = useState(false);
+  // Focus for the whole composer shell. A blur caused by a click elsewhere is
+  // applied only after that click completes, so the idle collapse below never
+  // moves the transcript under a pointer that is still down (useComposerFocus).
+  const { focused: composerFocused, onFocus: onComposerFocus, onBlur: onComposerBlur } = useComposerFocus();
   // Which Next-steps row has its run preview open (see NextSteps).
   const [openStep, setOpenStep] = useState<string | null>(null);
   const composerIds = { textarea: useId(), help: useId() };
@@ -2543,6 +2547,10 @@ function ChatWindowInner({
     canSubmit: preflight.canSubmit,
     uploading,
   });
+  // Idle, empty and no attachments: the label row hides and the actions sit on
+  // the textarea's own line, which gives the transcript ~100px back on short
+  // windows. Any focus inside the composer, or any text, restores the full box.
+  const compactComposer = !isPhone && !composerFocused && !input && attachments.length === 0;
   // Auto-grow the request box: one calm line when idle and empty, up to ~8
   // lines while writing. Height is set on the element so it never reflows the
   // transcript above more than the text itself needs.
@@ -3218,7 +3226,16 @@ function ChatWindowInner({
               })}
             </div>
           )}
-          <div className="composer-shell">
+          <div
+            className="composer-shell"
+            data-compact={compactComposer || undefined}
+            // Focus is tracked for the whole shell, not the textarea alone, so
+            // tabbing from the box to Continue does not collapse the row under
+            // the keyboard; a click elsewhere collapses it only once the click
+            // has landed (see useComposerFocus).
+            onFocus={onComposerFocus}
+            onBlur={onComposerBlur}
+          >
             <input
               ref={fileInputRef}
               type="file"
@@ -3229,7 +3246,7 @@ function ChatWindowInner({
             />
             {/* Label row. Visually hidden on a phone, where the composer is one
                 line, but still the textarea's accessible name. */}
-            <div className="flex items-center justify-between gap-2 px-3 pt-2 max-sm:sr-only">
+            <div className={cn("flex items-center justify-between gap-2 px-3 pt-2 max-sm:sr-only", compactComposer && "sr-only")}>
               <label htmlFor={composerIds.textarea} className="text-data font-medium text-foreground/90">
                 {isFollowUp ? "Message this case" : "Investigation request"}
               </label>
@@ -3239,7 +3256,7 @@ function ChatWindowInner({
                   : <><kbd className="font-sans">⌘/Ctrl</kbd> + <kbd className="font-sans">Enter</kbd> to {isFollowUp ? "send" : "start"} · Enter for a new line</>}
               </span>
             </div>
-            <div className="flex items-end gap-1 p-1.5 sm:block sm:p-0">
+            <div className={cn("flex items-end gap-1 p-1.5 sm:p-0", compactComposer ? "sm:flex sm:items-center sm:py-1" : "sm:block")}>
               <Button
                 type="button"
                 variant="ghost"
@@ -3256,8 +3273,6 @@ function ChatWindowInner({
                 id={composerIds.textarea}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onFocus={() => setComposerFocused(true)}
-                onBlur={() => setComposerFocused(false)}
                 onKeyDown={(e) => {
                   // Enter writes a new line; Cmd/Ctrl+Enter runs the primary
                   // action — Continue on an open case with an empty box, else
@@ -3282,7 +3297,7 @@ function ChatWindowInner({
                 spellCheck={false}
                 className="min-h-[44px] max-h-52 min-w-0 flex-1 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 px-1 py-2.5 text-[16px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70 sm:px-3 sm:py-2 sm:text-body"
               />
-              <div className="flex shrink-0 items-center gap-1 sm:gap-1.5 sm:px-2 sm:pb-2">
+              <div className={cn("flex shrink-0 items-center gap-1 sm:gap-1.5 sm:px-2", compactComposer ? "sm:pb-0" : "sm:pb-2")}>
                 <Button
                   type="button"
                   variant="ghost"

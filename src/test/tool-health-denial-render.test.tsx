@@ -55,7 +55,7 @@ function card(tool: string): HTMLElement {
 }
 /** The message block inside a card (the element that carries the lastIssue styling), or null. */
 function messageBlock(c: HTMLElement): HTMLElement | null {
-  return Array.from(c.querySelectorAll("div")).find((d) => /border-(destructive|amber)/.test(d.className) && d.className.includes("bg-black/30")) ?? null;
+  return Array.from(c.querySelectorAll("div")).find((d) => /border-(destructive|warning)/.test(d.className) && d.className.includes("bg-black/30")) ?? null;
 }
 
 const EITHER = /either an inactive plan or a reached usage quota, and the stored record does not say which/;
@@ -75,7 +75,7 @@ describe("Tool Health panel — a refused LeakCheck lookup", () => {
     expect(block.textContent).toMatch(/Check the plan and remaining quota on the LeakCheck account\.$/);
     expect(block.textContent).not.toMatch(/bot protection|IP reputation|attempts on this case|did not say which/i);
     expect(c.textContent!.match(/HTTP 403/g)).toHaveLength(1);        // the status is not printed twice
-    expect(block.className).toMatch(/amber/);                        // informational …
+    expect(block.className).toMatch(/warning/);                        // informational …
     expect(block.className).not.toMatch(/destructive/);              // … not an error
   });
 
@@ -98,7 +98,7 @@ describe("Tool Health panel — a refused LeakCheck lookup", () => {
     await screen.findByText("leakcheck_lookup");
     const block = messageBlock(card("leakcheck_lookup"))!;
     expect(block.textContent).toMatch(/^Most recent LeakCheck refusal: Refused \(HTTP 403\)\./);
-    expect(block.className).toMatch(/amber/);
+    expect(block.className).toMatch(/warning/);
   });
 
   it("three real-shaped 403s: the repetition sentence stays and the explanation follows it (attention styling)", async () => {
@@ -179,7 +179,7 @@ describe("Tool Health panel — a cache replay after a LeakCheck 403 is not a pr
     const block = messageBlock(c)!;
     expect(block.textContent).toMatch(/^Most recent LeakCheck refusal: Refused \(HTTP 403\)\./);
     expect(block.textContent).toMatch(EITHER);
-    expect(block.className).toMatch(/amber/);
+    expect(block.className).toMatch(/warning/);
     expect(block.className).not.toMatch(/destructive/);
   });
 
@@ -198,7 +198,7 @@ describe("Tool Health panel — a cache replay after a LeakCheck 403 is not a pr
       const block = messageBlock(c)!;
       expect(block.textContent).toMatch(/^Most recent LeakCheck refusal: Refused \(HTTP 403\)\./);
       expect(block.textContent).toMatch(EITHER);
-      expect(block.className).toMatch(/amber/);
+      expect(block.className).toMatch(/warning/);
       unmount();
     }
   });

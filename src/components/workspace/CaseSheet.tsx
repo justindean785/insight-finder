@@ -173,11 +173,11 @@ export function CaseSheetView({
                   </div>
                   <AuthorityCaveat view={view} />
                   <div className="flex items-center gap-2">
-                    <span className="text-[12px] text-faint-foreground">{ASK_LABEL[ask]}</span>
+                    <span className="min-w-0 text-[12px] text-faint-foreground">{ASK_LABEL[ask]}</span>
                     <button
                       type="button"
                       onClick={() => jumpToEvidence(artifact.id)}
-                      className="ml-auto inline-flex h-[26px] items-center gap-1 rounded-md bg-secondary px-2.5 text-[12px] font-medium text-foreground transition-colors duration-fast hover:bg-surface-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="ml-auto inline-flex h-[26px] shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-secondary px-2.5 text-[12px] font-medium text-foreground transition-colors duration-fast hover:bg-surface-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       Decide in Evidence <ArrowRight className="h-3 w-3" aria-hidden />
                     </button>

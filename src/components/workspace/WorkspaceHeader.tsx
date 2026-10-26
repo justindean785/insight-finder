@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { verifiedHint, verifiedLabel } from "@/lib/authority";
 import { toast } from "sonner";
 import { extractDisplaySeed, type SeedKind } from "@/lib/seed";
+import { humanCaseName } from "@/lib/case-name";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CaseStatusPill, CaseSyncStatus } from "@/components/workspace/CaseStatus";
 
@@ -122,8 +123,15 @@ function CustodyChip({ snapshot }: { snapshot: CaseSnapshot }) {
  * case is still being read. Shared by the desktop case bar and the mobile strip.
  */
 export function CaseFigures({
-  snapshot, dense = false, spendClassName,
-}: { snapshot: CaseSnapshot | null; dense?: boolean; /** Lets the desktop bar move spend to its right cluster at wide widths. */ spendClassName?: string }) {
+  snapshot, dense = false, oneLine = false, spendClassName,
+}: {
+  snapshot: CaseSnapshot | null;
+  dense?: boolean;
+  /** Full labels, but held to one row like the dense strip: what does not fit drops out whole. */
+  oneLine?: boolean;
+  /** Lets the desktop bar move spend to its right cluster at wide widths. */
+  spendClassName?: string;
+}) {
   if (!snapshot || !snapshot.hydrated) {
     return (
       <span className="inline-flex items-center gap-2" aria-label="Case figures loading">
@@ -142,27 +150,30 @@ export function CaseFigures({
   // entirely, lowest priority (spend, last) first. It used to be `flex-nowrap
   // overflow-hidden`, which hard-clipped the last figure mid-word ("15 verifie").
   const unit = "inline-flex items-center gap-x-2 whitespace-nowrap";
+  const toolsUnit = (
+    <span className={unit}>
+      <Sep />
+      {/* CALLS, not distinct tools: the Report's "N tools with artifacts" is a
+          different population, and both used to read "tools". */}
+      <Figure value={tools.available ? tools.total : "—"} label={toolCallsLabel(tools.total, dense)} hint={toolHint} />
+    </span>
+  );
   return (
     <span
       className={cn(
         "inline-flex min-w-0 items-center gap-x-2 text-data",
-        dense ? "h-5 max-w-full flex-wrap overflow-hidden leading-5" : "flex-wrap gap-y-0.5",
+        dense || oneLine ? "h-5 max-w-full flex-wrap overflow-hidden leading-5" : "flex-wrap gap-y-0.5",
       )}
       data-case-figures={dense ? "dense" : undefined}
     >
       <Figure value={evidence.available ? evidence.text.replace(/ evidence$/, "") : "—"} label={evidence.available ? (dense ? evidence.shortLabel : evidence.label) : ""} hint={evidence.hint} />
-      <span className={unit}>
-        <Sep />
-        {/* CALLS, not distinct tools: the Report's "N tools with artifacts" is a
-            different population, and both used to read "tools". */}
-        <Figure value={tools.available ? tools.total : "—"} label={toolCallsLabel(tools.total, dense)} hint={toolHint} />
-      </span>
+      {!oneLine && toolsUnit}
       {authority.verified > 0 && (
         <span className={unit}>
           <Sep />
           <Figure
             value={authority.verified}
-            label={verifiedLabel(authority.verified, snapshot.verifiedByAnalyst, dense)}
+            label={verifiedLabel(authority.verified, snapshot.verifiedByAnalyst, dense || oneLine)}
             tone="text-[hsl(var(--authority-verified))]"
             hint={verifiedHint(authority.verified, snapshot.verifiedByAnalyst)}
           />
@@ -190,6 +201,9 @@ export function CaseFigures({
           />
         </span>
       )}
+      {/* On the one-line bar the authority counts outrank the call count, which
+          the Tools tab badge already shows. */}
+      {oneLine && toolsUnit}
       {(spend.microUsd ?? 0) > 0 && (
         <span className={cn(unit, spendClassName)}>
           <Sep />
@@ -224,6 +238,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     ? extractDisplaySeed(snapshot.seed.value, snapshot.seed.type)
     : { selector: "", kind: "other" as SeedKind, title: snapshot?.hydrated ? "New investigation" : "" };
   const KindIcon = KIND_ICON[display.kind] ?? FileSearch;
+  const caseName = humanCaseName(snapshot?.seed.caseTitle ?? null, snapshot?.seed.value ?? null, display.title);
 
   const createInvestigation = async () => {
     if (!user || creating) return;
@@ -251,19 +266,25 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
       data-thread-id={threadId}
       className="case-bar relative border-b border-white/[0.07]"
     >
-      <div className="flex min-h-[3.5rem] items-center gap-3 px-4 py-2 sm:px-6">
+      <div className="flex min-h-[4.25rem] items-center gap-3.5 px-4 py-3 sm:px-6 [@media(max-height:700px)]:min-h-14 [@media(max-height:700px)]:py-2">
         {/* Identity */}
-        <div className="flex min-w-0 flex-1 items-center gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-3.5">
           <span
-            className="case-mark grid h-9 w-9 shrink-0 place-items-center rounded-[10px]"
+            className="case-mark grid h-10 w-10 shrink-0 place-items-center rounded-[11px] [@media(max-height:700px)]:h-8 [@media(max-height:700px)]:w-8 [@media(max-height:700px)]:rounded-[9px]"
             title={KIND_LABEL[display.kind]}
           >
-            <KindIcon className="h-4 w-4" strokeWidth={1.75} aria-hidden />
+            <KindIcon className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
             <span className="sr-only">{KIND_LABEL[display.kind]}</span>
           </span>
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
-              {display.title ? (
+            <div className="flex min-w-0 items-center gap-2.5">
+              {caseName ? (
+                // The analyst's name for the case leads, in the display face; the
+                // selector it started from moves to the line beneath.
+                <h1 className="min-w-0 truncate font-display text-[19px] font-semibold leading-tight tracking-[-0.02em] [@media(max-height:700px)]:text-[17px]" title={caseName}>
+                  {caseName}
+                </h1>
+              ) : display.title ? (
                 // The case's name is the page heading; the copy control sits inside it.
                 <h1 className="flex min-w-0">
                 <Tooltip>
@@ -291,8 +312,30 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
               )}
               <CaseStatusPill snapshot={snapshot} />
             </div>
-            <div className="mt-0.5 flex min-w-0 items-center gap-2">
-              <CaseFigures snapshot={snapshot} spendClassName="lg:hidden" />
+            <div className="mt-1 flex min-w-0 items-center gap-2 text-data [@media(max-height:700px)]:mt-0.5">
+              {caseName && snapshot?.seed.value && (
+                <>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={copySeed}
+                        aria-label={`${KIND_LABEL[display.kind]} ${display.title} — copy selector`}
+                        className="group inline-flex min-w-0 max-w-[11rem] shrink items-center lg:max-w-[16rem] gap-1.5 rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <span className="shrink-0 text-faint-foreground">{KIND_LABEL[display.kind]}</span>
+                        <span className="truncate font-mono text-subtle-foreground transition-colors group-hover:text-foreground">{display.title}</span>
+                        <Copy className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-xs">Copy selector</TooltipContent>
+                  </Tooltip>
+                  <Sep />
+                </>
+              )}
+              <div className="flex min-w-0 flex-1">
+                <CaseFigures snapshot={snapshot} oneLine spendClassName="lg:hidden" />
+              </div>
             </div>
           </div>
         </div>
@@ -312,15 +355,21 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
             </div>
           )}
           <CaseSyncStatus className="hidden md:flex" />
-          <button
-            onClick={createInvestigation}
-            disabled={creating}
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-white/10 bg-white px-2.5 text-meta font-semibold text-black shadow-cta transition-colors hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50"
-            aria-label="Start a new investigation"
-          >
-            <Plus className="h-3.5 w-3.5" aria-hidden />
-            <span className="hidden xl:inline">{creating ? "Creating…" : "New"}</span>
-          </button>
+          {/* Secondary on purpose: inside a case the one primary action is
+              Continue / Run. The rail carries the same "New investigation". */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={createInvestigation}
+                disabled={creating}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-muted-foreground transition-colors duration-fast hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+                aria-label="Start a new investigation"
+              >
+                <Plus className="h-4 w-4" aria-hidden />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">{creating ? "Creating…" : "New investigation"}</TooltipContent>
+          </Tooltip>
         </div>
       </div>
     </header>

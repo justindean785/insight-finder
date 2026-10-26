@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 
+const WORKBENCH_QUERY = "(min-width: 1024px)";
+
 /**
- * Tailwind's `xl` breakpoint, matched to the Workbench's `xl:block` gate in
+ * Tailwind's `lg` breakpoint, matched to the Workbench's `lg:block` gate in
  * ChatPage. Returns true when the Workbench is visible beside the content.
  *
  * Shared between ResourcesPanel (to suppress the modal drawer when the inline
@@ -11,12 +13,12 @@ import { useEffect, useState } from "react";
 export function useIsWorkbenchViewport(): boolean {
   const [match, setMatch] = useState<boolean>(() =>
     typeof window !== "undefined" && typeof window.matchMedia === "function"
-      ? window.matchMedia("(min-width: 1280px)").matches
+      ? window.matchMedia(WORKBENCH_QUERY).matches
       : false,
   );
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
-    const mql = window.matchMedia("(min-width: 1280px)");
+    const mql = window.matchMedia(WORKBENCH_QUERY);
     const onChange = () => setMatch(mql.matches);
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
