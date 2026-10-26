@@ -9,11 +9,14 @@ import { cn } from "@/lib/utils";
 
 /** Recorded score/cap disclosure beside the evidence's authority state. */
 export function ConfidenceExplain({
-  artifact, review, className,
+  artifact, review, className, onOpenChange,
 }: {
   artifact: Artifact;
   review?: ReviewState;
   className?: string;
+  /** Lets a host that owns another overlay (the Evidence row's peek card) yield
+   *  while this one is open, so Escape always dismisses what the analyst sees. */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const exp = explainConfidence(artifact, review);
   const shown = displayConfidence(artifact);
@@ -23,7 +26,7 @@ export function ConfidenceExplain({
   const verdictColor = "text-foreground";
 
   return (
-    <Popover>
+    <Popover onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
