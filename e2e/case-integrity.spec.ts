@@ -12,6 +12,28 @@ import { test, expect, type Page } from "@playwright/test";
 const THREAD = "/chat/11111111-2222-4333-8444-555555555555";
 const DRAFT = "/chat/22222222-3333-4444-8555-666666666666";
 
+// A live run reads "Analyzing", with its measured elapsed ("Analyzing · 12s")
+// once `run_started_at` is set (Stage 1b; `CaseStatus.tsx`). The state key is
+// still `running` — only the visible word changed. The contract these cases
+// pin is unchanged: a fresh heartbeat shows the live label, and a finished or
+// stopped run never does.
+const RUNNING = /^Analyzing( · \d+[smh])?$/;
+
+/**
+ * Stage 1 moved the live Next-steps queue off the transcript and into the
+ * Workbench's Next tab; the transcript keeps a one-line handoff ("N next pivots
+ * ranked · Open Next pivots"). The queue's guarantees — a Preview before every
+ * Run, nothing posted until Start, an unrunnable suggestion disclosed but never
+ * runnable — are asserted where the queue now lives. Clicking the handoff also
+ * checks it lands on the right tab.
+ */
+async function openWorkbenchNext(page: Page) {
+  await page.getByRole("button", { name: "Open Next pivots" }).click();
+  const tab = page.getByRole("tablist", { name: "Workbench" }).getByRole("tab", { name: "Next" });
+  await expect(tab).toHaveAttribute("aria-selected", "true");
+  return page.getByRole("tabpanel", { name: "Next" }).getByRole("region", { name: "Next steps" });
+}
+
 async function blockExternalOrigins(page: Page) {
   await page.route("**/*", (route) => {
     const url = route.request().url();
@@ -53,7 +75,7 @@ test.describe("canonical case snapshot", () => {
 
   test("2 · active run: a fresh heartbeat reads Running", async ({ page }) => {
     await open(page, `${THREAD}?scenario=running`);
-    await expect(page.getByRole("region", { name: "Case summary" }).getByText("Running", { exact: true })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Case summary" }).getByText(RUNNING)).toBeVisible();
     await expect(page.getByRole("region", { name: /run/i })).toHaveCount(0);
   });
 
@@ -84,7 +106,7 @@ test.describe("canonical case snapshot", () => {
     // Returning to the app is the one signal a dead socket cannot swallow.
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await expect(page.getByText("Synthetic run finished while this page was away.")).toBeVisible();
-    await expect(page.getByRole("region", { name: "Case summary" }).getByText("Running", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Case summary" }).getByText(RUNNING)).toHaveCount(0);
     await expect(live).toHaveCount(0);
   });
 
@@ -112,11 +134,11 @@ test.describe("canonical case snapshot", () => {
     await box.fill("follow-up: anything new on the mailbox?");
     await page.getByRole("button", { name: "Send" }).click();
     const header = page.getByRole("region", { name: "Case summary" });
-    await expect(header.getByText("Running", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(header.getByText(RUNNING)).toBeVisible({ timeout: 15_000 });
     await page.evaluate(() => (window as unknown as { __harnessFinishRun: () => void }).__harnessFinishRun());
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await expect(page.getByText("Synthetic run finished after its stream stalled.")).toBeVisible({ timeout: 20_000 });
-    await expect(header.getByText("Running", { exact: true })).toHaveCount(0);
+    await expect(header.getByText(RUNNING)).toHaveCount(0);
   });
 
   test("2c · a finished case shows no server-follow panel", async ({ page }) => {
@@ -216,7 +238,7 @@ test.describe("composer preflight", () => {
 test.describe("next steps", () => {
   test("9 · a malformed generated pivot is quarantined and cannot run", async ({ page }) => {
     await open(page, `${THREAD}?scenario=malformed`);
-    const steps = page.getByRole("region", { name: "Next steps" });
+    const steps = await openWorkbenchNext(page);
     // Off the list by default: an unrunnable suggestion is not a step.
     await expect(steps.getByText("Suggestion needs repair")).toHaveCount(0);
     // Still disclosed, one line, and expandable to the repair notice.
@@ -232,8 +254,8 @@ test.describe("next steps", () => {
     const posts: string[] = [];
     page.on("request", (r) => { if (r.method() === "POST") posts.push(r.url()); });
     await open(page, THREAD);
-    const steps = page.getByRole("region", { name: "Next steps" });
-    // The transcript finishes its load-time scroll-to-bottom a few hundred ms
+    const steps = await openWorkbenchNext(page);
+    // The workspace finishes its load-time scroll-to-bottom a few hundred ms
     // after hydration; a click in that window can land beside the moving button
     // (seen in a trace). Retry only while the row is still closed, so a click
     // that DID open the preview is never undone by the retry.
@@ -343,7 +365,7 @@ test.describe("case sheet → Evidence handoff", () => {
     const queue = page.getByRole("region", { name: "Needs your call" });
     await expect(queue).toBeVisible();
     // A quarantined (linkage) card — the kind the Analyst view hides.
-    const card = queue.getByRole("listitem").filter({ hasText: "Linkage · whose is this?" }).first();
+    const card = queue.getByRole("listitem").filter({ hasText: "Linkage · does this record belong to the subject?" }).first();
     const value = (await card.locator("[title]").first().getAttribute("title")) ?? "";
     expect(value).not.toBe("");
     await card.getByRole("button", { name: /Decide in Evidence/ }).click();
