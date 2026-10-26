@@ -739,8 +739,15 @@ export function ArtifactRow({
   // (and must not) reflect. The slot says so in words; the machine score moves
   // to the slot's accessible name and the ⓘ popover. See lib/analyst-confirmed.ts.
   const attested = isAnalystConfirmed(a, rState);
+  // ONE overlay at a time. The peek card opens 250 ms after the pointer settles on
+  // the row, which is AFTER an analyst has clicked the ⓘ — so it became the topmost
+  // dismissable layer and the first Escape closed the peek, not the popover the
+  // analyst was reading. The peek yields while the score popover is open and
+  // returns on close if the pointer is still on the row.
+  const [peekOpen, setPeekOpen] = useState(false);
+  const [scoreOpen, setScoreOpen] = useState(false);
   return (
-    <HoverCard openDelay={250} closeDelay={80}>
+    <HoverCard openDelay={250} closeDelay={80} open={peekOpen && !scoreOpen} onOpenChange={setPeekOpen}>
       <HoverCardTrigger asChild>
         <div
           id={`evidence-row-${a.id}`}
@@ -880,6 +887,7 @@ export function ArtifactRow({
               <ConfidenceExplain
                 artifact={a}
                 review={rState}
+                onOpenChange={setScoreOpen}
                 className="text-muted-foreground/45 transition-colors group-hover/row:text-muted-foreground data-[state=open]:text-foreground"
               />
             )}

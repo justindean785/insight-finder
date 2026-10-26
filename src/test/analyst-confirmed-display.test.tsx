@@ -237,7 +237,7 @@ describe("Evidence board row — the confidence slot", () => {
   // numbers in the one place an analyst-confirmed row still shows its score.
   it("the ⓘ popover headline IS the canonical score, never a re-derived total", () => {
     const a = art();
-    expect(explainConfidence(a).final).not.toBe(displayConfidence(a).effective);
+    expect(explainConfidence(a).final).toBe(displayConfidence(a).effective);
     const { slot } = renderRow(a, "key");
     openInfo(slot);
     const headline = document.querySelector<HTMLElement>("[data-score-headline]")!;

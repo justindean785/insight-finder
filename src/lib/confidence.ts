@@ -1,51 +1,27 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ReviewState } from "@/lib/review";
 import { extractSourceInfo, independentSourceClasses } from "@/lib/intel";
+import { displayConfidence } from "@/lib/display-confidence";
+import { authorityFor } from "@/lib/authority";
 import { isDateableBreachKind } from "./breach-kinds";
 
 /**
- * Source-tier baseline. These map an OSINT source to a default reliability
- * score (0–100). Tuned against JD's working trust order: government &
- * breach corpora ≥ vendor APIs ≥ self-reported social ≥ inference.
- * Unknown sources fall back to 55 — neither trusted nor dismissed.
+ * One line of the "Why this score?" disclosure. `value` is what the row
+ * RECORDED (a stored score, a cap, a class count, an authority state) — never a
+ * signed contribution. It is empty for a pure state disclosure such as an
+ * analyst decision, which changes authority, not the number.
  */
-const SOURCE_TIER: Record<string, number> = {
-  // Breach / leak (verified corpora)
-  breach_check: 92, leakcheck: 92, hibp: 92, dehashed: 90,
-  // Vendor osint aggregators
-  osint_industries: 88, deepfind: 85, oathnet: 84,
-  intelbase: 80, parallax: 80, osintnova: 78, osint_navigator: 78, cordcat: 75,
-  // Infrastructure / domain
-  whois: 90, securitytrails: 88, virustotal: 86, urlscan: 84,
-  // Email / phone verification
-  hunter: 82,
-  // Web fetch / scraping
-  firecrawl: 70, jina: 68, exa: 72, perplexity: 70, http_fingerprint: 65,
-  // Social
-  socialfetch: 76, github: 88,
-  // Geo
-  ipgeolocation: 80,
-  // Memory / inference
-  memory: 55, inference: 50, agent: 50,
-};
-
-function baseFor(source: string | null | undefined): { score: number; label: string } {
-  const key = (source ?? "").toLowerCase().replace(/[^a-z0-9_]/g, "_");
-  for (const k of Object.keys(SOURCE_TIER)) {
-    if (key.includes(k)) return { score: SOURCE_TIER[k], label: k };
-  }
-  return { score: 55, label: source || "unknown" };
-}
-
 export type ConfidenceComponent = {
   label: string;
-  delta: number;          // signed contribution
+  value: string;
   why: string;            // analyst-facing rationale
 };
 
 export type ConfidenceExplanation = {
-  raw: number;            // tool-reported confidence as stored
-  final: number;          // 0..100 after components, clamped
+  /** The stored score, or null when none usable was recorded. */
+  raw: number | null;
+  /** The canonical effective score (`displayConfidence(a).effective`). */
+  final: number | null;
   components: ConfidenceComponent[];
   badges: TrustBadge[];   // matrix-style trust badges
 };
@@ -59,74 +35,113 @@ export type TrustBadge = {
 
 const DAY = 86_400_000;
 
+function text(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
 /**
- * Decompose a stored artifact confidence into its analyst-readable inputs.
- * This is deterministic — no model call — so it can power "Why this is 60%"
- * popovers without an additional round-trip.
+ * Disclose what a stored artifact confidence RECORDS. This is deterministic and
+ * makes no model call, and it deliberately does not re-derive a score.
+ *
+ * The previous version rebuilt a total from a hardcoded provider-tier table,
+ * +6/-8 corroboration arithmetic, recency deltas and a -50 false-positive
+ * penalty. The server wrote none of those, so the popover could explain a number
+ * the row did not carry (64 beside a stored 50, capped to 50). `final` is now the
+ * canonical `displayConfidence(a).effective`, and every component is a fact the
+ * row recorded or a state the product derives from it (authority).
  */
 export function explainConfidence(a: Artifact, review?: ReviewState): ConfidenceExplanation {
   const src = extractSourceInfo(a);
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
-  const components: ConfidenceComponent[] = [];
+  const score = displayConfidence(a);
+  const authority = authorityFor(a, review);
 
-  // 1) Base source reliability
-  const base = baseFor(src.primary);
-  components.push({
-    label: `Source: ${base.label}`,
-    delta: base.score,
-    why: `Baseline reliability for ${base.label} sources (${base.score}/100).`,
-  });
+  // Source classes count only when the row RECORDED them. Without a recorded
+  // `source_category`, `independentSourceClasses` falls back to a coarse split of
+  // provider strings for legacy rows — and provider names do not establish
+  // independence, so that fallback is not shown as a count.
+  const category = meta.source_category;
+  const hasRecordedClasses =
+    typeof category === "string"
+      ? Boolean(category.trim())
+      : Array.isArray(category) && category.length > 0 && category.every((c) => typeof c === "string" && c.trim());
+  const classes = hasRecordedClasses ? independentSourceClasses(a) : [];
 
-  // 2) Corroboration count — +6 per extra distinct source, cap +18
-  const extraSources = Math.max(0, src.all.length - 1);
-  if (extraSources > 0) {
-    const corro = Math.min(18, extraSources * 6);
+  const rationale = text(meta.reason_for_confidence);
+  const components: ConfidenceComponent[] = [
+    {
+      label: "Stored machine score",
+      value: score.stored === null ? "Unknown" : `${score.stored}/100`,
+      why: score.stored === null ? "A usable score was not recorded." : "The score persisted with this observation.",
+    },
+    {
+      label: "Recorded cap",
+      value: score.cap === null ? "Not recorded" : `${score.cap}/100`,
+      why:
+        score.cap === null
+          ? "No usable numeric cap is recorded on this row."
+          : score.capReason ?? "The row records this limit; its reason is not recorded.",
+    },
+    {
+      label: "Independent source classes",
+      value: hasRecordedClasses ? String(classes.length) : "Not recorded",
+      why: !hasRecordedClasses
+        ? "Source classes were not recorded. Provider names alone do not establish independence."
+        : classes.length > 0
+        ? `Classes: ${classes.join(", ")}. Providers repeating one class do not add independent support. This count does not establish identity.`
+        : "No qualifying class was identified by the existing source taxonomy for this row.",
+    },
+    {
+      label: "Subject authority",
+      value: authority.label,
+      why: authority.caveat ?? authority.hint,
+    },
+  ];
+
+  // A cap already carries the server's reason on its own line; repeating it here
+  // would print one sentence twice.
+  if (rationale && score.cap === null) {
+    components.push({ label: "Recorded rationale", value: "", why: rationale });
+  }
+
+  const conflictNote = text(meta.conflict_note);
+  if (meta.conflict === true || conflictNote) {
     components.push({
-      label: `Corroboration ×${src.all.length}`,
-      delta: corro,
-      why: `Found across ${src.all.length} independent sources. Each additional source adds +6 (cap +18).`,
-    });
-  } else {
-    components.push({
-      label: "Single source",
-      delta: -8,
-      why: "Observed in only one source. Promote to high confidence only after independent corroboration.",
+      label: "Recorded contradiction",
+      value: "",
+      why: conflictNote ?? "This row is marked as conflicting; details were not recorded.",
     });
   }
 
-  // 3) Recency
-  if (a.created_at) {
-    const age = Date.now() - new Date(a.created_at).getTime();
-    if (age < 1 * DAY) {
-      components.push({ label: "Fresh (<24h)", delta: 4, why: "Captured in the last 24 hours." });
-    } else if (age > 30 * DAY) {
-      components.push({ label: "Stale (>30d)", delta: -10, why: "Captured more than 30 days ago — re-verify before relying on it." });
-    } else if (age > 7 * DAY) {
-      components.push({ label: "Aged (>7d)", delta: -4, why: "Captured over a week ago." });
-    }
-  }
-
-  // 4) Analyst decision — DISCLOSED, NEVER SCORED. These used to carry +15 /
-  //    +18 / −12 / −40, which told the analyst their click was a source. A
-  //    decision changes authority, priority or workflow state; the number it is
-  //    explaining is the evidence's, and stays exactly what the sources support.
+  // Analyst decision — DISCLOSED, NEVER SCORED. A decision changes authority,
+  // priority or workflow state; the number it sits beside is the evidence's.
   if (review === "confirmed") {
-    components.push({ label: "Analyst confirmed", delta: 0, why: "Accepted by the analyst. Authority, not evidence — no score change." });
+    components.push({
+      label: "Analyst confirmed",
+      value: "",
+      why: "Analyst decision recorded. The machine score is unchanged; linkage restrictions still apply.",
+    });
   } else if (review === "key") {
-    components.push({ label: "Marked key", delta: 0, why: "Prioritised by the analyst for the next run. Priority, not confidence — no score change." });
+    components.push({
+      label: "Marked key",
+      value: "",
+      why: "Prioritised by the analyst for the next run. The machine score is unchanged.",
+    });
   } else if (review === "recheck") {
-    components.push({ label: "Recheck requested", delta: 0, why: "Verification task recorded for the agent's next run. Workflow state, not confidence — no score change." });
+    components.push({
+      label: "Recheck requested",
+      value: "",
+      why: "Verification requested for the next run. The machine score is unchanged.",
+    });
   } else if (review === "dismissed" || review === "wrong") {
-    components.push({ label: "Rejected by analyst", delta: 0, why: "Excluded from pivots, dispatch, clusters and authoritative sections. The score is unchanged because the row is no longer used, not because it is weaker." });
+    components.push({
+      label: "Rejected by analyst",
+      value: "",
+      why: "Excluded from subject conclusions. The original score is preserved.",
+    });
   }
 
-  // 5) False-positive flag in metadata
-  if (meta.false_positive === true) {
-    components.push({ label: "False positive", delta: -50, why: "Metadata flag false_positive=true." });
-  }
-
-  const final = Math.max(0, Math.min(100, components.reduce((s, c) => s + c.delta, 0)));
-  return { raw: a.confidence ?? 0, final, components, badges: badgesFor(a, src, review) };
+  return { raw: score.stored, final: score.effective, components, badges: badgesFor(a, src, review) };
 }
 
 function badgesFor(

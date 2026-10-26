@@ -52,11 +52,12 @@ export default defineConfig({
    */
   // The case-integrity state suite is viewport-independent (its mobile cases
   // set their own 390px viewport), so it runs once, on the mid project. So
-  // does the app-shell suite: each case sets the viewport it is about.
+  // do the app-shell and confidence-explanation suites: each case sets the
+  // viewport it is about.
   projects: [
-    { name: "894x617", testIgnore: /(case-integrity|app-shell)\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 894, height: 617 } } },
+    { name: "894x617", testIgnore: /(case-integrity|app-shell|confidence-explanation)\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 894, height: 617 } } },
     { name: "1280x720", use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 720 } } },
-    { name: "1440x900", testIgnore: /(case-integrity|app-shell)\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } } },
+    { name: "1440x900", testIgnore: /(case-integrity|app-shell|confidence-explanation)\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } } },
   ],
 
   webServer: {
