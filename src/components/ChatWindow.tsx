@@ -1,3 +1,4 @@
+import { useCasePivotQueue } from "@/hooks/useCasePivotQueue";
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useChat } from "@ai-sdk/react";
@@ -1513,7 +1514,8 @@ function ChatWindowInner({
   serverRunActiveRef.current = serverRunActive;
   // Targets tools have already been run against — the "already investigated"
   // signal that stops the rail re-suggesting a pivot that's already been run.
-  const queriedTargets = useThreadQueriedTargets(threadId);
+  const casePivotQueue = useCasePivotQueue();
+  const queriedTargets = useThreadQueriedTargets(threadId, !casePivotQueue);
   // Analyst decisions. They shape the "Next steps" rail (a rejected selector is
   // never suggested, a Key one ranks first, a Recheck one is a verification
   // task) and they GATE the pivot bus: a "Run this pivot" on a rejected
@@ -2888,6 +2890,7 @@ function ChatWindowInner({
         .map((part) => part.text ?? ""),
     );
     if (!hasReportShape(latestText)) return [];
+    if (casePivotQueue) return casePivotQueue.items;
     const out: NextStepItem[] = [];
     const seenLabels = new Set<string>();
     const seenKeys = new Set<string>();
@@ -2938,15 +2941,15 @@ function ChatWindowInner({
       out.push({ kind: "action", key: `action:${g.title}`, title: g.title, detail: g.detail, prompt: g.prompt });
     }
     return [...out.slice(0, 4), ...repair];
-  }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability]);
+  }, [casePivotQueue, isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability]);
 
-  // The Workbench's Next-tab runnable count — the number the transcript's
-  // compact handoff line prints. Different from `suggestions.length` because
-  // the Workbench caps at WORKBENCH_RUNNABLE_LIMIT (5) and never injects the
-  // transcript's "Summarize / Breach check / Find more" fallback actions.
-  const workbenchRunnableCount = useMemo(() => countWorkbenchRunnablePivots({
+  // Workspace consumers share the published list. Keep the standalone count
+  // for read-only/embedded callers that do not mount the workspace provider.
+  const fallbackWorkbenchCount = useMemo(() => countWorkbenchRunnablePivots({
     artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets, reviews: review.map,
   }), [artifacts, seedValue, reportPivots, pivotSkip, queriedTargets, review.map]);
+
+  const workbenchRunnableCount = casePivotQueue?.count ?? fallbackWorkbenchCount;
 
   // The pivot Auto-run would start next. Read from a ref at cycle time, because
   // the cycle effect fires between renders. A pivot Auto-run already sent this
@@ -3128,17 +3131,11 @@ function ChatWindowInner({
           {error && !isLoading && !networkDropWhileAlive && !hasPersistedFailure(messages) && (
             <FailedRunCard reason={error.message} onRetry={retryLastUser} />
           )}
+          {casePivotQueue && casePivotQueue.status !== "ready" && !isLoading && <p role="status" className="text-sm text-muted-foreground">{casePivotQueue.status === "error" ? "Next pivots unavailable — refresh the case before choosing a target." : "Refreshing next pivots…"}</p>}
           {suggestions.length > 0 && (
             workbenchVisible ? (
-              // Workbench's Next tab owns the live queue. In the transcript we
-              // show a quiet handoff — the exact pivot cards, Run buttons and
-              // Preview flow live on the right so the analyst isn't offered
-              // the same action twice. The number names the Workbench Next
-              // tab's exact runnable count (via `countWorkbenchRunnablePivots`),
-              // not the local `suggestions` list which also carries generic
-              // fallback actions ("Summarize", "Find more") the Workbench
-              // doesn't offer. Below xl the full NextSteps renders (fallback)
-              // because the Workbench is hidden.
+              // Desktop summarizes the shared queue; below xl the same items
+              // render inline so hiding the Workbench cannot change the leads.
               <aside
                 aria-label="Next pivots summary"
                 className="rounded-lg border border-border-subtle bg-surface-2/60 px-4 py-3"
