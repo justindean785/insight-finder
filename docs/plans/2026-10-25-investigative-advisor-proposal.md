@@ -1,10 +1,10 @@
 # Investigative analyst and advisor workflow — proposal
 
-Status: planning only; implementation requires the phase-specific decisions below. Prepared on `planning/agentic-workflow-proposal`, independently from regression PR #881. No application, schema, scoring, production, secret, provider, or run-lease changes.
+Status: planning only; implementation requires the phase-specific decisions below. Updated 2026-10-26 on `planning/agentic-workflow-proposal`, independently from regression PRs #881 and #882. No application, schema, scoring, production, secret, provider, or run-lease changes.
 
 ## Recommendation and scope
 
-Build a reliable shared case queue first, then expose the existing automatic assessments consistently, make corrections durable and reversible, establish execution identity and lineage, and finally offer bounded passive batches. Evaluate a second-model advisor last. Do not build another confidence engine or require routine human confirmation to keep investigation moving.
+Review and release the verified shared-queue repair through its separate release process first, then expose the existing automatic assessments consistently, make corrections durable and reversible, establish execution identity and lineage, and finally offer bounded passive batches. Evaluate a second-model advisor last. Do not build another confidence engine or require routine human confirmation to keep investigation moving.
 
 The intended experience is: open case → review purpose, allowed tools and limits → **Run recommended pivots** → observe calls, costs and changes → pause/stop/correct → review the next batch. The authorization covers a bounded batch under a versioned policy; it is not consent to unlimited follow-on work. Tool exclusions and lower limits take effect before the next dispatch. An expanded scope or budget needs a new authorization. Ordinary eligible items within the approved batch need no individual approval. Exceptions such as ambiguous identity linkage remain distinct human decisions.
 
@@ -12,11 +12,11 @@ Repair the existing workspace progressively. The supplied screenshots are eviden
 
 ## Evidence and current state
 
-Inspected canonical main `750e885cffb0574290abec77bb406d7c2e673927`; read AGENTS.md, CLAUDE.md, tasks/lessons.md and the documents below. Remote main still matched that SHA during planning. PR #881 is open, draft, unmerged at `763b35c6134029b181e0d87b8151a2b3ac792223`: registration filtering repair only. Its 52 targeted tests and synthetic browser verification do not establish that the whole app is fixed.
+Inspected canonical main `750e885cffb0574290abec77bb406d7c2e673927`; read AGENTS.md, CLAUDE.md, tasks/lessons.md and the documents below. Remote main still matched that SHA during planning. PR #881 is open, draft, unmerged at `763b35c6134029b181e0d87b8151a2b3ac792223`: registration filtering repair only. Its 52 targeted tests and synthetic browser verification do not establish that the whole app is fixed. The subsequent queue repair is now [draft PR #882](https://github.com/justindean785/insight-finder/pull/882), head `db660df464579b87b467855b454a5b6e2af71f45`, also unmerged. The new attachment repeats the earlier product direction; this update reconciles the proposal with the completed repair rather than expanding that patch.
 
 | Capability | Existing implementation | Gap this proposal addresses |
 |---|---|---|
-| Case state | `CaseSnapshotProvider.tsx` reconciles thread, tools, artifacts, reviews and publishes versions; `useCaseSnapshot.ts` exposes hydration/sync/error | Chat and Workbench independently obtain queue inputs; `next-step-queue.ts` shares a count algorithm, not state |
+| Case state | `CaseSnapshotProvider.tsx` reconciles thread, tools, artifacts, reviews and publishes versions; `useCaseSnapshot.ts` exposes hydration/sync/error | Main still has independent queue inputs; draft #882 adds one mounted `CasePivotQueueProvider`, shared validated items/count, history reconciliation and explicit unavailable states |
 | Pivot planning | `pivot-engine.ts`, `recommended-pivots.ts`, `pivot-schema.ts`, `best-pivot.ts`; validation, review exclusions, ranking, skip and queried-target handling | Full recommendation sentences can remain invalid; queried target is too coarse to prove all useful actions exhausted; reasons/inputs need shared versions |
 | Tool choice and execution | `tool-registry.ts`, `cache.ts`, `runtime-policy.ts`, circuits and query policies; UI run controls allow up to three continuation cycles | Current browser event dispatch is not a durable batch scheduler; `BULK_QUEUE_UNAVAILABLE` explicitly cites missing run ID/idempotency contract |
 | Automatic assessment | `lib/finding-row.ts` uses `computeAxes`; recording paths use `applyRecordingSourcePolicy`; synthesis and clustering code already exist | Inconsistent projections and explanation vocabulary; deployed synthesis triggers/schema prerequisites require verification before reuse |
@@ -25,7 +25,7 @@ Inspected canonical main `750e885cffb0574290abec77bb406d7c2e673927`; read AGENTS
 | Provenance | tool log, artifact metadata, evidence log and lineage proposal #613 | Stable run/call/artifact lineage and original payload retention must be proved before automated batches |
 | Advisor | Existing primary/fallback orchestration and synthesis | No inspected implementation establishes a separate, capped, independently evaluated advisor with no write authority |
 
-Overlapping drafts: #873 ranking/explanations, #874 preview-before-run, #593 authority-safe dedupe, #613 lineage schema. Recheck their status before each implementation phase; reuse reviewed contracts rather than duplicate their work. Local queue WIP `ea082f1` is paused on `repair/case-pivot-queue`, unpushed and incompletely validated. Treat it as a candidate diff to review, not an approved implementation or completed queue repair.
+Overlapping drafts: #873 ranking/explanations, #874 preview-before-run, #593 authority-safe dedupe, #613 lineage schema. Recheck their status before each implementation phase; reuse reviewed contracts rather than duplicate their work. The previously paused local WIP `ea082f1` was reviewed, completed and replaced by `db660df` on `repair/case-pivot-queue` in draft #882. It is implementation-verified locally, not released or production-verified. The repair changes no ranking weights, scoring constants, provider policy, schema or run-lease setting.
 
 ### Reconcile the confidence documents with the tree
 
@@ -76,6 +76,10 @@ Proposed endpoints/RPCs: read queue/projection; compare-and-swap case policy; co
 
 ### 1. Smallest useful increment: one case queue
 
+**Repair status:** the authorized queue-coherence portion is implemented in draft #882. Against base `750e885`, a sanitized signed-in browser test reproduced a mounted transcript promising three leads while a later-opened Workbench showed two after a missed tool-log event. The repaired sequence shows two in both views and on mobile. Local results: 2,903 frontend tests passed / 1 skipped; 98 browser tests passed / 13 skipped; typecheck and build passed; lint 0 errors / 15 existing warnings. Nine queue/request-order tests exercise reviews, skips, report clearing, stale responses, case changes and reconnect. No paid investigation requests or production writes were made. Actual network partitions, two-device production runs and hosted-provider behavior remain unverified. Do not treat this as durable execution or completed batch support.
+
+The selector-repair form, structured recommendation contract and attempt coverage by action/tool family below are follow-ups; they were **not** included in this repair. Likewise, shared UI state does not provide server-side batch idempotency or ownership.
+
 One mounted case owner reads authoritative artifacts, seed, reviews, recommendations and queried-call history. Chat's count and every rendered queue read the same validated candidate list and revision. Refresh at run completion, reconciliation, socket resubscription, visibility return and explicit retry; suppress actions when prerequisites are unavailable. Ignore late responses from a previous case/version. Generic assistant actions get a separate label and never contribute to pivot counts.
 
 Keep existing ranking weights, dispatch controls and validation. Legacy sentence suggestions get an explicit selector/type repair form and preview; never auto-dispatch an extracted token. Structured recommendations are the future input contract. Distinguish observed prior attempts by selector + action/tool family + outcome/time; a previously queried selector is not automatically exhausted. Defer changes to ranking semantics until approved and covered by #873/#874 integration tests.
@@ -83,6 +87,8 @@ Keep existing ranking weights, dispatch controls and validation. Legacy sentence
 **Gate:** zero count/target mismatches across mounted chat, late Next opening, two completed runs, reconnect, rejected/skipped candidates, changed case, reload and 390/891/1440px viewports. A failed review/history fetch produces a visible unavailable state and no enabled launch. No new paid calls, score changes or artifact writes. PR scope: queue coherence only; inspector and seed repairs remain their own small regression tasks.
 
 ### 2. Automatic assessment, consistent explanations and correlation
+
+**Recommended next product increment:** a read-only explanation projection for existing recorded assessments, first in the evidence inspector, with parity fixtures for report/export consumers. Inventory actual metadata and source-class provenance before selecting a DTO; show missing inputs as unknown, retain the existing displayed number and authority status, and avoid reconstructing an invented score breakdown. No new scoring engine or schema migration is required unless inspection establishes a missing durable field. Deliver the projection/parity tests and one consumer in a focused PR; separate wider consumer migration, correlation changes and new persistence. Inspector readability remains an independent regression repair and can proceed without approving automation or scoring changes.
 
 Reuse automatic normalization, source policy, finding construction, contradiction and clustering paths. Introduce a versioned read projection of those results before replacing any consumer. Compare old/new projections in shadow tests; keep recorded values immutable. Render observations, candidate relationships and established identity links distinctly. Show cycle changes separately from a full case report.
 
@@ -130,7 +136,7 @@ Each phase uses small frontend, schema and backend PRs separately. Run targeted 
 
 ## Decisions for JD before implementation
 
-1. **Next scope:** approve Phase 1 queue coherence as the next implementation task; keep inspector/seed/tool-outcome repairs independent. This recommendation does not authorize the paused WIP wholesale.
+1. **Next scope:** the queue regression was already authorized and is complete in draft #882; its merge/release is not authorized here. For the larger product project, approve the read-only assessment explanation/parity increment in Phase 2. Keep inspector/seed/tool-outcome repairs and the remaining Phase 1 recommendation/coverage contracts separate. No broad automation implementation is implied.
 2. **Assessment contract:** approve the projection/schema and any removal of competing display calculations only after parity evidence. Any score, threshold, cap, tier, source-class or clustering change needs separate explicit sign-off.
 3. **Correction scope:** approve reason taxonomy, relationship correction/undo, atomic audit behavior, and how the existing Wrong→memory workflow transitions to explicit case-local versus cross-case learning.
 4. **Execution contract:** approve durable IDs/fencing/schema, runtime ownership and cancellation semantics before batch work; explicitly resolve any dependency on run-lease behavior. No silent change to its existing setting.
