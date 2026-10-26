@@ -62,7 +62,15 @@ export default defineConfig({
   webServer: {
     command: `npx vite --config vite.harness.config.ts --port ${HARNESS_PORT} --strictPort`,
     url: `http://127.0.0.1:${HARNESS_PORT}`,
-    reuseExistingServer: !process.env.CI,
+    /**
+     * Never adopt a server by default. Reuse used to be on for every local run,
+     * and a harness left on this port by ANOTHER worktree was silently tested in
+     * place of this checkout: on 2026-10-26 a day-old server from a stale tree
+     * produced 4 case-integrity failures that read as a macOS-only flake. With
+     * reuse off, a busy port fails the run up front instead. Set
+     * PW_REUSE_HARNESS=1 to reuse a harness you started from THIS checkout.
+     */
+    reuseExistingServer: process.env.PW_REUSE_HARNESS === "1",
     timeout: 120_000,
   },
 });
