@@ -239,30 +239,34 @@ Pending (JD-driven, not fork-driven):
 PRs #872 / #873 / #874 untouched; branch not pushed; no PR opened; no merge.
 
 
-## Production audit repair — 2026-10-25
+## Sensitive Registrations repair — 2026-10-25
 
-Authorization: implement repairs and draft PRs; no merge/deploy or production writes.
-Baseline: `750e885cffb0574290abec77bb406d7c2e673927` (remote main verified).
-GitHub API currently returns Forbidden; PR refs #874/#873/#593 fetched read-only.
-#874/#873 overlap queue/preview/ranking; #593 overlaps dedupe and radar. Leave their branches untouched.
+Scope: one authority leak only. Other audit findings remain backlog. No merge/deploy or production writes.
+Base: `750e885cffb0574290abec77bb406d7c2e673927`, verified against remote main.
+Branch: `repair/report-subject-registrations`; draft PR #881.
 
-- [x] Read AGENTS.md, CLAUDE.md, tasks/lessons.md and inspect overlapping PR diffs.
-- [x] Measure base: lint/typecheck/build pass; frontend 2894 passed, 1 skipped. Edge blocked by network importing deno.land/jsr.io.
-- [x] 1. Reproduce registrations authority leak; audit report and exports; test eligible/excluded/rejected-derived/negative rows; fix first.
-- [ ] 2. Reproduce stale queue/count inputs; case-scoped queue with loading/error, completion/reconnect refresh, late mounts and case switching tests.
-- [ ] 3. Structured recommendations and explicit legacy repair review; preserve strict dispatch validation and distinguish queried from exhausted.
-- [ ] 4. Compact expandable inspector heading, prose layout and review controls; verify 320/380px and laptop heights.
-- [ ] 5. Valid mixed IPv4/IPv6 detection and aliases; classify display versus persisted seeds; test URLs/phones/account IDs.
-- [ ] 6. Trace and label artifact/provider/dataset/source-class counts without changing scoring thresholds.
-- [ ] 7. Reconcile transcript/Tools/Overview outcomes by persisted call ID.
-- [ ] 8. Trace synthesis/finalizer overclaims and cycle delta behavior; isolate backend PR and preserve termination invariants.
-- [ ] 9. Separate generic assistant actions from eligible pivots across responsive layouts.
-- [ ] 10. Typed nested metadata formatting, source labels, review wording and effective versus historical linkage state.
-- [ ] Meaningful failing tests precede behavior changes; targeted tests, lint/typecheck/frontend/build/manual e2e; edge tests for backend changes.
-- [ ] Sanitized multi-run harness QA: mounted completion, late Next, review changes, malformed suggestions, switch/reload and responsive layouts.
-- [ ] Small independent draft PRs, tested SHAs, evidence, gaps and rollback scopes; update lessons/results.
+- [x] Read AGENTS.md, CLAUDE.md, tasks/lessons.md; inspect status/remotes/current HEAD.
+- [x] Inspect overlapping #593/#873/#874 via fetched refs and GitHub API. Their branches are untouched; #593 changes radar/dedupe, not the registrations builder.
+- [x] Trace artifacts → buildRegistrationRows → Sensitive Registrations; compare subjectBreaches and export predicates.
+- [x] Run failing rendered-table tests before changing behavior: 2 failed / 19 passed.
+- [x] Reuse forSubject/isSubjectAuthorityEligible, rejectedDerivedIds and isNullResultValue before registration deduplication.
+- [x] Cover active quarantine even with analyst confirmation, dismissal/rejection, rejected-derived, negative results, positive eligible registrations, legacy collision/false-positive and explicit linkage release with rejection precedence.
+- [x] Assert raw fixtures remain identical and excluded rows remain in Excluded / Collision Clusters.
+- [x] Relevant report/authority/provenance regression suite: 52 passed / 0 failed.
+- [x] Signed-in harness before/after, synthetic fixtures only, desktop 1440×900 and mobile 390×844. Before: 6 registrations including four ineligible rows. After: only EligibleFixture and ReleasedFixture. Quarantined original retained in excluded section. No page errors or Vite overlay.
+- [x] Final typecheck and production build pass; lint passes with 15 warnings / 0 errors.
+- [x] Review diff for unintended changes and real case data; update lessons; focused draft PR.
 
 ### Results
-Work in progress. No merge, deployment, production mutation, or paid scan performed.
 
-Registration repair: reproduced two failing tests, then 50 targeted tests passed. Export audit: buildReportMarkdown already cascades rejected provenance; audit serializer formats supplied clusters/sources and has no registrations producer. Other subject profile/alias/footprint callers have authority predicates but provenance coverage needs a broader follow-up. Baseline harness: 95 passed, 13 skipped; skipped tests are not verified.
+Root cause: buildRegistrationRows iterated raw artifacts and used only kind/reputation checks; sibling subjectBreaches already applies authority, rejected-provenance and negative-result gates. The repair adds those same gates before rows are built. No threshold, release rule, raw evidence, or persistence change.
+
+Adjacent inspection (not expanded into this patch): profile/aliases/footprint use subject eligibility, but their rejected-derived coverage is a separate follow-up. buildReportMarkdown already cascades rejected provenance; audit serializer formats supplied clusters/sources and has no registrations producer.
+
+Validation baseline: 2894 frontend tests passed / 1 skipped; existing harness e2e 95 passed / 13 skipped. Canonical edge suite subsequently completed 2781 passed / 0 failed / 6 ignored after network access became usable; the generated lockfile-only changes were restored. Edge code is unchanged by this repair. Skipped/ignored checks are not claimed as passed.
+
+Evidence (outside repository): /tmp/registration-before.log, /tmp/registration-final-targeted.log, /tmp/registration-browser-before.log, /tmp/registration-browser-after.log, /tmp/registrations-{before,after}-{desktop,mobile}.png.
+
+No authenticated production case inspection, paid scan, merge, or deployment. Deployed frontend SHA is not established; no attribution of this defect to the redesign is claimed. Separate pivot investigation was paused and preserved only on local branch repair/case-pivot-queue (ea082f1); it is not included in this PR.
+
+Remaining UI limitation observed during this eligibility check: the unchanged mobile registrations table wraps source labels and identifiers tightly. This is a separate layout defect, not fixed or claimed resolved here.

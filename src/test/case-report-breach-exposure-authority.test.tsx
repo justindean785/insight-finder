@@ -304,10 +304,28 @@ describe("Sensitive Registrations subject authority", () => {
       art({ id: "negative", value: "No breach hits", metadata: { site: "Negative" } }),
       art({ id: "account", kind: "account", value: "unrelated", metadata: { site: "RejectedAccount", ...UNLINKED } }),
     ];
-    const text = registrations(arts, { email: "wrong", dismissed: "dismissed" });
+    const originals = JSON.stringify(arts);
+    const text = registrations(arts, { email: "wrong", dismissed: "dismissed", quarantine: "confirmed" });
     expect(text).toContain("Accepted");
     for (const label of ["Quarantined", "Dismissed", "Derived", "Negative", "RejectedAccount"]) expect(text).not.toContain(label);
-    expect(arts).toHaveLength(7);
+    expect(JSON.stringify(arts)).toBe(originals);
+  });
+  it("keeps excluded evidence available with its original quarantine reason", () => {
+    const c = renderReport([breach("q", "Quarantined", { site: "Quarantined", ...UNLINKED })]);
+    expect(c.textContent).toContain("Excluded / Collision Clusters");
+    expect(c.textContent).toContain("Quarantined");
+    expect(Array.from(c.querySelectorAll("table")).some(t => t.querySelector("thead")?.textContent?.includes("Account identifier"))).toBe(false);
+  });
+  it("excludes legacy collision and false-positive records without changing their history", () => {
+    const arts = [
+      breach("ok", "Accepted", { site: "Accepted" }),
+      breach("collision", "Collision", { site: "Collision", possible_collision: true }),
+      breach("legacy", "LegacyFalse", { site: "LegacyFalse", false_positive: true }),
+    ];
+    const text = registrations(arts);
+    expect(text).toContain("Accepted");
+    expect(text).not.toContain("Collision");
+    expect(text).not.toContain("LegacyFalse");
   });
   it("permits explicitly released linkage while preserving rejection precedence", () => {
     const arts = [breach("released", "Released", { site: "Released", ...UNLINKED, linkage_confirmed: true })];
