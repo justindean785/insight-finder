@@ -237,3 +237,14 @@ Pending (JD-driven, not fork-driven):
 - Manual workspace e2e against the harness URL.
 
 PRs #872 / #873 / #874 untouched; branch not pushed; no PR opened; no merge.
+
+## 2026-10-25 — recorded assessment explanations (branch `repair/recorded-confidence-explanations`, base `750e885`)
+
+Frontend only. Draft PR; not merged, not deployed. Takes over the increment Codex left unpushed (its sandbox hit its usage limit).
+
+- [x] The ⓘ "Why this score?" popover explains what the row RECORDED (stored score, recorded cap + reason, recorded source classes, authority, contradiction, analyst decision). `explainConfidence` no longer re-derives a total from a provider-tier table, +6/-8 corroboration, recency deltas or a -50 false-positive penalty; `final` is `displayConfidence(a).effective`. RED before the fix: the popover said 64 beside a stored 50 capped to 50.
+- [x] Unknown stays unknown (`—`, "Why is this score unknown?"), a recorded cap of 0 is honoured, a missing `source_category` reads "Not recorded" instead of counting provider names.
+- [x] Escape: every Evidence row is wrapped in a peek HoverCard (open delay 250 ms). With the pointer on the row it opened AFTER the popover and became the topmost dismissable layer, so the first Escape closed the peek and the popover needed a second press. Reproduced deterministically (fake clock), fixed by making the peek yield while the score popover is open (`ArtifactRow` controls the HoverCard; `ConfidenceExplain` gets an optional `onOpenChange`). Pre-existing on `main`; not caused by this change.
+- [x] Gates on this branch: typecheck ok; lint 0 errors (15 pre-existing warnings, none new); vitest 242 files / 2907 passed / 1 skipped (base 241 / 2894 / 1); build ok, no `harness.local` in `dist/`; full e2e 104 passed / 13 skipped / 0 failed (the 77/4 figure in CLAUDE.md predates the current spec set).
+- [ ] **Not fixed here, found while verifying:** `buildEvidenceMatrixMarkdown` (`intel.ts:1320`) prints raw `a.confidence`; `buildReportMarkdown` (and the report tab) print the capped `effectiveConfidence`. A row stored 80 with cap 50 exports as 80 in the matrix table (embedded in the full report via `intel.ts:1564`) and 50 everywhere else. `no-raw-confidence-outside-helpers.test.ts` does not catch it. Separate one-behaviour PR.
+- [ ] Trust badges are untouched: `badgesFor` still falls back to provider-name classes for legacy rows without `source_category`, and the "Analyst confirmed" badge also fires for `key`. Both need a policy decision, not a drive-by.

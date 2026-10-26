@@ -2,6 +2,29 @@
 
 Running log of non-obvious gotchas learned while working in this repo. Newest first.
 
+## 2026-10-25 (recorded assessment explanations)
+
+### A matching headline does not make an explanation honest
+
+The popover headline already used `displayConfidence`, but the list beneath it came from a second formula (provider-tier baselines, +6/-8
+corroboration, recency deltas, -50 false-positive). A row stored 50 and capped to 50 showed 64 in `explainConfidence(...).final` while the
+headline said 50, and the components "explained" a number the server never wrote. Render what the row recorded; leave unknown inputs unknown.
+Capture age is not the age of the underlying event. Provider names without a recorded `source_category` do not establish independence.
+
+### Playwright `reuseExistingServer` can silently attach to ANOTHER checkout's dev server
+
+Port 5175 was held by a `vite` started from a different directory (the audit's QA lane). `npx playwright test` reused it, so the first e2e runs
+exercised OLD code and failed on a label that did not exist there. Before trusting any e2e result, confirm what owns the port
+(`readlink /proc/<pid>/cwd`) or use a separate port; do not kill a server you did not start. Also: Playwright 1.62 wants
+`chromium_headless_shell-1234`; this container ships 1243, so set `PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium-1243/chrome-linux64/chrome`
+(CLAUDE.md still says chromium-1194).
+
+### "Escape needs two presses" is a layering bug, not a timing flake
+
+Radix dismisses the NEWEST layer on Escape. A hover card that opens after a popover (250 ms open delay, pointer still on the row) steals the
+first Escape. A test that presses Escape immediately passes and hides it. Prove it with a fake clock (`page.clock.install()` + `fastForward`),
+assert "one overlay at a time", and fix the layering; never add a second Escape, a sleep or a longer timeout.
+
 ## 2026-10-25 (workspace Stage 1 correction pass)
 
 ### G-items NOT ADDED (fail honest-data check — explicit follow-ups)
