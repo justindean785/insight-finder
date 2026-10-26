@@ -149,6 +149,7 @@ import { trimExaResults, archiveAttachment } from "./archiver.ts";
 import { PROVIDER_REQUIREMENTS } from "./capabilities.ts";
 import { agentMemoryOrFilter } from "./pgrest.ts";
 import { shapeShodanResponse, shapeJinaBody } from "./lib/negative-lookup.ts";
+import { waybackCdxParallelDisabled, waybackCdxSearch, waybackCdxSearchLegacy } from "./lib/wayback-cdx.ts";
 
 /**
  * The REAL tool vocabulary, for G1's queued-placeholder gate.
@@ -3531,67 +3532,14 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: memoSchema("wayback_cdx_search", () => z.object({ url: z.string().min(1).describe("domain or URL to look up in the archive") })),
       execute: async ({ url }, opts) => {
         // archive.org's CDX endpoint is chronically slow (p95 ~60s). The cache
-        // wrapper's per-tool cap for wayback_cdx_search is raised to 25s
-        // (TOOL_TIMEOUT_OVERRIDE_MS) so a legit-slow archive still resolves, and
-        // the wrapper's AbortSignal is forwarded into every fetch so a hit on the
-        // cap CANCELS the request cleanly instead of orphaning it (the prior null/
-        // timeout bug: the 12s default cap fired while an un-signalled 15s fetch
-        // kept running). retries:1 keeps worst-case wall-clock under the cap.
+        // wrapper's per-tool cap is 25s (TOOL_TIMEOUT_OVERRIDE_MS), and its
+        // AbortSignal is forwarded into every fetch so a hit on the cap cancels
+        // the requests cleanly. The four archive.org queries run in parallel and
+        // a partial answer is kept — see lib/wayback-cdx.ts.
         const signal = (opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal;
-        try {
-          const base = `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json`;
-          // Accurate bookends, NOT derived from the capped sample page: CDX
-          // default order is chronological, so &limit=1 is the oldest capture and
-          // &limit=-1 is the newest. Each is failure-tolerant (null on any error).
-          const firstTs = async (limit: string): Promise<string | null> => {
-            try {
-              const r = await fetchRetry(`${base}&fl=timestamp&limit=${limit}`, { signal }, { timeoutMs: 12_000, retries: 1 });
-              if (!r.ok) { await r.body?.cancel().catch(() => {}); return null; }
-              const data = await r.json().catch(() => null);
-              if (!Array.isArray(data) || data.length < 2) return null;
-              const hdr = data[0] as string[];
-              const idx = hdr.indexOf("timestamp");
-              const row = data[1] as string[];
-              return ((idx >= 0 ? row[idx] : row[0]) ?? null) as string | null;
-            } catch { return null; }
-          };
-          // Small sample page for context (collapsed to unique urlkeys).
-          const r = await fetchRetry(`${base}&limit=25&collapse=urlkey`, { signal }, { timeoutMs: 12_000, retries: 1 });
-          if (!r.ok) return { ok: false, status: r.status, error: `wayback cdx ${r.status}`, url };
-          const data = await r.json().catch(() => null);
-          // CDX json: row[0] is the header (["urlkey","timestamp","original","statuscode",...]).
-          if (!Array.isArray(data) || data.length < 2) {
-            return { ok: true, url, archived: false, sampled_count: 0, capped: false, earliest: null, latest: null, captures: [] };
-          }
-          const header = data[0] as string[];
-          const ti = header.indexOf("timestamp"), oi = header.indexOf("original"), si = header.indexOf("statuscode");
-          const rows = (data.slice(1) as string[][]).map((row) => ({
-            timestamp: ti >= 0 ? row[ti] ?? null : null,
-            original: oi >= 0 ? row[oi] ?? null : null,
-            statuscode: si >= 0 ? row[si] ?? null : null,
-          }));
-          const [earliest, latest] = await Promise.all([firstTs("1"), firstTs("-1")]);
-          // Fall back to the sample's own min/max only if a bookend query failed.
-          const sampleTs = rows.map((x) => x.timestamp).filter((t): t is string => !!t).sort();
-          return {
-            ok: true, url, archived: true,
-            earliest: earliest ?? sampleTs[0] ?? null,
-            latest: latest ?? sampleTs[sampleTs.length - 1] ?? null,
-            sampled_count: rows.length,
-            capped: rows.length >= 25,
-            captures: rows.slice(0, 25),
-          };
-        } catch (e) {
-          // Explicit timeout surface: an AbortError here is the tool cap / archive.org
-          // being too slow, NOT a code error. Log it and return a clear reason so the
-          // timeline shows "timed out" instead of a bare stack string.
-          const isAbort = e instanceof DOMException && e.name === "AbortError";
-          if (isAbort) {
-            console.warn(`[wayback_cdx_search] timed out for ${url} (archive.org slow / tool cap)`);
-            return { ok: false, error: "wayback_cdx_search timed out (archive.org slow)", _timeout: true, url };
-          }
-          return { error: String(e instanceof Error ? e.message : e) };
-        }
+        return waybackCdxParallelDisabled()
+          ? await waybackCdxSearchLegacy(url, signal)
+          : await waybackCdxSearch(url, { signal });
       },
     }),
     crtsh_lookup: tool({

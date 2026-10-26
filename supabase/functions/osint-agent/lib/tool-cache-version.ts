@@ -38,6 +38,10 @@ export const TOOL_CACHE_VERSION: Readonly<Record<string, number>> = {
   // deploy failed (the #599 lesson, applied in the PR that changes the interpretation).
   shodan_internetdb: 2,
   jina_reader_scrape: 2,
+  // v2 — lib/wayback-cdx.ts. A v1 row contradicts the new reading of the SAME (url) key: a
+  // malformed 200 body was cached as `archived:false` (now a failed read, never cached), and
+  // `latest` fell back to the sample's own maximum before the availability API.
+  wayback_cdx_search: 2,
 };
 
 /**
