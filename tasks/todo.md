@@ -163,6 +163,50 @@ PR B design (backward compatible, preview-preserving, additive; separate edge an
   stamped #731, mirrored #110, deployed and verified live `2e0d3ee` with `checks.run_lease` ok, ledger #732.
   Edge suite 2232/0/6. Stated limit: time lease, not fencing (S1b).
 
+## Deep audit: pivot workflow and analytical language (2026-10-24)
+
+Audit report: `docs/AUDIT_2026-10-24_pivot-workflow-and-language.md`  
+Baseline: `main` at `70766fce` · CI status not independently verified
+
+### Checklist
+- [x] Read audit prompt and lessons
+- [x] Verify GitHub SHA (`70766fce`); CI status not independently verified
+- [x] Audit 1: pivot execution contract (WorkbenchNext docstring vs `requiresPreview`)
+- [x] Audit 2: runner/busy state (WorkbenchNext → NextSteps `busy` prop, ChatWindow listener scope)
+- [x] Audit 3: pivot explanation provenance (`explainPivot` claims vs actual evidence)
+- [x] Audit 4: source/corpus semantics (four counting systems identified; two overstate)
+- [x] Audit 5: narrative integrity / DOB display gap (code gap confirmed; narrative path unverified)
+- [x] Audit 6: collision language (area-code generic warning overstatement)
+- [x] Audit 7: HIBP semantics (occurrence count mislabeled as corpus count — 6-file propagation)
+- [x] Audit 8: continuity/regression (cross-case state leak via missing `key={threadId}`)
+- [x] Enumerate all manual pivot dispatch surfaces (4 + 1 programmatic)
+- [x] Trace `explainConfidence` callers (ConfidenceExplain.tsx, EvidenceMatrixTab.tsx)
+- [x] Trace `computeEffectiveSourceCount` callers (CaseReport, ReportCardV2, report-serializer)
+- [x] Verify ChatWindow mounting scope (always mounted in workspace — no dispatching-to-nobody gap)
+- [x] Check `buildSubjectProfile` DOB/age independence (no check found — Finding 5)
+- [x] Write audit report and implementation plan
+
+### Results
+
+**8 findings** ranked by severity. Evidence classes are calibrated per-finding (see full report).
+
+| # | Finding | Severity | Evidence class | Status |
+|---|---------|----------|---------------|--------|
+| 4 | Source-counting drift: "independent sources" counts provider tokens | High | code path confirmed; drift hypothesized | Open |
+| 5 | DOB/age from single-source name displayed as fact | High | code path confirmed; metadata writer untraced | Open |
+| 1 | Pivot contract says Preview-first; code dispatches directly | Medium | code path confirmed | Open |
+| 7 | HIBP occurrence count mislabeled as corpus count | Medium | code path confirmed | Open |
+| 2 | Busy state not shown in Workbench controls; silent refusal | Low-Med | code path confirmed | Open |
+| 6 | Area-code collision triggers generic "different people" | Low-Med | code path confirmed; downstream hypothesized | Open |
+| 8 | Cross-case stale display (missing `key={threadId}`) | Low-Med | code path confirmed; transient confirmed | Open |
+| 3 | Pivot explanation copy could be hedged | Low | code path confirmed; impact hypothesized | Open |
+
+**Two frontend PRs + one edge PR proposed** (consolidated per JD's one-frontend-PR preference). All await JD approval.
+
+**Unverified:** Live-case narrative path for Finding 5 (no authenticated access); `metadata.dob` writer; narrow-screen rendering; Evidence-to-Connections handoff detail.
+
+**Decision needed from JD:** Should Workbench pivots always go through Preview (enforce the docstring), or should the docstring match the code (clean pivots dispatch directly)?
+
 ## Blockers / decisions for JD
 - **Re-enable the S1a lease?** Explicit authorization required; the kill switch stays `true` until then.
 - Engine fixes (separate PRs, evidence-ranking, need sign-off): corroboration should filter through `NON_CORROBORATING_CLASSES`; add a `reputation` kind; negative lookups as coverage, not artifacts.
