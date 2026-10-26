@@ -7,11 +7,7 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ReviewState } from "@/lib/review";
 import { cn } from "@/lib/utils";
 
-/**
- * Compact "i" button that opens a popover explaining how a confidence score
- * was assembled (base × corroboration × recency × analyst). Use anywhere an
- * artifact's confidence is rendered — keeps every score audit-defensible.
- */
+/** Recorded score/cap disclosure beside the evidence's authority state. */
 export function ConfidenceExplain({
   artifact, review, className,
 }: {
@@ -20,12 +16,6 @@ export function ConfidenceExplain({
   className?: string;
 }) {
   const exp = explainConfidence(artifact, review);
-  // THE HEADLINE IS THE CANONICAL NUMBER. `explainConfidence(...).final` is a full
-  // re-derivation from source tier, corroboration and recency that never reads
-  // `a.confidence` at all — a fifth pipeline, and this popover is mounted on every
-  // Evidence board row, so it rendered its own opinion inches from the row's
-  // figure. The DECOMPOSITION below is genuinely useful and stays; what it may not
-  // do is disagree about the total.
   const shown = displayConfidence(artifact);
   // Ink, not hue — a third by-value ladder (80/50) lived here and rendered
   // inline beside every ledger numeral, so the row showed two different
@@ -37,7 +27,7 @@ export function ConfidenceExplain({
       <PopoverTrigger asChild>
         <button
           type="button"
-          aria-label={`Why is this ${shown.effective ?? 0}%?`}
+          aria-label={shown.effective === null ? "Why is this score unknown?" : `Why is this score ${shown.effective}/100?`}
           className={cn(
             "inline-grid place-items-center w-4 h-4 rounded-full text-muted-foreground/60 hover:text-foreground hover:bg-surface-3 transition-colors",
             className,
@@ -50,7 +40,7 @@ export function ConfidenceExplain({
       <PopoverContent
         side="left"
         align="start"
-        className="w-80 p-0 overflow-hidden border-border-subtle"
+        className="w-80 max-w-[calc(100vw-2rem)] max-h-[var(--radix-popover-content-available-height)] p-0 overflow-y-auto border-border-subtle"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="px-3 py-2 border-b border-border-subtle flex items-baseline justify-between gap-2">
@@ -68,29 +58,25 @@ export function ConfidenceExplain({
         <div className="px-3 py-1.5 border-b border-border-subtle text-data text-foreground" data-machine-score>
           {machineScoreText(shown)}
         </div>
+        <p className="px-3 py-2 text-data text-muted-foreground">
+          Machine assessment · uncalibrated. This score is not a probability of identity. A point-by-point calculation is unavailable in this record view.
+        </p>
         <ul className="py-1">
           {exp.components.map((c, i) => (
             <li key={i} className="px-3 py-1.5 grid grid-cols-[1fr_auto] gap-2 items-start">
               <div className="min-w-0">
                 <div className="text-data text-foreground">{c.label}</div>
-                <div className="text-data text-muted-foreground leading-snug">{c.why}</div>
+                <div className="text-data text-muted-foreground leading-snug break-words">{c.why}</div>
               </div>
-              <span
-                className={cn(
-                  "font-mono text-data tabular-nums shrink-0 mt-0.5",
-                  c.delta > 0 ? "text-[hsl(var(--confidence-high))]" :
-                  c.delta < 0 ? "text-[hsl(var(--confidence-low))]" :
-                  "text-muted-foreground",
-                )}
-              >
-                {c.delta > 0 ? "+" : ""}{c.delta}
-              </span>
+              {c.value && (
+                <span className="font-mono text-data tabular-nums shrink-0 mt-0.5 text-foreground">{c.value}</span>
+              )}
             </li>
           ))}
         </ul>
         {shown.stored != null && shown.stored !== shown.effective && (
           <div className="px-3 py-2 border-t border-border-subtle text-data text-muted-foreground">
-            Stored by the server: <span className="font-mono text-foreground">{shown.stored}</span>, capped to <span className="font-mono text-foreground">{shown.effective}</span>{shown.capReason ? ` — ${shown.capReason}` : ""}. The breakdown above decomposes the signals behind it.
+            Stored by the server: <span className="font-mono text-foreground">{shown.stored}</span>, capped to <span className="font-mono text-foreground">{shown.effective}</span>{shown.capReason ? ` — ${shown.capReason}` : ""}.
           </div>
         )}
       </PopoverContent>
