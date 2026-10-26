@@ -21,17 +21,23 @@ import { isQuarantined } from "@/lib/quarantine";
 /**
  * The two questions a row can put to the analyst, which are DIFFERENT
  * decisions and must never share one button:
- *   linkage — "whose is this?"  answered by releasing a quarantine
- *   review  — "is this real?"   answered by a review verdict
+ *   linkage — "does this record belong to the subject?"   answered by releasing a quarantine
+ *   review  — "does this source support the claim?"       answered by a review verdict
  * Keyed on the caveat's PREDICATE (`caveatKind`), not the winning `state`,
  * for the same reason `AuthorityView` does: a contradicted row that is also
  * quarantined still has a linkage question, and a plain conflict does not.
+ *
+ * The old copy ("Linkage · whose is this?" / "Review · is this real?") was
+ * precise once you knew the write paths, but read ambiguously on first
+ * encounter — "is this real?" conflates "is this value real?" with "does
+ * this source support the claim?". The write behaviour is unchanged; this
+ * is a wording-only refinement.
  */
 export type CaseSheetAsk = "linkage" | "review";
 
 export const ASK_LABEL: Record<CaseSheetAsk, string> = {
-  linkage: "Linkage · whose is this?",
-  review: "Review · is this real?",
+  linkage: "Linkage · does this record belong to the subject?",
+  review: "Review · does this source support the claim?",
 };
 
 export interface CaseSheetSubject {

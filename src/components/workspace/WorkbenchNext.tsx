@@ -11,8 +11,9 @@ import { pivotSkipStorageKey, type RecommendedPivot } from "@/lib/recommended-pi
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
 import { hasPivotRunner } from "@/lib/pivot-runner";
 import type { ReviewAdjustment } from "@/lib/intel";
+import { WORKBENCH_RUNNABLE_LIMIT } from "@/lib/next-step-queue";
 
-const RUNNABLE_LIMIT = 5;
+const RUNNABLE_LIMIT = WORKBENCH_RUNNABLE_LIMIT;
 const REPAIR_LIMIT = 3;
 
 /**

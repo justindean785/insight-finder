@@ -32,11 +32,45 @@ const DOT_TONE: Record<CaseRunState, string> = {
 };
 
 /**
+ * Elapsed since a UTC-stringified start timestamp — "3s", "47s", "2m", "14m",
+ * "1h", "4h". Returns null when `startedAtIso` is unusable; callers omit the
+ * sub-label in that case rather than fabricate a number (JD's requirement
+ * — audit §5 + the Stage 1b scope).
+ */
+function formatElapsed(nowMs: number, startedAtIso: string | null): string | null {
+  if (!startedAtIso) return null;
+  const startedMs = Date.parse(startedAtIso);
+  if (!Number.isFinite(startedMs)) return null;
+  const secs = Math.max(0, Math.floor((nowMs - startedMs) / 1000));
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h`;
+}
+
+/**
  * The run's state as one pill: dot (or stop mark) + word. Never colour alone —
  * every state carries its own label, and `stopped` uses a square rather than a
  * dot so it cannot be mistaken for a paused "complete".
+ *
+ * When state is "running" and `run_started_at` is a parseable timestamp, the
+ * label is `Analyzing · Xs|Xm|Xh` where X is the actual elapsed interval. If
+ * `run_started_at` is null (the backend hasn't stamped a start yet), the pill
+ * renders "Analyzing" with no elapsed — this is the audit's §5 requirement
+ * (never fabricate an interval from page-open or first-tool time).
  */
 export function CaseStatusPill({ snapshot, className }: { snapshot: CaseSnapshot | null; className?: string }) {
+  // Tick every second only while a run is live, so a mounted pill updates its
+  // elapsed label without a snapshot refresh. The tick is a no-op outside the
+  // running state, so idle pills never schedule intervals.
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const isRunning = snapshot?.hydrated && snapshot.run.state === "running";
+  useEffect(() => {
+    if (!isRunning) return;
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [isRunning]);
+
   if (!snapshot || !snapshot.hydrated) {
     return (
       <span
@@ -51,6 +85,16 @@ export function CaseStatusPill({ snapshot, className }: { snapshot: CaseSnapshot
     );
   }
   const state = snapshot.run.state;
+  // Running pill carries "Analyzing" + the measured elapsed when startedAt is
+  // parseable; otherwise falls back to the plain word. Non-running states keep
+  // the authoritative label from the snapshot — "Ready", "Complete",
+  // "Interrupted", "Stopped" — unchanged.
+  const label = state === "running"
+    ? (() => {
+        const elapsed = formatElapsed(nowMs, snapshot.run.startedAt);
+        return elapsed ? `Analyzing · ${elapsed}` : "Analyzing";
+      })()
+    : snapshot.run.label;
   return (
     <span
       data-run-state={state}
@@ -63,7 +107,7 @@ export function CaseStatusPill({ snapshot, className }: { snapshot: CaseSnapshot
       {state === "stopped"
         ? <Square className="h-2 w-2 fill-current" aria-hidden />
         : <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", DOT_TONE[state])} />}
-      {snapshot.run.label}
+      {label}
     </span>
   );
 }

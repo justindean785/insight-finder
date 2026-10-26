@@ -5,6 +5,7 @@ import { ChatWindow } from "@/components/ChatWindow";
 import { WorkspaceHeader, MobileCaseStrip } from "@/components/workspace/WorkspaceHeader";
 import { WorkspaceTabs, type WorkspaceTab } from "@/components/workspace/WorkspaceTabs";
 import { CaseSnapshotProvider } from "@/components/workspace/CaseSnapshotProvider";
+import { WorkspaceUIStateProvider } from "@/components/workspace/WorkspaceUIStateProvider";
 import { RecoveryBanner } from "@/components/workspace/RecoveryBanner";
 import { Workbench } from "@/components/workspace/Workbench";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
@@ -48,7 +49,9 @@ export default function ChatPage() {
 
   return (
     <CaseSnapshotProvider key={threadId} threadId={threadId}>
-      <ChatWorkspace threadId={threadId} userId={user.id} />
+      <WorkspaceUIStateProvider>
+        <ChatWorkspace threadId={threadId} userId={user.id} />
+      </WorkspaceUIStateProvider>
     </CaseSnapshotProvider>
   );
 }
@@ -129,7 +132,12 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
   // desktop xl+ only. It is rendered LAST inside the content container and the
   // two panels it sits beside only gain a right inset, so no existing child
   // moves or remounts: the ChatWindow's in-flight stream is untouched by it.
-  const showSheet = !isMobile && (tab === "chat" || tab === "report");
+  // The Workbench is shared across Investigate (chat), Evidence and Report:
+  // selection in Evidence must surface in the same right-hand pane, not a
+  // second column. On Evidence, the drawer suppresses itself at xl+ so the
+  // detail is in the Workbench's Sheet tab only. Overview / Tools / Graph
+  // own their full width and have no Workbench.
+  const showSheet = !isMobile && (tab === "chat" || tab === "report" || tab === "evidence");
   // The analyst can fold the sheet down to a 44px strip, like the cases rail;
   // the strip keeps the "Needs your call" count so open decisions never vanish.
   // Remembered across reloads.
@@ -140,7 +148,7 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
     try { localStorage.setItem("if:caseSheetCollapsed", sheetCollapsed ? "1" : "0"); } catch { /* ignore */ }
   }, [sheetCollapsed]);
   const besideSheet = (key: WorkspaceTab) =>
-    showSheet && (key === "chat" || key === "report") && (sheetCollapsed ? "xl:right-11" : "xl:right-[380px]");
+    showSheet && (key === "chat" || key === "report" || key === "evidence") && (sheetCollapsed ? "xl:right-11" : "xl:right-[380px]");
   const queueCount = sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null;
 
   const panel = (key: Exclude<WorkspaceTab, "chat">, body: ReactNode, scroll = false) =>

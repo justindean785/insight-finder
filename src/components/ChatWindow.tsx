@@ -28,6 +28,7 @@ import { messageIntegrity, narrativeIsUnadjudicated } from "@/lib/message-integr
 import { RunChips, RunMenu } from "@/components/pivots/RunControls";
 import { composerPrimary } from "@/lib/composer-primary";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useIsWorkbenchViewport } from "@/hooks/useIsWorkbenchViewport";
 import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import {
   AUTO_RUN_MAX_CYCLES, AUTO_RUN_OVERLAP_MAX_WAIT_MS, AUTO_RUN_OVERLAP_POLL_MS, AUTO_RUN_SETTLE_MS, CONTINUE_PROMPT, REPORT_PROMPT,
@@ -36,6 +37,7 @@ import {
 import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
+import { countWorkbenchRunnablePivots } from "@/lib/next-step-queue";
 import { registerPivotRunner } from "@/lib/pivot-runner";
 import { DEFAULT_CONTROLS, evaluatePreflight, type PreflightControls } from "@/lib/composer-preflight";
 import { TargetChip } from "@/components/composer/ComposerPreflight";
@@ -202,11 +204,21 @@ function CodePanel({
         </span>
         <div className="code-panel__head-actions">
           {isLong && (
-            <button type="button" onClick={() => setExpanded((v) => !v)}>
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+            >
               {expanded ? "Collapse" : "Expand"}
             </button>
           )}
-          <button type="button" onClick={onCopy}>Copy</button>
+          <button
+            type="button"
+            onClick={onCopy}
+            className="rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+          >
+            Copy
+          </button>
         </div>
       </div>
       <div className={cn("code-panel__body", expanded && "code-panel__body--expanded")}>
@@ -334,7 +346,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-4 py-3 text-left"
+        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-4 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
       >
         <span
           className={cn(
@@ -2509,6 +2521,11 @@ function ChatWindowInner({
   );
   // Placeholder length only — layout is CSS-responsive and never remounts.
   const isPhone = useIsMobile();
+  // When the Workbench's right-hand Next tab is visible (xl+), the actionable
+  // pivot queue lives there — the transcript shows a compact summary + handoff
+  // button to avoid duplicating Run affordances. Below xl, the Workbench aside
+  // is `display:none`, so the transcript keeps the full NextSteps as fallback.
+  const workbenchVisible = useIsWorkbenchViewport();
   const runControlsVisible = canShowRunControls({
     isLoading,
     hasAssistantTurn: messages.some((m) => m.role === "assistant"),
@@ -2915,6 +2932,14 @@ function ChatWindowInner({
     return [...out.slice(0, 4), ...repair];
   }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability]);
 
+  // The Workbench's Next-tab runnable count — the number the transcript's
+  // compact handoff line prints. Different from `suggestions.length` because
+  // the Workbench caps at WORKBENCH_RUNNABLE_LIMIT (5) and never injects the
+  // transcript's "Summarize / Breach check / Find more" fallback actions.
+  const workbenchRunnableCount = useMemo(() => countWorkbenchRunnablePivots({
+    artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets, reviews: review.map,
+  }), [artifacts, seedValue, reportPivots, pivotSkip, queriedTargets, review.map]);
+
   // The pivot Auto-run would start next. Read from a ref at cycle time, because
   // the cycle effect fires between renders. A pivot Auto-run already sent this
   // session is not sent again while the tool log catches up to it.
@@ -3096,17 +3121,50 @@ function ChatWindowInner({
             <FailedRunCard reason={error.message} onRetry={retryLastUser} />
           )}
           {suggestions.length > 0 && (
-            <NextSteps
-              items={suggestions}
-              onRunPivot={runPivotFromRail}
-              onRunAction={(prompt) => void sendText(prompt)}
-              busy={isLoading}
-              openKey={openStep}
-              onOpenChange={setOpenStep}
-              connections={connections}
-              artifactsById={artifactsByIdMemo}
-              onOpenGraph={() => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "graph" } }))}
-            />
+            workbenchVisible ? (
+              // Workbench's Next tab owns the live queue. In the transcript we
+              // show a quiet handoff — the exact pivot cards, Run buttons and
+              // Preview flow live on the right so the analyst isn't offered
+              // the same action twice. The number names the Workbench Next
+              // tab's exact runnable count (via `countWorkbenchRunnablePivots`),
+              // not the local `suggestions` list which also carries generic
+              // fallback actions ("Summarize", "Find more") the Workbench
+              // doesn't offer. Below xl the full NextSteps renders (fallback)
+              // because the Workbench is hidden.
+              <aside
+                aria-label="Next pivots summary"
+                className="rounded-lg border border-border-subtle bg-surface-2/60 px-4 py-3"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-data text-muted-foreground">
+                    {workbenchRunnableCount === 1
+                      ? "1 next pivot ranked"
+                      : `${workbenchRunnableCount} next pivots ranked`}
+                    <span className="mx-1.5 text-faint-foreground">·</span>
+                    open the workbench to Preview and Run
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => window.dispatchEvent(new CustomEvent("swarmbot:workbench-tab", { detail: { tab: "next" } }))}
+                    className="inline-flex h-7 items-center rounded-md border border-border-subtle bg-surface-3 px-2.5 text-data font-medium text-foreground transition-colors hover:bg-surface-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    Open Next pivots
+                  </button>
+                </div>
+              </aside>
+            ) : (
+              <NextSteps
+                items={suggestions}
+                onRunPivot={runPivotFromRail}
+                onRunAction={(prompt) => void sendText(prompt)}
+                busy={isLoading}
+                openKey={openStep}
+                onOpenChange={setOpenStep}
+                connections={connections}
+                artifactsById={artifactsByIdMemo}
+                onOpenGraph={() => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "graph" } }))}
+              />
+            )
           )}
           <div ref={endRef} />
         </div>
@@ -3315,13 +3373,15 @@ function ChatWindowInner({
           >
             {preflight.errors.target
               ? preflight.errors.target
-              : preflight.empty
-                ? primary.kind === "continue"
-                  ? "Continue runs the next best pivots and reports only what is new — or ask anything about this case."
-                  : isFollowUp
-                    ? "Ask about this case, or name a new selector to pivot on."
-                    : "Enter one primary target, then state the question you need answered."
-                : `Target: ${preflight.summary.target}`}
+              : primary.kind === "stop"
+                ? "Agent working — press Stop to end this run."
+                : preflight.empty
+                  ? primary.kind === "continue"
+                    ? "Continue runs the next best pivots and reports only what is new — or ask anything about this case."
+                    : isFollowUp
+                      ? "Ask about this case, or name a new selector to pivot on."
+                      : "Enter one primary target, then state the question you need answered."
+                  : `Target: ${preflight.summary.target}`}
           </p>
         </div>
       </div>

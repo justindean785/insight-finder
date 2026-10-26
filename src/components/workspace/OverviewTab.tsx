@@ -264,9 +264,76 @@ export function OverviewTab({ threadId }: { threadId: string }) {
 
       <div className="mx-auto max-w-6xl space-y-4 p-3 sm:p-4">
 
-        {/* ── The decision queue leads ──────────────────────────────────
-            It is the one surface on this page that asks the analyst to do
-            something; everything below it is context for that decision. */}
+        {/* ── Case assessment leads ─────────────────────────────────────
+            Register item 8: lead with what is SUPPORTED (what the engine
+            has adjudicated) then what is OPEN (what needs a decision).
+            Run diagnostics (RunCockpit, RunStrip) are demoted below the
+            Authority distribution — they describe the run that produced
+            the case, which is secondary to the case itself.
+
+            Previously the first panel on the Overview was the decision
+            queue; a case with a long queue read as a list of problems
+            before anything supported was visible. */}
+        {/* G-3: "The case, at a glance" two-card lead. Left: compact
+            working assessment (what the engine supports). Right: what
+            could change the case (strongest open contradiction). Both
+            cards read from the same selectors the fuller sections below
+            use, so the two can never disagree. */}
+        <div className="grid gap-4 md:grid-cols-2" data-overview-lead="case-at-a-glance">
+          <section className="panel panel-flat overflow-hidden" data-overview-card="working-assessment">
+            <RuleLabel right={<span className="text-micro tabular-nums text-muted-foreground/70">{strongest.length} of {tally.verified + tally.infrastructure + tally.probable}</span>}>
+              Working assessment
+            </RuleLabel>
+            {strongest.length === 0 ? (
+              <p className="p-3 text-data text-muted-foreground">No corroborated findings yet. The decision queue below is a good place to start.</p>
+            ) : (
+              <ul>
+                {strongest.slice(0, 4).map(({ a, v }) => (
+                  <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
+                    <AuthoritySpine state={v.state} />
+                    <ArtifactValue value={a.value} className="min-w-0" />
+                    <AuthorityChip view={v} />
+                  </li>
+                ))}
+              </ul>
+            )}
+            {strongest.length > 4 && (
+              <p className="border-t border-border-subtle px-3 py-1.5 text-micro text-muted-foreground">
+                +{strongest.length - 4} more supported findings below.
+              </p>
+            )}
+          </section>
+
+          <section className="panel panel-flat overflow-hidden" data-overview-card="what-could-change">
+            <RuleLabel right={unresolved.length > 0 ? <span className="text-micro tabular-nums text-muted-foreground/70">{unresolved.length}</span> : undefined}>
+              What could change the case
+            </RuleLabel>
+            {unresolved.length === 0 ? (
+              <p className="p-3 text-data text-muted-foreground">
+                No open contradictions. New disputes will appear here as the investigation records them.
+              </p>
+            ) : (
+              <ul>
+                {unresolved.slice(0, 2).map(({ a, v }) => (
+                  <li key={a.id} className="relative border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
+                    <AuthoritySpine state={v.state} />
+                    <div className="flex items-start gap-2">
+                      <ArtifactValue value={a.value} className="min-w-0 flex-1" />
+                      <AuthorityChip view={v} />
+                    </div>
+                    <AuthorityCaveat view={v} className="mt-0.5 line-clamp-2 text-micro" />
+                  </li>
+                ))}
+                {unresolved.length > 2 && (
+                  <li className="px-3 py-1.5 text-micro text-muted-foreground">
+                    +{unresolved.length - 2} more awaiting your call below.
+                  </li>
+                )}
+              </ul>
+            )}
+          </section>
+        </div>
+
         {/* ── Needs a decision ───────────────────────────────────────── */}
         <section className="panel panel-primary overflow-hidden">
           <RuleLabel
@@ -335,35 +402,6 @@ export function OverviewTab({ threadId }: { threadId: string }) {
           )}
         </section>
 
-        {/* ── The run, in one line ─────────────────────────────────────
-            These were five tiles. Three of them (verified, conflict,
-            quarantined) printed numbers the case bar already carries AND the
-            distribution chart below shows better, with all eight states and
-            their shares — so the bank was saying the same thing three times on
-            one screen. What is left is the other axis: what the run itself
-            cost, which appears nowhere else as a figure. */}
-        {/* ── The run itself: state, elapsed, last action, why it stopped ──
-            Read-only; assembled from the same snapshot (lib/run-cockpit.ts). */}
-        <RunCockpit
-          input={{
-            run: snapshot.run,
-            tools: snapshot.tools,
-            spendText: snapshot.spend.text,
-            pendingDecisions: sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null,
-          }}
-          onOpenDecisions={() => jump("artifacts")}
-          onOpenTools={() => jump("issues")}
-        />
-
-        <RunStrip
-          calls={activity.persistedTotal}
-          failed={activity.failed}
-          degraded={activity.degraded}
-          cached={cached}
-          wall={fmtWallClock(toolMs)}
-          onJump={() => jump("issues")}
-        />
-
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
           {/* ── Authority distribution ─────────────────────────────────── */}
           <section className="panel overflow-hidden">
@@ -431,6 +469,31 @@ export function OverviewTab({ threadId }: { threadId: string }) {
             )}
           </section>
         </div>
+
+        {/* ── Run diagnostics (secondary) ──────────────────────────────
+            Register item 8: demoted from the top of the page. The run
+            that produced the case is secondary to the case itself; its
+            state, stop reason and tool activity appear below the
+            findings and distribution. */}
+        <RunCockpit
+          input={{
+            run: snapshot.run,
+            tools: snapshot.tools,
+            spendText: snapshot.spend.text,
+            pendingDecisions: sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null,
+          }}
+          onOpenDecisions={() => jump("artifacts")}
+          onOpenTools={() => jump("issues")}
+        />
+
+        <RunStrip
+          calls={activity.persistedTotal}
+          failed={activity.failed}
+          degraded={activity.degraded}
+          cached={cached}
+          wall={fmtWallClock(toolMs)}
+          onJump={() => jump("issues")}
+        />
 
         <div className="grid gap-4 lg:grid-cols-2">
           {/* ── Failed / degraded lookups ──────────────────────────────── */}

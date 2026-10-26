@@ -1,0 +1,32 @@
+  3) [1280x720] › e2e/case-integrity.spec.ts:340:3 › case sheet → Evidence handoff › Decide in Evidence opens that row even though the default view hides quarantined rows 
+
+    Test timeout of 30000ms exceeded.
+
+    Error: locator.getAttribute: Test timeout of 30000ms exceeded.
+    Call log:
+      - waiting for getByRole('region', { name: 'Needs your call' }).getByRole('listitem').filter({ hasText: 'Linkage · whose is this?' }).first().locator('[title]').first()
+
+
+      345 |     // A quarantined (linkage) card — the kind the Analyst view hides.
+      346 |     const card = queue.getByRole("listitem").filter({ hasText: "Linkage · whose is this?" }).first();
+    > 347 |     const value = (await card.locator("[title]").first().getAttribute("title")) ?? "";
+          |                                                          ^
+      348 |     expect(value).not.toBe("");
+      349 |     await card.getByRole("button", { name: /Decide in Evidence/ }).click();
+      350 |     // At xl+ the detail surface is the shared Workbench inspector, not the
+        at /Users/dizosint/insight-finder/.claude/worktrees/awesome-panini-451148/e2e/case-integrity.spec.ts:347:58
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results/case-integrity-case-sheet--3b1f4-view-hides-quarantined-rows-1280x720/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results/case-integrity-case-sheet--3b1f4-view-hides-quarantined-rows-1280x720/error-context.md
+
+  3 failed
+    [1280x720] › e2e/case-integrity.spec.ts:217:3 › next steps › 9 · a malformed generated pivot is quarantined and cannot run 
+    [1280x720] › e2e/case-integrity.spec.ts:231:3 › next steps › Preview opens a preview inside the app; nothing starts until Start 
+    [1280x720] › e2e/case-integrity.spec.ts:340:3 › case sheet → Evidence handoff › Decide in Evidence opens that row even though the default view hides quarantined rows 
+  7 skipped
+  80 passed (2.3m)
+
+[exited with code 0]

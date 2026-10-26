@@ -79,24 +79,29 @@ function FigureSkeleton({ width = "w-14" }: { width?: string }) {
  * The old header printed a bare "100%" beside a lock. That number was the share
  * of evidence-log entries whose hash links to the previous one — a statement
  * about the LOG not having been altered. It says nothing about whether sources
- * were preserved: a case with 47 linked entries and zero hard-preserved sources
+ * were preserved: a case with 47 chained entries and zero hard-preserved sources
  * read "100%", which an analyst reasonably takes as full custody. The chip now
- * says what it measured ("47/47 linked") and the tooltip says what it did not.
+ * says what it measured ("47/47 chained") and the tooltip says what it did not.
+ *
+ * Why "chained", not "linked": "linked" collides with identity linkage (what
+ * the Connections tab counts). Hash-chain integrity is a different relationship
+ * entirely — one entry's hash referencing the previous entry's hash — and the
+ * two counts face each other on the same screen, so the words must be distinct.
  */
 function CustodyChip({ snapshot }: { snapshot: CaseSnapshot }) {
   const integ = snapshot.integrity;
   if (!integ || integ.total === 0) return null;
-  const linked = integ.ok ? integ.total : Math.max(0, Number(integ.firstBreak ?? 1) - 1);
-  const text = `${linked}/${integ.total}`;
+  const chained = integ.ok ? integ.total : Math.max(0, Number(integ.firstBreak ?? 1) - 1);
+  const text = `${chained}/${integ.total}`;
   const hint = integ.ok
-    ? `Hash chain valid: all ${integ.total} evidence-log entries link to the one before, so the log has not been altered. This does not mean the underlying sources were preserved — see Tools › Custody for hard vs soft entries.`
+    ? `Hash chain valid: all ${integ.total} evidence-log entries hash to the one before, so the log has not been altered. This is not identity linkage — see Connections for that. And it does not mean the underlying sources were preserved — see Tools › Custody for hard vs soft entries.`
     : `Chain break at entry #${integ.firstBreak}. Entries after the break cannot be shown to be unaltered.`;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <span
           tabIndex={0}
-          aria-label={integ.ok ? `Hash chain valid, ${text} entries linked` : `Hash chain broken at entry ${integ.firstBreak}, ${text} entries linked`}
+          aria-label={integ.ok ? `Hash chain valid, ${text} evidence-log entries chained` : `Hash chain broken at entry ${integ.firstBreak}, ${text} evidence-log entries chained`}
           className={cn(
             "inline-flex items-center gap-1 whitespace-nowrap rounded-md px-1 outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-help",
             integ.ok ? "text-muted-foreground" : "text-[hsl(var(--danger))]",
@@ -104,7 +109,7 @@ function CustodyChip({ snapshot }: { snapshot: CaseSnapshot }) {
         >
           {integ.ok ? <Lock className="h-3 w-3" aria-hidden /> : <ShieldAlert className="h-3 w-3" aria-hidden />}
           <span className="font-mono tabular-nums">{text}</span>
-          <span className="hidden 2xl:inline">linked</span>
+          <span className="hidden 2xl:inline">chained</span>
         </span>
       </TooltipTrigger>
       <TooltipContent side="bottom" className="max-w-[300px] text-xs leading-relaxed">{hint}</TooltipContent>
