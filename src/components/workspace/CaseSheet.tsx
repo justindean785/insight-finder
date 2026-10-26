@@ -37,6 +37,10 @@ function jumpToEvidence(artifactId?: string) {
   window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "artifacts", artifactId } }));
 }
 
+// Review opens the board's "Needs review" filter, which also lists Conflict rows,
+// so its count there runs higher than here. Say so rather than surprise.
+const ALSO_CONFLICT = "the Needs review view also lists Conflict rows";
+
 function jumpToState(authorityState: AuthorityState) {
   // Opens Evidence on the quick filter that holds these rows (the Board picks it).
   window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "artifacts", authorityState } }));
@@ -134,7 +138,7 @@ export function CaseSheetView({
                   <button
                     type="button"
                     onClick={() => jumpToState(d.state)}
-                    aria-label={`Show ${d.n} ${d.short} in Evidence`}
+                    aria-label={`Show ${d.n} ${d.short} in Evidence${d.state === "review" ? ` (${ALSO_CONFLICT})` : ""}`}
                     className="-mx-1 flex w-[calc(100%+0.5rem)] items-center gap-2 rounded px-1 text-left text-[12.5px] text-muted-foreground transition-colors duration-fast hover:bg-surface-3 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <span aria-hidden className="h-2 w-2 shrink-0 rounded-sm" style={{ background: fill(d.state) }} />
@@ -173,6 +177,8 @@ export function CaseSheetView({
               <button
                 type="button"
                 onClick={() => jumpToState("review")}
+                aria-label={`${reviewCount} ${reviewCount === 1 ? "row awaits" : "rows await"} a second source, not a decision. Opens Evidence; ${ALSO_CONFLICT}`}
+                title={`Opens Evidence; ${ALSO_CONFLICT}`}
                 className="inline-flex w-fit items-center gap-1 rounded text-[12.5px] text-foreground/90 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {reviewCount} {reviewCount === 1 ? "row awaits" : "rows await"} a second source, not a decision

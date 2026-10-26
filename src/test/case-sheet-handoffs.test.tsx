@@ -61,6 +61,7 @@ describe("case sheet handoffs", () => {
     const link = within(queue).getByRole("button", { name: /a second source, not a decision/ });
     const seen = navigations(() => fireEvent.click(link));
     expect(seen).toEqual([{ tab: "artifacts", authorityState: "review" }]);
+    expect(link.getAttribute("aria-label")).toMatch(/also lists Conflict rows/);
   });
 });
 

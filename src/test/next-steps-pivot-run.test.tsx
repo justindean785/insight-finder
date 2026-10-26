@@ -11,10 +11,10 @@ afterEach(cleanup);
 const row = (id: string): Artifact =>
   ({ id, kind: "email", value: `${id}@x.test`, confidence: 50, source: null, created_at: "2026-10-26T14:17:00.000Z", metadata: null });
 
-const view = (phase: "running" | "done", newRows: Artifact[]): PivotRunView => ({
+const view = (phase: PivotRunView["phase"], newRows: Artifact[]): PivotRunView => ({
   phase,
   newRows,
-  run: { key: "email:kcreech@drvhome.com", target: "kcreech@drvhome.com", targetType: "email", action: "Investigate email", sentAt: "2026-10-26T14:16:00.000Z", origin: "manual" },
+  run: { key: "email:person@example.test", target: "person@example.test", targetType: "email", action: "Investigate email", sentAt: "2026-10-26T14:16:00.000Z", anchorCreatedAt: null, origin: "manual" },
 });
 
 describe("the pivot this tab started", () => {
@@ -23,7 +23,7 @@ describe("the pivot this tab started", () => {
     const strip = screen.getByTestId("pivot-run");
     expect(strip.dataset.phase).toBe("running");
     expect(strip.textContent).toContain("Running");
-    expect(strip.textContent).toContain("kcreech@drvhome.com");
+    expect(strip.textContent).toContain("person@example.test");
     expect(strip.textContent).toContain("1 new record so far");
     expect(screen.queryByRole("button", { name: /Run now/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /View changes/ })).toBeNull();
@@ -45,6 +45,20 @@ describe("the pivot this tab started", () => {
     render(<NextSteps items={[]} onRunPivot={vi.fn()} onRunAction={vi.fn()} runs={[view("done", [])]} onViewChanges={vi.fn()} />);
     expect(screen.getByTestId("pivot-run").textContent).toContain("No new records since it was sent");
     expect(screen.queryByRole("button", { name: /View changes/ })).toBeNull();
+  });
+
+  it("an ended run with no recorded tool call reads Run ended and says the outcome is unknown, never Pivot completed", () => {
+    render(<NextSteps items={[]} onRunPivot={vi.fn()} onRunAction={vi.fn()} runs={[view("ended", [])]} onViewChanges={vi.fn()} />);
+    const strip = screen.getByTestId("pivot-run");
+    expect(strip.dataset.phase).toBe("ended");
+    expect(strip.textContent).toContain("Run ended");
+    expect(strip.textContent).not.toContain("Pivot completed");
+    expect(strip.textContent).toContain("No tool call was recorded against this target. That is unknown, not a negative result.");
+  });
+
+  it("an ended run still reports its window count, as a window", () => {
+    render(<NextSteps items={[]} onRunPivot={vi.fn()} onRunAction={vi.fn()} runs={[view("ended", [row("a"), row("b")])]} />);
+    expect(screen.getByTestId("pivot-run").textContent).toContain("2 new records since it was sent");
   });
 
   it("renders nothing with no items and no runs", () => {

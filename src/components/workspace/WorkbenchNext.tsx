@@ -31,12 +31,17 @@ export function WorkbenchNext({ threadId }: { threadId: string }) {
   const pivotRuns = usePivotRuns(threadId);
   const artifacts = useMemo(() => snapshot?.items ?? [], [snapshot?.items]);
   const caseRunning = snapshot?.run?.state === "running";
-  // A pivot this tab already started leaves the queue (it is shown above it as
-  // Running / Completed), so the next one becomes the best pivot.
-  const sentKeys = useMemo(() => new Set(pivotRuns.map((r) => r.key)), [pivotRuns]);
   const runViews = useMemo(
-    () => derivePivotRunViews(pivotRuns, { caseRunning, artifacts }),
-    [pivotRuns, caseRunning, artifacts],
+    () => derivePivotRunViews(pivotRuns, { caseRunning, artifacts, queriedTargets }),
+    [pivotRuns, caseRunning, artifacts, queriedTargets],
+  );
+  // A pivot this tab started leaves the queue while it runs or once a tool call
+  // was recorded against it (shown above the queue as Running / Completed), so
+  // the next one becomes the best pivot. An ended run with no such call returns
+  // to the queue: whether it ran is unknown.
+  const sentKeys = useMemo(
+    () => new Set(runViews.filter((v) => v.phase !== "ended").map((v) => v.run.key)),
+    [runViews],
   );
   const seed = snapshot?.seed ?? { value: null, type: null };
   const [reportPivots, setReportPivots] = useState<RecommendedPivot[]>([]);

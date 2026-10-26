@@ -36,7 +36,7 @@ import {
   autoRunStopMessage, canShowRunControls, decideAutoContinue,
 } from "@/lib/run-controls";
 import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
-import { derivePivotRunViews, pivotRunKey, recordPivotRun, usePivotRuns } from "@/lib/pivot-runs";
+import { derivePivotRunViews, pivotRunKey, pivotSendHooks, usePivotRuns } from "@/lib/pivot-runs";
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
 import { countWorkbenchRunnablePivots } from "@/lib/next-step-queue";
@@ -1511,7 +1511,6 @@ function ChatWindowInner({
   // Pivots this tab started: they leave the Next-steps queue and show above it
   // as Running, then Completed (see lib/pivot-runs.ts).
   const pivotRuns = usePivotRuns(threadId);
-  const sentPivotKeys = useMemo(() => new Set(pivotRuns.map((r) => r.key)), [pivotRuns]);
   // Read at CALL time (delayed auto-continue, send guards) so a callback built
   // while a run was live does not keep refusing after it ends.
   const serverRunActiveRef = useRef(serverRunActive);
@@ -2167,14 +2166,20 @@ function ChatWindowInner({
   };
 
   // Send arbitrary text without going through the input (used by pivots + suggestions).
-  const sendText = useCallback(async (text: string) => {
+  // `hooks` let a pivot be recorded only once its send is accepted, and withdrawn
+  // if the send then rejects (see pivotSendHooks). A blocked send calls neither.
+  const sendText = useCallback(async (text: string, hooks?: { onAccepted?: () => void; onFailed?: () => void }) => {
     const t = text.trim();
     if (!t || isSubmitBlocked(status, submitLockRef.current, serverRunActiveRef.current)) return;
     submitLockRef.current = true;
+    let accepted = false;
     try {
       await beginInvestigation();
+      accepted = true;
+      hooks?.onAccepted?.();
       await sendMessage({ text: t });
     } catch (e) {
+      if (accepted) hooks?.onFailed?.();
       console.error("sendText failed:", e);
       toast.error(`Failed to send message: ${describeTransportError(e)}`);
     } finally {
@@ -2188,6 +2193,9 @@ function ChatWindowInner({
   // dossier, on demand, instead of after every turn.
   const artifactsCountRef = useRef(artifacts.length);
   artifactsCountRef.current = artifacts.length;
+  // Read at send time to anchor a pivot's new-row window on server timestamps.
+  const artifactsRef = useRef(artifacts);
+  artifactsRef.current = artifacts;
   // Auto-run follows the ranking: each cycle runs the best next pivot (see the
   // refs' assignment after `suggestions`) and falls back to the generic
   // continue prompt when none is safe to start unattended.
@@ -2211,25 +2219,18 @@ function ChatWindowInner({
       return;
     }
     stoppedByAnalystRef.current = false;
-    // Recorded only past the refusal above, so a cycle that never started is
-    // never shown as a running pivot.
+    // Recorded only once sendText accepts the send, so a cycle that never
+    // started is never shown as a running pivot.
     const autoPivot = autoPivotRef.current;
-    if (countAsAutoCycle && autoPivot && prompt === autoPivot.prompt) {
-      recordPivotRun(threadId, {
-        key: pivotRunKey(autoPivot.targetType, autoPivot.target),
-        target: autoPivot.target,
-        targetType: autoPivot.targetType,
-        action: autoPivot.action,
-        sentAt: new Date().toISOString(),
-        origin: "auto",
-      });
-    }
+    const hooks = countAsAutoCycle && autoPivot && prompt === autoPivot.prompt
+      ? pivotSendHooks(threadId, { ...autoPivot, origin: "auto" }, () => artifactsRef.current)
+      : undefined;
     setAutoRun((prev) => ({
       ...prev,
       cyclesRun: countAsAutoCycle ? prev.cyclesRun + 1 : prev.cyclesRun,
       artifactsBefore: artifactsCountRef.current,
     }));
-    await sendText(prompt);
+    await sendText(prompt, hooks);
   }, [sendText, status, threadId]);
   const runContinue = useCallback(() => { void sendCycle(CONTINUE_PROMPT, false); }, [sendCycle]);
   const runWriteReport = useCallback(() => {
@@ -2277,16 +2278,13 @@ function ChatWindowInner({
       const prompt = detail.prompt ??
         `Pivot on ${detail.value}${detail.type ? ` (${detail.type})` : ""}. Run the next investigation step on this lead.`;
       toast.success(`Pivot on ${detail.value} sent to the agent`);
-      // Past the dispatch guard and the submit lock: this pivot is starting.
-      recordPivotRun(threadId, {
-        key: pivotRunKey(detail.type, detail.value),
-        target: detail.value,
-        targetType: detail.type ?? "",
-        action: detail.action ?? "Pivot",
-        sentAt: new Date().toISOString(),
-        origin: "manual",
-      });
-      void sendText(prompt);
+      // Past the dispatch guard and the submit lock; recorded once sendText
+      // accepts the send, withdrawn if it then rejects.
+      void sendText(prompt, pivotSendHooks(
+        threadId,
+        { target: detail.value, targetType: detail.type, action: detail.action ?? "Pivot", origin: "manual" },
+        () => artifactsRef.current,
+      ));
     };
     window.addEventListener("proximity:run-pivot", onRunPivot as EventListener);
     // Tell the Pivots surface that something on this page can actually run a
@@ -2893,6 +2891,17 @@ function ChatWindowInner({
   // Build suggested next-step replies after the agent stops streaming.
   // Memoized — without this the IIFE re-runs on every streamed token because
   // `messages` updates dozens of times per second during streaming.
+  const pivotRunViews = useMemo(
+    () => derivePivotRunViews(pivotRuns, { caseRunning: isLoading || serverRunActive, artifacts, queriedTargets }),
+    [pivotRuns, isLoading, serverRunActive, artifacts, queriedTargets],
+  );
+  // A pivot leaves the suggestions while it runs or once a tool call was
+  // recorded against it. An ended run with none (stopped, errored, never
+  // reached) puts it back: that pivot is unknown, not done.
+  const sentPivotKeys = useMemo(
+    () => new Set(pivotRunViews.filter((v) => v.phase !== "ended").map((v) => v.run.key)),
+    [pivotRunViews],
+  );
   const suggestions = useMemo(() => {
     if (isLoading || messages.length === 0) return [] as NextStepItem[];
     // Wait for every input the ranking depends on, so the list is stable when shown.
@@ -2966,10 +2975,6 @@ function ChatWindowInner({
     }
     return [...out.slice(0, 4), ...repair];
   }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability, sentPivotKeys]);
-  const pivotRunViews = useMemo(
-    () => derivePivotRunViews(pivotRuns, { caseRunning: isLoading || serverRunActive, artifacts }),
-    [pivotRuns, isLoading, serverRunActive, artifacts],
-  );
 
   // The Workbench's Next-tab runnable count — the number the transcript's
   // compact handoff line prints. Different from `suggestions.length` because

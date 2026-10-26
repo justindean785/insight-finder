@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowRight, CheckCircle2, ChevronRight, Loader2, Sparkles } from "lucide-react";
+import { ArrowRight, CheckCircle2, ChevronRight, CircleDashed, Loader2, Sparkles } from "lucide-react";
 import type { PivotRunView } from "@/lib/pivot-runs";
 import { cn } from "@/lib/utils";
 import type { PivotEligibility, PivotValidation, RunnablePivot } from "@/lib/pivot-schema";
@@ -305,8 +305,10 @@ const clock = (iso: string) => {
 };
 
 /**
- * The pivot this tab last started: Running while the case runs, then Completed
- * with what changed. The count is rows created SINCE it was sent, worded that
+ * The pivot this tab last started: Running while the case runs; then Completed
+ * only if a tool call was recorded against its target, otherwise Run ended and
+ * says the outcome is unknown (a Stop, an error or a run spent on other leads
+ * all end the same way). The count is rows created SINCE it was sent, worded that
  * way on purpose — the agent can follow other leads in the same run, so this is
  * a measurement of the window, never a claim about what the pivot found.
  */
@@ -315,6 +317,7 @@ function PivotRunStrip({ view, onViewChanges }: { view: PivotRunView; onViewChan
   const n = newRows.length;
   const rows = `${n} new ${n === 1 ? "record" : "records"}`;
   const running = phase === "running";
+  const ended = phase === "ended";
   return (
     <div
       role="status"
@@ -327,13 +330,20 @@ function PivotRunStrip({ view, onViewChanges }: { view: PivotRunView; onViewChan
     >
       {running
         ? <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-[hsl(var(--brand))] motion-reduce:animate-none" aria-hidden />
-        : <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />}
+        : ended
+          ? <CircleDashed className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+          : <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />}
       <div className="min-w-0 flex-1">
         <div className="text-data font-medium text-foreground">
-          {running ? "Running" : "Pivot completed"}
+          {running ? "Running" : ended ? "Run ended" : "Pivot completed"}
           <span className="text-muted-foreground"> · {run.action} </span>
           <span className="inline-block max-w-full truncate align-bottom font-mono text-[12.5px] text-foreground/90" title={run.target}>{run.target}</span>
         </div>
+        {ended && (
+          <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+            No tool call was recorded against this target. That is unknown, not a negative result.
+          </p>
+        )}
         <p className="mt-0.5 text-[12.5px] text-muted-foreground">
           {running
             ? `Since ${clock(run.sentAt)} · ${n > 0 ? `${rows} so far` : "no new records yet"}`
