@@ -8,6 +8,7 @@
 // outcome line it shows when the run ends.
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import {
+  closeLatestPivotRun,
   derivePivotRunViews,
   newestCreatedAt,
   pivotRunKey,
@@ -182,5 +183,47 @@ describe("a pivot is recorded only once its send is accepted", () => {
   it("a run stored before the anchor existed reads back with a null anchor", () => {
     sessionStorage.setItem(`swarmbot:pivot-runs:${T}`, JSON.stringify([{ ...run(), anchorCreatedAt: undefined }]));
     expect(readPivotRuns(T)[0].anchorCreatedAt).toBeNull();
+  });
+});
+
+describe("a later non-pivot send ends the pivot's claim to the run", () => {
+  const rows = [
+    art("before", "2026-10-26T14:10:00.000Z"),
+    art("during", "2026-10-26T14:12:00.000Z"),
+    art("after", "2026-10-26T14:20:00.000Z"),
+  ];
+
+  it("after Continue (or any chat send) the case runs again, but the finished pivot never reads Running", () => {
+    recordPivotRun(T, run());
+    closeLatestPivotRun(T, rows.slice(0, 2)); // Continue sent once "during" existed
+    const [v] = derivePivotRunViews(readPivotRuns(T), { caseRunning: true, artifacts: rows, queriedTargets: NONE });
+    expect(v.phase).toBe("ended");
+  });
+
+  it("its window stops at the rows present when the other send started", () => {
+    recordPivotRun(T, run());
+    closeLatestPivotRun(T, rows.slice(0, 2));
+    const [v] = derivePivotRunViews(readPivotRuns(T), { caseRunning: false, artifacts: rows, queriedTargets: QUERIED });
+    expect(v.phase).toBe("done");
+    expect(v.newRows.map((a) => a.id)).toEqual(["during"]);
+  });
+
+  it("closing is idempotent and touches only the latest run", () => {
+    recordPivotRun(T, run({ key: pivotRunKey("email", "b@x.test"), target: "b@x.test", sentAt: "2026-10-26T14:00:00.000Z" }));
+    recordPivotRun(T, run());
+    closeLatestPivotRun(T, rows.slice(0, 2));
+    closeLatestPivotRun(T, rows); // a second send must not move the first close's anchor
+    const byTarget = Object.fromEntries(readPivotRuns(T).map((r) => [r.target, r]));
+    expect(byTarget["b@x.test"].closed).toBe(false);
+    expect(byTarget["person@example.test"].closedAnchorCreatedAt).toBe("2026-10-26T14:12:00.000Z");
+  });
+
+  it("a new pivot sent after a close reads Running on its own run", () => {
+    recordPivotRun(T, run());
+    closeLatestPivotRun(T, rows.slice(0, 2));
+    pivotSendHooks(T, { target: "b@x.test", targetType: "email", action: "Investigate email", origin: "manual" }, () => rows).onAccepted();
+    const views = derivePivotRunViews(readPivotRuns(T), { caseRunning: true, artifacts: rows, queriedTargets: NONE });
+    expect(views[0].run.target).toBe("b@x.test");
+    expect(views[0].phase).toBe("running");
   });
 });

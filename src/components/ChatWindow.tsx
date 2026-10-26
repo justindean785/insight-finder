@@ -36,7 +36,7 @@ import {
   autoRunStopMessage, canShowRunControls, decideAutoContinue,
 } from "@/lib/run-controls";
 import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
-import { derivePivotRunViews, pivotRunKey, pivotSendHooks, usePivotRuns } from "@/lib/pivot-runs";
+import { closeLatestPivotRun, derivePivotRunViews, pivotRunKey, pivotSendHooks, usePivotRuns } from "@/lib/pivot-runs";
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
 import { countWorkbenchRunnablePivots } from "@/lib/next-step-queue";
@@ -1503,6 +1503,11 @@ function ChatWindowInner({
   const submitLockRef = useRef(false);
   const [rerunBusy, setRerunBusy] = useState(false);
   const { items: artifacts } = useThreadArtifacts(threadId);
+  // Read at send time to anchor pivot-run windows on server timestamps.
+  const artifactsRef = useRef(artifacts);
+  artifactsRef.current = artifacts;
+  // Any send that is not a pivot's own ends the latest pivot's claim to the run.
+  const closePivotRun = useCallback(() => closeLatestPivotRun(threadId, artifactsRef.current), [threadId]);
   // Optional: absent in standalone renders/tests. Used only to keep the run
   // controls off a thread whose run is live in another tab (overlap guard).
   const caseSnapshot = useOptionalCaseSnapshot();
@@ -2093,6 +2098,7 @@ function ChatWindowInner({
     setControls(DEFAULT_CONTROLS);
     try {
       await beginInvestigation();
+      closePivotRun();
       await sendMessage({ text: composed });
     } catch (e) {
       // useChat's onError only fires for stream errors. Pre-stream failures
@@ -2176,7 +2182,8 @@ function ChatWindowInner({
     try {
       await beginInvestigation();
       accepted = true;
-      hooks?.onAccepted?.();
+      if (hooks?.onAccepted) hooks.onAccepted();
+      else closePivotRun();
       await sendMessage({ text: t });
     } catch (e) {
       if (accepted) hooks?.onFailed?.();
@@ -2185,7 +2192,7 @@ function ChatWindowInner({
     } finally {
       submitLockRef.current = false;
     }
-  }, [beginInvestigation, sendMessage, status]);
+  }, [beginInvestigation, closePivotRun, sendMessage, status]);
 
   // --- Run controls -------------------------------------------------------
   // Continue = one more cycle. Auto-run = keep cycling while each cycle still
@@ -2193,9 +2200,6 @@ function ChatWindowInner({
   // dossier, on demand, instead of after every turn.
   const artifactsCountRef = useRef(artifacts.length);
   artifactsCountRef.current = artifacts.length;
-  // Read at send time to anchor a pivot's new-row window on server timestamps.
-  const artifactsRef = useRef(artifacts);
-  artifactsRef.current = artifacts;
   // Auto-run follows the ranking: each cycle runs the best next pivot (see the
   // refs' assignment after `suggestions`) and falls back to the generic
   // continue prompt when none is safe to start unattended.
@@ -2271,7 +2275,10 @@ function ChatWindowInner({
       }
       // A run already in flight holds the submit lock, and sendText would drop
       // this pivot without a word. Say so instead.
-      if (isSubmitBlocked(status, submitLockRef.current)) {
+      // Same three-argument check sendText applies, so a run the server still
+      // holds (after a reload or a dropped stream) is refused here, out loud,
+      // instead of toasting "sent" for a send sendText then drops.
+      if (isSubmitBlocked(status, submitLockRef.current, serverRunActiveRef.current)) {
         toast.info("A run is in progress on this case. Start the pivot when it finishes.");
         return;
       }
@@ -2468,6 +2475,7 @@ function ChatWindowInner({
       }
       setMessages((prev) => prev.filter((m) => !(m.role === "assistant" && (m.parts as MessagePartShape[]).some((p) => p?.type === CACHE_BANNER_TYPE))));
       await beginInvestigation();
+      closePivotRun();
       await sendMessage({ text });
     } finally {
       setRerunBusy(false);
@@ -2516,6 +2524,7 @@ function ChatWindowInner({
       return out;
     });
     await beginInvestigation();
+    closePivotRun();
     await sendMessage({ text });
     } catch (e) {
       console.error("retry failed:", e);

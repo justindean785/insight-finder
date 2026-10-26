@@ -36,6 +36,11 @@ export type PivotRun = {
    *  clock), or null when the case had none. A row is new to this pivot when it
    *  is strictly newer than this, so browser clock skew cannot move the window. */
   anchorCreatedAt: string | null;
+  /** Set when any other send (Continue, a chat message, a report, a retry)
+   *  starts after this pivot: that run is not this pivot's, so the card must not
+   *  read Running again. Its anchor ends this pivot's new-row window. */
+  closed?: boolean;
+  closedAnchorCreatedAt?: string | null;
   origin: "manual" | "auto";
 };
 
@@ -64,7 +69,12 @@ export function readPivotRuns(threadId: string): PivotRun[] {
     return Array.isArray(parsed)
       ? (parsed as PivotRun[])
         .filter((r) => r && typeof r.key === "string" && typeof r.sentAt === "string")
-        .map((r) => ({ ...r, anchorCreatedAt: typeof r.anchorCreatedAt === "string" ? r.anchorCreatedAt : null }))
+        .map((r) => ({
+          ...r,
+          anchorCreatedAt: typeof r.anchorCreatedAt === "string" ? r.anchorCreatedAt : null,
+          closed: r.closed === true,
+          closedAnchorCreatedAt: typeof r.closedAnchorCreatedAt === "string" ? r.closedAnchorCreatedAt : null,
+        }))
       : [];
   } catch {
     return [];
@@ -89,6 +99,19 @@ export function withdrawPivotRun(threadId: string, run: Pick<PivotRun, "key" | "
   const runs = readPivotRuns(threadId);
   const next = runs.filter((r) => !(r.key === run.key && r.sentAt === run.sentAt));
   if (next.length !== runs.length) writePivotRuns(threadId, next);
+}
+
+/**
+ * A send that is not a pivot (Continue, a chat message, a report, a retry) is
+ * starting: close the latest pivot run so that run never reads as this pivot's,
+ * and end its window at the rows the case has now. No-op when already closed.
+ */
+export function closeLatestPivotRun(threadId: string, currentArtifacts: readonly Pick<Artifact, "created_at">[]): void {
+  const runs = readPivotRuns(threadId);
+  if (runs.length === 0) return;
+  const latest = runs.reduce((a, b) => (Date.parse(b.sentAt) >= Date.parse(a.sentAt) ? b : a));
+  if (latest.closed) return;
+  writePivotRuns(threadId, runs.map((r) => (r === latest ? { ...r, closed: true, closedAnchorCreatedAt: newestCreatedAt(currentArtifacts) } : r)));
 }
 
 /** Newest server `created_at` among the rows, or null. The window anchor. */
@@ -149,7 +172,8 @@ export function usePivotRuns(threadId: string): PivotRun[] {
 }
 
 /**
- * Only the most recently sent pivot can be running, and only while the case is.
+ * Only the most recently sent pivot can be running, only while the case is, and
+ * only until another send closes it (`closeLatestPivotRun`).
  * Each pivot's window runs from its own anchor (exclusive) to the next pivot's
  * anchor (inclusive): both are server `created_at` values, so the browser clock
  * never enters the comparison. An ended run is "done" only when `queriedTargets`
@@ -168,14 +192,16 @@ export function derivePivotRunViews(
   const anchorT = (r: PivotRun) => (r.anchorCreatedAt ? Date.parse(r.anchorCreatedAt) : -Infinity);
   const views = ordered.map((run, i): PivotRunView => {
     const from = anchorT(run);
-    const until = i + 1 < ordered.length ? anchorT(ordered[i + 1]) : Infinity;
+    const until = run.closed
+      ? (run.closedAnchorCreatedAt ? Date.parse(run.closedAnchorCreatedAt) : -Infinity)
+      : i + 1 < ordered.length ? anchorT(ordered[i + 1]) : Infinity;
     const newRows = artifacts
       .filter((a) => {
         const t = Date.parse(a.created_at);
         return t > from && t <= until;
       })
       .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-    const phase = caseRunning && i === ordered.length - 1
+    const phase = caseRunning && i === ordered.length - 1 && !run.closed
       ? "running"
       : queriedTargets.has(normalizeTarget(run.target)) ? "done" : "ended";
     return { run, phase, newRows };
