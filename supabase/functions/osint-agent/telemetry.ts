@@ -376,9 +376,9 @@ export function reconcileTimeline(
 /** `prepareStep` wrapper that records how long it ran. Behaviourally invisible: same value,
  *  same thrown error object (the analyst-stop AbortError must still abort the run), and under
  *  the kill switch the ORIGINAL function is returned untouched. */
-// deno-lint-ignore no-explicit-any -- the SDK's prepareStep takes a larger argument object than {stepNumber};
-// `any` keeps F assignable under strictFunctionTypes, and the wrapper only ever reads stepNumber.
-export function withPrepareTiming<F extends (arg: any) => unknown>(
+// `(arg: never) => unknown` accepts ANY function under strictFunctionTypes (the SDK's prepareStep takes a
+// larger argument object than {stepNumber}), so no `any` is needed; the wrapper only ever reads stepNumber.
+export function withPrepareTiming<F extends (arg: never) => unknown>(
   fn: F,
   rec: Pick<InvocationTelemetryRecorder, "mono" | "recordPrepare">,
 ): F {
@@ -392,7 +392,7 @@ export function withPrepareTiming<F extends (arg: any) => unknown>(
       t0 = rec.mono();
     } catch { /* telemetry only */ }
     try {
-      return await fn(arg);
+      return await (fn as unknown as (a: unknown) => unknown)(arg);
     } finally {
       try {
         rec.recordPrepare(arg?.stepNumber, rec.mono() - t0);
