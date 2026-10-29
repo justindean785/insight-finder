@@ -54,6 +54,31 @@ Deno.test("dizosint: zero-hit results are not exposures", () => {
   assertEquals(isZeroHitBreachRow("Neopets breach 2013", { total_breaches: 1 }), false);
 });
 
+Deno.test("port162 (2026-10-29): 'no breach hits' / 'no stealer log hits' wordings are zero-hit results", () => {
+  for (const [value, src] of [
+    ["NO BREACH HITS", "breach_check"],
+    ["port162 - no breach hits", "breach_check"],
+    ["NO STEALER LOG HITS", "oathnet_stealer_search"],
+    ["port162 — No stealer hits", "oathnet_stealer_search"],
+    ["no stealer logs hit", "oathnet_stealer_search"],
+    ["jane-doe - no breach hits.", "breach_check"],
+  ] as const) {
+    const v = check(value, [src]);
+    assertEquals(!v.ok && v.code, "zero_hit_result", value);
+  }
+  // Graphify on #896: the wording is matched as the WHOLE value, so a mixed row naming a real breach is not refused.
+  assert(check("Canva breach (2019) — 1 hit; no stealer log hits", ["breach_check"]).ok);
+  assertEquals(isZeroHitBreachRow("LinkedIn 2021 exposed email; no breach hits elsewhere", {}), false);
+  // Positive stealer/breach hit counts are not caught by the new wording.
+  assertEquals(isZeroHitBreachRow("Neopets breach — stealer log hits: 3", {}), false);
+  assertEquals(isZeroHitBreachRow("3 stealer log hits for port162", {}), false);
+});
+
+Deno.test("/health detail names the no-breach/stealer-hits shape (proof key for this build)", () => {
+  const d = breachExposureGuardSelfTest().detail;
+  assert(/no breach\/stealer hits/.test(d), d);
+});
+
 Deno.test("isBreachCapableTool uses server classification of the slug", () => {
   assertEquals(isBreachCapableTool("breach_check"), true);
   assertEquals(isBreachCapableTool("opsis_search"), true);
