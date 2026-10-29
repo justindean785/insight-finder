@@ -44,7 +44,7 @@ export function FullPageLoader({
             className="radar-ring absolute h-14 w-14 rounded-full border border-[hsl(var(--intel-blue)/0.42)]"
             style={{ animation: "radar-ping 3.4s ease-out infinite", animationDelay: "1.7s" }}
           />
-          <div className="relative grid h-14 w-14 place-items-center rounded-2xl border border-[hsl(var(--intel-blue)/0.32)] bg-[hsl(var(--surface-2))] shadow-[0_0_32px_-10px_hsl(var(--intel-blue)/0.7)]">
+          <div className="relative grid h-14 w-14 place-items-center rounded-2xl border border-[hsl(var(--intel-blue)/0.32)] bg-[hsl(var(--surface-2))]">
             <SwarmMark className="h-[27px] w-[27px]" />
           </div>
         </div>

@@ -43,6 +43,7 @@ const threadRowSchema = z.object({
   run_started_at: nullableString,
   last_heartbeat_at: nullableString,
   updated_at: nullableString,
+  title: nullableString,
 });
 
 function parseThreadRow(raw: unknown): CaseThreadRow | null {
@@ -64,6 +65,7 @@ function parseThreadRow(raw: unknown): CaseThreadRow | null {
     run_started_at: d.run_started_at ?? null,
     last_heartbeat_at: d.last_heartbeat_at ?? null,
     updated_at: d.updated_at ?? null,
+    title: d.title ?? null,
   };
 }
 
@@ -76,7 +78,7 @@ const integritySchema = z.object({
 /** Fields whose change means the case moved — a status flip, a recovery stamp, a
  *  cost checkpoint, a new run. A heartbeat-only update is not one of them. */
 const MATERIAL_FIELDS: (keyof CaseThreadRow)[] = [
-  "status", "recovery_reason", "recovered_at", "cost_micro_usd", "run_started_at", "seed_value", "seed_type",
+  "status", "recovery_reason", "recovered_at", "cost_micro_usd", "run_started_at", "seed_value", "seed_type", "title",
 ];
 
 /** How long a reconcile may run before "Syncing case…" is shown — a fast one

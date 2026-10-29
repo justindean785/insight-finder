@@ -479,7 +479,7 @@ describe("CaseSnapshotProvider — failed reads fail closed", () => {
     m.rpcError = false;
     await act(async () => { screen.getAllByRole("button", { name: "Refresh case data" })[0].click(); });
     await flush(10);
-    expect(within(header).getByLabelText(/Hash chain valid, 12\/12 entries linked/)).toBeTruthy();
+    expect(within(header).getByLabelText(/Hash chain valid, 12\/12 evidence-log entries chained/)).toBeTruthy();
   });
 
   it("control: with verdicts read, the engine's report-ready stands", async () => {

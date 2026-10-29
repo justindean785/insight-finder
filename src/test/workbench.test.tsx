@@ -33,11 +33,14 @@ vi.mock("@/lib/review", async (orig) => {
 vi.mock("@/hooks/useThreadQueriedTargets", async () => {
   const React = await import("react");
   const stable = new Set<string>();
+  const noCalls: never[] = [];
   return {
     useThreadQueriedTargets: () => {
       React.useEffect(() => { harness.queriedMounts += 1; return () => { harness.queriedMounts -= 1; }; }, []);
       return stable;
     },
+    useThreadQueriedCalls: () => noCalls,
+    queriedTargetSet: () => stable,
   };
 });
 
@@ -209,7 +212,7 @@ describe("Connections tab", () => {
     renderWorkbench(items);
     fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
     expect(screen.getByText(/No relationships between distinct entities established/)).toBeTruthy();
-    const leads = screen.getByRole("region", { name: "Isolated leads" });
+    const leads = screen.getByRole("region", { name: "Unlinked candidates" });
     fireEvent.click(within(leads).getByRole("button", { name: /lone_handle/ }));
     const selected = screen.getByRole("region", { name: "Selected entity" });
     expect(within(selected).getByText(/No relationship to another entity has been established/)).toBeTruthy();

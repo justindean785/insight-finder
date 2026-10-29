@@ -6,6 +6,7 @@ import {
 import { cn } from "@/lib/utils";
 import { AUTHORITY_LEGEND, type AuthorityState, type AuthorityView } from "@/lib/authority";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Chip } from "@/components/ui/chip";
 
 /**
  * Shared rendering for the authority ladder (`src/lib/authority.ts`).
@@ -62,18 +63,10 @@ export function AuthorityChip({
 }) {
   const Icon = ICON[view.state];
   return (
-    <span
-      title={view.hint}
-      className={cn(
-        "inline-flex items-center gap-1 rounded border font-medium whitespace-nowrap",
-        size === "sm" ? "px-1.5 py-px text-eyebrow" : "px-2 py-0.5 text-micro",
-        CHIP[view.state],
-        className,
-      )}
-    >
+    <Chip title={view.hint} size={size} tone={CHIP[view.state]} className={className}>
       <Icon className="h-3 w-3 shrink-0" strokeWidth={2} aria-hidden />
       {view.label}
-    </span>
+    </Chip>
   );
 }
 

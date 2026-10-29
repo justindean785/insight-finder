@@ -20,7 +20,7 @@ const TONE_CLS = {
   ok: "text-conf-confirmed",
   empty: "text-muted-foreground/80",
   skipped: "text-muted-foreground",
-  degraded: "text-amber-400",
+  degraded: "text-warning",
   failed: "text-destructive",
 } as const;
 
@@ -56,7 +56,7 @@ function HealthRow({ row }: { row: ToolHealthRow }) {
         attention
           ? "border-destructive/30 bg-destructive/[0.05]"
           : row.counts.timeout + row.counts.rate_limited + row.counts.http_denied + row.counts.blocked > 0
-            ? "border-amber-400/25 bg-amber-400/[0.03]"
+            ? "border-warning/25 bg-warning/[0.03]"
             : "border-white/8 bg-white/[0.02]",
       )}
     >
@@ -78,7 +78,7 @@ function HealthRow({ row }: { row: ToolHealthRow }) {
           className={cn(
             "mt-1.5 rounded-md border bg-black/30 px-2 py-1 font-mono text-micro leading-snug break-words [overflow-wrap:anywhere]",
             // An explanation on a row that does not need attention (LeakCheck 403) is information, not a fault.
-            row.lastIssue.informational ? "border-amber-400/20 text-amber-400/90" : "border-destructive/30 text-foreground/90",
+            row.lastIssue.informational ? "border-warning/20 text-warning/90" : "border-destructive/30 text-foreground/90",
           )}
         >
           {row.lastIssue.statusCode != null && <span className="mr-1 opacity-70">HTTP {row.lastIssue.statusCode}</span>}

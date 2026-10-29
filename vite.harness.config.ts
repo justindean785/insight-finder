@@ -16,7 +16,10 @@ import react from "@vitejs/plugin-react-swc";
 import path from "path";
 
 export default defineConfig({
-  server: { host: "127.0.0.1", port: 5174 },
+  // strictPort: when :5174 is taken, fail instead of drifting to the next free
+  // port. Drifting landed a second harness on :5175, the Playwright e2e port,
+  // where a local run tested it in place of the checkout (2026-10-26).
+  server: { host: "127.0.0.1", port: 5174, strictPort: true },
   plugins: [react()],
   resolve: {
     alias: [

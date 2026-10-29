@@ -21,7 +21,15 @@ export type { WorkspaceTab };
  * `alert` is the number that NEEDS ATTENTION (failed tool calls, breaches)
  * and renders as a dot — never as a count, so a tab number always means the
  * same thing as the word next to it. */
-export type TabCount = { value: number; alert?: number; hint?: string; /** Screen-reader-only noun after the number. */ unit?: string };
+export type TabCount = {
+  value: number;
+  alert?: number;
+  hint?: string;
+  /** Screen-reader-only noun after the number. */
+  unit?: string;
+  /** "decision": the number is open calls, not items, so it renders as an attention chip with a "to decide" label. */
+  kind?: "decision";
+};
 
 const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
   // Overview leads: it is the only tab that answers "what is the state of this
@@ -114,9 +122,28 @@ export function WorkspaceTabs({
   return <TabBar tabs={tabs} label={label} active={active} onChange={onChange} counts={counts} loading={loading} />;
 }
 
+/**
+ * Open decisions, styled like the folded case sheet's count so "Evidence 10"
+ * is not read as ten evidence items beside the header's "55 evidence logged".
+ */
+function DecisionChip({ count, compact = false }: { count: TabCount; compact?: boolean }) {
+  if (count.value <= 0) return null;
+  return (
+    <span
+      title={count.hint}
+      className="inline-flex items-center gap-1 rounded-full border border-warning/40 bg-warning/10 px-1.5 text-micro leading-[18px] text-warning"
+    >
+      <span className="font-mono tabular-nums">{countText(count.value)}</span>
+      {!compact && <span aria-hidden className="hidden lg:inline">to decide</span>}
+      {count.unit && <span className="sr-only"> {count.unit}</span>}
+    </span>
+  );
+}
+
 function TabCountBadge({ count, loading, active }: { count?: TabCount; loading: boolean; active: boolean }) {
   if (!count) return null;
   if (loading) return <span aria-hidden className="h-2.5 w-4 rounded-sm bg-white/[0.08]" />;
+  if (count.kind === "decision") return <DecisionChip count={count} />;
   return (
     <>
       {count.value > 0 && (

@@ -1,15 +1,28 @@
-import { useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { ArtifactInspector } from "@/components/workspace/ArtifactInspector";
 import { CaseSheet } from "@/components/workspace/CaseSheet";
 import { WorkbenchConnections } from "@/components/workspace/WorkbenchConnections";
 import { WorkbenchNext } from "@/components/workspace/WorkbenchNext";
+import { useOptionalWorkspaceUIState, useWorkspaceUIState } from "@/hooks/useWorkspaceUIState";
+import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
+import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
+import { useReviewStates } from "@/lib/review";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { cn } from "@/lib/utils";
 
 /**
- * The right-hand column of the case desk, as a small workbench: the case sheet (default, unchanged), the ranked next
- * pivots, and the connections of one entity. Nothing here is a new authority or a new path to a run: Next is the
- * compact Next-steps list (same engine, validation, Preview before every Run, no bulk queue) and Connections reads the Graph's
- * own model and pivots through the Evidence drawer's Preview-gated action.
+ * The right-hand column of the case desk, as a small workbench: the case sheet
+ * (default), the ranked next pivots, and the connections of one entity.
+ * Nothing here is a new authority or a new path to a run.
+ *
+ * The Sheet tab is dual-mode. When nothing is selected, it shows the
+ * case-level summary (subject, evidence distribution, "Needs your call"
+ * queue). When an Evidence row is selected via the shared
+ * {@link WorkspaceUIStateProvider}, the same tab becomes a selected-finding
+ * inspector — exactly ONE right-hand surface, never two.
+ *
+ * A selection also auto-switches the Workbench to the Sheet tab, so a click
+ * in Evidence surfaces its detail without a second tab click.
  */
 export type WorkbenchTab = "sheet" | "next" | "connections";
 const TABS: ReadonlyArray<{ key: WorkbenchTab; label: string }> = [
@@ -36,6 +49,39 @@ export function Workbench({ threadId }: { threadId: string }) {
     select(TABS[next].key);
     refs.current[TABS[next].key]?.focus();
   };
+
+  // Optional: standalone renders (CaseViewPage read-only, tests) have no
+  // provider — the Workbench then degrades to its pre-change single-mode
+  // behaviour (CaseSheet only, no selection path), which is exactly what
+  // those callers used to get.
+  const ui = useOptionalWorkspaceUIState();
+  const selectedArtifactId = ui?.selectedArtifactId ?? null;
+  const clear = ui?.clear ?? (() => {});
+  // Auto-switch to Sheet when a selection appears, so Evidence row click
+  // doesn't leave the detail hiding behind the Next or Connections tab.
+  // Preserve the user's tab choice when selection returns to null.
+  useEffect(() => {
+    if (selectedArtifactId) select("sheet");
+  }, [selectedArtifactId]);
+
+  // The transcript's compact "Open Next pivots" affordance dispatches this
+  // event so the single actionable queue on the right-hand Workbench gets the
+  // focus without duplicating Run buttons in the chat. See ChatWindow.tsx and
+  // register item 1 ("single Next-steps queue").
+  useEffect(() => {
+    const onJump = (e: Event) => {
+      const detail = (e as CustomEvent<{ tab?: WorkbenchTab }>).detail;
+      const target = detail?.tab;
+      if (target === "sheet" || target === "next" || target === "connections") {
+        select(target);
+        // Hand keyboard focus to the newly-selected tab button so the next
+        // ArrowLeft/ArrowRight keystroke lands in the right place.
+        queueMicrotask(() => refs.current[target]?.focus());
+      }
+    };
+    window.addEventListener("swarmbot:workbench-tab", onJump as EventListener);
+    return () => window.removeEventListener("swarmbot:workbench-tab", onJump as EventListener);
+  }, []);
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-workbench>
@@ -71,12 +117,61 @@ export function Workbench({ threadId }: { threadId: string }) {
           className="min-h-0 flex-1 overflow-y-auto"
         >
           <ErrorBoundary>
-            {t.key === "sheet" && <CaseSheet threadId={threadId} />}
+            {t.key === "sheet" && (
+              selectedArtifactId
+                ? <SheetInspectorHost threadId={threadId} selectedArtifactId={selectedArtifactId} onClose={clear} />
+                : <CaseSheet threadId={threadId} />
+            )}
             {t.key === "next" && <WorkbenchNext threadId={threadId} />}
             {t.key === "connections" && <WorkbenchConnections threadId={threadId} />}
           </ErrorBoundary>
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * Resolves the selected id to a live artifact from the case snapshot. If the
+ * row has disappeared (deleted, cross-case stale), it clears the selection
+ * and renders the case summary — never a stale row.
+ *
+ * `useCaseSnapshot()` is the one place every surface reads from, so the
+ * inspector cannot show counts from a different read than the Evidence tab.
+ */
+function SheetInspectorHost({
+  threadId,
+  selectedArtifactId,
+  onClose,
+}: {
+  threadId: string;
+  selectedArtifactId: string;
+  onClose: () => void;
+}) {
+  const { snapshot } = useCaseSnapshot();
+  const artifacts = snapshot?.items ?? [];
+  const artifact = artifacts.find((a) => a.id === selectedArtifactId) ?? null;
+  const review = useReviewStates(threadId);
+  const { updateLocal } = useThreadArtifacts(threadId);
+  const { clear } = useWorkspaceUIState();
+
+  // If the id no longer resolves (deleted / cross-case stale), clear and
+  // render the case summary. Do NOT render a placeholder artifact.
+  useEffect(() => {
+    if (snapshot?.hydrated && !artifact) clear();
+  }, [snapshot?.hydrated, artifact, clear]);
+
+  if (!artifact) return <CaseSheet threadId={threadId} />;
+
+  return (
+    <ArtifactInspector
+      artifact={artifact}
+      onClose={onClose}
+      onChanged={(a) => updateLocal(a)}
+      reviewGet={review.get}
+      reviewSet={review.set}
+      threadId={threadId}
+      allArtifacts={artifacts}
+    />
   );
 }

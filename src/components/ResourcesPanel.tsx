@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useToolbarSlot } from "@/hooks/useToolbarSlot";
 import { CompactFilter, FilterPopover, MenuSelect, type CompactOption } from "@/components/ui/compact-controls";
+import { Chip } from "@/components/ui/chip";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Globe, User as UserIcon, Network, ShieldAlert, Image as ImgIcon, Tag,
@@ -17,6 +18,9 @@ import { SourceBadge } from "@/components/SourceBadge";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useThreadArtifacts, type Artifact } from "@/hooks/useThreadArtifacts";
+import { useOptionalWorkspaceUIState } from "@/hooks/useWorkspaceUIState";
+import { useIsWorkbenchViewport } from "@/hooks/useIsWorkbenchViewport";
+import { CompareCandidatesDialog } from "@/components/workspace/CompareCandidatesDialog";
 import {
   groupForKind, GROUP_LABEL, GROUP_ORDER, type Group,
   extractSourceInfo, CACHE_LAYER_LABEL, CACHE_LAYER_CLASS,
@@ -24,6 +28,7 @@ import {
 import { evidenceStatus, classLabel } from "@/lib/evidence-status";
 import { independentSourceClasses } from "@/lib/intel";
 import { ANALYST_ACTIONABLE_STATES, authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
+import { statusFilterForAuthority } from "@/lib/evidence-status-filter";
 import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
 import {
   canReleaseLinkage, releasePatch,
@@ -53,7 +58,7 @@ import {
   AuthorityChip, AuthorityCaveat, AuthorityLegend, AuthoritySpine, RuleLabel, UnderlyingStrength,
 } from "@/components/ui/authority";
 import {
-  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, startRecheck,
+  useReviewStates, REVIEW_CLASS, REVIEW_SHORT, REVIEW_LABEL, startRecheck,
   type ReviewState, type ReviewWriteResult,
 } from "@/lib/review";
 
@@ -265,7 +270,7 @@ function ArtifactsList({
             <button
               type="button"
               onClick={onShowAll}
-              className="mt-1 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-[12.5px] font-medium text-foreground/90 transition-colors hover:bg-white/10"
+              className="mt-1 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-[12.5px] font-medium text-foreground/90 transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               Show all {items.length}
             </button>
@@ -332,7 +337,7 @@ function ArtifactsList({
                   className="radar-ring absolute h-11 w-11 rounded-full border border-[hsl(var(--intel-blue)/0.5)]"
                   style={{ animation: "radar-ping 3.4s ease-out infinite", animationDelay: "1.7s" }}
                 />
-                <div className="relative grid h-11 w-11 place-items-center rounded-xl border border-[hsl(var(--intel-blue)/0.35)] bg-[linear-gradient(180deg,hsl(var(--surface-3)),hsl(var(--surface-1)))] text-[hsl(var(--intel-blue))] shadow-[0_0_26px_-10px_hsl(var(--intel-blue)/0.7)]">
+                <div className="relative grid h-11 w-11 place-items-center rounded-xl border border-[hsl(var(--intel-blue)/0.35)] bg-[linear-gradient(180deg,hsl(var(--surface-3)),hsl(var(--surface-1)))] text-[hsl(var(--intel-blue))]">
                   <Radar className="h-[18px] w-[18px]" strokeWidth={1.6} />
                 </div>
               </div>
@@ -598,6 +603,18 @@ function ArtifactsList({
           </section>
         );
       })}
+      {items.length > 0 && (
+        /* G-4: Honest-data disclosure. Group headers and expandable
+           repeats compress the display; this line affirms that every
+           underlying source record is retained. Reinforces the breach-reveal
+           rail: raw provenance stays available in the inspector. */
+        <p
+          data-ledger-foot
+          className="border-t border-border-subtle px-4 py-2 text-micro leading-snug text-muted-foreground"
+        >
+          Repeated observations grouped. Every source record retained.
+        </p>
+      )}
     </div>
   );
 }
@@ -646,6 +663,7 @@ function BulkCorpusGroupRow({
   const more = group.artifacts.length - 4;
   return (
     <div
+      id={`evidence-row-${lead.id}`}
       role="button"
       tabIndex={0}
       onClick={() => onSelect(lead)}
@@ -659,16 +677,19 @@ function BulkCorpusGroupRow({
       <AuthoritySpine state={authority.state} />
       <span className="min-w-0" data-ledger-col="value">
         <span className="flex items-start gap-1.5">
-          <span className="text-[12.5px] leading-[1.45] text-foreground/90">
+          <span className="text-[12.5px] leading-[1.35] text-foreground/90">
             <span className="font-medium">{group.artifacts.length} {group.label}</span>
             {preview && (
-              <span className="mt-0.5 block truncate font-mono text-data text-muted-foreground/80">
+              <span className="mt-px block truncate font-mono text-data text-muted-foreground/80">
                 {preview}{more > 0 ? ` · +${more} more` : ""}
               </span>
             )}
           </span>
         </span>
-        <AuthorityCaveat view={authority} className="mt-0.5 line-clamp-2" />
+        {/* E-5 density: one-line caveat clamp (was 2) — the full caveat is
+            always in the inspector, so a second line in the ledger just
+            squeezes rows and lowers findings-per-viewport. */}
+        <AuthorityCaveat view={authority} className="mt-px line-clamp-1" />
       </span>
       <span className="min-w-0" data-ledger-col="status">
         <AuthorityChip view={authority} />
@@ -723,6 +744,7 @@ export function ArtifactRow({
     <HoverCard openDelay={250} closeDelay={80}>
       <HoverCardTrigger asChild>
         <div
+          id={`evidence-row-${a.id}`}
           role="button"
           tabIndex={0}
           onClick={() => onSelect(a)}
@@ -738,7 +760,7 @@ export function ArtifactRow({
             authority.caveat ?? "",
             attested
               ? analystConfirmedLabel(shown)
-              : shown.effective != null ? `${conf}% confidence` : "",
+              : shown.effective != null ? `confidence score ${conf} out of 100, uncalibrated` : "",
           ].filter(Boolean).join(". ")}
           data-density-row
           className={cn(
@@ -807,7 +829,10 @@ export function ArtifactRow({
                 <Copy className="h-3 w-3" aria-hidden />
               </button>
             </span>
-            <AuthorityCaveat view={authority} className="mt-0.5" />
+            {/* E-5 density: one-line clamp; the full caveat is in the
+                inspector. Previously allowed to wrap to two lines, which
+                drove row heights to ~76px. */}
+            <AuthorityCaveat view={authority} className="mt-px line-clamp-1" />
           </span>
 
           {/* Authority — chip, then BOTH axes on one sub-line: how strong the
@@ -838,7 +863,10 @@ export function ArtifactRow({
             {attested ? (
               <AnalystConfirmedMark shown={shown} className="text-right" />
             ) : shown.effective != null && (
-              <span className="flex flex-col items-end gap-1">
+              <span
+                className="flex flex-col items-end gap-1"
+                title={`Confidence score ${conf}/100 — uncalibrated`}
+              >
                 <span className="conf-figure" style={{ color: confColor }}>{conf}</span>
                 {/* The magnitude. A 2px rule whose LENGTH is the score — the
                     one honest way to show a number at a glance. */}
@@ -925,6 +953,14 @@ function ArtifactDrawerInner({
   const drawerAuthority = authorityFor(artifact, rState);
   const review = useReviewStates(threadId);
   const [noteDraft, setNoteDraft] = useState(review.getNote(artifact.id));
+  // Audit §7 — sr-only live-region announcement of review-state writes so a
+  // screen-reader user hears the Confirm/Dismiss/Key/Recheck/Reset take effect
+  // alongside the existing toast.
+  const [reviewLive, setReviewLive] = useState<string>("");
+  const announceReview = (next: ReviewState | null) => {
+    const label = next ? REVIEW_LABEL[next] : REVIEW_LABEL.new;
+    setReviewLive(`Review for ${artifact.value}: ${label}.`);
+  };
   // `onChanged` fed the metadata false-positive toggle #534 removed (the review
   // verdict is the one False contract). It is wired again for exactly one caller:
   // the linkage release below — the drawer's only remaining metadata write, and
@@ -1006,9 +1042,7 @@ function ArtifactDrawerInner({
                 {shownArtifact.effective}% confidence
               </span>
             )}
-            <span className={"rounded-md border px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.14em] " + REVIEW_CLASS[rState]}>
-              {REVIEW_SHORT[rState]}
-            </span>
+            <Chip tone={REVIEW_CLASS[rState]} mono>{REVIEW_SHORT[rState]}</Chip>
           </div>
         </SheetHeader>
 
@@ -1128,13 +1162,11 @@ function ArtifactDrawerInner({
           </Field>
           <Field label="Review">
             <div className="mb-2 flex items-center gap-2 flex-wrap text-xs">
-              <span className={"px-2 py-0.5 rounded-full border font-mono text-eyebrow uppercase tracking-wider " + REVIEW_CLASS[rState]}>
-                {REVIEW_SHORT[rState]}
-              </span>
-              {falsePositive && <span className="px-2 py-0.5 rounded-full bg-destructive/15 text-destructive border border-destructive/40 text-eyebrow uppercase">false positive</span>}
+              <Chip tone={REVIEW_CLASS[rState]} mono>{REVIEW_SHORT[rState]}</Chip>
+              {falsePositive && <Chip tone="bg-destructive/15 text-destructive border-destructive/40" mono>false positive</Chip>}
             </div>
             <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] p-2">
-              <ReviewBtn current={rState} target="confirmed" onClick={() => reviewSet(artifact.id, "confirmed", rctx)}>
+              <ReviewBtn current={rState} target="confirmed" onClick={() => { void reviewSet(artifact.id, "confirmed", rctx); announceReview("confirmed"); }}>
                 <CheckCircle2 className="w-3 h-3" /> Confirm
               </ReviewBtn>
               <ReviewBtn
@@ -1151,6 +1183,7 @@ function ArtifactDrawerInner({
                     ctx: rctx,
                   }).then((r) => {
                     if (!r.ok) return;
+                    announceReview("recheck");
                     toast.success("Rechecking in chat…");
                     onClose();
                   });
@@ -1158,16 +1191,17 @@ function ArtifactDrawerInner({
               >
                 <ShieldQuestion className="w-3 h-3" /> Recheck
               </ReviewBtn>
-              <ReviewBtn current={rState} target="dismissed" onClick={() => reviewSet(artifact.id, "dismissed", rctx)}>
+              <ReviewBtn current={rState} target="dismissed" onClick={() => { void reviewSet(artifact.id, "dismissed", rctx); announceReview("dismissed"); }}>
                 <XCircle className="w-3 h-3" /> Dismiss
               </ReviewBtn>
-              <ReviewBtn current={rState} target="key" onClick={() => reviewSet(artifact.id, "key", rctx)}>
+              <ReviewBtn current={rState} target="key" onClick={() => { void reviewSet(artifact.id, "key", rctx); announceReview("key"); }}>
                 <Star className="w-3 h-3" /> Key
               </ReviewBtn>
-              <Button size="sm" variant="ghost" className="col-span-2 h-7 px-2 gap-1 text-data" onClick={() => reviewSet(artifact.id, null, rctx)}>
+              <Button size="sm" variant="ghost" className="col-span-2 h-7 px-2 gap-1 text-data" onClick={() => { void reviewSet(artifact.id, null, rctx); announceReview(null); }}>
                 Reset
               </Button>
             </div>
+            <span role="status" aria-live="polite" className="sr-only">{reviewLive}</span>
           </Field>
           <Field label="Note">
             <textarea
@@ -1176,7 +1210,7 @@ function ArtifactDrawerInner({
               aria-label="Note — justification or context for this artifact"
               placeholder="Why is this key? Add justification, link, or context…"
               rows={3}
-              className="w-full text-xs font-mono bg-secondary/40 border border-border rounded p-2 outline-none focus:border-primary/60 resize-y"
+              className="w-full text-xs font-mono bg-secondary/40 border border-border rounded p-2 outline-none focus-visible:border-primary/60 focus-visible:ring-2 focus-visible:ring-ring resize-y"
             />
             <div className="flex justify-end mt-1">
               <Button
@@ -1343,29 +1377,64 @@ function PeekField({ label, children }: { label: string; children: React.ReactNo
 export function EvidenceBoard({
   threadId,
   focusRequest,
+  filterRequest,
 }: {
   threadId: string;
   /** Open one row, whatever filter the board was left on. `n` is a nonce. */
   focusRequest?: { id: string; n: number } | null;
+  /** Open on the quick filter holding this authority state. `n` is a nonce. */
+  filterRequest?: { state: string; n: number } | null;
 }) {
   const { items, updateLocal, loading, error, retry } = useThreadArtifacts(threadId);
   const review = useReviewStates(threadId);
   const [selected, setSelected] = useState<Artifact | null>(null);
   const [statusFilter, setStatusFilter] = useState<EvidenceStatusFilter>("analyst");
+  // Also publish selection to the shared workspace UI state, so the Workbench's
+  // Sheet tab surfaces the same artifact. On xl+ (where the Workbench is
+  // visible) the drawer stays suppressed so there is exactly ONE right-hand
+  // surface, as the brief requires; below xl the drawer remains the detail
+  // surface (there is no Workbench there). Falls back to the drawer-only
+  // behaviour whenever the provider is not mounted (standalone renders, tests).
+  const ui = useOptionalWorkspaceUIState();
+  const workbenchHandlesDetail = useIsWorkbenchViewport() && !!ui;
+  const handleSelect = useCallback((a: Artifact | null) => {
+    setSelected(a);
+    if (!ui) return;
+    if (a) {
+      ui.rememberOpener(`evidence-row-${a.id}`);
+      ui.select(a.id);
+    } else {
+      // Closing on the modal path too — route through the provider's clear() so
+      // the opener row regains focus (the Radix sheet otherwise returns focus
+      // to the first interactive element inside the panel, which disappears
+      // when the sheet closes, leaving focus on <body> or a stray button).
+      ui.clear();
+    }
+  }, [ui]);
 
   // A handoff from the case sheet names a row that the default Analyst view
   // may HIDE (it excludes quarantined rows). Widen to All so the row is in the
   // list, and open its drawer. Applied once per nonce, and only once the row
   // has actually loaded — the board can mount before its artifacts arrive.
+  //
+  // Uses `handleSelect` (not `setSelected`) so the shared workspace UI state
+  // publishes the selection too — otherwise the Workbench Sheet at xl+ would
+  // stay on the case summary while the Board shows the row selected locally.
   const [focusedNonce, setFocusedNonce] = useState<number | null>(null);
   useEffect(() => {
     if (!focusRequest || focusRequest.n === focusedNonce) return;
     const target = items.find((a) => a.id === focusRequest.id);
     if (!target) return;
     setStatusFilter("all");
-    setSelected(target);
+    handleSelect(target);
     setFocusedNonce(focusRequest.n);
-  }, [focusRequest, focusedNonce, items]);
+  }, [focusRequest, focusedNonce, items, handleSelect]);
+  const [filteredNonce, setFilteredNonce] = useState<number | null>(null);
+  useEffect(() => {
+    if (!filterRequest || filterRequest.n === filteredNonce) return;
+    setStatusFilter(statusFilterForAuthority(filterRequest.state, STATUS_FILTER_GROUPS, "all"));
+    setFilteredNonce(filterRequest.n);
+  }, [filterRequest, filteredNonce]);
   const [sortMode, setSortMode] = useState<EvidenceSortMode>("strength");
 
   // Live counts per quick-filter so the analyst sees how much sits in each bucket.
@@ -1448,6 +1517,24 @@ export function EvidenceBoard({
     </>
   ) : null;
 
+  // G-2: pick the first open conflict as the banner's target. The "two
+  // candidates" are: the conflict row itself (A) and the strongest
+  // same-kind sibling with a different value (B) — the common one-phone-
+  // two-names case. The dialog is a view over existing data; nothing
+  // here re-adjudicates.
+  const [compareOpen, setCompareOpen] = useState(false);
+  const compareCandidates = useMemo(() => {
+    const conflictA = items.find((a) => authorityFor(a, review.get(a.id)).state === "conflict");
+    if (!conflictA) return null;
+    const siblings = items
+      .filter((o) => o.id !== conflictA.id && o.kind === conflictA.kind && o.value !== conflictA.value)
+      .sort((x, y) => (effectiveConfidenceOrZero(y) - effectiveConfidenceOrZero(x)));
+    const conflictB = siblings[0] ?? null;
+    const view = authorityFor(conflictA, review.get(conflictA.id));
+    const reason = view.caveat || "The engine flagged this as a conflict. Review the two candidates side by side.";
+    return { conflictA, conflictB, reason };
+  }, [items, review]);
+
   return (
     <>
       {controls && (slot
@@ -1456,7 +1543,7 @@ export function EvidenceBoard({
       <ArtifactsList
         items={items}
         threadId={threadId}
-        onSelect={setSelected}
+        onSelect={handleSelect}
         review={review}
         statusFilter={statusFilter}
         onShowAll={() => setStatusFilter("all")}
@@ -1465,9 +1552,36 @@ export function EvidenceBoard({
         error={error}
         onRetry={retry}
       />
+      {compareCandidates && (
+        <div
+          data-conflict-banner
+          className="flex flex-wrap items-center justify-between gap-2 border-t border-[hsl(var(--authority-conflict)/0.35)] bg-[hsl(var(--authority-conflict)/0.08)] px-4 py-2 text-[12.5px]"
+        >
+          <span className="text-foreground">
+            <span className="font-semibold text-[hsl(var(--authority-conflict))]">One connection needs explanation</span>
+            <span className="ml-2 text-muted-foreground">— two candidates compete for the same selector.</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setCompareOpen(true)}
+            className="inline-flex h-7 items-center rounded-md border border-border-subtle bg-surface-3 px-2.5 text-[12.5px] font-medium text-foreground transition-colors hover:bg-surface-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Compare candidates →
+          </button>
+        </div>
+      )}
+      <CompareCandidatesDialog
+        open={compareOpen}
+        onOpenChange={setCompareOpen}
+        candidateA={compareCandidates?.conflictA ?? null}
+        candidateB={compareCandidates?.conflictB ?? null}
+        reason={compareCandidates?.reason ?? ""}
+        reviewOf={review.get}
+        onFocusNextPivots={() => window.dispatchEvent(new CustomEvent("swarmbot:workbench-tab", { detail: { tab: "next" } }))}
+      />
       <ArtifactDrawer
-        artifact={selected}
-        onClose={() => setSelected(null)}
+        artifact={workbenchHandlesDetail ? null : selected}
+        onClose={() => handleSelect(null)}
         onChanged={(a) => { updateLocal(a); setSelected(a); }}
         reviewGet={review.get}
         reviewSet={review.set}

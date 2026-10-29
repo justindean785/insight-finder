@@ -72,7 +72,7 @@ export default function Landing() {
       {/* Status rail — the instrument announces itself before the copy does. */}
       <div
         aria-hidden
-        className="relative flex items-center justify-between border-b border-white/[0.07] px-5 py-2 font-mono text-[9px] uppercase tracking-[0.22em] text-muted-foreground/70 sm:px-8 lg:px-10"
+        className="relative flex items-center justify-between border-b border-white/[0.07] px-5 py-2 font-mono text-eyebrow uppercase tracking-[0.12em] text-muted-foreground sm:px-8 lg:px-10"
       >
         <span className="inline-flex items-center gap-2">
           <span className="live-dot h-1.5 w-1.5" />
@@ -97,7 +97,7 @@ export default function Landing() {
             </span>
             <span>
               <span className="block font-display text-sm font-semibold tracking-tight">Insight Finder</span>
-              <span className="block font-mono text-[9px] uppercase tracking-[0.24em] text-muted-foreground">
+              <span className="block font-mono text-eyebrow uppercase tracking-[0.12em] text-muted-foreground">
                 Analyst workspace
               </span>
             </span>
@@ -165,7 +165,7 @@ export default function Landing() {
                       <span className="block text-xs font-semibold tracking-tight text-foreground">
                         {label}
                       </span>
-                      <span className="mt-1 block font-mono text-[9px] uppercase leading-4 tracking-[0.12em] text-muted-foreground/70">
+                      <span className="mt-1 block font-mono text-eyebrow uppercase leading-4 tracking-[0.12em] text-muted-foreground">
                         {note}
                       </span>
                     </span>
@@ -179,14 +179,14 @@ export default function Landing() {
             <div aria-hidden className="signal-sweep absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[hsl(var(--intel-blue))] to-transparent opacity-70" />
             <div className="flex items-start justify-between gap-6 border-b border-white/[0.08] pb-5">
               <div>
-                <p className="font-mono text-[9px] uppercase tracking-[0.24em] text-[hsl(var(--intel-blue))]">
+                <p className="font-mono text-eyebrow uppercase tracking-[0.12em] text-[hsl(var(--intel-blue))]">
                   Operational workflow
                 </p>
                 <h2 className="mt-2 font-display text-xl font-semibold tracking-tight">
                   Intelligence with a review trail
                 </h2>
               </div>
-              <span className="rounded-md border border-white/[0.1] bg-black/20 px-2 py-1 font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground">
+              <span className="rounded-md border border-white/[0.1] bg-black/20 px-2 py-1 font-mono text-eyebrow uppercase tracking-[0.12em] text-muted-foreground">
                 IF / OPS
               </span>
             </div>
@@ -200,7 +200,7 @@ export default function Landing() {
                     className="absolute left-[18px] top-14 h-[calc(100%-3rem)] w-px bg-gradient-to-b from-[hsl(var(--brand)/0.4)] to-transparent last:hidden"
                   />
                   <div className="flex flex-col items-center gap-2">
-                    <span className="font-mono text-[9px] tracking-[0.18em] text-[hsl(var(--intel-blue)/0.85)]">
+                    <span className="font-mono text-eyebrow tracking-[0.12em] text-[hsl(var(--intel-blue))]">
                       {step}
                     </span>
                     <span className="grid h-9 w-9 place-items-center rounded-lg border border-[hsl(var(--brand)/0.22)] bg-[hsl(var(--brand)/0.09)] shadow-[inset_0_1px_0_hsl(var(--film)/0.08)]">
@@ -215,7 +215,7 @@ export default function Landing() {
               ))}
             </ol>
 
-            <div className="mt-1 flex items-center justify-between border-t border-white/[0.08] pt-4 font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/70">
+            <div className="mt-1 flex items-center justify-between border-t border-white/[0.08] pt-4 font-mono text-eyebrow uppercase tracking-[0.12em] text-muted-foreground">
               <span className="inline-flex items-center gap-2">
                 <span className="live-dot h-1.5 w-1.5" aria-hidden />
                 Chain of custody retained
@@ -262,7 +262,7 @@ export default function Landing() {
 
         <div aria-hidden className="signal-rule" />
 
-        <footer className="flex flex-col gap-3 pt-5 font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/65 sm:flex-row sm:items-center sm:justify-between">
+        <footer className="flex flex-col gap-3 pt-5 font-mono text-eyebrow uppercase tracking-[0.12em] text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
           <span>Built for source-aware investigation</span>
           <span>
             <Link to="/terms" className="rounded-sm transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">

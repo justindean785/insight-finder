@@ -16,6 +16,7 @@ import { buildDecisionQueue } from "@/lib/decision-queue";
 import { RunCockpit } from "@/components/workspace/RunCockpit";
 import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
 import { groupSharedCaveats } from "@/lib/shared-caveats";
+import { summarizeLatestRun, type LatestRunSummary } from "@/lib/latest-run";
 import {
   Unlink, AlertTriangle, XCircle, ShieldCheck, Timer,
   DatabaseZap, Activity, ArrowRight, type LucideIcon,
@@ -115,6 +116,53 @@ function RunStrip({
  * evidence moved to half width. Same predicate, same two modes, so a row reads
  * the same on both surfaces.
  */
+/** What the latest run added, so an analyst returning to a case sees the delta before the totals. */
+function LatestRunStrip({ summary, live }: { summary: LatestRunSummary; live: boolean }) {
+  const { added, supported, conflict, quarantined, other } = summary;
+  const started = new Date(summary.startedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const parts = [
+    supported > 0 && { n: supported, word: "supported", tone: "text-subtle-foreground" },
+    conflict > 0 && { n: conflict, word: "in conflict", tone: "text-[hsl(var(--authority-conflict))]" },
+    quarantined > 0 && { n: quarantined, word: "quarantined", tone: "text-subtle-foreground" },
+    // Review, weak and failed rows, so the parts always sum to `added`.
+    other > 0 && { n: other, word: "other", tone: "text-subtle-foreground" },
+  ].filter(Boolean) as Array<{ n: number; word: string; tone: string }>;
+  return (
+    <section
+      aria-label="Latest run"
+      data-overview-latest-run
+      className="panel panel-flat flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 text-data"
+    >
+      <span className="font-medium text-foreground">Latest run</span>
+      <span className="text-faint-foreground">
+        started <time dateTime={summary.startedAt}>{started}</time>
+      </span>
+      <span aria-hidden className="text-muted-foreground/40">·</span>
+      {added === 0 ? (
+        <span className="text-muted-foreground">No new records{live ? " yet" : ""}</span>
+      ) : (
+        <span className="text-muted-foreground">
+          <span className="font-mono tabular-nums text-foreground">{added}</span> new record{added === 1 ? "" : "s"}{live ? " so far" : ""}
+          {parts.length > 0 && ": "}
+          {parts.map((p, i) => (
+            <span key={p.word}>
+              {i > 0 && ", "}
+              <span className={cn("font-mono tabular-nums", p.tone)}>{p.n}</span> {p.word}
+            </span>
+          ))}
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={() => jump("artifacts")}
+        className="ml-auto inline-flex h-7 items-center rounded-md px-2 text-micro font-medium text-muted-foreground transition-colors duration-fast hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        Open Evidence
+      </button>
+    </section>
+  );
+}
+
 function ArtifactValue({ value, className }: { value: string; className?: string }) {
   const prose = isProseValue(value);
   return (
@@ -235,6 +283,11 @@ export function OverviewTab({ threadId }: { threadId: string }) {
     return [...c.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
   }, [items]);
 
+  const latestRun = useMemo(
+    () => summarizeLatestRun(items, snapshot?.run.startedAt ?? null, (a) => authorityFor(a, review.get(a.id)).state),
+    [items, snapshot?.run.startedAt, review],
+  );
+
   const maxDist = Math.max(1, ...DIST.map((d) => tally[d.state]));
 
   // Until every source has answered, no tile may print a number: a "0 verified"
@@ -264,9 +317,79 @@ export function OverviewTab({ threadId }: { threadId: string }) {
 
       <div className="mx-auto max-w-6xl space-y-4 p-3 sm:p-4">
 
-        {/* ── The decision queue leads ──────────────────────────────────
-            It is the one surface on this page that asks the analyst to do
-            something; everything below it is context for that decision. */}
+        {/* rowState, not state: until the row is re-read, startedAt is the previous run's. */}
+        {latestRun && <LatestRunStrip summary={latestRun} live={snapshot.run.rowState === "running"} />}
+
+        {/* ── Case assessment leads ─────────────────────────────────────
+            Register item 8: lead with what is SUPPORTED (what the engine
+            has adjudicated) then what is OPEN (what needs a decision).
+            Run diagnostics (RunCockpit, RunStrip) are demoted below the
+            Authority distribution — they describe the run that produced
+            the case, which is secondary to the case itself.
+
+            Previously the first panel on the Overview was the decision
+            queue; a case with a long queue read as a list of problems
+            before anything supported was visible. */}
+        {/* G-3: "The case, at a glance" two-card lead. Left: compact
+            working assessment (what the engine supports). Right: what
+            could change the case (strongest open contradiction). Both
+            cards read from the same selectors the fuller sections below
+            use, so the two can never disagree. */}
+        <div className="grid gap-4 md:grid-cols-2" data-overview-lead="case-at-a-glance">
+          <section className="panel panel-flat overflow-hidden" data-overview-card="working-assessment">
+            <RuleLabel right={<span className="text-micro tabular-nums text-muted-foreground/70">{strongest.length} of {tally.verified + tally.infrastructure + tally.probable}</span>}>
+              Working assessment
+            </RuleLabel>
+            {strongest.length === 0 ? (
+              <p className="p-3 text-data text-muted-foreground">No corroborated findings yet. The decision queue below is a good place to start.</p>
+            ) : (
+              <ul>
+                {strongest.slice(0, 4).map(({ a, v }) => (
+                  <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
+                    <AuthoritySpine state={v.state} />
+                    <ArtifactValue value={a.value} className="min-w-0" />
+                    <AuthorityChip view={v} />
+                  </li>
+                ))}
+              </ul>
+            )}
+            {strongest.length > 4 && (
+              <p className="border-t border-border-subtle px-3 py-1.5 text-micro text-muted-foreground">
+                +{strongest.length - 4} more supported findings below.
+              </p>
+            )}
+          </section>
+
+          <section className="panel panel-flat overflow-hidden" data-overview-card="what-could-change">
+            <RuleLabel right={unresolved.length > 0 ? <span className="text-micro tabular-nums text-muted-foreground/70">{unresolved.length}</span> : undefined}>
+              What could change the case
+            </RuleLabel>
+            {unresolved.length === 0 ? (
+              <p className="p-3 text-data text-muted-foreground">
+                No open contradictions. New disputes will appear here as the investigation records them.
+              </p>
+            ) : (
+              <ul>
+                {unresolved.slice(0, 2).map(({ a, v }) => (
+                  <li key={a.id} className="relative border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
+                    <AuthoritySpine state={v.state} />
+                    <div className="flex items-start gap-2">
+                      <ArtifactValue value={a.value} className="min-w-0 flex-1" />
+                      <AuthorityChip view={v} />
+                    </div>
+                    <AuthorityCaveat view={v} className="mt-0.5 line-clamp-2 text-micro" />
+                  </li>
+                ))}
+                {unresolved.length > 2 && (
+                  <li className="px-3 py-1.5 text-micro text-muted-foreground">
+                    +{unresolved.length - 2} more awaiting your call below.
+                  </li>
+                )}
+              </ul>
+            )}
+          </section>
+        </div>
+
         {/* ── Needs a decision ───────────────────────────────────────── */}
         <section className="panel panel-primary overflow-hidden">
           <RuleLabel
@@ -335,35 +458,6 @@ export function OverviewTab({ threadId }: { threadId: string }) {
           )}
         </section>
 
-        {/* ── The run, in one line ─────────────────────────────────────
-            These were five tiles. Three of them (verified, conflict,
-            quarantined) printed numbers the case bar already carries AND the
-            distribution chart below shows better, with all eight states and
-            their shares — so the bank was saying the same thing three times on
-            one screen. What is left is the other axis: what the run itself
-            cost, which appears nowhere else as a figure. */}
-        {/* ── The run itself: state, elapsed, last action, why it stopped ──
-            Read-only; assembled from the same snapshot (lib/run-cockpit.ts). */}
-        <RunCockpit
-          input={{
-            run: snapshot.run,
-            tools: snapshot.tools,
-            spendText: snapshot.spend.text,
-            pendingDecisions: sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null,
-          }}
-          onOpenDecisions={() => jump("artifacts")}
-          onOpenTools={() => jump("issues")}
-        />
-
-        <RunStrip
-          calls={activity.persistedTotal}
-          failed={activity.failed}
-          degraded={activity.degraded}
-          cached={cached}
-          wall={fmtWallClock(toolMs)}
-          onJump={() => jump("issues")}
-        />
-
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
           {/* ── Authority distribution ─────────────────────────────────── */}
           <section className="panel overflow-hidden">
@@ -431,6 +525,31 @@ export function OverviewTab({ threadId }: { threadId: string }) {
             )}
           </section>
         </div>
+
+        {/* ── Run diagnostics (secondary) ──────────────────────────────
+            Register item 8: demoted from the top of the page. The run
+            that produced the case is secondary to the case itself; its
+            state, stop reason and tool activity appear below the
+            findings and distribution. */}
+        <RunCockpit
+          input={{
+            run: snapshot.run,
+            tools: snapshot.tools,
+            spendText: snapshot.spend.text,
+            pendingDecisions: sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null,
+          }}
+          onOpenDecisions={() => jump("artifacts")}
+          onOpenTools={() => jump("issues")}
+        />
+
+        <RunStrip
+          calls={activity.persistedTotal}
+          failed={activity.failed}
+          degraded={activity.degraded}
+          cached={cached}
+          wall={fmtWallClock(toolMs)}
+          onJump={() => jump("issues")}
+        />
 
         <div className="grid gap-4 lg:grid-cols-2">
           {/* ── Failed / degraded lookups ──────────────────────────────── */}

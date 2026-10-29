@@ -34,7 +34,7 @@ const OperationsBrief = memo(function OperationsBrief() {
   <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">Analyst operations platform</div>
   </div>
   </div>
-  <span className="rounded-full border border-[hsl(var(--success)/0.28)] bg-[hsl(var(--success-muted))] px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.18em] text-[hsl(var(--success))]">
+  <span className="rounded-full border border-[hsl(var(--success)/0.28)] bg-[hsl(var(--success-muted))] px-2.5 py-1 font-mono text-eyebrow uppercase tracking-[0.12em] text-[hsl(var(--success))]">
   Secure access
   </span>
   </header>
@@ -87,15 +87,15 @@ const OperationsBrief = memo(function OperationsBrief() {
   
   <footer className="relative grid grid-cols-3 divide-x divide-white/[0.07] border-t border-white/[0.07] pt-5">
   <div className="pr-4">
-  <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground">Method</div>
+  <div className="font-mono text-eyebrow uppercase tracking-[0.12em] text-muted-foreground">Method</div>
   <div className="mt-1 text-xs text-foreground/85">Evidence-first</div>
   </div>
   <div className="px-4">
-  <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground">Review</div>
+  <div className="font-mono text-eyebrow uppercase tracking-[0.12em] text-muted-foreground">Review</div>
   <div className="mt-1 text-xs text-foreground/85">Human-controlled</div>
   </div>
   <div className="pl-4">
-  <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground">Output</div>
+  <div className="font-mono text-eyebrow uppercase tracking-[0.12em] text-muted-foreground">Output</div>
   <div className="mt-1 text-xs text-foreground/85">Audit-ready</div>
   </div>
   </footer>
@@ -208,7 +208,7 @@ export default function Auth() {
               </div>
               <div>
                 <div className="font-display text-lg font-semibold">Insight Finder</div>
-                <div className="font-mono text-[9px] uppercase tracking-[0.2em] text-muted-foreground">Analyst operations</div>
+                <div className="font-mono text-eyebrow uppercase tracking-[0.2em] text-muted-foreground">Analyst operations</div>
               </div>
             </div>
 

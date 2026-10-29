@@ -21,7 +21,7 @@ export function explainPivot(
   const sources = pivot.sourceArtifactIds.filter((id) => artifactsById.has(id));
   if (pivot.status === "new") reasons.push("No tool has run against it yet.");
   if (sources.length === 1) {
-    reasons.push("Only one recorded row points at it, so running it is how it gets a second source.");
+    reasons.push("Only one recorded row points at it; check for additional evidence (results may not be independent).");
   } else if (sources.length === 0 && pivot.sourceArtifactIds.length === 0) {
     reasons.push("The report suggested it; no recorded row backs it yet.");
   }
