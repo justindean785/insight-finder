@@ -61,10 +61,14 @@ Deno.test("port162 (2026-10-29): 'no breach hits' / 'no stealer log hits' wordin
     ["NO STEALER LOG HITS", "oathnet_stealer_search"],
     ["port162 — No stealer hits", "oathnet_stealer_search"],
     ["no stealer logs hit", "oathnet_stealer_search"],
+    ["jane-doe - no breach hits.", "breach_check"],
   ] as const) {
     const v = check(value, [src]);
     assertEquals(!v.ok && v.code, "zero_hit_result", value);
   }
+  // Graphify on #896: the wording is matched as the WHOLE value, so a mixed row naming a real breach is not refused.
+  assert(check("Canva breach (2019) — 1 hit; no stealer log hits", ["breach_check"]).ok);
+  assertEquals(isZeroHitBreachRow("LinkedIn 2021 exposed email; no breach hits elsewhere", {}), false);
   // Positive stealer/breach hit counts are not caught by the new wording.
   assertEquals(isZeroHitBreachRow("Neopets breach — stealer log hits: 3", {}), false);
   assertEquals(isZeroHitBreachRow("3 stealer log hits for port162", {}), false);
