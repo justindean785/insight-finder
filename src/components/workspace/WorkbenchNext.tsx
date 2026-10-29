@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
-import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
+import { queriedTargetSet, useThreadQueriedCalls } from "@/hooks/useThreadQueriedTargets";
 import { useReviewStates } from "@/lib/review";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
 import { computePivots } from "@/lib/pivot-engine";
@@ -12,6 +12,7 @@ import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type R
 import { hasPivotRunner } from "@/lib/pivot-runner";
 import type { ReviewAdjustment } from "@/lib/intel";
 import { WORKBENCH_RUNNABLE_LIMIT } from "@/lib/next-step-queue";
+import { derivePivotRunViews, pivotRunKey, usePivotRuns } from "@/lib/pivot-runs";
 
 const RUNNABLE_LIMIT = WORKBENCH_RUNNABLE_LIMIT;
 const REPAIR_LIMIT = 3;
@@ -26,8 +27,23 @@ const REPAIR_LIMIT = 3;
 export function WorkbenchNext({ threadId }: { threadId: string }) {
   const { snapshot } = useCaseSnapshot();
   const review = useReviewStates(threadId);
-  const queriedTargets = useThreadQueriedTargets(threadId);
+  const queriedCalls = useThreadQueriedCalls(threadId);
+  const queriedTargets = useMemo(() => queriedTargetSet(queriedCalls), [queriedCalls]);
+  const pivotRuns = usePivotRuns(threadId);
   const artifacts = useMemo(() => snapshot?.items ?? [], [snapshot?.items]);
+  const caseRunning = snapshot?.run?.state === "running";
+  const runViews = useMemo(
+    () => derivePivotRunViews(pivotRuns, { caseRunning, artifacts, queriedCalls }),
+    [pivotRuns, caseRunning, artifacts, queriedCalls],
+  );
+  // A pivot this tab started leaves the queue while it runs or once a tool call
+  // was recorded against it (shown above the queue as Running / Completed), so
+  // the next one becomes the best pivot. An ended run with no such call returns
+  // to the queue: whether it ran is unknown.
+  const sentKeys = useMemo(
+    () => new Set(runViews.filter((v) => v.phase !== "ended").map((v) => v.run.key)),
+    [runViews],
+  );
   const seed = snapshot?.seed ?? { value: null, type: null };
   const [reportPivots, setReportPivots] = useState<RecommendedPivot[]>([]);
   const [skip, setSkip] = useState<Set<string>>(new Set());
@@ -68,7 +84,7 @@ export function WorkbenchNext({ threadId }: { threadId: string }) {
     const repair: NextStepItem[] = [];
     const seen = new Set<string>();
     let runnable = 0;
-    for (const p of ranked.filter((c) => c.status === "new")) {
+    for (const p of ranked.filter((c) => c.status === "new" && !sentKeys.has(pivotRunKey(c.type, c.value)))) {
       if (runnable >= RUNNABLE_LIMIT) break;
       const key = cardDedupeKey({ title: p.actionLabel, target: p.value });
       if (seen.has(key)) continue;
@@ -82,7 +98,7 @@ export function WorkbenchNext({ threadId }: { threadId: string }) {
       out.push({ kind: "pivot", key, validation, eligibility: pivotEligibility(validation.pivot, { artifactsById, review: reviewOf }) });
     }
     return [...out, ...repair];
-  }, [artifacts, seed.value, reportPivots, skip, queriedTargets, review.map, artifactsById]);
+  }, [artifacts, seed.value, reportPivots, skip, queriedTargets, review.map, artifactsById, sentKeys]);
 
   const reviews = useMemo(() => {
     const m: Record<string, ReviewAdjustment> = {};
@@ -107,13 +123,13 @@ export function WorkbenchNext({ threadId }: { threadId: string }) {
       </p>
     );
   }
-  if (items.length === 0) {
+  if (items.length === 0 && runViews.length === 0) {
     return <p className="px-5 py-4 text-[13px] text-muted-foreground">No pivot is waiting. New ones appear as the investigation records selectors or the agent recommends them.</p>;
   }
 
   const run = (p: RunnablePivot) => {
     window.dispatchEvent(new CustomEvent("proximity:run-pivot", {
-      detail: { threadId, value: p.target, type: p.targetType, prompt: p.prompt },
+      detail: { threadId, value: p.target, type: p.targetType, prompt: p.prompt, action: p.action },
     }));
   };
 
@@ -128,6 +144,9 @@ export function WorkbenchNext({ threadId }: { threadId: string }) {
         items={items}
         onRunPivot={run}
         onRunAction={() => {}}
+        busy={caseRunning}
+        runs={runViews}
+        onViewChanges={(artifactId) => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "artifacts", artifactId } }))}
         openKey={open}
         onOpenChange={setOpen}
         connections={connections}

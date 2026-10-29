@@ -47,7 +47,7 @@ export function EvidenceTab({
   threadId: string;
   // A command-palette jump target may request a specific lens; `n` is a nonce so
   // re-requesting the same lens still re-applies it.
-  viewRequest?: { view: string; n: number; artifactId?: string } | null;
+  viewRequest?: { view: string; n: number; artifactId?: string; authorityState?: string } | null;
 }) {
   const { items, updateLocal, hasMore, cap } = useThreadArtifacts(threadId);
   const review = useReviewStates(threadId);
@@ -146,6 +146,7 @@ export function EvidenceTab({
             <EvidenceBoard
               threadId={threadId}
               focusRequest={viewRequest?.artifactId ? { id: viewRequest.artifactId, n: viewRequest.n } : null}
+              filterRequest={viewRequest?.authorityState ? { state: viewRequest.authorityState, n: viewRequest.n } : null}
             />
           </div>
         )}
