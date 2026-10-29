@@ -105,6 +105,9 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
         {view.seedRecords > 0 && (
           <p className="mt-1 text-[12px] text-subtle-foreground">{view.seedRecords} record{view.seedRecords === 1 ? "" : "s"} only repeat the seed; not counted as links.</p>
         )}
+        {view.cleanChecks > 0 && (
+          <p className="mt-1 text-[12px] text-subtle-foreground" data-clean-checks>{view.cleanChecks} clean check{view.cleanChecks === 1 ? "" : "s"} (coverage, not candidates): lookups that found nothing. Still listed in Evidence.</p>
+        )}
       </section>
 
       {node ? (
