@@ -113,7 +113,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
                       onChange={(e) => { setCapDraft(e.target.value); if (capError) setCapError(null); }}
                       onKeyDown={(e) => { if (e.key === "Enter") saveCap(); if (e.key === "Escape") { setEditingCap(false); setCapError(null); } }}
                       className={cn(
-                        "w-14 bg-secondary/60 border rounded px-1 font-mono text-foreground outline-none focus:border-primary/60",
+                        "w-14 bg-secondary/60 border rounded px-1 font-mono text-foreground outline-none focus-visible:border-primary/60 focus-visible:ring-2 focus-visible:ring-ring",
                         capError ? "border-destructive" : "border-border",
                       )}
                     />

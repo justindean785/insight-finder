@@ -38,7 +38,7 @@ import {
   type ConfLabel,
   type ReviewAdjustment,
 } from "@/lib/intel";
-import { formatArtifactDisplayValue, buildIdentityRows, isClusterIneligible, isNullResultValue, isSubjectAuthorityEligible, type IdentityRow } from "@/lib/report-hygiene";
+import { formatArtifactDisplayValue, buildIdentityRows, isClusterIneligible, isNullResultValue, isSubjectAuthorityEligible, pickSubjectName, type IdentityRow } from "@/lib/report-hygiene";
 import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
@@ -234,7 +234,7 @@ function BucketTable({ rows, empty, reviews }: { rows: Artifact[]; empty: string
 function SectionHeader({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
   return (
     <div className="report-section-head flex items-center gap-2 mt-6 mb-3">
-      <span className="w-[3px] h-4 bg-[hsl(var(--info))] rounded-sm shadow-[0_0_16px_hsl(var(--info)/0.55)]" />
+      <span className="w-[3px] h-4 bg-[hsl(var(--info))] rounded-sm" />
       <h3 className="text-title font-semibold tracking-normal text-[hsl(var(--info))]">
         {children}
       </h3>
@@ -245,7 +245,7 @@ function SectionHeader({ children, right }: { children: React.ReactNode; right?:
 
 function HunterNote({ children }: { children: React.ReactNode }) {
   return (
-    <aside className="my-3 pl-3 border-l-2 border-destructive/80 text-foreground/90 leading-relaxed">
+    <aside className="my-3 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2.5 text-foreground/90 leading-relaxed">
       <div className="text-micro font-semibold tracking-normal text-destructive mb-1">
         Hunter's Note
       </div>
@@ -1101,6 +1101,13 @@ export function CaseReport({
 
   const audit = buildToolAudit(artifacts);
 
+  // The engine's accepted subject — the same selector CaseSheet reads. When
+  // this is null the engine has refused to adopt a name (quarantined,
+  // collision-flagged, or analyst-rejected), yet the model's prose below may
+  // still assert one. The callout surfaces that disagreement at the top of
+  // the report so the analyst doesn't have to compare against the Sheet.
+  const engineSubject = useMemo(() => pickSubjectName(artifacts, reviews), [artifacts, reviews]);
+
   // Evidence-strength buckets per the new audit rules.
   const buckets = useMemo(() => {
     const g: Record<string, Artifact[]> = { confirmed: [], probable: [], lead: [], contradiction: [], excluded: [] };
@@ -1130,6 +1137,26 @@ export function CaseReport({
     <article id="case-report-print-root" className="case-report-doc text-data leading-relaxed text-foreground/95">
       {draftMark && <DraftMarking readinessPct={draftMark.readinessPct} reasons={draftMark.reasons} position="top" />}
       <VerdictBanner verdict={verdict} confCount={confidenceFindings.length} indepCount={independenceFindings.length} />
+      {engineSubject === null && artifacts.length > 0 && (
+        // Register item 10: reuse the Sheet's exact copy so a Report that
+        // narrates a subject the engine has not accepted still shows the
+        // engine's refusal in-line. The narrative notice on the chat prose
+        // (ChatWindow.tsx) is per-message; this banner is per-report.
+        <aside
+          role="note"
+          data-report-subject-refused
+          className="mt-3 rounded-xl border border-[hsl(var(--warning)/0.35)] bg-[hsl(var(--warning)/0.08)] px-4 py-3 text-data leading-snug text-foreground/90"
+        >
+          <div className="font-semibold text-[hsl(var(--warning))]">
+            No established subject name.
+          </div>
+          <p className="mt-1 text-muted-foreground">
+            No name holds for the subject yet. Quarantined and rejected names
+            are never used here. Any name in the narrative below is model-written,
+            not engine-adjudicated — reconcile against Evidence before adopting it.
+          </p>
+        </aside>
+      )}
       {/* Header */}
       <header className="report-cover relative overflow-hidden rounded-2xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.72] p-4 sm:p-5">
         <div className="relative z-10 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -1529,6 +1556,21 @@ export function CaseReport({
         </>
       ))}
 
+      {/* G-5 section 2: Supported observations.
+          Umbrella header over the Confirmed / Probable / Leads buckets.
+          The content below is the same `buckets.*` the previous flat
+          structure rendered; the header gives JD's four-section
+          vocabulary a visible anchor in the report.
+
+          Important honest-data caveat (preserved from CLAUDE.md): the
+          numbers inside these BucketTable rows are what `record_finding`
+          persisted, not what the model's prose asserts. If a narrative
+          elsewhere disagrees, trust these. */}
+      <SectionHeader>Supported observations</SectionHeader>
+      <p className="mt-1 mb-2 text-[12.5px] leading-snug text-muted-foreground">
+        What the collected evidence supports today — from strongest (confirmed) to weakest (leads).
+      </p>
+
       {/* 4. Confirmed findings */}
       <SectionHeader right={<StatusLegend />}>Confirmed Findings</SectionHeader>
       <BucketTable rows={buckets.confirmed} empty="No findings meet the confirmation threshold (official + independent corroboration)." reviews={reviews} />
@@ -1549,18 +1591,28 @@ export function CaseReport({
         </>
       )}
 
-      {/* 9. Contradictions */}
+      {/* G-5 section 3: Contradictions and gaps.
+          The existing "Contradictions & Data Quality Problems" bucket is
+          the content; the header rename matches the four-section vocabulary
+          JD specified ("Executive summary · Supported observations ·
+          Contradictions and gaps · Next investigative question"). */}
       {buckets.contradiction.length > 0 && (
         <>
-          <SectionHeader>Contradictions &amp; Data Quality Problems</SectionHeader>
+          <SectionHeader>Contradictions and gaps</SectionHeader>
           <BucketTable rows={buckets.contradiction} empty="—" reviews={reviews} />
         </>
       )}
 
-      {/* 14. Recommended next pivots */}
+      {/* G-5 section 4: Next investigative question.
+          The existing "Recommended Next Pivots" list is the content; the
+          header asks the investigative question the pivots are proposed
+          to answer. */}
       {nextPivots.length > 0 && (
         <>
-          <SectionHeader>Recommended Next Pivots</SectionHeader>
+          <SectionHeader>Next investigative question</SectionHeader>
+          <p className="mt-1 mb-2 text-[12.5px] leading-snug text-muted-foreground">
+            What should the next pivot establish? Each line is a target with its reason — ranked by expected case value, not record volume.
+          </p>
           <ul className="space-y-1.5 list-disc pl-5 text-foreground/90 font-mono text-data">
             {nextPivots.map((p, i) => <li key={i}>{p}</li>)}
           </ul>

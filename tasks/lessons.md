@@ -9,6 +9,130 @@ Running log of non-obvious gotchas learned while working in this repo. Newest fi
 - **A one-click run is a contract, not a style choice.** `requiresPreview` returned false for clean pivots, so the best-pivot card ran them with no preview. Tests and e2e selectors had pinned the label, so the change needed those updated together, not hidden.
 - **A worktree session may write only to its own worktree.** Creating a second worktree and writing into it was blocked by the session guard. Move this session's own worktree to the branch instead, after saving any uncommitted docs.
 
+## 2026-10-25 (workspace Stage 1 correction pass)
+
+### G-items NOT ADDED (fail honest-data check — explicit follow-ups)
+
+JD's final addendum listed four presentation items that look harmless but
+would print numbers the backend does not actually compute. They are
+recorded here as follow-ups, not implemented in this pass:
+
+- **"+12 linkage" delta** from the prototype — needs an assessment-history
+  schema (and a `prev_effective` column, or an append-only
+  `assessment_events` table). Without that, any delta the UI shows is
+  derived from client state and will drift the moment the page reloads.
+- **Separate "Finding support %" vs "Subject linkage %"** — the backend
+  carries ONE confidence scalar (`displayConfidence(a).effective`).
+  Showing two numbers requires a backend-side split; this UI stage
+  collapses to the one honest value.
+- **Agent "suggested quick-reply" chips** — requires model generation on
+  the chat path; adding chips UI without the generation surface would
+  print blanks or placeholders.
+- **"Simulated live session" badge** — the prototype used this to label
+  the fixtures. It would read as live-session marketing in prod and
+  misrepresent an idle run. Omitted.
+
+Each belongs to a separately-approved backend or model-generation stage.
+
+### E-6 — "floating panel clipping at far left" could not be reproduced from source scan
+
+JD's screenshot audit reported a partially clipped floating panel at the far
+left edge of the Board (now Ledger) view. Grepped the full ResourcesPanel,
+EvidenceMatrixTab, ClustersTab, and the ledger CSS; found no
+`position:absolute` with a negative `left` offset, no `overflow:hidden` on
+the ledger container, and no left-floating pane. The only absolute element
+near the left edge is `.spine` (3px authority stripe at `left:0`, `width:3px`),
+which sits inside the ledger-row's padding area and has no bounds the row
+clips against.
+
+Returning this to the main session's browser pane for a repro screenshot
+with the suspected element inspected — fixing a layout defect without
+being able to see it is how a speculative change ships two defects.
+
+### E-1 — Next-steps count divergence (transcript 4, Workbench Next 5)
+
+Two near-copies of the same engine computation, each with its own cap and
+its own fallback behaviour:
+
+| Surface | File | Pivot cap | Generic fallback actions |
+|---|---|---|---|
+| Transcript (`ChatWindow.suggestions`) | `src/components/ChatWindow.tsx` ~:2882 | 3 runnable | "Summarize findings", "Check for breaches", "Find more pivots" (injected to fill slots up to 4) |
+| Workbench Next (`WorkbenchNext.items`) | `src/components/workspace/WorkbenchNext.tsx` ~:65 | 5 runnable | None |
+
+The transcript also gated on `hasReportShape(latestText)` — a chat concern,
+not an application-wide gate. The Workbench does not gate on message shape.
+
+Converged by extracting `countWorkbenchRunnablePivots` /
+`WORKBENCH_RUNNABLE_LIMIT` to `src/lib/next-step-queue.ts`. WorkbenchNext
+now imports the shared cap; the transcript's compact "N next pivots ranked"
+summary reads the shared count rather than the local `suggestions.length`,
+which still includes the chat-only generic actions for the sub-xl fallback
+NextSteps render. Different lists for different purposes; one count on
+the summary line.
+
+
+### Count-scope map — what each number on the workspace actually counts
+
+JD screenshot-audited the harness and listed six numbers from one case view:
+`55 evidence logged`, `Evidence 10`, `Analyst view 42`, `Needs review 36`,
+`Sheet Review 34`, `Needs your call 10`. Different denominators, no scope
+labels — reads as inconsistent. The map below names each number's selector
+so a surface edit can label its scope without changing the counting.
+
+| Surface | Figure | Selector | Scope |
+|---|---|---|---|
+| Case bar header | `55 evidence logged` | `snapshot.counts.artifactsTotal` (all `useThreadArtifacts` items) | Total artifact rows ever persisted to this thread (includes quarantined). |
+| Workspace tab chip | `Evidence 10` | `WorkspaceTabs.tsx` evidence badge | **Review-eligible count** — artifacts whose authority state is in `ANALYST_ACTIONABLE_STATES` (see `src/lib/authority.ts`). Reads "10 waiting on your decision", NOT "10 of 55". |
+| Evidence toolbar filter | `Analyst view 42` | `EvidenceBoard.counts.analyst` (`STATUS_FILTER_GROUPS.analyst`) | Everything excluding leads and excluded rows — the default "work queue" view. 42 of 55. |
+| Evidence toolbar filter | `Needs review 36` | `EvidenceBoard.counts.review` (`STATUS_FILTER_GROUPS.review`) | Review-pending authority states. 36 of 55. |
+| Sheet distribution | `Review 34` | `useCaseSheetModel` distribution bucket (reads review verdicts via `useReviewStates`) | Rows the ANALYST has not yet marked; 2 fewer than toolbar `Needs review` because the Sheet reads verdicts post-review-write while the toolbar reads authority state (which lags one write). |
+| Sheet queue | `Needs your call 10` | `useCaseSheetModel.queue` | Rows whose `authorityFor` + `pickAsk` evaluates to a decision prompt (release, resolve, verify). Subset of `Needs review 36`. |
+
+Rule: no surface may show a figure without naming its scope. "Needs review 36" alone is wrong; "Needs review 36 of 55" or "Review 34 undecided" is right.
+
+### Pivot-ranking address-dispute signal (item 2 — follow-up)
+
+Harness fixtures show pivots targeting emails Overview already describes as
+belonging to other families (unsupported for this subject). Traced through
+`src/lib/pivot-engine.ts` `computePivots`:
+
+- The engine ranks candidates by `TIER_SCORE[priority] + attempt decay`
+  (see `pivot-engine.ts:405-416`, with #873's attempt history inputs).
+- There is NO cross-check against artifact `authorityFor(a).state` on the
+  pivot's target before offering it. A quarantined or dispute-flagged
+  target still enters the ranked list if a pivot kind is defined for its
+  kind.
+- Overview's "belongs to other families" copy comes from a disjoint path
+  (name-collision clustering in `report-hygiene.ts`) that pivot-engine
+  does not consult.
+
+Classification: **likely reproducible ranking defect, not fixture-only.**
+Scope: belongs in a separately-approved pivot-engine stage (per CLAUDE.md
+"Do not re-litigate ranking as a drive-by UI fix"). Fix shape: pass an
+`isActionableForSubject(a)` predicate into `computePivots` and filter
+targets whose authority is `quarantined` or whose dispute signal is set.
+No change made here.
+
+### Report prose vs engine confidence (item 3 — follow-up)
+
+CLAUDE.md section "The report layer bypasses the integrity engine"
+describes this exact pattern. Measured on current main:
+
+- `record_finding` server-side derives true independence count and persists
+  computed confidence (`tool-registry.ts` `countIndependentClasses`).
+- The model's final-turn text retypes a Findings table in prose that is
+  NOT populated from the stored rows — model-written numbers survive.
+- No `{{FINDINGS_TABLE}}` server-side marker exists today; the fix shape
+  CLAUDE.md recommends ("expand the marker server-side before the message
+  is stored, from persisted rows, no markdown parsing of model output,
+  never allowed to fail finalize") is unbuilt.
+
+Classification: **reproducible defect — this is the CLAUDE.md-named
+report-bypass pattern, not a fixture issue.** Scope: belongs in a
+separately-approved report-generation stage. The UI stage can only make
+the contradiction visible (register item 10 — "No established subject name"
+callout beside narrative-asserted subject). No scoring or writer change.
+
 ## 2026-10-23 (Opsis guard ship, brendanloza measurements)
 - **A pre-flight refusal's error text must match `tool-outcome.ts` `SKIP_RE`**, or its `tool_usage_log` row logs `failed`
   and counts against the tool's health. Pin it with a captured-row test (`opsis_search_guard_test.ts`).
@@ -118,3 +242,22 @@ Running log of non-obvious gotchas learned while working in this repo. Newest fi
   `package.json` lists `@vercel/speed-insights` will fail `build`/`typecheck` if the parent's
   shared `node_modules` was installed for a branch lacking it. Fix locally with
   `npm install --no-save <pkg>` from the parent — don't touch the lockfile.
+- **Scope corrections are not implementation decisions.** A prior Stage 1 report
+  described the compact Evidence ledger as "deferred" when the corrected brief
+  had explicitly listed it as included. Mis-reading the brief then shipping
+  half of it reads as covert descoping. If a sub-scope seems large, name it in
+  the pre-edit discrepancy report, not after.
+- **`git diff main..HEAD` on a stale local-main branch overstates the PR size.**
+  Local `main` can be far behind `origin/main`, so the diff includes commits
+  that have already landed on origin's main. Always `git fetch origin main`
+  and diff against `origin/main` before quoting a file count or line delta.
+  The fast check: `git log main..origin/main --oneline | wc -l` — if non-zero,
+  diff against origin/main.
+- **A vitest delta is only meaningful against a baseline measured today on the
+  same machine from `origin/main`.** CLAUDE.md baselines drift between PRs and
+  across machines. Measure the baseline, measure the branch, quote both — never
+  quote a delta against a static baseline from a note file.
+- **An inline `# comment` inside a `bash`-tagged code block can reach `git` as a
+  bare argument** when the host surface runs the block through a route that
+  does not evaluate shell syntax. For user-facing blocks with a Run button,
+  put commands on their own lines and keep comments outside the fence.

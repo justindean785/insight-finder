@@ -5,6 +5,7 @@ import { ChatWindow } from "@/components/ChatWindow";
 import { WorkspaceHeader, MobileCaseStrip } from "@/components/workspace/WorkspaceHeader";
 import { WorkspaceTabs, type WorkspaceTab } from "@/components/workspace/WorkspaceTabs";
 import { CaseSnapshotProvider } from "@/components/workspace/CaseSnapshotProvider";
+import { WorkspaceUIStateProvider } from "@/components/workspace/WorkspaceUIStateProvider";
 import { RecoveryBanner } from "@/components/workspace/RecoveryBanner";
 import { Workbench } from "@/components/workspace/Workbench";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
@@ -18,6 +19,7 @@ const ToolsTab = lazy(() => import("@/components/workspace/ToolsTab").then((m) =
 const GraphTab = lazy(() => import("@/components/workspace/GraphTab").then((m) => ({ default: m.GraphTab })));
 const ReportTab = lazy(() => import("@/components/panel/ReportTab").then((m) => ({ default: m.ReportTab })));
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useIsWorkbenchViewport } from "@/hooks/useIsWorkbenchViewport";
 import { cn } from "@/lib/utils";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -48,7 +50,9 @@ export default function ChatPage() {
 
   return (
     <CaseSnapshotProvider key={threadId} threadId={threadId}>
-      <ChatWorkspace threadId={threadId} userId={user.id} />
+      <WorkspaceUIStateProvider>
+        <ChatWorkspace threadId={threadId} userId={user.id} />
+      </WorkspaceUIStateProvider>
     </CaseSnapshotProvider>
   );
 }
@@ -75,11 +79,11 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
   // an Evidence lens (artifacts/matrix/clusters/timeline) also tell EvidenceTab
   // which lens to open, so the jump lands on the right view instead of always
   // dumping the user on the Board. The nonce forces re-honoring repeat jumps.
-  const [evidenceReq, setEvidenceReq] = useState<{ view: string; n: number; artifactId?: string } | null>(null);
+  const [evidenceReq, setEvidenceReq] = useState<{ view: string; n: number; artifactId?: string; authorityState?: string } | null>(null);
   const [toolsReq, setToolsReq] = useState<{ view: string; n: number } | null>(null);
   useEffect(() => {
     const onNav = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { tab?: string; section?: string; artifactId?: string };
+      const detail = (e as CustomEvent).detail as { tab?: string; section?: string; artifactId?: string; authorityState?: string };
       const t = detail?.tab ?? "";
       if (t === "overview") setTab("overview");
       else if (t === "chat") setTab("chat");
@@ -95,8 +99,10 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
           : t === "timeline" ? "timeline"
           : "board";
         // `artifactId` asks the Board to reveal and open one row (the case sheet's
-        // "Decide in Evidence"), whatever filter it was left on.
-        setEvidenceReq((prev) => ({ view, n: (prev?.n ?? 0) + 1, artifactId: detail?.artifactId }));
+        // "Decide in Evidence"), whatever filter it was left on. `authorityState`
+        // asks it to open on the quick filter that holds that state (the sheet's
+        // Review / Quarantined / Leads counts).
+        setEvidenceReq((prev) => ({ view, n: (prev?.n ?? 0) + 1, artifactId: detail?.artifactId, authorityState: detail?.authorityState }));
       }
     };
     window.addEventListener("swarmbot:navigate", onNav);
@@ -129,7 +135,12 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
   // desktop xl+ only. It is rendered LAST inside the content container and the
   // two panels it sits beside only gain a right inset, so no existing child
   // moves or remounts: the ChatWindow's in-flight stream is untouched by it.
-  const showSheet = !isMobile && (tab === "chat" || tab === "report");
+  // The Workbench is shared across Investigate (chat), Evidence and Report:
+  // selection in Evidence must surface in the same right-hand pane, not a
+  // second column. On Evidence, the drawer suppresses itself at xl+ so the
+  // detail is in the Workbench's Sheet tab only. Overview / Tools / Graph
+  // own their full width and have no Workbench.
+  const showSheet = !isMobile && (tab === "chat" || tab === "report" || tab === "evidence");
   // The analyst can fold the sheet down to a 44px strip, like the cases rail;
   // the strip keeps the "Needs your call" count so open decisions never vanish.
   // Remembered across reloads.
@@ -139,8 +150,22 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
   useEffect(() => {
     try { localStorage.setItem("if:caseSheetCollapsed", sheetCollapsed ? "1" : "0"); } catch { /* ignore */ }
   }, [sheetCollapsed]);
+  // Below lg (768-1023px) there is no room to dock 320px beside the content, so
+  // the sheet stays folded and opens as an overlay. That open state is not
+  // remembered: a reload at this width should not cover the transcript.
+  const docked = useIsWorkbenchViewport();
+  const [overlayOpen, setOverlayOpen] = useState(false);
+  const collapsed = docked ? sheetCollapsed : !overlayOpen;
+  const setCollapsed = (v: boolean) => (docked ? setSheetCollapsed(v) : setOverlayOpen(!v));
+  useEffect(() => {
+    if (docked || !overlayOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOverlayOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [docked, overlayOpen]);
   const besideSheet = (key: WorkspaceTab) =>
-    showSheet && (key === "chat" || key === "report") && (sheetCollapsed ? "xl:right-11" : "xl:right-[380px]");
+    showSheet && (key === "chat" || key === "report" || key === "evidence") &&
+    (collapsed ? "md:right-11" : "md:right-11 lg:right-[320px] xl:right-[380px]");
   const queueCount = sheet.hydrated && !sheet.reviewsUnavailable ? sheet.model.queueTotal : null;
 
   const panel = (key: Exclude<WorkspaceTab, "chat">, body: ReactNode, scroll = false) =>
@@ -188,17 +213,21 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
           id="case-sheet"
           aria-label="Case sheet"
           className={cn(
-            "absolute inset-y-0 right-0 hidden border-l border-border-subtle bg-card xl:block",
-            sheetCollapsed ? "w-11" : "w-[380px]",
+            // Docked at lg+ (keep in step with useIsWorkbenchViewport); a folded
+            // strip that opens as an overlay at md. It used to exist only at xl+,
+            // so a laptop browser had no way to reach it.
+            "absolute inset-y-0 right-0 hidden border-l border-border-subtle bg-card md:block",
+            collapsed ? "w-11" : "w-[320px] xl:w-[380px]",
+            !docked && !collapsed && "z-30 shadow-2xl",
           )}
         >
-          {sheetCollapsed ? (
+          {collapsed ? (
             <div className="flex h-full flex-col items-center gap-2 py-2">
               <Tooltip delayDuration={150}>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    onClick={() => setSheetCollapsed(false)}
+                    onClick={() => setCollapsed(false)}
                     aria-label="Show case sheet"
                     aria-expanded={false}
                     aria-controls="case-sheet"
@@ -212,7 +241,7 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
               {queueCount != null && queueCount > 0 && (
                 <button
                   type="button"
-                  onClick={() => setSheetCollapsed(false)}
+                  onClick={() => setCollapsed(false)}
                   aria-label={`${queueCount} need${queueCount === 1 ? "s" : ""} your call — open case sheet`}
                   title={`${queueCount} need${queueCount === 1 ? "s" : ""} your call`}
                   className="grid min-h-8 min-w-8 place-items-center rounded-full border border-warning/40 bg-warning/10 px-1.5 font-mono text-data tabular-nums text-warning transition-colors hover:bg-warning/15"
@@ -227,7 +256,7 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    onClick={() => setSheetCollapsed(true)}
+                    onClick={() => setCollapsed(true)}
                     aria-label="Hide case sheet"
                     aria-expanded
                     aria-controls="case-sheet"

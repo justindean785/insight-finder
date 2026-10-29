@@ -700,7 +700,10 @@ All colors MUST be HSL.
     grid-template-columns: var(--ledger-cols);
     align-items: center;
     column-gap: 0.75rem;
-    padding: 0.4375rem 0.625rem 0.4375rem 1rem;
+    /* E-5: tightened from 0.4375rem (7px) to 0.3125rem (5px) vertical, which
+       drops row height from ~76px to ~58-62px and lifts findings-per-viewport
+       at 1440x900 from ~8 to ~12-14. Horizontal padding unchanged. */
+    padding: 0.3125rem 0.625rem 0.3125rem 1rem;
     border-bottom: 1px solid hsl(var(--border-subtle));
     transition: background-color 120ms linear;
   }

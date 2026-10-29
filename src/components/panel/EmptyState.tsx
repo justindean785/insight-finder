@@ -66,7 +66,7 @@ export function EmptyState({
           className="radar-ring absolute h-14 w-14 rounded-full border border-[hsl(var(--intel-blue)/0.5)]"
           style={{ animation: "radar-ping 3.4s ease-out infinite", animationDelay: "1.7s" }}
         />
-        <div className="relative grid h-14 w-14 place-items-center rounded-2xl border border-[hsl(var(--intel-blue)/0.35)] bg-[linear-gradient(180deg,hsl(var(--surface-3)),hsl(var(--surface-1)))] text-[hsl(var(--intel-blue))] shadow-[0_0_30px_-8px_hsl(var(--intel-blue)/0.65)]">
+        <div className="relative grid h-14 w-14 place-items-center rounded-2xl border border-[hsl(var(--intel-blue)/0.35)] bg-[linear-gradient(180deg,hsl(var(--surface-3)),hsl(var(--surface-1)))] text-[hsl(var(--intel-blue))]">
           <Icon className="h-[22px] w-[22px]" strokeWidth={1.6} />
         </div>
       </div>
