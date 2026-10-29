@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+import type { QueriedCall } from "@/hooks/useThreadQueriedTargets";
+import { KIND_TO_PIVOT } from "@/lib/intel";
 import { normalizeTarget } from "@/lib/next-step-cards";
 
 /**
@@ -58,8 +60,15 @@ const MAX_RUNS = 20;
 const CHANGED = "swarmbot:pivot-runs-changed";
 const storageKey = (threadId: string) => `swarmbot:pivot-runs:${threadId}`;
 
+/**
+ * A Recheck dispatches the artifact KIND ("handle", "person", "ip_address")
+ * while a queue card carries the PIVOT type ("username", "name", "ip"); the
+ * dispatch guard already folds one onto the other, so the registry must too
+ * or a running recheck never matches its own card.
+ */
 export function pivotRunKey(type: string | null | undefined, value: string): string {
-  return `${(type ?? "").toLowerCase()}:${normalizeTarget(value)}`;
+  const t = (type ?? "").toLowerCase();
+  return `${KIND_TO_PIVOT[t] ?? t}:${normalizeTarget(value)}`;
 }
 
 export function readPivotRuns(threadId: string): PivotRun[] {
@@ -176,34 +185,40 @@ export function usePivotRuns(threadId: string): PivotRun[] {
  * only until another send closes it (`closeLatestPivotRun`).
  * Each pivot's window runs from its own anchor (exclusive) to the next pivot's
  * anchor (inclusive): both are server `created_at` values, so the browser clock
- * never enters the comparison. An ended run is "done" only when `queriedTargets`
- * (normalized targets from tool_usage_log, the set the pivot engine reads) holds
- * its target; otherwise "ended", which the card shows as unknown.
+ * never enters the comparison. An ended run is "done" only when a logged tool
+ * call against its target (`queriedCalls`, from tool_usage_log) falls INSIDE
+ * that same window; otherwise "ended", which the card shows as unknown. A call
+ * from before the pivot was sent, or after another send closed it, is not this
+ * pivot's: a re-run on an already-queried target must not read Completed on the
+ * strength of the earlier hit.
  */
 export function derivePivotRunViews(
   runs: readonly PivotRun[],
-  { caseRunning, artifacts, queriedTargets }: {
+  { caseRunning, artifacts, queriedCalls }: {
     caseRunning: boolean;
     artifacts: readonly Artifact[];
-    queriedTargets: ReadonlySet<string>;
+    queriedCalls: readonly QueriedCall[];
   },
 ): PivotRunView[] {
   const ordered = [...runs].sort((a, b) => Date.parse(a.sentAt) - Date.parse(b.sentAt));
   const anchorT = (r: PivotRun) => (r.anchorCreatedAt ? Date.parse(r.anchorCreatedAt) : -Infinity);
+  const inWindow = (createdAt: string, from: number, until: number) => {
+    const t = Date.parse(createdAt);
+    return t > from && t <= until;
+  };
   const views = ordered.map((run, i): PivotRunView => {
     const from = anchorT(run);
     const until = run.closed
       ? (run.closedAnchorCreatedAt ? Date.parse(run.closedAnchorCreatedAt) : -Infinity)
       : i + 1 < ordered.length ? anchorT(ordered[i + 1]) : Infinity;
     const newRows = artifacts
-      .filter((a) => {
-        const t = Date.parse(a.created_at);
-        return t > from && t <= until;
-      })
+      .filter((a) => inWindow(a.created_at, from, until))
       .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+    const target = normalizeTarget(run.target);
+    const calledInWindow = queriedCalls.some((c) => c.target === target && inWindow(c.createdAt, from, until));
     const phase = caseRunning && i === ordered.length - 1 && !run.closed
       ? "running"
-      : queriedTargets.has(normalizeTarget(run.target)) ? "done" : "ended";
+      : calledInWindow ? "done" : "ended";
     return { run, phase, newRows };
   });
   return views.reverse();

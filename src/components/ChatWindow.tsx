@@ -23,7 +23,7 @@ import { checkCachedHitSafety, useReviewStates, type ReviewState } from "@/lib/r
 import { buildDecisionSets, isManualDispatchRefused } from "@/lib/analyst-decisions";
 import { KIND_TO_PIVOT } from "@/lib/intel";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
-import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
+import { queriedTargetSet, useThreadQueriedCalls } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked, submitRefusal, submitRefusalMessage } from "@/lib/submit-guard";
 import { messageIntegrity, narrativeIsUnadjudicated } from "@/lib/message-integrity";
 import { RunChips, RunMenu } from "@/components/pivots/RunControls";
@@ -1507,7 +1507,14 @@ function ChatWindowInner({
   const artifactsRef = useRef(artifacts);
   artifactsRef.current = artifacts;
   // Any send that is not a pivot's own ends the latest pivot's claim to the run.
-  const closePivotRun = useCallback(() => closeLatestPivotRun(threadId, artifactsRef.current), [threadId]);
+  // The withdraw hook of the pivot whose send is in flight, so a send the SDK
+  // routes to onError (a 409 for a server-held run, a dead stream) takes its
+  // Running card down with it. Cleared by any non-pivot send.
+  const pivotFailRef = useRef<(() => void) | null>(null);
+  const closePivotRun = useCallback(() => {
+    pivotFailRef.current = null;
+    closeLatestPivotRun(threadId, artifactsRef.current);
+  }, [threadId]);
   // Optional: absent in standalone renders/tests. Used only to keep the run
   // controls off a thread whose run is live in another tab (overlap guard).
   const caseSnapshot = useOptionalCaseSnapshot();
@@ -1522,7 +1529,8 @@ function ChatWindowInner({
   serverRunActiveRef.current = serverRunActive;
   // Targets tools have already been run against — the "already investigated"
   // signal that stops the rail re-suggesting a pivot that's already been run.
-  const queriedTargets = useThreadQueriedTargets(threadId);
+  const queriedCalls = useThreadQueriedCalls(threadId);
+  const queriedTargets = useMemo(() => queriedTargetSet(queriedCalls), [queriedCalls]);
   // Analyst decisions. They shape the "Next steps" rail (a rejected selector is
   // never suggested, a Key one ranks first, a Recheck one is a verification
   // task) and they GATE the pivot bus: a "Run this pivot" on a rejected
@@ -1644,6 +1652,13 @@ function ChatWindowInner({
     transport,
     onError: async (e) => {
       if (!user || failSavedRef.current) return;
+      // Read synchronously: the failing send is still the current one here,
+      // and nothing can replace it before the first await below.
+      const withdrawPivot = pivotFailRef.current;
+      const failPivotSend = () => {
+        withdrawPivot?.();
+        if (pivotFailRef.current === withdrawPivot) pivotFailRef.current = null;
+      };
       // Ignore aborts caused by the user navigating away — the run continues
       // in the background and onFinish will save the assistant message.
       const msg = String(e?.message ?? "");
@@ -1659,6 +1674,7 @@ function ChatWindowInner({
       // A provider's 401 surfaced mid-stream ("…rejected the API key (401)…") is NOT the
       // analyst's session and must never sign them out (lib/tool-run.ts isTransportAuthFailure).
       if (isTransportAuthFailure(e)) {
+        failPivotSend();
         toast.error(friendly);
         navigate("/auth");
         return;
@@ -1728,6 +1744,8 @@ function ChatWindowInner({
         // through to persist the marker, exactly as before this branch existed.
         if (suppressedDropErrorRef.current === e) markDropSuppressed(null);
       }
+      // The send is dead, so the pivot it carried goes back to the queue.
+      failPivotSend();
       // Persist a failed assistant marker so reload shows the failed card
       await supabase.from("messages").insert({
         thread_id: threadId,
@@ -2182,8 +2200,10 @@ function ChatWindowInner({
     try {
       await beginInvestigation();
       accepted = true;
-      if (hooks?.onAccepted) hooks.onAccepted();
-      else closePivotRun();
+      if (hooks?.onAccepted) {
+        hooks.onAccepted();
+        pivotFailRef.current = hooks.onFailed ?? null;
+      } else closePivotRun();
       await sendMessage({ text: t });
     } catch (e) {
       if (accepted) hooks?.onFailed?.();
@@ -2901,8 +2921,8 @@ function ChatWindowInner({
   // Memoized — without this the IIFE re-runs on every streamed token because
   // `messages` updates dozens of times per second during streaming.
   const pivotRunViews = useMemo(
-    () => derivePivotRunViews(pivotRuns, { caseRunning: isLoading || serverRunActive, artifacts, queriedTargets }),
-    [pivotRuns, isLoading, serverRunActive, artifacts, queriedTargets],
+    () => derivePivotRunViews(pivotRuns, { caseRunning: isLoading || serverRunActive, artifacts, queriedCalls }),
+    [pivotRuns, isLoading, serverRunActive, artifacts, queriedCalls],
   );
   // A pivot leaves the suggestions while it runs or once a tool call was
   // recorded against it. An ended run with none (stopped, errored, never

@@ -33,11 +33,14 @@ vi.mock("@/lib/review", async (orig) => {
 vi.mock("@/hooks/useThreadQueriedTargets", async () => {
   const React = await import("react");
   const stable = new Set<string>();
+  const noCalls: never[] = [];
   return {
     useThreadQueriedTargets: () => {
       React.useEffect(() => { harness.queriedMounts += 1; return () => { harness.queriedMounts -= 1; }; }, []);
       return stable;
     },
+    useThreadQueriedCalls: () => noCalls,
+    queriedTargetSet: () => stable,
   };
 });
 

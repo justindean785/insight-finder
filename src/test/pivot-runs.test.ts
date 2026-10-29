@@ -18,6 +18,7 @@ import {
   type PivotRun,
 } from "@/lib/pivot-runs";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
+import type { QueriedCall } from "@/hooks/useThreadQueriedTargets";
 import { normalizeTarget } from "@/lib/next-step-cards";
 
 const T = "thread-1";
@@ -34,9 +35,12 @@ const run = (over: Partial<PivotRun> = {}): PivotRun => ({
   origin: "manual",
   ...over,
 });
-const NONE = new Set<string>();
-// Normalized the way useThreadQueriedTargets stores tool_usage_log targets.
-const QUERIED = new Set([normalizeTarget("person@example.test")]);
+// Normalized the way useThreadQueriedCalls stores tool_usage_log targets, each
+// stamped with the row's server created_at.
+const call = (target: string, createdAt: string): QueriedCall => ({ target: normalizeTarget(target), createdAt });
+const NONE: QueriedCall[] = [];
+// A call against the target inside the pivot's window (after its 14:10 anchor).
+const QUERIED = [call("person@example.test", "2026-10-26T14:16:20.000Z")];
 
 beforeEach(() => sessionStorage.clear());
 
@@ -45,6 +49,18 @@ describe("pivotRunKey", () => {
     expect(pivotRunKey("email", " Person@Example.TEST ")).toBe(pivotRunKey("email", "person@example.test"));
     // A name and a username that normalize to the same text must not collide.
     expect(pivotRunKey("username", "jordan.vale")).not.toBe(pivotRunKey("name", "Jordan Vale"));
+  });
+
+  it("folds an artifact KIND onto its pivot type, the way a Recheck dispatches it", () => {
+    // lib/review.ts fires run-pivot with type: artifact.kind; the queue card
+    // carries the pivot type. Both must land on one registry key.
+    expect(pivotRunKey("handle", "jordan.vale")).toBe(pivotRunKey("username", "jordan.vale"));
+    expect(pivotRunKey("social", "jordan.vale")).toBe(pivotRunKey("username", "jordan.vale"));
+    expect(pivotRunKey("person", "Jordan Vale")).toBe(pivotRunKey("name", "Jordan Vale"));
+    expect(pivotRunKey("ip_address", "10.0.0.1")).toBe(pivotRunKey("ip", "10.0.0.1"));
+    expect(pivotRunKey("crypto", "0xabc")).toBe(pivotRunKey("wallet", "0xabc"));
+    // An unmapped type keys as itself rather than collapsing onto "".
+    expect(pivotRunKey("vehicle", "ABC123")).toBe("vehicle:" + normalizeTarget("ABC123"));
   });
 });
 
@@ -79,13 +95,13 @@ describe("derivePivotRunViews", () => {
   ];
 
   it("the latest pivot reads Running while the case runs, with rows so far", () => {
-    const [v] = derivePivotRunViews([run()], { caseRunning: true, artifacts, queriedTargets: NONE });
+    const [v] = derivePivotRunViews([run()], { caseRunning: true, artifacts, queriedCalls: NONE });
     expect(v.phase).toBe("running");
     expect(v.newRows.map((a) => a.id)).toEqual(["new2", "new1"]);
   });
 
   it("reads Completed once the case stops ONLY when a tool call was recorded against the target", () => {
-    const [v] = derivePivotRunViews([run()], { caseRunning: false, artifacts, queriedTargets: QUERIED });
+    const [v] = derivePivotRunViews([run()], { caseRunning: false, artifacts, queriedCalls: QUERIED });
     expect(v.phase).toBe("done");
     expect(v.newRows).toHaveLength(2);
     expect(v.newRows.some((a) => a.id === "before")).toBe(false);
@@ -94,15 +110,31 @@ describe("derivePivotRunViews", () => {
   it("an ended run with no recorded tool call reads ended (unknown), never done", () => {
     // Stop, an errored run, or a run the agent spent on other leads all end the
     // case the same way; none of them is evidence the pivot ran.
-    const [v] = derivePivotRunViews([run()], { caseRunning: false, artifacts, queriedTargets: new Set([normalizeTarget("someone.else@example.test")]) });
+    const [v] = derivePivotRunViews([run()], { caseRunning: false, artifacts, queriedCalls: [call("someone.else@example.test", "2026-10-26T14:16:20.000Z")] });
     expect(v.phase).toBe("ended");
     expect(v.newRows).toHaveLength(2); // the window count is still reported, as a window
+  });
+
+  it("a re-run on a target already queried BEFORE it was sent reads ended, never done", () => {
+    // The target was hit at 14:05, the pivot was sent with a 14:10 anchor and
+    // its run never touched it. The earlier hit is not this pivot's.
+    const [v] = derivePivotRunViews([run()], { caseRunning: false, artifacts, queriedCalls: [call("person@example.test", "2026-10-26T14:05:00.000Z")] });
+    expect(v.phase).toBe("ended");
+  });
+
+  it("a hit that lands in a LATER pivot's window does not complete the earlier one", () => {
+    const older = run();
+    const newer = run({ key: pivotRunKey("email", "b@x.test"), target: "b@x.test", sentAt: "2026-10-26T14:17:00.000Z", anchorCreatedAt: "2026-10-26T14:16:30.000Z" });
+    // person@ is hit only during newer's run (after 14:16:30).
+    const views = derivePivotRunViews([older, newer], { caseRunning: false, artifacts, queriedCalls: [call("person@example.test", "2026-10-26T14:18:00.000Z")] });
+    const byTarget = Object.fromEntries(views.map((v) => [v.run.target, v]));
+    expect(byTarget["person@example.test"].phase).toBe("ended");
   });
 
   it("an older pivot is never Running, and its window ends at the next one's anchor", () => {
     const older = run();
     const newer = run({ key: pivotRunKey("email", "b@x.test"), target: "b@x.test", sentAt: "2026-10-26T14:17:00.000Z", anchorCreatedAt: "2026-10-26T14:16:30.000Z" });
-    const views = derivePivotRunViews([older, newer], { caseRunning: true, artifacts, queriedTargets: QUERIED });
+    const views = derivePivotRunViews([older, newer], { caseRunning: true, artifacts, queriedCalls: QUERIED });
     const byTarget = Object.fromEntries(views.map((v) => [v.run.target, v]));
     expect(byTarget["person@example.test"].phase).toBe("done");
     expect(byTarget["person@example.test"].newRows.map((a) => a.id)).toEqual(["new1"]);
@@ -113,13 +145,13 @@ describe("derivePivotRunViews", () => {
   it("lists the newest pivot first", () => {
     const views = derivePivotRunViews(
       [run(), run({ key: "email:b", target: "b@x.test", sentAt: "2026-10-26T14:17:00.000Z" })],
-      { caseRunning: false, artifacts, queriedTargets: NONE },
+      { caseRunning: false, artifacts, queriedCalls: NONE },
     );
     expect(views[0].run.target).toBe("b@x.test");
   });
 
   it("a row created in the same instant as the anchor row is not counted as new (strictly newer)", () => {
-    const [v] = derivePivotRunViews([run()], { caseRunning: false, artifacts: [art("tie", "2026-10-26T14:10:00.000Z")], queriedTargets: NONE });
+    const [v] = derivePivotRunViews([run()], { caseRunning: false, artifacts: [art("tie", "2026-10-26T14:10:00.000Z")], queriedCalls: NONE });
     expect(v.newRows).toEqual([]);
   });
 });
@@ -137,7 +169,7 @@ describe("browser clock skew cannot move the window", () => {
       vi.setSystemTime(new Date(Date.parse("2026-10-26T14:10:10.000Z") + skew));
       const hooks = pivotSendHooks(T, { target: "person@example.test", targetType: "email", action: "Investigate email", origin: "manual" }, () => existing);
       hooks.onAccepted();
-      const [v] = derivePivotRunViews(readPivotRuns(T), { caseRunning: true, artifacts: [...existing, ...later], queriedTargets: NONE });
+      const [v] = derivePivotRunViews(readPivotRuns(T), { caseRunning: true, artifacts: [...existing, ...later], queriedCalls: NONE });
       expect(v.newRows.map((a) => a.id)).toEqual(["fresh2", "fresh1"]);
     });
   }
@@ -158,7 +190,7 @@ describe("a pivot is recorded only once its send is accepted", () => {
     hooks.onAccepted();
     hooks.onFailed();
     expect(readPivotRuns(T)).toEqual([]);
-    const views = derivePivotRunViews(readPivotRuns(T), { caseRunning: true, artifacts: [], queriedTargets: NONE });
+    const views = derivePivotRunViews(readPivotRuns(T), { caseRunning: true, artifacts: [], queriedCalls: NONE });
     expect(views).toEqual([]);
   });
 
@@ -196,16 +228,24 @@ describe("a later non-pivot send ends the pivot's claim to the run", () => {
   it("after Continue (or any chat send) the case runs again, but the finished pivot never reads Running", () => {
     recordPivotRun(T, run());
     closeLatestPivotRun(T, rows.slice(0, 2)); // Continue sent once "during" existed
-    const [v] = derivePivotRunViews(readPivotRuns(T), { caseRunning: true, artifacts: rows, queriedTargets: NONE });
+    const [v] = derivePivotRunViews(readPivotRuns(T), { caseRunning: true, artifacts: rows, queriedCalls: NONE });
     expect(v.phase).toBe("ended");
   });
 
   it("its window stops at the rows present when the other send started", () => {
     recordPivotRun(T, run());
     closeLatestPivotRun(T, rows.slice(0, 2));
-    const [v] = derivePivotRunViews(readPivotRuns(T), { caseRunning: false, artifacts: rows, queriedTargets: QUERIED });
+    // The call against the target landed inside the pivot's own run (14:10 .. 14:12].
+    const [v] = derivePivotRunViews(readPivotRuns(T), { caseRunning: false, artifacts: rows, queriedCalls: [call("person@example.test", "2026-10-26T14:11:00.000Z")] });
     expect(v.phase).toBe("done");
     expect(v.newRows.map((a) => a.id)).toEqual(["during"]);
+  });
+
+  it("a hit on the target AFTER the close (by Continue, or another tab) does not flip it to done", () => {
+    recordPivotRun(T, run());
+    closeLatestPivotRun(T, rows.slice(0, 2)); // closed at "during", 14:12
+    const [v] = derivePivotRunViews(readPivotRuns(T), { caseRunning: false, artifacts: rows, queriedCalls: [call("person@example.test", "2026-10-26T14:15:00.000Z")] });
+    expect(v.phase).toBe("ended");
   });
 
   it("closing is idempotent and touches only the latest run", () => {
@@ -222,7 +262,7 @@ describe("a later non-pivot send ends the pivot's claim to the run", () => {
     recordPivotRun(T, run());
     closeLatestPivotRun(T, rows.slice(0, 2));
     pivotSendHooks(T, { target: "b@x.test", targetType: "email", action: "Investigate email", origin: "manual" }, () => rows).onAccepted();
-    const views = derivePivotRunViews(readPivotRuns(T), { caseRunning: true, artifacts: rows, queriedTargets: NONE });
+    const views = derivePivotRunViews(readPivotRuns(T), { caseRunning: true, artifacts: rows, queriedCalls: NONE });
     expect(views[0].run.target).toBe("b@x.test");
     expect(views[0].phase).toBe("running");
   });

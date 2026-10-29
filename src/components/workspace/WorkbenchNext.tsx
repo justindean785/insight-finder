@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
-import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
+import { queriedTargetSet, useThreadQueriedCalls } from "@/hooks/useThreadQueriedTargets";
 import { useReviewStates } from "@/lib/review";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
 import { computePivots } from "@/lib/pivot-engine";
@@ -27,13 +27,14 @@ const REPAIR_LIMIT = 3;
 export function WorkbenchNext({ threadId }: { threadId: string }) {
   const { snapshot } = useCaseSnapshot();
   const review = useReviewStates(threadId);
-  const queriedTargets = useThreadQueriedTargets(threadId);
+  const queriedCalls = useThreadQueriedCalls(threadId);
+  const queriedTargets = useMemo(() => queriedTargetSet(queriedCalls), [queriedCalls]);
   const pivotRuns = usePivotRuns(threadId);
   const artifacts = useMemo(() => snapshot?.items ?? [], [snapshot?.items]);
   const caseRunning = snapshot?.run?.state === "running";
   const runViews = useMemo(
-    () => derivePivotRunViews(pivotRuns, { caseRunning, artifacts, queriedTargets }),
-    [pivotRuns, caseRunning, artifacts, queriedTargets],
+    () => derivePivotRunViews(pivotRuns, { caseRunning, artifacts, queriedCalls }),
+    [pivotRuns, caseRunning, artifacts, queriedCalls],
   );
   // A pivot this tab started leaves the queue while it runs or once a tool call
   // was recorded against it (shown above the queue as Running / Completed), so
