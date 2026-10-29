@@ -79,7 +79,7 @@ import {
   shouldNudgePersistence, buildPersistenceNudgeDirective,
   hasNoFindingsDecision, resolveTerminalState,
 } from "./orchestrator-finalize.ts";
-import { contextCharsFromMessages, createInvocationTelemetry } from "./telemetry.ts";
+import { contextCharsFromMessages, createInvocationTelemetry, withPrepareTiming, type SalvageOutcome } from "./telemetry.ts";
 import { measurePromptTerms, measureToolDescriptions, promptSizeEvent } from "./prompt-size.ts";
 import {
   loadReviewsForThread, applyReviewsToArtifacts, dropRejectedArtifacts,
@@ -1633,8 +1633,8 @@ Deno.serve(async (req) => {
       // Third condition (P0 fix A): once the forced finalize phase has run its
       // budgeted step(s), stop — the model has written its report, so don't spin
       // the remaining reserve window re-synthesizing (and re-recording) artifacts.
-      onFinish: () => { loopDone = true; },
-      onAbort: () => { loopAborted = true; },
+      onFinish: () => { loopDone = true; invocationTelemetry.markLoopEnd(); },
+      onAbort: () => { loopAborted = true; invocationTelemetry.markLoopEnd(); },
       stopWhen: [
         stepLimitReached,
         () => !finalizeStarted && orchestratorDeadlineReached(),
@@ -1645,7 +1645,9 @@ Deno.serve(async (req) => {
           FINALIZE_MAX_STEPS,
         ),
       ],
-      prepareStep,
+      // Timed so prepareStep's own work (its threads.status read, trimming) is no longer invisible to
+      // the step meter. Behaviourally identical; the kill switch returns prepareStep untouched.
+      prepareStep: withPrepareTiming(prepareStep, invocationTelemetry),
       // Fires before the provider is called for each step — the earliest point at
       // which this step's outbound message array is known, so telemetry can size
       // the SAME prompt the model is about to see and start this step's clock
@@ -2014,6 +2016,9 @@ Deno.serve(async (req) => {
     ) => {
       if (finalPersisted) return;
       finalPersisted = true;
+      // Everything from here to invocationTelemetry.finish() (salvage, clustering, writes) counts toward
+      // duration_ms but sits outside every step; persist_ms is measured from this mark.
+      invocationTelemetry.markPersistStart();
       // WHY is this handler running? Normally from the server-owned persistence branch's flush,
       // when the loop has finished. Only with PERSIST_ON_CLIENT_CANCEL=true is it also wired to
       // the browser-facing response stream, whose onFinish the SDK fires on CANCEL too — the
@@ -2061,6 +2066,12 @@ Deno.serve(async (req) => {
         // the assistant message. Best-effort: any failure leaves the prior behavior
         // untouched. Fix A makes this rare; B guarantees a report even if A's forced
         // step still emitted no text.
+        //
+        // Salvage is a model call OUTSIDE the step meter, so before telemetry.ts recorded it, its time
+        // (28-96 s in the slowest runs measured 2026-10-29) was in duration_ms but in no step row.
+        // These two locals only observe; they change no control flow.
+        let salvageStartMono: number | null = null;
+        let salvageOutcome: SalvageOutcome = "none";
         try {
           const { toolCalls: workToolCalls } = countRecordArtifactCalls(finalMessages);
           const reportMsgs = finalMessages as unknown as Array<{ role?: string; parts?: Array<{ type?: string; text?: unknown }> }>;
@@ -2117,6 +2128,7 @@ Deno.serve(async (req) => {
             artifactCount: (salvageArts ?? []).length,
             hadNoFindingsDecision: hasNoFindingsDecision(reportMsgs),
           })) {
+            salvageStartMono = invocationTelemetry.mono();
             // Respect analyst verdicts in the salvage report. This is the dominant
             // CPU-kill finalize path, so skipping it re-promotes rejected findings
             // into the closing report the analyst actually reads.
@@ -2129,6 +2141,7 @@ Deno.serve(async (req) => {
                 event: "salvage_skipped_review_state_unavailable",
                 thread_id: threadId, error: salvageReviews.error,
               }));
+              salvageOutcome = "skipped_reviews";
               throw new Error("salvage synthesis skipped: analyst review state unavailable");
             }
             // Bounded to the top 200 by confidence — the exact slice this prompt
@@ -2158,6 +2171,7 @@ Deno.serve(async (req) => {
                 run_input_tokens: anthropicRun.inputTokens, run_cost_micro_usd: anthropicRun.costMicroUsd,
                 reserve_input_tokens: salvageCost.inputTokens, reserve_cost_micro_usd: salvageCost.costMicroUsd,
               }));
+              salvageOutcome = "skipped_budget";
               throw new Error("salvage synthesis skipped: anthropic run budget exhausted");
             }
             const salvage = await generateText({
@@ -2168,6 +2182,7 @@ Deno.serve(async (req) => {
             });
             if (anthropicActive()) meterAnthropicUsage(salvage?.usage, "salvage", null);
             const salvageText = (salvage?.text ?? "").trim();
+            salvageOutcome = salvageText ? "ok" : "empty";
             if (salvageText) {
               const salvagePart = { type: "text", text: salvageText } as unknown;
               if (assistant) {
@@ -2183,7 +2198,10 @@ Deno.serve(async (req) => {
             }
           }
         } catch (e) {
+          if (salvageStartMono !== null && salvageOutcome === "none") salvageOutcome = "error";
           console.warn("[report-salvage] backstop failed (non-fatal):", String(e));
+        } finally {
+          if (salvageStartMono !== null) invocationTelemetry.recordSalvage(salvageStartMono, salvageOutcome);
         }
         // Detect the seed kind cheaply up front (pure string check — no network,
         // no isolate-kill risk) so seed_type can be stamped in the SAME terminal
@@ -2498,11 +2516,14 @@ Deno.serve(async (req) => {
         // precisely because correlate never fired). Local union-find over shared strong
         // selectors; the LLM only ever adds candidate edges, never a merge. Best-effort:
         // a clustering error must never fail an otherwise-complete investigation.
+        const clusterStartMono = invocationTelemetry.mono();
         try {
           const clustered = await applyClusteringToThread(supabaseAdmin, threadId, userId);
           console.log(JSON.stringify({ event: "cluster_applied", thread_id: threadId, ...clustered }));
         } catch (e) {
           console.warn("[cluster] applyClusteringToThread failed (non-fatal):", String(e));
+        } finally {
+          invocationTelemetry.recordCluster(clusterStartMono);
         }
         // Investigation is done generating — release this run's hold on the
         // in-memory circuit-breaker state so it doesn't linger on the warm
