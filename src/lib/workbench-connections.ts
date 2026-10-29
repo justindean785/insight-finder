@@ -6,15 +6,28 @@ import { isNullResultValue } from "@/lib/report-hygiene";
 
 /** Metadata keys a lookup tool writes its result summary into ("breach_check_result": "0 hits"). */
 const RESULT_KEY_RE = /_result$/;
+/** Lookup statuses that mean the check did NOT run to completion (`not_found` is a completed zero, so it is absent). */
+const FAILED_LOOKUP_STATUSES = new Set(["restricted", "blocked", "denied", "error"]);
+
+/** A refused or failed lookup established nothing: it is missing coverage, never a clean check. */
+function isFailedLookup(a: Artifact): boolean {
+  const meta = (a.metadata ?? {}) as Record<string, unknown>;
+  const status = typeof meta.lookup_status === "string" ? meta.lookup_status.trim().toLowerCase() : "";
+  if (FAILED_LOOKUP_STATUSES.has(status)) return true;
+  const http = Number(meta.http_status);
+  return Number.isFinite(http) && http >= 400;
+}
 
 /**
  * A lookup that found NOTHING: coverage, not a candidate. Three shapes, any one suffices: numeric zero counters
  * (`isNegativeResultArtifact`), a null-result value ("port162 - no breach hits"), or — on a lookup-result kind only —
  * every `*_result` string in metadata reading as a null result. The last shape is what model-authored rows carry
  * (`breach_check_result: "0 hits"` as a STRING), which the numeric predicate cannot see. One positive result string
- * keeps the row a candidate.
+ * keeps the row a candidate. A failed or refused lookup (`isNegativeResultArtifact` also accepts those) is excluded:
+ * it did not establish absence, so calling it "found nothing" would present missing coverage as a negative result.
  */
 export function isCleanCheck(a: Artifact): boolean {
+  if (isFailedLookup(a)) return false;
   if (isNegativeResultArtifact(a) || isNullResultValue(a.value, a.source)) return true;
   if (!LOOKUP_RESULT_KINDS.has(String(a.kind ?? "").toLowerCase())) return false;
   const meta = (a.metadata ?? {}) as Record<string, unknown>;

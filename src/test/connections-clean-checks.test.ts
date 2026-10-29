@@ -37,6 +37,19 @@ describe("isCleanCheck", () => {
     expect(isCleanCheck(A({ kind: "breach_exposure", source: "leakcheck", value: "port162@x.com", metadata: { found: 0 } }))).toBe(true);
   });
 
+  it("a failed or refused lookup is NOT a clean check — it established nothing (Codex P2 on #895)", () => {
+    for (const status of ["blocked", "restricted", "denied", "error"]) {
+      expect(isCleanCheck(A({ kind: "breach_exposure", source: "leakcheck", value: "port162@x.com", metadata: { lookup_status: status } })), status).toBe(false);
+    }
+    for (const http_status of [401, 403, 429, 503]) {
+      expect(isCleanCheck(A({ kind: "breach_exposure", source: "leakcheck", value: "port162@x.com", metadata: { http_status, found: 0 } })), String(http_status)).toBe(false);
+    }
+    // Even with a zero-reading value or result string, a failed status wins.
+    expect(isCleanCheck(A({ kind: "breach_exposure", source: "breach_check", value: "NO BREACH HITS", metadata: { lookup_status: "error", breach_check_result: "0 hits" } }))).toBe(false);
+    // `not_found` is a completed lookup that found nothing.
+    expect(isCleanCheck(A({ kind: "breach_exposure", source: "leakcheck", value: "port162@x.com", metadata: { lookup_status: "not_found" } }))).toBe(true);
+  });
+
   it("a real hit is never a clean check", () => {
     expect(isCleanCheck(A({ kind: "breach_exposure", source: "breach_check", value: "Canva (2019)", metadata: { breach_check_result: "3 hits" } }))).toBe(false);
     expect(isCleanCheck(A({ kind: "breach_exposure", source: "breach_check", value: "Canva breach found; no records of password exposure" }))).toBe(false);
