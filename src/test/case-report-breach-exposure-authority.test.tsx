@@ -333,4 +333,34 @@ describe("Sensitive Registrations subject authority", () => {
     cleanup();
     expect(registrations(arts, { released: "wrong" })).not.toContain("Released");
   });
+
+  // Rejection is a verdict on the REGISTRATION, not on one row's id. A re-run
+  // records the same site|identifier under a new id; filtering by id and
+  // deduping afterwards would let that unreviewed twin render as a clean row —
+  // the "re-record under a new id cannot revive it" rule in analyst-decisions.ts.
+  it("an unreviewed duplicate of an analyst-dismissed breach registration does not come back as a clean row", () => {
+    const dup = { site: "DupCorp", identifier: "subject@example.com" };
+    const arts = [breach("dupA", "DupCorp", dup), breach("dupB", "DupCorp", dup)];
+    expect(registrations(arts, { dupA: "dismissed" })).not.toContain("DupCorp");
+    cleanup();
+    // order-independent: the rejected row may come second
+    expect(registrations([...arts].reverse(), { dupA: "dismissed" })).not.toContain("DupCorp");
+  });
+
+  it("the same holds for the account/social/handle branch", () => {
+    const acc = (id: string) => art({ id, kind: "account", value: "example_user", metadata: { site: "DupSite" } });
+    expect(registrations([acc("accA"), acc("accB")], { accA: "wrong" })).not.toContain("DupSite");
+  });
+});
+
+describe("Breach Exposure table applies the same null-result gate as its count", () => {
+  it("a 'no breach hits' breach_exposure row is not a corpus the subject appears in", () => {
+    const c = renderReport([
+      breach("ok", "RealCorp"),
+      art({ id: "neg", value: "quietfalcon77@example.com - No breach hits", metadata: { breach_name: "NegCorp" } }),
+    ]);
+    const table = tableOf(c);
+    expect(table).toContain("RealCorp");
+    expect(table).not.toContain("NegCorp");
+  });
 });

@@ -1,11 +1,10 @@
 # Lessons
 
-## 2026-10-25 — registration authority repair
-
-A sibling report table is an independent authority boundary. Sensitive Registrations read raw rows even though Breach Exposure was gated. Reuse the authority predicate plus rejected-provenance and negative-result checks before deduplication; a later rejected duplicate must never become a subject registration. Test the actual table and retain an accepted positive control.
-
-
 Running log of non-obvious gotchas learned while working in this repo. Newest first.
+
+## 2026-10-25 (registration authority repair)
+
+A sibling report table is an independent authority boundary. Sensitive Registrations read raw rows even though Breach Exposure was gated. Reuse the authority predicate plus rejected-provenance and negative-result checks before deduplication; a later rejected duplicate must never become a subject registration. Test the actual table and retain an accepted positive control. Key the rejection on the table's own identity (site|identifier), not the row id: a re-run records the same registration under a new id, and an id-only filter with dedupe after it lets the unreviewed twin render clean.
 
 ## 2026-10-25 (workspace Stage 1 correction pass)
 
