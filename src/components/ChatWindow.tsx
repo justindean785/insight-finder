@@ -1020,19 +1020,31 @@ const chatMarkdownComponents: Components = {
   // query string to that host. Disclose it as plain text instead, with no link,
   // so nothing is fetched or one click away. Analyst uploads are a direct <img>
   // in MessageViewImpl and do not pass through here.
-  img: ({ alt, src }) => <BlockedImage alt={alt} src={src} />,
+  img: ({ alt, src, title }) => <BlockedImage alt={alt} src={src} title={title} />,
 };
 
-function BlockedImage({ alt, src }: { alt?: string; src?: string }) {
-  let host = "";
+const BLOCKED_IMAGE_SRC_MAX = 80;
+
+// Where the model pointed is part of the disclosure. A protocol-relative or
+// data: src has no usable hostname, so fall back to the raw text (truncated,
+// never a link) rather than hiding the target.
+function blockedImageTarget(src?: string): string {
+  if (!src) return "";
   try {
-    host = src ? new URL(src).hostname : "";
+    const host = new URL(src).hostname;
+    if (host) return host;
   } catch {
-    host = "";
+    // not an absolute URL
   }
+  const raw = src.trim();
+  return raw.length > BLOCKED_IMAGE_SRC_MAX ? `${raw.slice(0, BLOCKED_IMAGE_SRC_MAX)}…` : raw;
+}
+
+function BlockedImage({ alt, src, title }: { alt?: string; src?: string; title?: string }) {
+  const target = blockedImageTarget(src);
   return (
     <span className="chat-blocked-image text-muted-foreground">
-      [image not loaded{alt ? `: ${alt}` : ""}{host ? ` · ${host}` : ""}]
+      [image not loaded{alt ? `: ${alt}` : ""}{title ? ` ("${title}")` : ""}{target ? ` · ${target}` : ""}]
     </span>
   );
 }
