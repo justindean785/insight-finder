@@ -119,8 +119,14 @@ export function CaseSheetView({
       <section aria-label="Evidence" className="flex flex-col gap-3 border-b border-border-subtle px-5 py-4">
         <div className="flex items-baseline">
           <h3 className="text-[13px] font-semibold text-foreground">Evidence</h3>
-          <span className="ml-auto font-mono text-[12px] tabular-nums text-faint-foreground">
-            {total} {total === 1 ? "item" : "items"}
+          {/* Scope in the label, not only a tooltip: this is the deduped case-artifact count, a different
+              population from the header's "evidence logged" (chain-of-custody entries) and a report's
+              "N artifacts" (raw rows). All three are correct; unlabeled they read as one number disagreeing. */}
+          <span
+            className="ml-auto font-mono text-[12px] tabular-nums text-faint-foreground"
+            title="Deduped case artifacts across every run. The header's 'evidence logged' counts chain-of-custody entries and can be higher."
+          >
+            {total} {total === 1 ? "artifact" : "artifacts"}
           </span>
         </div>
         {total === 0 ? (

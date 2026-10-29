@@ -1309,7 +1309,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             <div role="note" data-narrative-notice className="border-b border-white/[0.06] px-4 py-2 text-[12.5px] leading-snug text-muted-foreground">
               <span className="font-medium text-foreground/85">AI narrative — claims need evidence review.</span>{" "}
               {unadjudicated
-                ? "No finding rows were adjudicated for this run; labels and scores in this text are the model\u2019s own writing, not computed results."
+                ? "Model-adjudicated findings this run: 0 \u2014 the model did not call record_finding, so labels and scores in this text are its own writing, not computed results. Case-artifact authority (the header\u2019s verified and quarantined counts, and Evidence) was still computed."
                 : "Labels and scores in this text are written by the model. Computed confidence and analyst review are in Evidence."}
             </div>
           )}
@@ -1331,7 +1331,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             {(hasStatedLabel(prose) || unadjudicated) && (
               <span className="ml-auto min-w-0 text-balance text-right text-[11px] leading-snug text-faint-foreground">
                 {unadjudicated
-                  ? "No finding rows were adjudicated for this run: labels and confidence figures in this text are the agent\u2019s wording, not computed results."
+                  ? "Model-adjudicated findings this run: 0 (record_finding was not called); labels and confidence figures in this text are not computed results. Case-artifact authority in the header and Evidence was still computed."
                   : "Labels are the agent\u2019s wording. Computed confidence is in Evidence."}
               </span>
             )}
