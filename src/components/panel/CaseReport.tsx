@@ -301,45 +301,63 @@ type RegistrationRow = {
   label: ConfLabel;
 };
 
+/** The registration a row asserts (site + account identifier), or null when the row is not one. */
+function registrationOf(a: Artifact): Pick<RegistrationRow, "site" | "identifier"> | null {
+  const k = String(a.kind ?? "").toLowerCase();
+  const meta = (a.metadata ?? {}) as Record<string, unknown>;
+  const site =
+    (meta.site as string) ||
+    (meta.platform as string) ||
+    (meta.service as string) ||
+    (meta.source_name as string) ||
+    null;
+  // #405 retired the bare "breach" kind in favour of breach_exposure; this
+  // call site kept the literal, so the registrations table has been empty
+  // for every investigation since. Same predicate as lines 340/405.
+  if (isBreachKind(k) && !isReputationArtifact(a)) {
+    return {
+      site: site || String(a.value ?? "—"),
+      identifier:
+        (meta.identifier as string) ||
+        (meta.email as string) ||
+        (meta.username as string) ||
+        (meta.account as string) ||
+        "—",
+    };
+  }
+  if ((k === "account" || k === "social" || k === "handle") && site) return { site, identifier: a.value };
+  return null;
+}
+
+const registrationKey = (r: Pick<RegistrationRow, "site" | "identifier">): string =>
+  `${String(r.site ?? "").toLowerCase()}|${String(r.identifier ?? "").toLowerCase()}`;
+
 function buildRegistrationRows(artifacts: Artifact[], reviews?: Reviews): RegistrationRow[] {
+  const derived = rejectedDerivedIds(artifacts, reviews);
+  // A rejection is a verdict on the REGISTRATION, not on one row's id: a re-run
+  // records the same site|identifier under a new id, and filtering by id with the
+  // dedupe running afterwards would let that unreviewed twin render as a clean
+  // row. Same rule as analyst-decisions.ts ("a re-record under a new id cannot
+  // revive it"), keyed on this table's own identity.
+  const rejectedKeys = new Set<string>();
+  for (const a of artifacts) {
+    if (!isRejectedArtifactRow(a, revOf(reviews, a)) && !derived.has(a.id)) continue;
+    const reg = registrationOf(a);
+    if (reg) rejectedKeys.add(registrationKey(reg));
+  }
   const rows: RegistrationRow[] = [];
   for (const a of artifacts) {
-    const k = String(a.kind ?? "").toLowerCase();
-    const meta = (a.metadata ?? {}) as Record<string, unknown>;
-    const site =
-      (meta.site as string) ||
-      (meta.platform as string) ||
-      (meta.service as string) ||
-      (meta.source_name as string) ||
-      null;
-    // #405 retired the bare "breach" kind in favour of breach_exposure; this
-    // call site kept the literal, so the registrations table has been empty
-    // for every investigation since. Same predicate as lines 340/405.
-    if (isBreachKind(k) && !isReputationArtifact(a)) {
-      rows.push({
-        site: site || String(a.value ?? "—"),
-        identifier:
-          (meta.identifier as string) ||
-          (meta.email as string) ||
-          (meta.username as string) ||
-          (meta.account as string) ||
-          "—",
-        source: a.source ?? "—",
-        label: labelForArtifact(a, revOf(reviews, a)),
-      });
-    } else if ((k === "account" || k === "social" || k === "handle") && site) {
-      rows.push({
-        site,
-        identifier: a.value,
-        source: a.source ?? "—",
-        label: labelForArtifact(a, revOf(reviews, a)),
-      });
-    }
+    // Registrations assert subject membership, just like Breach Exposure.
+    // Keep excluded rows in the evidence/review sections, not this table.
+    if (!forSubject(reviews, a) || derived.has(a.id) || isNullResultValue(a.value, a.source)) continue;
+    const reg = registrationOf(a);
+    if (!reg || rejectedKeys.has(registrationKey(reg))) continue;
+    rows.push({ ...reg, source: a.source ?? "—", label: labelForArtifact(a, revOf(reviews, a)) });
   }
   // Dedupe by site|identifier
   const seen = new Set<string>();
   return rows.filter((r) => {
-    const k = `${String(r.site ?? "").toLowerCase()}|${String(r.identifier ?? "").toLowerCase()}`;
+    const k = registrationKey(r);
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
@@ -950,7 +968,8 @@ function buildBreachExposure(artifacts: Artifact[], reviews: Reviews): BreachRow
   const byKey = new Map<string, BreachRow>();
   for (const a of artifacts) {
     if (String(a.kind ?? "").toLowerCase() !== "breach_exposure") continue;
-    if (!forSubject(reviews, a) || derived.has(a.id)) continue;
+    // Same three gates as `subjectBreaches`, whose count sits beside this table.
+    if (!forSubject(reviews, a) || derived.has(a.id) || isNullResultValue(a.value, a.source)) continue;
     const m = (a.metadata ?? {}) as Record<string, unknown>;
     // Prefer the explicit breach name; else strip the "<selector> - " prefix off value.
     const site = (metaStr(m, "breach_name") || String(a.value ?? "").replace(/^.*?\s-\s/, "")).trim()

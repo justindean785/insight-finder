@@ -57,6 +57,11 @@ Deno.test("conflicting aliases are REJECTED, even when an explicit handle alone 
   assertEquals(ok({ platform: "instagram", handle: "one", username: "one" }).handle, "one");
 });
 
+Deno.test("`query` is NOT an alias: {query, platform} is REJECTED, never read as the handle (paid tool; prose is not a selector)", () => {
+  rejected({ platform: "twitter", query: "example_user" });
+  rejected({ platform: "twitter", query: "https://twitter.com/example_user" });
+});
+
 Deno.test("platform is inferred from an EXACT supported host (subdomains ok)", () => {
   const cases: Array<[string, string]> = [
     ["https://www.instagram.com/example_user/", "instagram"],

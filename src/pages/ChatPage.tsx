@@ -79,11 +79,11 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
   // an Evidence lens (artifacts/matrix/clusters/timeline) also tell EvidenceTab
   // which lens to open, so the jump lands on the right view instead of always
   // dumping the user on the Board. The nonce forces re-honoring repeat jumps.
-  const [evidenceReq, setEvidenceReq] = useState<{ view: string; n: number; artifactId?: string } | null>(null);
+  const [evidenceReq, setEvidenceReq] = useState<{ view: string; n: number; artifactId?: string; authorityState?: string } | null>(null);
   const [toolsReq, setToolsReq] = useState<{ view: string; n: number } | null>(null);
   useEffect(() => {
     const onNav = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { tab?: string; section?: string; artifactId?: string };
+      const detail = (e as CustomEvent).detail as { tab?: string; section?: string; artifactId?: string; authorityState?: string };
       const t = detail?.tab ?? "";
       if (t === "overview") setTab("overview");
       else if (t === "chat") setTab("chat");
@@ -99,8 +99,10 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
           : t === "timeline" ? "timeline"
           : "board";
         // `artifactId` asks the Board to reveal and open one row (the case sheet's
-        // "Decide in Evidence"), whatever filter it was left on.
-        setEvidenceReq((prev) => ({ view, n: (prev?.n ?? 0) + 1, artifactId: detail?.artifactId }));
+        // "Decide in Evidence"), whatever filter it was left on. `authorityState`
+        // asks it to open on the quick filter that holds that state (the sheet's
+        // Review / Quarantined / Leads counts).
+        setEvidenceReq((prev) => ({ view, n: (prev?.n ?? 0) + 1, artifactId: detail?.artifactId, authorityState: detail?.authorityState }));
       }
     };
     window.addEventListener("swarmbot:navigate", onNav);

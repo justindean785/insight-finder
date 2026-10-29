@@ -37,6 +37,15 @@ function jumpToEvidence(artifactId?: string) {
   window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "artifacts", artifactId } }));
 }
 
+// Review opens the board's "Needs review" filter, which also lists Conflict rows,
+// so its count there runs higher than here. Say so rather than surprise.
+const ALSO_CONFLICT = "the Needs review view also lists Conflict rows";
+
+function jumpToState(authorityState: AuthorityState) {
+  // Opens Evidence on the quick filter that holds these rows (the Board picks it).
+  window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "artifacts", authorityState } }));
+}
+
 const REVIEWS_UNAVAILABLE =
   "Your review decisions couldn't be loaded, so this is withheld — it could otherwise show a row you already rejected.";
 
@@ -65,6 +74,7 @@ export function CaseSheetView({
   }
 
   const { subject, total, distribution, queue, queueTotal } = model;
+  const reviewCount = distribution.find((d) => d.state === "review")?.n ?? 0;
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto">
@@ -89,7 +99,14 @@ export function CaseSheetView({
                 {subject.view.basis}
               </span>
             </div>
-            <AuthorityChip view={subject.view} size="md" className="shrink-0" />
+            <button
+              type="button"
+              onClick={() => jumpToEvidence(subject.artifact.id)}
+              aria-label={`Open ${subject.artifact.value} in Evidence (${subject.view.label})`}
+              className="shrink-0 rounded-full transition-opacity duration-fast hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <AuthorityChip view={subject.view} size="md" />
+            </button>
           </div>
         ) : (
           <p className="text-[13px] leading-snug text-muted-foreground">
@@ -102,8 +119,14 @@ export function CaseSheetView({
       <section aria-label="Evidence" className="flex flex-col gap-3 border-b border-border-subtle px-5 py-4">
         <div className="flex items-baseline">
           <h3 className="text-[13px] font-semibold text-foreground">Evidence</h3>
-          <span className="ml-auto font-mono text-[12px] tabular-nums text-faint-foreground">
-            {total} {total === 1 ? "item" : "items"}
+          {/* Scope in the label, not only a tooltip: this is the deduped case-artifact count, a different
+              population from the header's "evidence logged" (chain-of-custody entries) and a report's
+              "N artifacts" (raw rows). All three are correct; unlabeled they read as one number disagreeing. */}
+          <span
+            className="ml-auto font-mono text-[12px] tabular-nums text-faint-foreground"
+            title="Deduped case artifacts across every run. The header's 'evidence logged' counts chain-of-custody entries and can be higher."
+          >
+            {total} {total === 1 ? "artifact" : "artifacts"}
           </span>
         </div>
         {total === 0 ? (
@@ -117,10 +140,17 @@ export function CaseSheetView({
             </div>
             <ul className="grid grid-cols-2 gap-x-4 gap-y-1.5">
               {distribution.map((d) => (
-                <li key={d.state} className="flex items-center gap-2 text-[12.5px] text-muted-foreground" title={HINT.get(d.state)}>
-                  <span aria-hidden className="h-2 w-2 shrink-0 rounded-sm" style={{ background: fill(d.state) }} />
-                  {d.short}
-                  <span className="ml-auto font-mono tabular-nums text-foreground">{d.n}</span>
+                <li key={d.state} title={HINT.get(d.state)}>
+                  <button
+                    type="button"
+                    onClick={() => jumpToState(d.state)}
+                    aria-label={`Show ${d.n} ${d.short} in Evidence${d.state === "review" ? ` (${ALSO_CONFLICT})` : ""}`}
+                    className="-mx-1 flex w-[calc(100%+0.5rem)] items-center gap-2 rounded px-1 text-left text-[12.5px] text-muted-foreground transition-colors duration-fast hover:bg-surface-3 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <span aria-hidden className="h-2 w-2 shrink-0 rounded-sm" style={{ background: fill(d.state) }} />
+                    {d.short}
+                    <span className="ml-auto font-mono tabular-nums text-foreground">{d.n}</span>
+                  </button>
                 </li>
               ))}
             </ul>
@@ -144,9 +174,24 @@ export function CaseSheetView({
         {reviewsUnavailable ? (
           <p className="px-1.5 text-[13px] leading-snug text-muted-foreground">{REVIEWS_UNAVAILABLE}</p>
         ) : queue.length === 0 ? (
-          <p className="px-1.5 text-[13px] leading-snug text-muted-foreground">
-            Nothing disputed or unattributed.
-          </p>
+          <div className="flex flex-col gap-1.5 px-1.5">
+            <p className="text-[13px] leading-snug text-muted-foreground">Nothing disputed or unattributed.</p>
+            {/* "Review" in the bar above is a different queue — single-source rows
+                waiting on a second source, not a decision — and reading "0" right
+                under "Review 28" looked like a contradiction. Say so, and link it. */}
+            {reviewCount > 0 && (
+              <button
+                type="button"
+                onClick={() => jumpToState("review")}
+                aria-label={`${reviewCount} ${reviewCount === 1 ? "row awaits" : "rows await"} a second source, not a decision. Opens Evidence; ${ALSO_CONFLICT}`}
+                title={`Opens Evidence; ${ALSO_CONFLICT}`}
+                className="inline-flex w-fit items-center gap-1 rounded text-[12.5px] text-foreground/90 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {reviewCount} {reviewCount === 1 ? "row awaits" : "rows await"} a second source, not a decision
+                <ArrowRight className="h-3 w-3" aria-hidden />
+              </button>
+            )}
+          </div>
         ) : (
           <ul className="flex flex-col gap-2">
             {queue.map(({ artifact, view, ask }) => {
