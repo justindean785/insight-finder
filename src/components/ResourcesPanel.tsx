@@ -28,6 +28,7 @@ import {
 import { evidenceStatus, classLabel } from "@/lib/evidence-status";
 import { independentSourceClasses } from "@/lib/intel";
 import { ANALYST_ACTIONABLE_STATES, authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
+import { statusFilterForAuthority } from "@/lib/evidence-status-filter";
 import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
 import {
   canReleaseLinkage, releasePatch,
@@ -1376,10 +1377,13 @@ function PeekField({ label, children }: { label: string; children: React.ReactNo
 export function EvidenceBoard({
   threadId,
   focusRequest,
+  filterRequest,
 }: {
   threadId: string;
   /** Open one row, whatever filter the board was left on. `n` is a nonce. */
   focusRequest?: { id: string; n: number } | null;
+  /** Open on the quick filter holding this authority state. `n` is a nonce. */
+  filterRequest?: { state: string; n: number } | null;
 }) {
   const { items, updateLocal, loading, error, retry } = useThreadArtifacts(threadId);
   const review = useReviewStates(threadId);
@@ -1425,6 +1429,12 @@ export function EvidenceBoard({
     handleSelect(target);
     setFocusedNonce(focusRequest.n);
   }, [focusRequest, focusedNonce, items, handleSelect]);
+  const [filteredNonce, setFilteredNonce] = useState<number | null>(null);
+  useEffect(() => {
+    if (!filterRequest || filterRequest.n === filteredNonce) return;
+    setStatusFilter(statusFilterForAuthority(filterRequest.state, STATUS_FILTER_GROUPS, "all"));
+    setFilteredNonce(filterRequest.n);
+  }, [filterRequest, filteredNonce]);
   const [sortMode, setSortMode] = useState<EvidenceSortMode>("strength");
 
   // Live counts per quick-filter so the analyst sees how much sits in each bucket.

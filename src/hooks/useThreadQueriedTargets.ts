@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { normalizeTarget } from "@/lib/next-step-cards";
 
@@ -55,22 +55,30 @@ function collectTargets(inputJson: unknown, into: Set<string>): void {
 /** Exported for tests — the parsing half, with no Supabase or React attached. */
 export const __collectTargets = collectTargets;
 
+/** One logged tool call against one normalized target, stamped with the row's
+ *  server `created_at` so a caller can ask "was it hit inside THIS window". */
+export type QueriedCall = { target: string; createdAt: string };
+
+const NO_CALLS: readonly QueriedCall[] = [];
+
+/** The plain set the pivot engine reads, derived from the timestamped calls. */
+export function queriedTargetSet(calls: readonly QueriedCall[]): Set<string> {
+  const set = new Set<string>();
+  for (const c of calls) set.add(c.target);
+  set.delete("");
+  return set;
+}
+
 /**
- * The set of normalized targets that tools have ALREADY been run against on this
- * thread, read from `tool_usage_log.input_json` (runtime.selector + input.*).
+ * Every target a tool has been run against on this thread, read from
+ * `tool_usage_log.input_json` (runtime.selector + input.*), one entry per
+ * target per logged call, each carrying the row's server `created_at`.
  *
- * WHY: artifacts carry no parent/seed lineage (verified: those columns are null
- * on real cases), so the pivot engine had no way to know a discovered email had
- * already been fully investigated — and kept re-suggesting "verify ownership"
- * for a target that seven tools had already hit. The tool log IS that signal.
- * The pivot engine marks these targets "searched" so the chat's "Next steps"
- * only surfaces genuinely-unrun leads; already-run ones sink to the Pivots tab.
- *
- * Stays live via a realtime subscription so the suggestions update as a running
+ * Stays live via a realtime subscription so the callers update as a running
  * investigation queries new targets.
  */
-export function useThreadQueriedTargets(threadId: string): Set<string> {
-  const [targets, setTargets] = useState<Set<string>>(() => new Set());
+export function useThreadQueriedCalls(threadId: string): readonly QueriedCall[] {
+  const [calls, setCalls] = useState<readonly QueriedCall[]>(NO_CALLS);
   const channelIdRef = useRef<number>();
   if (channelIdRef.current == null) channelIdRef.current = ++channelSeq;
 
@@ -80,15 +88,17 @@ export function useThreadQueriedTargets(threadId: string): Set<string> {
     const load = async () => {
       const { data } = await supabase
         .from("tool_usage_log")
-        .select("input_json")
+        .select("input_json,created_at")
         .eq("thread_id", threadId);
       if (!alive) return;
-      const set = new Set<string>();
-      for (const row of (data ?? []) as { input_json: unknown }[]) {
+      const next: QueriedCall[] = [];
+      for (const row of (data ?? []) as { input_json: unknown; created_at: string }[]) {
+        const set = new Set<string>();
         collectTargets(row.input_json, set);
+        set.delete("");
+        for (const target of set) next.push({ target, createdAt: row.created_at });
       }
-      set.delete("");
-      setTargets(set);
+      setCalls(next);
     };
     void load();
     const ch = supabase
@@ -102,5 +112,21 @@ export function useThreadQueriedTargets(threadId: string): Set<string> {
     return () => { alive = false; void supabase.removeChannel(ch); };
   }, [threadId]);
 
-  return targets;
+  return calls;
+}
+
+/**
+ * The set of normalized targets that tools have ALREADY been run against on this
+ * thread.
+ *
+ * WHY: artifacts carry no parent/seed lineage (verified: those columns are null
+ * on real cases), so the pivot engine had no way to know a discovered email had
+ * already been fully investigated — and kept re-suggesting "verify ownership"
+ * for a target that seven tools had already hit. The tool log IS that signal.
+ * The pivot engine marks these targets "searched" so the chat's "Next steps"
+ * only surfaces genuinely-unrun leads; already-run ones sink to the Pivots tab.
+ */
+export function useThreadQueriedTargets(threadId: string): Set<string> {
+  const calls = useThreadQueriedCalls(threadId);
+  return useMemo(() => queriedTargetSet(calls), [calls]);
 }
