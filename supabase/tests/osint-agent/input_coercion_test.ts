@@ -553,3 +553,34 @@ Deno.test("GENERIC: a number beyond Number.MAX_SAFE_INTEGER is never stringified
   assertEquals(safe.value, "6175550100");
   assertEquals(safe.seed, "1.5");
 });
+
+// ── angle brackets on the email trim path (the one RapidAPI gap left after quotes/whitespace) ──────────────────────
+// A model that copies an address out of a header or a mailto renders it as `<a@b.c>`; unquote() strips ", ' and ` but
+// not <>, so the call was rejected by z.string().email(). ONE enclosing layer comes off, on `email` only.
+
+Deno.test("rapidapi_breach_search email: ONE enclosing angle-bracket layer is removed (padded or not), then the address validates", () => {
+  for (const sent of ["<a@example.invalid>", " <a@example.invalid> ", "\t<a@example.invalid>\n"]) {
+    assertEquals(ok("rapidapi_breach_search", { email: sent }).email, "a@example.invalid", JSON.stringify(sent));
+  }
+});
+
+Deno.test("rapidapi_breach_search email: a lone '<', an inner '<', an unmatched or doubled bracket, or a non-address in brackets is NOT repaired and stays rejected", () => {
+  for (const sent of ["<", "a<b.c", "a<b@example.invalid", "<a@example.invalid", "a@example.invalid>", "<<a@example.invalid>>", "<not-an-email>", "<>"]) {
+    rejected("rapidapi_breach_search", { email: sent });
+  }
+});
+
+Deno.test("GENERIC: angle brackets come off the `email` field only — name, query and handle keep theirs", () => {
+  const r = coerceToolInput(
+    { email: "<a@example.invalid>", name: "<Ada Lovelace>", query: "<ada>", handle: "<example_user>" },
+    GENERIC_SELECTOR_SPEC,
+  );
+  assertEquals(r.value, { email: "a@example.invalid", name: "<Ada Lovelace>", query: "<ada>", handle: "<example_user>" });
+  assertEquals(r.records, [{ field: "email", coercion: "angle_unwrapped" }]);
+});
+
+Deno.test("kill switch: INPUT_COERCION_DISABLED=true rejects the bracketed email again", async () => {
+  await withEnv(SWITCH, "true", () => {
+    rejected("rapidapi_breach_search", { email: "<a@example.invalid>" });
+  });
+});

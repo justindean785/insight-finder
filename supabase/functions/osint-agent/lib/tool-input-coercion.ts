@@ -23,7 +23,10 @@
 //     enum already had as the catch-all);
 //   • a numeric STRING ("15000") → number, only on fields the schema types as a number;
 //   • a number → string, only on string selector fields (a phone sent as 6175550100);
-//   • leading/trailing whitespace trimmed on selector fields (email/value/seed/url).
+//   • leading/trailing whitespace trimmed on selector fields (email/value/seed/url);
+//   • ONE enclosing angle-bracket layer removed on `email` only (`<a@b.c>`, as copied from a header or a mailto). A lone
+//     `<`, an inner `<`, a doubled layer or brackets around a non-address are left alone and rejected as before; `name`,
+//     `query` and `handle` keep their brackets.
 //
 // What it will NOT do:
 //   • widen anything. The coerced value is re-validated against the UNCHANGED inner schema; if it still fails, the RAW
@@ -120,6 +123,7 @@ export type CoercionKind =
   | "number_to_string" // 6175550100 → "6175550100"
   | "trimmed" // surrounding whitespace removed
   | "unquoted" // one pair of enclosing quotes removed ("'a@b.c'" → "a@b.c")
+  | "angle_unwrapped" // one enclosing <…> layer removed from an email ("<a@b.c>" → "a@b.c")
   | "root_json" // the WHOLE input arrived as a JSON string and parsed to an object
   | "array_wrapped" // the whole input arrived as a bare array and was wrapped under `wrapArrayAs`
   | "json_parsed" // a field expecting an object/array arrived as a JSON string
@@ -225,6 +229,15 @@ function unquote(v: string): string {
   return t;
 }
 
+/** Strip ONE enclosing <…> layer from an address-shaped value. "<a@b.c>" → "a@b.c"; a lone "<", an unmatched or
+ *  doubled bracket, or brackets around something with no "@" are returned untouched (and fail the email schema). */
+function unangle(v: string): string {
+  if (v.length < 3 || v[0] !== "<" || v[v.length - 1] !== ">") return v;
+  const inner = v.slice(1, -1).trim();
+  if (!inner || inner.includes("<") || inner.includes(">") || !inner.includes("@")) return v;
+  return inner;
+}
+
 const NUMERIC_STRING = /^\s*-?\d+(?:\.\d+)?\s*$/;
 const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
@@ -301,7 +314,10 @@ export function coerceToolInput(raw: unknown, spec: InputCoercionSpec): { value:
     const v = out[f];
     if (typeof v !== "string") continue;
     const unquoted = unquote(v);
-    if (unquoted !== v.trim() && unquoted) {
+    if (f === "email" && unangle(unquoted) !== unquoted) {
+      out[f] = unangle(unquoted);
+      records.push({ field: f, coercion: "angle_unwrapped" });
+    } else if (unquoted !== v.trim() && unquoted) {
       out[f] = unquoted;
       records.push({ field: f, coercion: "unquoted" });
     } else if (v !== v.trim() && v.trim()) {
@@ -491,6 +507,9 @@ export function inputCoercionSelfTest(): { ok: boolean; switch: string; detail: 
   if ((c.value as Record<string, unknown>).maxChars !== 15000 || (c.value as Record<string, unknown>).n !== "15k") wrong.push("numeric-string rule wrong");
   const d = coerceToolInput({ email: " 'a@example.com' ", seed: 12345 }, GENERIC_SELECTOR_SPEC).value as Record<string, unknown>;
   if (d.email !== "a@example.com" || d.seed !== "12345") wrong.push("quote/number rule wrong");
+  const g = coerceToolInput({ email: " <a@example.com> ", name: "<Ada>" }, GENERIC_SELECTOR_SPEC).value as Record<string, unknown>;
+  if (g.email !== "a@example.com" || g.name !== "<Ada>") wrong.push("angle-bracket rule wrong");
+  if (coerceToolInput({ email: "<not-an-email>" }, GENERIC_SELECTOR_SPEC).records.length) wrong.push("brackets around a non-address were stripped");
   const sf = coerceToolInput({ x: 1 }, { custom: () => ({ kind: "reject", reason: "probe", value: {} }) });
   if (sf.rejected !== "probe") wrong.push("custom hook rejection not honoured");
   const e = coerceToolInput('{"artifacts":"[{\\"kind\\":\\"email\\"}]"}', { jsonFields: ["artifacts"] }).value as Record<string, unknown>;
@@ -503,7 +522,7 @@ export function inputCoercionSelfTest(): { ok: boolean; switch: string; detail: 
       ok: true,
       switch: `${sw}=false`,
       detail: "near-miss tool inputs (kind aliases, query→seed, numeric strings, number→string, whitespace, enclosing " +
-        "quotes, a stringified-JSON root or field, a bare array for {entries}) are coerced only when the result " +
-        "validates; anything else is rejected as before",
+        "quotes, one <…> layer on email only, a stringified-JSON root or field, a bare array for {entries}) are coerced " +
+        "only when the result validates; anything else is rejected as before",
     };
 }
