@@ -69,8 +69,9 @@ export default defineConfig({
      * produced 4 case-integrity failures that read as a macOS-only flake. With
      * reuse off, a busy port fails the run up front instead. Set
      * PW_REUSE_HARNESS=1 to reuse a harness you started from THIS checkout.
+     * CI never reuses, whatever the env carries.
      */
-    reuseExistingServer: process.env.PW_REUSE_HARNESS === "1",
+    reuseExistingServer: !process.env.CI && process.env.PW_REUSE_HARNESS === "1",
     timeout: 120_000,
   },
 });
