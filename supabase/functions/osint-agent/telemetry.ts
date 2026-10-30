@@ -325,15 +325,22 @@ export interface TimelineBreakdown {
 
 /**
  * Turn one timed invocation row plus its step rows into named buckets that sum to duration_ms.
- * Returns null for a legacy (untimed) row — a timeline is never fabricated from data that was
- * not measured. `unattributedMs` is the residual; it is the number to alarm on, and it should
+ * Returns null for a legacy (untimed) row — one whose timing columns are absent OR present-but-NULL
+ * (what a database SELECT returns for any pre-timing run) — because a timeline is never fabricated
+ * from data that was not measured. `unattributedMs` is the residual; it is the number to alarm on, and it should
  * be ~0 by construction. A clamped or overlapping clock shows up here instead of vanishing.
  */
 export function reconcileTimeline(
   inv: Record<string, unknown>,
   steps: Record<string, unknown>[],
 ): TimelineBreakdown | null {
-  if (!("persist_ms" in inv) && !("first_step_offset_ms" in inv)) return null;
+  // Timed-or-not is decided by VALUE, never by key presence. Once the migration is applied, a row
+  // read back from the database carries every timing column — as NULL for anything recorded before
+  // this shipped or under TIMING_TELEMETRY_DISABLED — so a key check accepts it and fabricates a
+  // reconciled timeline for a run that was never measured (Codex P2 on #900). unfinished_steps is the
+  // discriminator because the recorder writes it whenever timing is on, including on the error path
+  // where the loop-end and persist columns are legitimately NULL; 0 is a measurement, not an absence.
+  if (typeof inv.unfinished_steps !== "number") return null;
   const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
   const durationMs = num(inv.duration_ms);
   const persistMs = num(inv.persist_ms);
@@ -434,11 +441,19 @@ export function timingTelemetrySelfTest(): { ok: boolean; detail: string; switch
   const t = reconcileTimeline(timed, [stepRow]);
   if (!t) wrong.push("a timed invocation did not reconcile");
   else if (t.unattributedMs !== 0) wrong.push(`synthetic timeline left ${t.unattributedMs} ms unattributed`);
-  if (reconcileTimeline({ duration_ms: 1_000 }, []) !== null) wrong.push("a legacy row was given a timeline");
+  if (reconcileTimeline({ duration_ms: 1_000 }, []) !== null) wrong.push("a legacy row with omitted keys was given a timeline");
+  // The shape a SELECT returns for a pre-timing row once the columns exist: present, all NULL.
+  const dbLegacy = {
+    duration_ms: 1_000, first_step_offset_ms: null, loop_end_offset_ms: null, persist_ms: null,
+    salvage_ms: null, cluster_ms: null, unfinished_steps: null, salvage_outcome: null,
+  };
+  if (reconcileTimeline(dbLegacy, [{ step_wall_ms: 500, started_offset_ms: null, prepare_ms: null }]) !== null) {
+    wrong.push("a database-shaped legacy row (columns present, NULL) was given a timeline");
+  }
   return {
     ok: wrong.length === 0,
     detail: wrong.length === 0
-      ? "invocation + step timing columns, reconcileTimeline residual 0, salvage outcome enum (no text fields)"
+      ? "invocation + step timing columns, reconcileTimeline residual 0 and no timeline for legacy rows (omitted or NULL), salvage outcome enum (no text fields)"
       : wrong.join("; "),
     switch: "TIMING_TELEMETRY_DISABLED=false",
   };
