@@ -3,7 +3,7 @@ import { ToolbarSlotContext } from "@/hooks/useToolbarSlot";
 import { MenuSelect } from "@/components/ui/compact-controls";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useReviewStates } from "@/lib/review";
-import { tallyAuthority } from "@/lib/authority";
+import { summarizeReviewCounts } from "@/lib/authority";
 import { EvidenceBoard } from "@/components/ResourcesPanel";
 import { EvidenceMatrixTab } from "@/components/panel/EvidenceMatrixTab";
 import { ClustersTab } from "@/components/panel/ClustersTab";
@@ -75,22 +75,13 @@ export function EvidenceTab({
   // vs 2 on the same 55-artifact case, because a corroborated-but-unreviewed
   // row is real evidence Overview already counts.
   //
-  // "rejected" / "recheck" have no equivalent in the authority ladder — they
-  // are purely analyst-decision states — so those stay a direct review tally.
-  const tally = useMemo(() => {
-    const authority = tallyAuthority(items, review.get);
-    let rejected = 0, recheck = 0;
-    for (const a of items) {
-      const s = review.get(a.id);
-      if (s === "wrong" || s === "dismissed") rejected++;
-      else if (s === "recheck") recheck++;
-    }
-    return { verified: authority.verified, rejected, recheck };
-  }, [items, review]);
+  // "excluded" is the authority ladder's `failed` state, the same figure as the
+  // board's Excluded chip; "recheck" is an analyst verdict with no ladder state.
+  const tally = useMemo(() => summarizeReviewCounts(items, review.get), [items, review]);
 
   const parts: ReactNode[] = [`${items.length} artifact${items.length === 1 ? "" : "s"}`];
   if (tally.verified) parts.push(<span className="text-[hsl(var(--confidence-high))]">{tally.verified} verified</span>);
-  if (tally.rejected) parts.push(<span className="text-destructive">{tally.rejected} rejected</span>);
+  if (tally.excluded) parts.push(<span className="text-destructive">{tally.excluded} excluded</span>);
   if (tally.recheck) parts.push(<span className="text-[hsl(var(--confidence-mid))]">{tally.recheck} to recheck</span>);
 
   const subtitle = (

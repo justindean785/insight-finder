@@ -26,21 +26,19 @@ const SRC = fs.readFileSync(
 
 describe("EvidenceTab's verified count is wired to the shared authority selector", () => {
   it("imports tallyAuthority from the shared authority module", () => {
-    expect(SRC).toMatch(/import\s*\{\s*tallyAuthority\s*\}\s*from\s*["']@\/lib\/authority["']/);
+    expect(SRC).toMatch(/import\s*\{\s*summarizeReviewCounts\s*\}\s*from\s*["']@\/lib\/authority["']/);
   });
 
   it("derives `verified` from tallyAuthority(...), not a hand-rolled review-state count", () => {
-    expect(SRC).toContain("tallyAuthority(items, review.get)");
-    expect(SRC).toContain("authority.verified");
+    expect(SRC).toContain("summarizeReviewCounts(items, review.get)");
     // The regression this guards: counting confirmed/key locally instead of
     // deferring to the shared selector.
     expect(SRC).not.toMatch(/verified\+\+/);
   });
 
-  it("still tallies rejected/recheck locally — those have no equivalent in the authority ladder", () => {
-    // Not a regression to guard structurally beyond confirming the review-only
-    // concepts remain distinct from the authority-gated one.
-    expect(SRC).toContain('s === "wrong" || s === "dismissed"');
-    expect(SRC).toContain('s === "recheck"');
+  it("prints the shared 'excluded' figure, not a local count of review verdicts", () => {
+    // Behaviour is driven in review-summary.test.ts; this only catches a revert to the local tally.
+    expect(SRC).not.toContain('s === "wrong" || s === "dismissed"');
+    expect(SRC).not.toMatch(/rejected\+\+/);
   });
 });
