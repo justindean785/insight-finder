@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowRight, CheckCircle2, ChevronRight, CircleDashed, Loader2, Sparkles } from "lucide-react";
+import { ArrowRight, CheckCircle2, ChevronRight, CircleDashed, EyeOff, Loader2, Sparkles } from "lucide-react";
 import type { PivotRunView } from "@/lib/pivot-runs";
 import { cn } from "@/lib/utils";
 import type { PivotEligibility, PivotValidation, RunnablePivot } from "@/lib/pivot-schema";
@@ -57,6 +57,11 @@ export function NextSteps({
   onOpenGraph,
   runs = [],
   onViewChanges,
+  onHide,
+  hiddenCount = 0,
+  onShowHidden,
+  lastHidden = null,
+  onUndoHide,
 }: {
   items: NextStepItem[];
   onRunPivot: (pivot: RunnablePivot) => void;
@@ -76,6 +81,16 @@ export function NextSteps({
   runs?: PivotRunView[];
   /** Open a row in Evidence. Wired to "View changes" on a completed pivot. */
   onViewChanges?: (artifactId: string) => void;
+  /** Hide pivots from view (a display preference, not a verdict). Targets are raw
+   *  values; `label` names what was hidden for the undo line. Omit to show no
+   *  hide controls. */
+  onHide?: (targets: string[], label: string) => void;
+  /** How many pivots on this device are currently hidden. */
+  hiddenCount?: number;
+  onShowHidden?: () => void;
+  /** The last hide, for a one-step undo. */
+  lastHidden?: { label: string; count: number } | null;
+  onUndoHide?: () => void;
 }) {
   const [localOpen, setLocalOpen] = useState<string | null>(null);
   const open = openKey !== undefined ? openKey : localOpen;
@@ -91,9 +106,25 @@ export function NextSteps({
   const queue = best ? runnable.filter((item) => item !== best) : runnable;
   const shownQueue = showAllQueue ? queue : queue.slice(0, QUEUE_VISIBLE);
   const hiddenQueue = queue.length - shownQueue.length;
+  // "Larger scale": every queued step that repeats one action ("Check phone
+  // association" x3) can be hidden together. Built from the whole queue, not only
+  // the visible rows, so a folded-away repeat is still counted.
+  const repeatedActions = (() => {
+    const byAction = new Map<string, string[]>();
+    for (const item of queue) {
+      if (item.kind !== "pivot" || item.validation.status !== "valid") continue;
+      const { action, target } = item.validation.pivot;
+      byAction.set(action, [...(byAction.get(action) ?? []), target]);
+    }
+    return [...byAction.entries()].filter(([, targets]) => targets.length >= 2).slice(0, 3);
+  })();
 
   return (
-    <section aria-label="Next steps" className="ws-panel-enter w-full overflow-hidden rounded-xl border border-white/[0.08] bg-surface-1">
+    <section
+      aria-label="Next steps"
+      className="ws-panel-enter w-full overflow-hidden rounded-xl border border-white/[0.08] bg-surface-1"
+      onKeyDown={onHide ? (e) => hideOnMinus(e, onHide) : undefined}
+    >
       <header className="flex h-10 items-center gap-2 border-b border-white/[0.06] px-4 text-data font-medium text-muted-foreground">
         <Sparkles className="h-3.5 w-3.5" aria-hidden />
         Next steps
@@ -102,6 +133,7 @@ export function NextSteps({
       {latestRun && <PivotRunStrip view={latestRun} onViewChanges={onViewChanges} />}
       {best && best.validation.status === "valid" && best.eligibility && (
         <BestPivot
+          onHide={onHide}
           pivot={best.validation.pivot}
           eligibility={best.eligibility}
           reasons={explainPivot(best.validation.pivot, best.eligibility, artifactsById ?? new Map())}
@@ -126,7 +158,7 @@ export function NextSteps({
           const detail = pivot ? pivot.reason : item.kind === "action" ? item.detail : "";
           const blocked = item.kind === "pivot" && item.eligibility !== null && !item.eligibility.runnable;
           return (
-            <li key={item.key} className="px-4 py-3">
+            <li key={item.key} className="px-4 py-3" data-pivot-target={pivot?.target} data-pivot-label={title}>
               <div className="flex items-start gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -165,6 +197,7 @@ export function NextSteps({
                   {isOpen ? "Close" : "Run"}
                   {!isOpen && <ArrowRight className="h-3.5 w-3.5 opacity-70" aria-hidden />}
                 </button>
+                {onHide && pivot && <HideButton label={`${title} on ${pivot.target}`} onClick={() => { if (isOpen) setOpen(null); onHide([pivot.target], title); }} />}
               </div>
               {isOpen && pivot && item.kind === "pivot" && item.eligibility && (
                 <PivotPreview
@@ -214,6 +247,43 @@ export function NextSteps({
           {hiddenQueue} more {hiddenQueue === 1 ? "step" : "steps"}
         </button>
       )}
+      {onHide && repeatedActions.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-white/[0.06] px-4 py-2 text-[12.5px] text-faint-foreground">
+          <span>Hide all:</span>
+          {repeatedActions.map(([action, targets]) => (
+            <button
+              key={action}
+              type="button"
+              onClick={() => onHide(targets, `${targets.length} × ${action}`)}
+              className="rounded px-1 text-muted-foreground underline-offset-2 transition-colors duration-fast hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:min-h-11"
+            >
+              {action} ({targets.length})
+            </button>
+          ))}
+        </div>
+      )}
+      {(lastHidden || hiddenCount > 0) && (
+        <p role="status" className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-white/[0.06] px-4 py-2 text-[12.5px] text-faint-foreground">
+          {lastHidden && (
+            <span>
+              Hid {lastHidden.label}.{" "}
+              {onUndoHide && (
+                <button type="button" onClick={onUndoHide} className="text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  Undo
+                </button>
+              )}
+            </span>
+          )}
+          {hiddenCount > 0 && onShowHidden && (
+            <span>
+              {hiddenCount} hidden on this device.{" "}
+              <button type="button" onClick={onShowHidden} className="text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                Show all
+              </button>
+            </span>
+          )}
+        </p>
+      )}
       {repair.length > 0 && (
         <div className={cn(runnable.length > 0 && "border-t border-white/[0.06]")}>
           <button
@@ -252,7 +322,7 @@ export function NextSteps({
  * carries a warning, and for those the primary action opens the same preview
  * every other row uses, so the analyst reads what the result will be worth.
  */
-function BestPivot({ pivot, eligibility, reasons, rationale, isOpen, busy, onToggle, onRunNow }: {
+function BestPivot({ pivot, eligibility, reasons, rationale, isOpen, busy, onToggle, onRunNow, onHide }: {
   pivot: RunnablePivot;
   eligibility: PivotEligibility;
   reasons: string[];
@@ -261,12 +331,13 @@ function BestPivot({ pivot, eligibility, reasons, rationale, isOpen, busy, onTog
   busy: boolean;
   onToggle: () => void;
   onRunNow: () => void;
+  onHide?: (targets: string[], label: string) => void;
 }) {
   // Every pivot run opens its preview first. There is no one-click path to a
   // paid run from the best-pivot card: the analyst reads the question, the
   // selector and the tool before Start is offered (integrity decision 1).
   return (
-    <div className="px-4 py-4" data-testid="best-pivot">
+    <div className="px-4 py-4" data-testid="best-pivot" data-pivot-target={pivot.target} data-pivot-label={pivot.action}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-data text-muted-foreground">
         <span className={`pivot-priority pivot-priority--${pivot.priority} shrink-0`}>{pivot.priority}</span>
         <span>Best next pivot</span>
@@ -288,6 +359,7 @@ function BestPivot({ pivot, eligibility, reasons, rationale, isOpen, busy, onTog
           {isOpen ? "Close preview" : "Review and run"}
           <ArrowRight className="h-3.5 w-3.5" aria-hidden />
         </button>
+        {onHide && <HideButton label={`${pivot.action} on ${pivot.target}`} onClick={() => onHide([pivot.target], pivot.action)} />}
       </div>
       {isOpen && (
         <PivotPreview pivot={pivot} eligibility={eligibility} busy={busy} onCancel={onToggle} onStart={onRunNow} />
@@ -413,4 +485,34 @@ function ConnectionLine({ summary, onOpenGraph }: { summary: ConnectionSummary; 
       )}
     </div>
   );
+}
+
+
+/** A hide control that names its row, so a screen reader hears what it removes. */
+function HideButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`Hide ${label}`}
+      aria-keyshortcuts="-"
+      title="Hide this step (−)"
+      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors duration-fast hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+    >
+      <EyeOff className="h-3.5 w-3.5" aria-hidden />
+    </button>
+  );
+}
+
+/** "−" on a focused step hides it. Ignored while typing and with any modifier, so
+ *  it never fires from a field or a browser shortcut (zoom out is Ctrl/Cmd −). */
+function hideOnMinus(e: React.KeyboardEvent, onHide: (targets: string[], label: string) => void) {
+  if (e.key !== "-" || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+  const t = e.target as HTMLElement;
+  if (t.closest("input, textarea, select, [contenteditable='true']")) return;
+  const row = t.closest<HTMLElement>("[data-pivot-target]");
+  const target = row?.dataset.pivotTarget;
+  if (!row || !target) return;
+  e.preventDefault();
+  onHide([target], row.dataset.pivotLabel ?? target);
 }
