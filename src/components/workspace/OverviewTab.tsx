@@ -403,6 +403,19 @@ export function OverviewTab({ threadId }: { threadId: string }) {
           >
             Needs a decision
           </RuleLabel>
+          {/* Every row the queue holds, named by reason. A partition: the counts
+              sum to the full queue, so no row is hidden by being grouped. */}
+          {queue.groups.length > 1 && (
+            <ul className="border-b border-border-subtle px-3 py-2" aria-label="Queue by reason" data-testid="decision-groups">
+              {queue.groups.map((g) => (
+                <li key={g.key} className="flex items-baseline gap-2 text-micro text-muted-foreground" title={g.label}>
+                  <span className="w-6 shrink-0 text-right tabular-nums text-foreground">{g.count}</span>
+                  <span className="min-w-0 flex-1 truncate">{g.label}</span>
+                  {g.heldBack && <span className="shrink-0 text-faint-foreground">held back</span>}
+                </li>
+              ))}
+            </ul>
+          )}
           {unresolved.length === 0 ? (
             <p className="p-3 text-data text-muted-foreground">
               {queue.heldBack > 0
