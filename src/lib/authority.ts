@@ -427,11 +427,12 @@ export function countVerifiedByAnalyst(
 }
 
 /** "verified" alone hides whether the evidence earned it or the analyst clicked
- *  Confirm. Say which, without changing the number or the noun: the dense strip
+ *  Confirm. Say which, without changing the number or the noun. The compact strip
  *  used to print "confirmed" for the same count every other surface calls
- *  "verified", so the split lives in `verifiedHint` there, not in a second word. */
-export function verifiedLabel(verified: number, byAnalyst: number): string {
-  if (byAnalyst <= 0) return "verified";
+ *  "verified"; it now says "verified" and the split lives in `verifiedHint`. It
+ *  never takes the long suffix: that strip clips a long label mid-word. */
+export function verifiedLabel(verified: number, byAnalyst: number, dense?: boolean): string {
+  if (dense || byAnalyst <= 0) return "verified";
   if (byAnalyst >= verified) return "verified (analyst-confirmed)";
   return `verified (${byAnalyst} analyst-confirmed)`;
 }

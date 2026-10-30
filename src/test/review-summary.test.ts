@@ -49,8 +49,10 @@ describe("summarizeReviewCounts", () => {
 });
 
 describe("the verified noun", () => {
-  it("never switches to 'confirmed' for the same count (the hint carries who confirmed)", () => {
-    expect(verifiedLabel(37, 37)).not.toMatch(/^confirmed/);
-    expect(verifiedLabel(37, 37)).toMatch(/^verified/);
+  it("is 'verified' in every mode, never 'confirmed' (the hint carries who confirmed)", () => {
+    expect(verifiedLabel(37, 37, true)).toBe("verified");
+    expect(verifiedLabel(37, 10, true)).toBe("verified");
+    expect(verifiedLabel(37, 37)).toBe("verified (analyst-confirmed)");
+    expect(verifiedLabel(37, 10)).toBe("verified (10 analyst-confirmed)");
   });
 });
