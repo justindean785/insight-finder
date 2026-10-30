@@ -88,7 +88,14 @@ export function EvidenceTab({
     return { verified: authority.verified, rejected, recheck };
   }, [items, review]);
 
-  const parts: ReactNode[] = [`${items.length} artifact${items.length === 1 ? "" : "s"}`];
+  const parts: ReactNode[] = [
+    <span
+      key="total"
+      title="Deduped case artifacts across every run. The header's 'evidence logged' counts chain-of-custody entries and can be higher."
+    >
+      {items.length} artifact{items.length === 1 ? "" : "s"}
+    </span>,
+  ];
   if (tally.verified) parts.push(<span className="text-[hsl(var(--confidence-high))]">{tally.verified} verified</span>);
   if (tally.rejected) parts.push(<span className="text-destructive">{tally.rejected} rejected</span>);
   if (tally.recheck) parts.push(<span className="text-[hsl(var(--confidence-mid))]">{tally.recheck} to recheck</span>);
