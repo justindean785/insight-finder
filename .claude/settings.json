@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status*)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git diff *)",
+      "Bash(git ls-remote *)",
+      "Bash(git ls-tree *)",
+      "Bash(git rev-parse *)",
+      "Bash(git fetch *)",
+      "Bash(git branch)",
+      "Bash(git branch -a)",
+      "Bash(git branch -r)",
+      "Bash(git branch -r --contains *)",
+      "Bash(curl -sS \"https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1\")",
+      "Bash(curl -sS https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1)",
+      "Bash(npm run verify:deploy)",
+      "Bash(npm run verify:deploy -- --previous *)",
+      "Bash(npm run lint)",
+      "Bash(npm run typecheck)",
+      "Bash(npm run test)",
+      "Bash(npx vitest run*)",
+      "Bash(npm run test:e2e)",
+      "Bash(PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium npm run test:e2e*)"
+    ],
+    "deny": [
+      "Bash(npm run verify:deploy *--record*)",
+      "Bash(curl *maintenance=1*)"
+    ]
+  }
+}
