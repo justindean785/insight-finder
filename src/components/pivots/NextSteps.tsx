@@ -7,6 +7,7 @@ import { PivotPreview, RepairNotice } from "@/components/pivots/PivotPreview";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { ConnectionSummary } from "@/lib/connection-summary";
 import { explainPivot, pickBestPivot, requiresPreview } from "@/lib/best-pivot";
+import type { PivotRationale } from "@/lib/pivot-rationale";
 
 /** Queue rows shown before the rest fold behind "N more". */
 const QUEUE_VISIBLE = 3;
@@ -18,6 +19,8 @@ export type NextStepItem =
     validation: PivotValidation;
     /** Null when the suggestion failed validation (it cannot run at all). */
     eligibility: PivotEligibility | null;
+    /** Why it ranks here, from the engine. Absent for callers that do not rank. */
+    rationale?: PivotRationale;
   }
   | {
     kind: "action";
@@ -102,6 +105,7 @@ export function NextSteps({
           pivot={best.validation.pivot}
           eligibility={best.eligibility}
           reasons={explainPivot(best.validation.pivot, best.eligibility, artifactsById ?? new Map())}
+          rationale={best.rationale}
           isOpen={open === best.key}
           busy={busy}
           onToggle={() => setOpen(open === best.key ? null : best.key)}
@@ -248,10 +252,11 @@ export function NextSteps({
  * carries a warning, and for those the primary action opens the same preview
  * every other row uses, so the analyst reads what the result will be worth.
  */
-function BestPivot({ pivot, eligibility, reasons, isOpen, busy, onToggle, onRunNow }: {
+function BestPivot({ pivot, eligibility, reasons, rationale, isOpen, busy, onToggle, onRunNow }: {
   pivot: RunnablePivot;
   eligibility: PivotEligibility;
   reasons: string[];
+  rationale?: PivotRationale;
   isOpen: boolean;
   busy: boolean;
   onToggle: () => void;
@@ -269,6 +274,7 @@ function BestPivot({ pivot, eligibility, reasons, isOpen, busy, onToggle, onRunN
       {reasons.length > 0 && (
         <p className="mt-2 max-w-[68ch] text-[13.5px] leading-relaxed text-muted-foreground">{reasons.join(" ")}</p>
       )}
+      {rationale && <PivotRationaleBlock rationale={rationale} />}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button
           type="button"
@@ -299,6 +305,35 @@ function BestPivot({ pivot, eligibility, reasons, isOpen, busy, onToggle, onRunN
   );
 }
 
+/**
+ * The adaptive explanation under the best pivot: the question it answers, what
+ * tools already did against it, and what moved its rank. Cost is always stated as
+ * unknown until a per-tool estimate is measured, so no figure is implied. Read-only.
+ */
+function PivotRationaleBlock({ rationale }: { rationale: PivotRationale }) {
+  return (
+    <div className="mt-3 max-w-[68ch] space-y-1.5 text-[13px] leading-snug" data-testid="pivot-rationale">
+      <p className="text-foreground">{rationale.question}</p>
+      <p className="text-muted-foreground">
+        <span className="text-faint-foreground">Previously: </span>
+        {rationale.previous}
+      </p>
+      <p className="text-muted-foreground">
+        <span className="text-faint-foreground">Cost: </span>
+        unknown until measured
+      </p>
+      {rationale.factors.length > 0 && (
+        <details className="text-muted-foreground">
+          <summary className="cursor-pointer text-foreground/80 hover:text-foreground">Why this rank</summary>
+          <ul className="mt-1 list-disc space-y-0.5 pl-5">
+            {rationale.factors.map((f) => <li key={f}>{f}</li>)}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 const clock = (iso: string) => {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -309,7 +344,7 @@ const clock = (iso: string) => {
  * only if a tool call was recorded against its target, otherwise Run ended and
  * says the outcome is unknown (a Stop, an error or a run spent on other leads
  * all end the same way). The count is rows created SINCE it was sent, worded that
- * way on purpose — the agent can follow other leads in the same run, so this is
+ * way on purpose \u2014 the agent can follow other leads in the same run, so this is
  * a measurement of the window, never a claim about what the pivot found.
  */
 function PivotRunStrip({ view, onViewChanges }: { view: PivotRunView; onViewChanges?: (artifactId: string) => void }) {
@@ -336,7 +371,7 @@ function PivotRunStrip({ view, onViewChanges }: { view: PivotRunView; onViewChan
       <div className="min-w-0 flex-1">
         <div className="text-data font-medium text-foreground">
           {running ? "Running" : ended ? "Run ended" : "Pivot completed"}
-          <span className="text-muted-foreground"> · {run.action} </span>
+          <span className="text-muted-foreground"> \u00b7 {run.action} </span>
           <span className="inline-block max-w-full truncate align-bottom font-mono text-[12.5px] text-foreground/90" title={run.target}>{run.target}</span>
         </div>
         {ended && (
@@ -346,7 +381,7 @@ function PivotRunStrip({ view, onViewChanges }: { view: PivotRunView; onViewChan
         )}
         <p className="mt-0.5 text-[12.5px] text-muted-foreground">
           {running
-            ? `Since ${clock(run.sentAt)} · ${n > 0 ? `${rows} so far` : "no new records yet"}`
+            ? `Since ${clock(run.sentAt)} \u00b7 ${n > 0 ? `${rows} so far` : "no new records yet"}`
             : n > 0 ? `${rows} since it was sent` : "No new records since it was sent"}
         </p>
       </div>

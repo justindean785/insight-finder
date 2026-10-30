@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { queriedTargetSet, useThreadQueriedCalls } from "@/hooks/useThreadQueriedTargets";
+import { useThreadPivotAttempts } from "@/hooks/useThreadPivotAttempts";
 import { useReviewStates } from "@/lib/review";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
 import { computePivots } from "@/lib/pivot-engine";
@@ -29,6 +30,7 @@ export function WorkbenchNext({ threadId }: { threadId: string }) {
   const review = useReviewStates(threadId);
   const queriedCalls = useThreadQueriedCalls(threadId);
   const queriedTargets = useMemo(() => queriedTargetSet(queriedCalls), [queriedCalls]);
+  const attempts = useThreadPivotAttempts(threadId);
   const pivotRuns = usePivotRuns(threadId);
   const artifacts = useMemo(() => snapshot?.items ?? [], [snapshot?.items]);
   const caseRunning = snapshot?.run?.state === "running";
@@ -79,7 +81,7 @@ export function WorkbenchNext({ threadId }: { threadId: string }) {
 
   const items = useMemo<NextStepItem[]>(() => {
     const reviewOf = (id: string) => review.map[id] ?? "new";
-    const ranked = computePivots({ artifacts, seedValue: seed.value, reportPivots, skipSet: skip, queriedSet: queriedTargets, reviews: review.map });
+    const ranked = computePivots({ artifacts, seedValue: seed.value, reportPivots, skipSet: skip, queriedSet: queriedTargets, reviews: review.map, attempts });
     const out: NextStepItem[] = [];
     const repair: NextStepItem[] = [];
     const seen = new Set<string>();
@@ -95,10 +97,16 @@ export function WorkbenchNext({ threadId }: { threadId: string }) {
         continue;
       }
       runnable++;
-      out.push({ kind: "pivot", key, validation, eligibility: pivotEligibility(validation.pivot, { artifactsById, review: reviewOf }) });
+      out.push({
+        kind: "pivot",
+        key,
+        validation,
+        eligibility: pivotEligibility(validation.pivot, { artifactsById, review: reviewOf }),
+        rationale: p.rationale,
+      });
     }
     return [...out, ...repair];
-  }, [artifacts, seed.value, reportPivots, skip, queriedTargets, review.map, artifactsById, sentKeys]);
+  }, [artifacts, seed.value, reportPivots, skip, queriedTargets, review.map, artifactsById, attempts, sentKeys]);
 
   const reviews = useMemo(() => {
     const m: Record<string, ReviewAdjustment> = {};

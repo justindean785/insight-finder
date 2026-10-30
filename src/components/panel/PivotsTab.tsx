@@ -20,6 +20,7 @@ import {
 import { hasPivotRunner } from "@/lib/pivot-runner";
 import { formatUsd } from "@/lib/case-snapshot";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
+import { useThreadPivotAttempts } from "@/hooks/useThreadPivotAttempts";
 import { useReviewStates } from "@/lib/review";
 import { PivotCard } from "@/components/pivots/PivotCard";
 
@@ -79,12 +80,13 @@ export function PivotsTab({ threadId, artifacts }: { threadId: string; artifacts
   }, [threadId]);
 
   const queriedTargets = useThreadQueriedTargets(threadId);
+  const attempts = useThreadPivotAttempts(threadId);
   const review = useReviewStates(threadId);
 
   // Live pivots — same engine and inputs as the chat rail.
   const visible = useMemo(
-    () => computePivots({ artifacts, seedValue, reportPivots, skipSet: skipped, queriedSet: queriedTargets, reviews: review.map }),
-    [artifacts, seedValue, reportPivots, skipped, queriedTargets, review.map],
+    () => computePivots({ artifacts, seedValue, reportPivots, skipSet: skipped, queriedSet: queriedTargets, reviews: review.map, attempts }),
+    [artifacts, seedValue, reportPivots, skipped, queriedTargets, review.map, attempts],
   );
 
   // Validation + eligibility, once per render of the list.

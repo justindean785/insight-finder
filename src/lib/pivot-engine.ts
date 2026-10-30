@@ -37,6 +37,9 @@ import { buildDecisionSets, recheckPrompt } from "@/lib/analyst-decisions";
 // imported inside `quarantine.ts`.
 import { isClusterIneligible } from "@/lib/report-hygiene";
 import { toDisplayPivots, type RecommendedPivot } from "@/lib/recommended-pivots";
+import { authorityFor } from "@/lib/authority";
+import type { AttemptSummary } from "@/lib/pivot-attempts";
+import { buildRationale, isRepeated, type PivotGap, type PivotRationale } from "@/lib/pivot-rationale";
 
 export type PivotPriority = "high" | "medium" | "low";
 
@@ -54,6 +57,8 @@ export type DisplayPivot = Pivot & {
   prompt: string;
   score: number;
   decision?: PivotDecision;
+  /** Why it ranks here. Explains the order computed above; it never sets the order. */
+  rationale?: PivotRationale;
   /**
    * A report-recommended handle read from bare prose that the case does not
    * know: a candidate, not a selector. It validates as "choose a target" and
@@ -85,6 +90,12 @@ export type ComputePivotsInput = {
    *   - a `recheck` identity becomes a verification task card.
    */
   reviews?: Record<string, string | null | undefined>;
+  /**
+   * Prior tool attempts per normalized selector (`summarizeAttempts`). Optional:
+   * without it nothing is marked repeated. Read-only and DISPLAY ONLY — it never
+   * changes the order, and never touches confidence, authority or linkage.
+   */
+  attempts?: ReadonlyMap<string, AttemptSummary>;
 };
 
 // ---- Ranking weights ---------------------------------------------------
@@ -425,6 +436,27 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
     // READ ONLY: the artifact's own confidence, untouched by any decision.
     const conf = clamp(c.confidence ?? 0, 0, 100);
     const recency = (newestOrder.get(c.sourceArtifactId) ?? 0) / denom;
+
+    // --- Stage 1 adaptive terms (priority only) --------------------------
+    // Prior attempts: how many live ok runs, and whether any row came of them.
+    const att = input.attempts?.get(k) ?? input.attempts?.get(ek);
+    const repeated = status === "searched" && isRepeated(att);
+    // The source row's authority, read through the engine's own predicate.
+    // `conflict` is the contradiction gap: the row disagrees with the seed or a
+    // cluster, so resolving it is worth more than a comparable lookup.
+    const sourceRow = artifactById.get(c.sourceArtifactId);
+    const contradicts = !!sourceRow && status === "new" &&
+      authorityFor(sourceRow, input.reviews?.[sourceRow.id] as Parameters<typeof authorityFor>[1]).state === "conflict";
+    const gap: PivotGap = repeated
+      ? "repeated"
+      : contradicts
+        ? "contradiction"
+        : c.origin === "finding"
+          ? "corroboration"
+          : "new_records";
+    // DISPLAY ONLY: `repeated` and `contradicts` label the card and feed the
+    // rationale. They add nothing to `score` — a reorder needs JD's sign-off (N1).
+
     const score =
       (status === "new" ? STATUS_RANK_NEW : 0) +
       keyBonus +
@@ -433,12 +465,21 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
       TYPE_YIELD[c.type] * YIELD_WEIGHT +
       recency * RECENCY_WEIGHT;
 
+    const factors: string[] = [];
+    if (status === "new") factors.push("Not searched yet.");
+    else factors.push("Already searched, so it ranks below unsearched leads.");
+    if (repeated) factors.push("Already run twice or more with the same tool. This is shown for context and does not change the order.");
+    if (contradicts) factors.push("Its source row conflicts with the seed or a cluster. This is shown for context and does not change the order.");
+    if (decision === "key") factors.push("Analyst marked it Key.");
+    const rationale = buildRationale({ type: c.type, gap, attempts: att, factors });
+
     // Strip the internal origin tag from the public shape.
     const { origin: _origin, ...rest } = c;
     void _origin;
     out.push({
       ...rest, priority, actionLabel, reason, detail, prompt, status, score,
       ...(decision ? { decision } : {}),
+      rationale,
     });
   }
 
