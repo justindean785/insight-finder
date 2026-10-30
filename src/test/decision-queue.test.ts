@@ -59,3 +59,50 @@ describe("buildDecisionQueue", () => {
     expect(out.heldBack).toBe(1);
   });
 });
+
+describe("buildDecisionQueue groups", () => {
+  it("partitions every candidate — shown, beyond the slots and held back — by reason", () => {
+    const rows = [
+      ...Array.from({ length: 11 }, (_, i) => q(`ct${i}`, COTENANT)),
+      ...Array.from({ length: 3 }, (_, i) => q(`bulk${i}`, BULK)),
+      ...Array.from({ length: 7 }, (_, i) => q(`name${i}`, NAME_ONLY)),
+      c("k1"),
+      c("k2"),
+    ];
+    const out = buildDecisionQueue(rows);
+    expect(out.groups.reduce((n, g) => n + g.count, 0)).toBe(rows.length);
+    expect(out.groups.map((g) => [g.label, g.count, g.heldBack])).toEqual([
+      ["conflicting claims", 2, false],
+      ["harvested from a name-only query — same-name collision axis; linkage to the subject is unproven", 7, false],
+      ["co-tenant row in a breach corpus", 11, true],
+      ["harvested from a bulk corpus return", 3, true],
+    ]);
+  });
+
+  it("folds case-specific detail on dataset-stranger reasons into one group", () => {
+    const out = buildDecisionQueue([
+      q("a", "harvested from a bulk corpus return — yielded 67 identities"),
+      q("b", "harvested from a bulk corpus return — yielded 12 identities"),
+    ]);
+    expect(out.groups).toHaveLength(1);
+    expect(out.groups[0]).toMatchObject({ count: 2, heldBack: true });
+  });
+
+  it("agrees with heldBack: held-back groups sum to the heldBack count", () => {
+    const out = buildDecisionQueue([q("a", COTENANT), q("b", BULK), q("c", NAME_ONLY), c("d")]);
+    expect(out.groups.filter((g) => g.heldBack).reduce((n, g) => n + g.count, 0)).toBe(out.heldBack);
+  });
+
+  it("a collision-flagged row without a subject_unlinked reason groups as a collision", () => {
+    const row: DecisionCandidate<string> = { item: "x", state: "quarantined", metadata: { possible_collision: true }, confidence: 60 };
+    const out = buildDecisionQueue([row, { ...row, item: "y" }, q("z", NAME_ONLY)]);
+    expect(out.groups.find((g) => g.label === "possible same-name collision")?.count).toBe(2);
+    expect(out.groups.reduce((n, g) => n + g.count, 0)).toBe(3);
+  });
+
+  it("a quarantined row with no signal at all still lands in a group", () => {
+    const row: DecisionCandidate<string> = { item: "x", state: "quarantined", metadata: {}, confidence: 60 };
+    const out = buildDecisionQueue([row]);
+    expect(out.groups).toEqual([expect.objectContaining({ label: "no recorded reason", count: 1 })]);
+  });
+});
