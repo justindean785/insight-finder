@@ -125,7 +125,12 @@ if (failedUrls.length && failedUrls.every((u) => IGNORED.test(u))) {
     if (/^Failed to load resource: net::ERR_/.test(consoleErrors[k])) consoleErrors.splice(k, 1);
 }
 const otherFailed = failedUrls.filter((u) => !IGNORED.test(u));
-if (otherFailed.length) console.error(`failed requests: ${otherFailed.slice(0, 10).join(", ")}`);
+if (otherFailed.length) {
+  console.error(`failed requests: ${otherFailed.slice(0, 10).join(", ")}`);
+  // An unexpected failed request is a failure on its own: an aborted request fires
+  // `requestfailed` with no console error, and must not let the run exit 0.
+  if (!process.env.ALLOW_CONSOLE_ERRORS) failed = true;
+}
 if (consoleErrors.length) {
   console.error(`console errors (${consoleErrors.length}):`);
   for (const e of consoleErrors.slice(0, 20)) console.error(`  ${e.slice(0, 300)}`);
