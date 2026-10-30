@@ -31,7 +31,8 @@ describe("ReportTab's verified count is wired to the shared authority selector",
     expect(SRC).not.toMatch(/verified\+\+/);
   });
 
-  it("still tallies rejected locally — it has no equivalent in the authority ladder", () => {
-    expect(SRC).toContain('s === "wrong" || s === "dismissed"');
+  it("prints the authority ladder's excluded figure, not a local count of review verdicts", () => {
+    expect(SRC).toContain("excluded: authority.failed");
+    expect(SRC).not.toContain('s === "wrong" || s === "dismissed"');
   });
 });

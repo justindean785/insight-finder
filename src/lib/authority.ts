@@ -375,6 +375,24 @@ export function countAnalystActionable(tally: Record<AuthorityState, number>): n
   return n;
 }
 
+/**
+ * The counts the Evidence and Report toolbars print beside the artifact total.
+ * `verified` and `excluded` are the authority ladder's own states, so each equals
+ * the board's Verified / Excluded figure on the same rows. `excluded` used to be
+ * "rejected", a count of review verdicts: it missed rows the false-positive flag or
+ * the engine rules out, and it counted verdicts on rows no longer in the list.
+ * `recheck` has no authority state; it is an analyst verdict and stays one.
+ */
+export function summarizeReviewCounts(
+  artifacts: readonly Artifact[],
+  review: (id: string) => ReviewState,
+): { verified: number; excluded: number; recheck: number } {
+  const tally = tallyAuthority(artifacts, review);
+  let recheck = 0;
+  for (const a of artifacts) if (review(a.id) === "recheck") recheck++;
+  return { verified: tally.verified, excluded: tally.failed, recheck };
+}
+
 export function tallyAuthority(
   artifacts: readonly Artifact[],
   review: (id: string) => ReviewState,
@@ -409,11 +427,13 @@ export function countVerifiedByAnalyst(
 }
 
 /** "verified" alone hides whether the evidence earned it or the analyst clicked
- *  Confirm. Say which, without changing the number. */
-export function verifiedLabel(verified: number, byAnalyst: number, dense?: boolean): string {
+ *  Confirm. Say which, without changing the number or the noun: the dense strip
+ *  used to print "confirmed" for the same count every other surface calls
+ *  "verified", so the split lives in `verifiedHint` there, not in a second word. */
+export function verifiedLabel(verified: number, byAnalyst: number): string {
   if (byAnalyst <= 0) return "verified";
-  if (byAnalyst >= verified) return dense ? "confirmed" : "verified (analyst-confirmed)";
-  return dense ? "verified" : `verified (${byAnalyst} analyst-confirmed)`;
+  if (byAnalyst >= verified) return "verified (analyst-confirmed)";
+  return `verified (${byAnalyst} analyst-confirmed)`;
 }
 
 export function verifiedHint(verified: number, byAnalyst: number): string {

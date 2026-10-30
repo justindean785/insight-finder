@@ -40,7 +40,6 @@ describe("verified label and hint", () => {
     expect(verifiedLabel(10, 10)).toBe("verified (analyst-confirmed)");
     expect(verifiedLabel(10, 4)).toBe("verified (4 analyst-confirmed)");
     expect(verifiedLabel(3, 0)).toBe("verified");
-    expect(verifiedLabel(10, 10, true)).toBe("confirmed");
   });
   it("the hint splits evidence from analyst decisions", () => {
     expect(verifiedHint(10, 10)).toContain("0 corroborated");

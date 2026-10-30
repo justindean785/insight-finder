@@ -173,7 +173,7 @@ export function CaseFigures({
           <Sep />
           <Figure
             value={authority.verified}
-            label={verifiedLabel(authority.verified, snapshot.verifiedByAnalyst, dense || oneLine)}
+            label={verifiedLabel(authority.verified, snapshot.verifiedByAnalyst)}
             tone="text-[hsl(var(--authority-verified))]"
             hint={verifiedHint(authority.verified, snapshot.verifiedByAnalyst)}
           />

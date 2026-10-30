@@ -184,18 +184,13 @@ export function ReportTab({
   const gate: ExportGate = useMemo(() => evaluateExportGate(profile, review.availability), [profile, review.availability]);
   const isDraft = gate.mode === "draft";
 
-  // Analyst review state for the toolbar summary. "verified" comes from the
-  // shared `tallyAuthority` selector (src/lib/authority.ts) — the same one the
-  // case bar, Overview and Evidence use; "rejected" has no equivalent in the
-  // authority ladder, so it stays a direct tally.
+  // Toolbar summary: verified and excluded come from the shared authority ladder
+  // (src/lib/authority.ts), the same figures the case bar, Overview and Evidence print.
+  // The rest of the tally feeds the readiness block below.
   const reviewTally = useMemo(() => {
     const authority = tallyAuthority(artifacts, review.get);
-    let rejected = 0;
-    for (const s of Object.values(reviews)) {
-      if (s === "wrong" || s === "dismissed") rejected++;
-    }
-    return { verified: authority.verified, review: authority.review, conflict: authority.conflict, quarantined: authority.quarantined, rejected };
-  }, [artifacts, review, reviews]);
+    return { verified: authority.verified, review: authority.review, conflict: authority.conflict, quarantined: authority.quarantined, excluded: authority.failed };
+  }, [artifacts, review]);
 
   const copy = (text: string, label: string) =>
     navigator.clipboard.writeText(text).then(() => toast.success(label), () => toast.error("Copy failed"));
@@ -313,8 +308,8 @@ export function ReportTab({
       </Tooltip>
       <span className="hidden text-data text-muted-foreground md:inline">
         {reviewTally.verified > 0 && <span className="text-[hsl(var(--authority-verified))]">{reviewTally.verified} verified</span>}
-        {reviewTally.verified > 0 && reviewTally.rejected > 0 && <span className="mx-1.5 text-muted-foreground/40" aria-hidden>·</span>}
-        {reviewTally.rejected > 0 && <span className="text-[hsl(var(--danger))]">{reviewTally.rejected} rejected</span>}
+        {reviewTally.verified > 0 && reviewTally.excluded > 0 && <span className="mx-1.5 text-muted-foreground/40" aria-hidden>·</span>}
+        {reviewTally.excluded > 0 && <span className="text-[hsl(var(--danger))]">{reviewTally.excluded} excluded</span>}
       </span>
 
       <div className="ml-auto flex flex-wrap items-center gap-2" role="group" aria-label="Report exports">
