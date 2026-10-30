@@ -992,6 +992,9 @@ Deno.serve(async (req) => {
         .from("agent_memory")
         .select("id,kind,subject,content,confidence,hit_count")
         .eq("user_id", userId)
+        // 'global' only: a case-scoped row is about ONE investigation and must not reach another (the scope leak the
+        // agent-memory CI assertion guards against).
+        .eq("scope", "global")
         .like("subject", `${TOOL_LESSON_PREFIX}%`)
         .order("confidence", { ascending: false })
         .limit(MEMORY_BRIEF_FETCH_LIMIT) as unknown as PromiseLike<

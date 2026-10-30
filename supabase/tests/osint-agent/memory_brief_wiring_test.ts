@@ -19,11 +19,12 @@ Deno.test("wiring: the read starts behind the kill switch, BEFORE the intake awa
   assert(kickoff > 0 && kickoff < intake, "the read must overlap the intake and review loads");
 });
 
-Deno.test("wiring: the read is the user's own tool: rows only", () => {
+Deno.test("wiring: the read is the user's own GLOBAL-scope tool: rows only", () => {
   const start = INDEX.indexOf("const toolLessonReads");
-  const slice = INDEX.slice(start, start + 700);
+  const slice = INDEX.slice(start, start + 900);
   assertStringIncludes(slice, '.from("agent_memory")');
   assertStringIncludes(slice, '.eq("user_id", userId)');
+  assertStringIncludes(slice, '.eq("scope", "global")'); // a case-scoped row must never reach another case
   assertStringIncludes(slice, '.like("subject", `${TOOL_LESSON_PREFIX}%`)');
 });
 
