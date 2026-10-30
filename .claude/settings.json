@@ -26,7 +26,10 @@
     ],
     "deny": [
       "Bash(npm run verify:deploy *--record*)",
-      "Bash(curl *maintenance=1*)"
+      "Bash(curl *maintenance=1*)",
+      "Bash(git *--output*)",
+      "Bash(git *--ext-diff*)",
+      "Bash(git *--textconv*)"
     ]
   }
 }
