@@ -281,3 +281,32 @@ describe("neighbour pivots share one thread-log read (Codex P2 on #869)", () => 
     expect(harness.queriedMounts).toBe(1);
   });
 });
+
+describe("the workbench tab strip shares the main strip's recipe", () => {
+  it("shows an icon on every tab and the brand underline on the selected one", () => {
+    renderWorkbench([art("email", "a@example.test")]);
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs).toHaveLength(3);
+    for (const t of tabs) expect(t.querySelector("svg")).not.toBeNull();
+    expect(screen.getByRole("tab", { name: /Sheet/ }).className).toContain("shadow-[inset_0_-2px_0_hsl(var(--brand))]");
+    expect(screen.getByRole("tab", { name: "Next" }).className).not.toContain("hsl(var(--brand))]");
+  });
+
+  it("the Sheet tab carries the open calls, the same count the case sheet's queue reports", () => {
+    renderWorkbench([
+      art("location", "Stockton, CA", { conflict: true }),
+      art("location", "Oakland, CA", { conflict: true }),
+      art("email", "ok@example.test"),
+    ]);
+    const sheet = screen.getByRole("tab", { name: /Sheet/ });
+    const chip = sheet.querySelector("[title*='awaiting your call']");
+    expect(chip?.textContent).toContain("2");
+    // Never a bare number: the unit is read after it, so it is not taken for an evidence count.
+    expect(sheet.textContent).toContain("awaiting your call");
+  });
+
+  it("no chip when nothing awaits a call", () => {
+    renderWorkbench([art("email", "ok@example.test")]);
+    expect(screen.getByRole("tab", { name: /Sheet/ }).querySelector("[title*='awaiting your call']")).toBeNull();
+  });
+});
