@@ -67,6 +67,11 @@ export function toolTokens(labels: readonly string[]): string[] {
 }
 
 const ZERO_HIT_VALUE = /\(clean\)|\b0\s+(?:breach(?:es)?|hits?|results?|records?|pastes?)\b|\bno\s+breach(?:es)?\s+found\b/i;
+// "no breach hits" / "no stealer log hits": model-authored wordings seen on the @port162 scan (2026-10-29), which
+// the forms above miss. Matched as the WHOLE value (optionally behind a short "<selector> - " prefix), never as a
+// substring, so a mixed row ("Canva breach — 1 hit; no stealer log hits") is not refused as zero-hit.
+const NO_HITS_WHOLE_VALUE =
+  /^\s*(?:\S+(?:\s+\S+){0,2}\s+[-–—]\s+)?no\s+(?:breach(?:es)?|stealer(?:\s+logs?)?)\s+hits?\s*[.!]?\s*$/i;
 
 /** Does this row report that nothing was found? Structured counts first, then the value's own wording. */
 export function isZeroHitBreachRow(value: string, metadata: Record<string, unknown> | null | undefined): boolean {
@@ -78,7 +83,7 @@ export function isZeroHitBreachRow(value: string, metadata: Record<string, unkno
     const pastes = typeof m.total_pastes === "number" ? m.total_pastes : 0;
     if (pastes === 0) return true;
   }
-  return ZERO_HIT_VALUE.test(value);
+  return ZERO_HIT_VALUE.test(value) || NO_HITS_WHOLE_VALUE.test(value);
 }
 
 export type BreachGuardVerdict =
@@ -164,11 +169,14 @@ export function breachExposureGuardSelfTest(): { ok: boolean; switch: string; de
   if (checkBreachExposureRow({ value: "dizosint - serus: 0 breaches, 0 pastes (clean)", sourceLabels: ["breach_check"], metadata: {}, ranTools: ran }).ok) {
     wrong.push("a zero-hit result passed as an exposure");
   }
+  if (checkBreachExposureRow({ value: "port162 - NO STEALER LOG HITS", sourceLabels: ["breach_check"], metadata: {}, ranTools: ran }).ok) {
+    wrong.push("a 'no stealer log hits' row passed as an exposure");
+  }
   return wrong.length
     ? { ok: false, switch: `${sw}=false`, detail: wrong.join("; ") }
     : {
       ok: true,
       switch: `${sw}=false`,
-      detail: "breach_exposure needs a breach-class tool that ran in this case and a non-zero result; auto-extraction keeps it only from breach-capable tools",
+      detail: "breach_exposure needs a breach-class tool that ran in this case and a non-zero result (\"0 hits\", \"(clean)\" and no breach/stealer hits wordings are zero-hit); auto-extraction keeps it only from breach-capable tools",
     };
 }

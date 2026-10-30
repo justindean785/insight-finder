@@ -94,3 +94,25 @@ never close a PR without JD.
 > refs/heads/deploy/live`, `gh pr list --state open`, one `/health` read — build must be `845f15e`). Then work item 1
 > of §4: settle #872 vs #875, resolve the e2e discrepancy on a clean `main` worktree, and bring the Stage 1 stack to
 > merge. Do not merge, deploy, change flags or secrets, or close any PR without JD's explicit go for that PR.
+
+## 7. End of session (2026-10-26T03:05Z) — what shipped after §1 was written
+
+| PR | Merge | What |
+|---|---|---|
+| #871 | `3a18a6d` | docs: the 2026-10-24 pivot-workflow audit + baselines |
+| #877 | `3f0bdb8` | docs: this handoff and the CLAUDE.md dated lines |
+| #875 | `08553ef` | frontend: Stage 1 + 1b (Investigate / Evidence ledger / Workbench, a11y). Its five e2e failures were regressions in the specs' targets, not main; fixed in `7981603e` (live run reads "Analyzing", pivot queue asserted in the Workbench Next tab, linkage copy). Full e2e 95 / 13 / 0. |
+| #876 | `df15ec7` | frontend: Stage 1b polish. Its two remaining e2e failures were a real defect: the idle composer collapsed on blur and moved the transcript 40px under a click in flight (first click after load, every time). Fixed in `4e37a5ca` via `useComposerFocus` (pointer-caused blur applied after `pointerup` + one tick). Full e2e 95 / 13 / 0. |
+| #831 | `f9eaaaac` | edge: memory authority. Stamp #878 `606bf779`, mirror #134 `18381d5d`, gate `mirror tree -> equal` + `pushed`, Lovable deploy 03:00Z, `/health` moved `845f15e` → `f9eaaaa` 03:01:35Z, ledger #879 `750e885`. |
+
+**Standing decisions this session (JD):** merge #871, #877, #875, #876 (done); fix the #876 composer bug in #876 (done); ship #831 (done). #738 and #872 are superseded (#872 by #875's inspector) and stay open until JD says to close them.
+
+**Subscriptions and check-ins:** none left. #875/#876/#877 unsubscribed on merge; #878 and mirror #134 auto-unsubscribed; both `send_later` triggers deleted (`trig_01L6db1TRyaKGarrwgBPV1eE`, `trig_014XqHc9jsrv46W2bZbFRBf2`).
+
+**Traps found:** (1) in the cloud sandbox `npm run test:e2e` needs `PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium-1243/chrome-linux64/chrome` (the repo's Playwright 1.62.1 wants build 1234; CLAUDE.md's `chromium-1194` path is stale), and every test fails identically without it — not a code signal. (2) Playwright reuses a harness server already on port 5175 (`reuseExistingServer`), so two worktrees' e2e runs must never overlap or one measures the other's code. (3) A `cd` into the mirror clone was silently redirected once; address the mirror with `git -C <path>`. (4) The merge-tool's `expectedHeadSha` must be the real 40-char SHA; a guessed one returns 409 "Head branch was modified".
+
+**Next three:** (1) port #872's `ResourcesPanel` → `ArtifactInspector` delegation as a small frontend PR and close #872 (two copies of the inspector's release/review UI exist on main now); (2) F-1 from `tasks/stage1-verification/real-case-findings.md`: label the two "verified" scopes; (3) #868 as the next edge build.
+
+**Opening prompt for the next session:**
+
+> Read `CLAUDE.md` and §7 of `SESSION_HANDOFF_2026-10-26_state-audit-and-the-stage1-review-queue.md`. Re-measure (`git ls-remote origin refs/heads/main refs/heads/deploy/live`, open PR list, one `/health` read — build must be `f9eaaaa`). Then take item 1 of §7's next three: a small frontend PR that makes `ResourcesPanel`'s drawer delegate to `ArtifactInspector` (port #872's shape onto current main), with `npm run test:e2e` run by hand using the pinned Chromium path. Do not merge, deploy, change flags or secrets, or close any PR without JD's explicit go.

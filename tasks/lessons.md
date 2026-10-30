@@ -9,6 +9,10 @@ Running log of non-obvious gotchas learned while working in this repo. Newest fi
 - **A one-click run is a contract, not a style choice.** `requiresPreview` returned false for clean pivots, so the best-pivot card ran them with no preview. Tests and e2e selectors had pinned the label, so the change needed those updated together, not hidden.
 - **A worktree session may write only to its own worktree.** Creating a second worktree and writing into it was blocked by the session guard. Move this session's own worktree to the branch instead, after saving any uncommitted docs.
 
+## 2026-10-25 (registration authority repair)
+
+A sibling report table is an independent authority boundary. Sensitive Registrations read raw rows even though Breach Exposure was gated. Reuse the authority predicate plus rejected-provenance and negative-result checks before deduplication; a later rejected duplicate must never become a subject registration. Test the actual table and retain an accepted positive control. Key the rejection on the table's own identity (site|identifier), not the row id: a re-run records the same registration under a new id, and an id-only filter with dedupe after it lets the unreviewed twin render clean.
+
 ## 2026-10-25 (workspace Stage 1 correction pass)
 
 ### G-items NOT ADDED (fail honest-data check — explicit follow-ups)

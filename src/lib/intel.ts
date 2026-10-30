@@ -451,7 +451,7 @@ const NEGATIVE_COUNT_KEYS = [
 ] as const;
 const NEGATIVE_LOOKUP_STATUSES = new Set(["not_found", "restricted", "blocked", "denied", "error"]);
 /** Kinds whose row IS a lookup's answer, so a zero counter describes the row itself. */
-const LOOKUP_RESULT_KINDS = new Set(["breach_exposure", "weak_lead"]);
+export const LOOKUP_RESULT_KINDS = new Set(["breach_exposure", "weak_lead"]);
 /** Tools whose output is a match count against a leak corpus. */
 const LEAK_LOOKUP_TOOL_RE = /breach|leak|stealer|paste|darkweb|oathnet|intelbase|snusbase|stolen\.tax|osintcat|dehashed|hibp/i;
 const ANALYST_SUPPLIED_RE = /user[-_ ]?(?:provided|supplied)|analyst[-_ ]?(?:provided|supplied)|\bseed\b/i;

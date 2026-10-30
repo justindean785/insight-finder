@@ -219,6 +219,18 @@ describe("Connections tab", () => {
     expect(within(selected).getByRole("button", { name: "Pivot on this" })).toBeTruthy();
   });
 
+  it("a zero-hit lookup is disclosed as a clean check, not listed or counted as an unlinked candidate", () => {
+    const zero = { ...art("breach_exposure", "NO STEALER LOG HITS", { serus_darkweb_result: "0 hits, 0 breaches, 0 pastes" }), source: "oathnet_stealer_search" };
+    renderWorkbench([art("username", "lone_handle"), zero]);
+    fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
+    const summary = screen.getByRole("region", { name: "Connection summary" });
+    expect(summary.textContent).toMatch(/1 unlinked candidate(?!s)/);
+    expect(summary.querySelector("[data-clean-checks]")?.textContent).toMatch(/^1 clean check \(coverage, not candidates\)/);
+    const leads = screen.getByRole("region", { name: "Unlinked candidates" });
+    expect(within(leads).queryByRole("button", { name: /NO STEALER LOG HITS/ })).toBeNull();
+    expect(within(leads).getByRole("button", { name: /lone_handle/ })).toBeTruthy();
+  });
+
   it("the seed's own record has no pivot of its own and says why", () => {
     const items = [art("email", "seed@example.test")];
     renderWorkbench(items);

@@ -286,3 +286,81 @@ describe("Breach narrative count agrees with the filtered table", () => {
     expect(text).not.toContain("Subject appears in 4 distinct breach corpora");
   });
 });
+
+
+describe("Sensitive Registrations subject authority", () => {
+  function registrations(arts: ReturnType<typeof art>[], reviews: Record<string, string> = {}) {
+    const c = renderReport(arts, reviews);
+    return Array.from(c.querySelectorAll("table")).find(t =>
+      t.querySelector("thead")?.textContent?.includes("Account identifier"))?.textContent ?? "";
+  }
+  it("retains accepted registrations and excludes quarantined, dismissed, rejected-derived and negative rows", () => {
+    const arts = [
+      art({ id: "email", kind: "email", value: "unrelated@example.com" }),
+      breach("accepted", "Accepted", { site: "Accepted", identifier: "subject@example.com" }),
+      breach("quarantine", "Quarantined", { site: "Quarantined", ...UNLINKED }),
+      breach("dismissed", "Dismissed", { site: "Dismissed" }),
+      breach("derived", "Derived", { site: "Derived", parent_selector: "unrelated@example.com" }),
+      art({ id: "negative", value: "No breach hits", metadata: { site: "Negative" } }),
+      art({ id: "account", kind: "account", value: "unrelated", metadata: { site: "RejectedAccount", ...UNLINKED } }),
+    ];
+    const originals = JSON.stringify(arts);
+    const text = registrations(arts, { email: "wrong", dismissed: "dismissed", quarantine: "confirmed" });
+    expect(text).toContain("Accepted");
+    for (const label of ["Quarantined", "Dismissed", "Derived", "Negative", "RejectedAccount"]) expect(text).not.toContain(label);
+    expect(JSON.stringify(arts)).toBe(originals);
+  });
+  it("keeps excluded evidence available with its original quarantine reason", () => {
+    const c = renderReport([breach("q", "Quarantined", { site: "Quarantined", ...UNLINKED })]);
+    expect(c.textContent).toContain("Excluded / Collision Clusters");
+    expect(c.textContent).toContain("Quarantined");
+    expect(Array.from(c.querySelectorAll("table")).some(t => t.querySelector("thead")?.textContent?.includes("Account identifier"))).toBe(false);
+  });
+  it("excludes legacy collision and false-positive records without changing their history", () => {
+    const arts = [
+      breach("ok", "Accepted", { site: "Accepted" }),
+      breach("collision", "Collision", { site: "Collision", possible_collision: true }),
+      breach("legacy", "LegacyFalse", { site: "LegacyFalse", false_positive: true }),
+    ];
+    const text = registrations(arts);
+    expect(text).toContain("Accepted");
+    expect(text).not.toContain("Collision");
+    expect(text).not.toContain("LegacyFalse");
+  });
+  it("permits explicitly released linkage while preserving rejection precedence", () => {
+    const arts = [breach("released", "Released", { site: "Released", ...UNLINKED, linkage_confirmed: true })];
+    expect(registrations(arts)).toContain("Released");
+    cleanup();
+    expect(registrations(arts, { released: "wrong" })).not.toContain("Released");
+  });
+
+  // Rejection is a verdict on the REGISTRATION, not on one row's id. A re-run
+  // records the same site|identifier under a new id; filtering by id and
+  // deduping afterwards would let that unreviewed twin render as a clean row —
+  // the "re-record under a new id cannot revive it" rule in analyst-decisions.ts.
+  it("an unreviewed duplicate of an analyst-dismissed breach registration does not come back as a clean row", () => {
+    const dup = { site: "DupCorp", identifier: "subject@example.com" };
+    const arts = [breach("dupA", "DupCorp", dup), breach("dupB", "DupCorp", dup)];
+    expect(registrations(arts, { dupA: "dismissed" })).not.toContain("DupCorp");
+    cleanup();
+    // order-independent: the rejected row may come second
+    expect(registrations([...arts].reverse(), { dupA: "dismissed" })).not.toContain("DupCorp");
+  });
+
+  it("the same holds for the account/social/handle branch", () => {
+    const acc = (id: string) => art({ id, kind: "account", value: "example_user", metadata: { site: "DupSite" } });
+    expect(registrations([acc("accA"), acc("accB")], { accA: "wrong" })).not.toContain("DupSite");
+  });
+});
+
+describe("Breach Exposure table applies the same null-result gate as its count", () => {
+  it("a 'no breach hits' breach_exposure row is not a corpus the subject appears in", () => {
+    const c = renderReport([
+      breach("ok", "RealCorp"),
+      art({ id: "neg", value: "quietfalcon77@example.com - No breach hits", metadata: { breach_name: "NegCorp" } }),
+    ]);
+    const table = tableOf(c);
+    expect(table).toContain("RealCorp");
+    expect(table).not.toContain("NegCorp");
+  });
+});
