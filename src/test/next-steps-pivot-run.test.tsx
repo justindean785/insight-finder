@@ -25,6 +25,9 @@ describe("the pivot this tab started", () => {
     expect(strip.textContent).toContain("Running");
     expect(strip.textContent).toContain("person@example.test");
     expect(strip.textContent).toContain("1 new record so far");
+    // JSX text does not interpret \u escapes: this printed a literal "\u00b7" (#886).
+    expect(strip.textContent).not.toContain("\\u00b7");
+    expect(strip.textContent).toContain("Running \u00b7 Investigate email");
     expect(screen.queryByRole("button", { name: /Run now/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /View changes/ })).toBeNull();
   });
