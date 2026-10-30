@@ -102,6 +102,7 @@ export function CompactFilter<T extends string>({
             type="button"
             data-compact-item
             aria-pressed={on}
+            title={o.hint}
             onClick={() => onChange(o.key)}
             className={cn(
               "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-data font-medium transition-colors duration-fast [@media(pointer:coarse)]:h-11",

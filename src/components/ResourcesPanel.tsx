@@ -1462,7 +1462,12 @@ export function EvidenceBoard({
     { key: "analyst", label: "Analyst view", count: counts.analyst, hint: "Everything that needs a decision — leads and exclusions hidden" },
     { key: "all", label: "All", count: counts.all },
     { key: "strong", label: "Findings", count: counts.strong, tone: "ok" },
-    { key: "review", label: "Needs review", count: counts.review, tone: "warn" },
+    {
+      key: "review", label: "Needs review", count: counts.review, tone: "warn",
+      // The tab badge's "to decide" counts a different set: conflicts plus quarantined rows awaiting a
+      // linkage call. Quarantined rows are listed under Quarantined, not here, so the two differ.
+      hint: "Rows that need another source, and conflicts. Not the tab's \"to decide\" count, which adds quarantined rows awaiting a linkage call.",
+    },
     // Only offered when there is something in it — an always-present
     // "Quarantined 0" trains analysts to stop reading the number.
     ...(counts.quarantined > 0
