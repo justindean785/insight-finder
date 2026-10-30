@@ -638,3 +638,69 @@ Deno.test("isolation: a monotonic clock that is broken FROM THE START cannot cos
   assertEquals(inv.first_step_offset_ms, null);
   assertEquals(inv.duration_ms, 7_000);
 });
+
+// ---- Codex P2 on #900: a legacy row READ BACK from the database ---------------------------
+//
+// After the migration is applied, every historical orchestrator_invocations / _step_metrics row
+// has the timing columns PRESENT with NULL values — not absent. reconcileTimeline used to test key
+// presence, so it handed such a row a "fully reconciled" timeline (a 90 s run became
+// preFirstStepMs=90000, stepsWallMs=0, unattributedMs=0: "no time in steps, nothing missing").
+// The only legacy test used an object with the keys omitted, which is not what a SELECT returns.
+
+const DB_LEGACY_TIMING = {
+  first_step_offset_ms: null,
+  loop_end_offset_ms: null,
+  persist_ms: null,
+  salvage_ms: null,
+  cluster_ms: null,
+  unfinished_steps: null,
+  salvage_outcome: null,
+};
+
+Deno.test("reconcileTimeline: a legacy row as the DATABASE returns it (timing columns present, all NULL) gets no timeline", () => {
+  const legacyRow = { id: "i", duration_ms: 90_000, step_count: 2, ...DB_LEGACY_TIMING };
+  const legacySteps = [
+    { step_number: 0, step_wall_ms: 12_000, started_offset_ms: null, prepare_ms: null },
+    { step_number: 1, step_wall_ms: 30_000, started_offset_ms: null, prepare_ms: null },
+  ];
+  assertEquals(T.reconcileTimeline(legacyRow, legacySteps), null);
+});
+
+Deno.test("reconcileTimeline: a legacy row with its timing keys OMITTED still gets no timeline", () => {
+  assertEquals(T.reconcileTimeline({ id: "i", duration_ms: 90_000, step_count: 2 }, []), null);
+});
+
+Deno.test("reconcileTimeline: a row the recorder wrote on the ERROR path (loop and persist NULL) is timed and DOES reconcile", async () => {
+  const rows: Written[] = [];
+  const c = fakeClock();
+  const rec = recorder(rows, c);
+  rec.onStepStart({ stepNumber: 0, messages: [] });
+  c.advance(2_000);
+  rec.recordStepFinish({ stepNumber: 0, usage: null, finishReason: "error", toolCalls: [] });
+  rec.onStepStart({ stepNumber: 1, messages: [] }); // hangs
+  c.advance(3_000);
+  rec.finish(finishInput(c, { hadStreamError: true }));
+  await settle();
+  const inv = rows.find((w) => w.table === "orchestrator_invocations")!.row;
+  const steps = rows.filter((w) => w.table === "orchestrator_step_metrics").map((w) => w.row);
+  // What a SELECT would return: persist_ms and loop_end_offset_ms are NULL here because they were never reached.
+  assertEquals(inv.persist_ms, null);
+  assertEquals(inv.loop_end_offset_ms, null);
+  const t = T.reconcileTimeline(inv, steps);
+  assert(t, "a timed row must still reconcile when persistence and the loop end never happened");
+  assertEquals(t!.durationMs, 5_000);
+  assertEquals(t!.stepsWallMs, 2_000);
+});
+
+Deno.test("reconcileTimeline: a timed run with NOTHING else measured is still timed (unfinished_steps=0 and outcome 'none' are real measurements)", () => {
+  const timedRow = { id: "i", duration_ms: 4_000, ...DB_LEGACY_TIMING, unfinished_steps: 0, salvage_outcome: "none" };
+  const t = T.reconcileTimeline(timedRow, []);
+  assert(t, "unfinished_steps=0 is a measurement, not an absence");
+  assertEquals(t!.durationMs, 4_000);
+});
+
+Deno.test("health: the self-test also pins the database-shaped legacy row", () => {
+  const detail = withEnv("TIMING_TELEMETRY_DISABLED", null, () => T.timingTelemetrySelfTest());
+  assertEquals(detail.ok, true, detail.detail);
+  assert(/legacy/i.test(detail.detail), `self-test detail should name the legacy-row check, got: ${detail.detail}`);
+});
