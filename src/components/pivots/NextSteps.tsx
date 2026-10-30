@@ -362,7 +362,7 @@ function PivotRunStrip({ view, onViewChanges }: { view: PivotRunView; onViewChan
       <div className="min-w-0 flex-1">
         <div className="text-data font-medium text-foreground">
           {running ? "Running" : ended ? "Run ended" : "Pivot completed"}
-          <span className="text-muted-foreground"> \u00b7 {run.action} </span>
+          <span className="text-muted-foreground">{" \u00b7 "}{run.action} </span>
           <span className="inline-block max-w-full truncate align-bottom font-mono text-[12.5px] text-foreground/90" title={run.target}>{run.target}</span>
         </div>
         {ended && (
