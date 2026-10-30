@@ -8,7 +8,8 @@ import { computePivots } from "@/lib/pivot-engine";
 import { cardDedupeKey } from "@/lib/next-step-cards";
 import { buildEntityGraph } from "@/lib/entity-graph";
 import { summarizeConnections } from "@/lib/connection-summary";
-import { pivotSkipStorageKey, type RecommendedPivot } from "@/lib/recommended-pivots";
+import type { RecommendedPivot } from "@/lib/recommended-pivots";
+import { hidePivots, readPivotSkip, restorePivots, PIVOT_SKIP_EVENT } from "@/lib/pivot-skip";
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
 import { hasPivotRunner } from "@/lib/pivot-runner";
 import type { ReviewAdjustment } from "@/lib/intel";
@@ -62,20 +63,22 @@ export function WorkbenchNext({ threadId }: { threadId: string }) {
   }, [threadId]);
 
   useEffect(() => {
-    const load = () => {
-      try {
-        const raw = localStorage.getItem(pivotSkipStorageKey(threadId));
-        setSkip(new Set(raw ? (JSON.parse(raw) as string[]) : []));
-      } catch { setSkip(new Set()); }
-    };
+    const load = () => setSkip(readPivotSkip(threadId));
     load();
     const onChanged = (e: Event) => {
       const d = (e as CustomEvent<{ threadId: string }>).detail;
       if (!d || d.threadId === threadId) load();
     };
-    window.addEventListener("swarmbot:pivot-skip-changed", onChanged as EventListener);
-    return () => window.removeEventListener("swarmbot:pivot-skip-changed", onChanged as EventListener);
+    window.addEventListener(PIVOT_SKIP_EVENT, onChanged as EventListener);
+    return () => window.removeEventListener(PIVOT_SKIP_EVENT, onChanged as EventListener);
   }, [threadId]);
+
+  // The last hide, for a one-step undo. Cleared on the next hide or restore.
+  const [lastHide, setLastHide] = useState<{ targets: string[]; label: string } | null>(null);
+  const hide = (targets: string[], label: string) => {
+    hidePivots(threadId, targets);
+    setLastHide({ targets, label });
+  };
 
   const artifactsById = useMemo(() => new Map(artifacts.map((a) => [a.id, a] as const)), [artifacts]);
 
@@ -132,7 +135,19 @@ export function WorkbenchNext({ threadId }: { threadId: string }) {
     );
   }
   if (items.length === 0 && runViews.length === 0) {
-    return <p className="px-5 py-4 text-[13px] text-muted-foreground">No pivot is waiting. New ones appear as the investigation records selectors or the agent recommends them.</p>;
+    return (
+      <div className="px-5 py-4 text-[13px] text-muted-foreground">
+        <p>No pivot is waiting. New ones appear as the investigation records selectors or the agent recommends them.</p>
+        {skip.size > 0 && (
+          <p role="status" className="mt-2 text-[12.5px] text-faint-foreground">
+            {skip.size} hidden on this device.{" "}
+            <button type="button" onClick={() => { restorePivots(threadId); setLastHide(null); }} className="text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              Show all
+            </button>
+          </p>
+        )}
+      </div>
+    );
   }
 
   const run = (p: RunnablePivot) => {
@@ -160,6 +175,11 @@ export function WorkbenchNext({ threadId }: { threadId: string }) {
         connections={connections}
         artifactsById={artifactsById}
         onOpenGraph={() => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "graph" } }))}
+        onHide={hide}
+        hiddenCount={skip.size}
+        onShowHidden={() => { restorePivots(threadId); setLastHide(null); }}
+        lastHidden={lastHide ? { label: lastHide.label, count: lastHide.targets.length } : null}
+        onUndoHide={() => { if (lastHide) restorePivots(threadId, lastHide.targets); setLastHide(null); }}
       />
     </div>
   );
