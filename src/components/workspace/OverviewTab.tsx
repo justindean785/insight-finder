@@ -16,6 +16,8 @@ import { buildDecisionQueue } from "@/lib/decision-queue";
 import { RunCockpit } from "@/components/workspace/RunCockpit";
 import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
 import { groupSharedCaveats } from "@/lib/shared-caveats";
+import { detectNameConflict } from "@/lib/name-conflict";
+import { NameConflictNotice } from "@/components/workspace/NameConflictNotice";
 import { summarizeLatestRun, type LatestRunSummary } from "@/lib/latest-run";
 import {
   Unlink, AlertTriangle, XCircle, ShieldCheck, Timer,
@@ -235,6 +237,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
     return buildDecisionQueue(candidates);
   }, [items, review]);
   const unresolved = queue.shown;
+  const nameConflict = useMemo(() => detectNameConflict(items), [items]);
   const sharedCaveats = useMemo(
     () => groupSharedCaveats(unresolved.map(({ a, v }) => ({ id: a.id, caveat: v.caveat, caveatKind: v.caveatKind }))),
     [unresolved],
@@ -389,6 +392,8 @@ export function OverviewTab({ threadId }: { threadId: string }) {
             )}
           </section>
         </div>
+
+        {nameConflict && <NameConflictNotice conflict={nameConflict} onOpen={() => jump("artifacts")} />}
 
         {/* ── Needs a decision ───────────────────────────────────────── */}
         <section className="panel panel-primary overflow-hidden">
