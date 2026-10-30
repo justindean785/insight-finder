@@ -2999,7 +2999,10 @@ export function buildTools(ctx: ToolContext) {
       execute: async ({ query, size }) => {
         const KEY = Deno.env.get("FOFA_API_KEY");
         if (!KEY) return { error: "FOFA_API_KEY not configured" };
-        const fields = "host,ip,port,protocol,domain,title,server,country_name,as_organization";
+        // No `as_organization`: FOFA rejects the whole request with [820001] "No
+        // permission to search as_organization field" when the plan lacks a field,
+        // and that made every call fail (7 of 7 in the 14 days to 2026-10-30).
+        const fields = "host,ip,port,protocol,domain,title,server,country_name";
         try {
           const qbase64 = btoa(String.fromCharCode(...new TextEncoder().encode(query)));
           const url = `https://en.fofa.info/api/v1/search/all?key=${encodeURIComponent(KEY)}` +
