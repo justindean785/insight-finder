@@ -113,3 +113,17 @@ export function formatNameConflict(c: NameConflict): string {
     c.conflicting.length === 1 ? "a record-derived name" : `${c.conflicting.length} record-derived names`
   } that share its first name — ${variants}. Nothing in this case establishes which surname is right; treat them as unresolved and do not merge identities on a first name alone.`;
 }
+
+/** The structured form of the same warning, for a UI that lists the variants
+ *  instead of printing one paragraph. Same wording rules: an open question, no
+ *  winner. */
+export function nameConflictParts(c: NameConflict): { headline: string; variants: string[] } {
+  return {
+    headline: `You supplied “${c.anchor}”. ${
+      c.conflicting.length === 1 ? "A record gives" : `${c.conflicting.length} records give`
+    } the same first name with a different surname.`,
+    variants: c.conflicting.map(
+      (v) => `“${v.name}” · ${v.rows} row${v.rows === 1 ? "" : "s"}${v.sources.length ? ` · ${v.sources.join(", ")}` : ""}`,
+    ),
+  };
+}
