@@ -24,6 +24,8 @@ killed. The timing columns from #899/#900 do not help — they are also written 
 - That one is thread `06175985`: `run_started_at` 03:18:34Z, `last_heartbeat_at` 03:20:19Z
   (a 105 s run life), `recovered_at` 03:22:05Z, `recovery_reason` "stale heartbeat recovered by
   health sweep". No invocation row exists.
+- The run's last `tool_usage_log` row is at 03:19:25Z, about 51 s in; only 3 rows fall in its
+  window. After that it made no tool call, yet the heartbeat kept pulsing until 105 s.
 - 105 s is past `FINALIZE_RESERVE_MS` (90 s), so the forced-finalize window had opened. The
   heartbeat pulses every 15 s while the isolate lives, so the isolate most likely died between
   105 s and ~120 s. **That is an inference from the pulse cadence, not a measurement.** What
