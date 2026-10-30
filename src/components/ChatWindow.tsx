@@ -3047,7 +3047,8 @@ function ChatWindowInner({
   // transcript's "Summarize / Breach check / Find more" fallback actions.
   const workbenchRunnableCount = useMemo(() => countWorkbenchRunnablePivots({
     artifacts, seedValue, reportPivots, skipSet: pivotSkip, queriedSet: queriedTargets, reviews: review.map,
-  }), [artifacts, seedValue, reportPivots, pivotSkip, queriedTargets, review.map]);
+    sentKeys: sentPivotKeys,
+  }), [artifacts, seedValue, reportPivots, pivotSkip, queriedTargets, review.map, sentPivotKeys]);
 
   // The pivot Auto-run would start next. Read from a ref at cycle time, because
   // the cycle effect fires between renders. A pivot Auto-run already sent this

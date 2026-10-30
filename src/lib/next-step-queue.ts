@@ -20,6 +20,7 @@ import type { RecommendedPivot } from "@/lib/recommended-pivots";
 import type { ReviewState } from "@/lib/review";
 import { computePivots } from "@/lib/pivot-engine";
 import { cardDedupeKey } from "@/lib/next-step-cards";
+import { pivotRunKey } from "@/lib/pivot-runs";
 import { validatePivotSuggestion, pivotSuggestionInput } from "@/lib/pivot-schema";
 
 /** Shared with WorkbenchNext.tsx — one cap on the actionable queue. */
@@ -32,6 +33,10 @@ export interface WorkbenchQueueInput {
   skipSet: Set<string>;
   queriedSet: Set<string>;
   reviews: Record<string, ReviewState>;
+  /** `pivotRunKey`s of pivots that are running or have a tool call recorded against them. The Workbench
+   *  lists those above the queue (Running / Completed), not in it, so the count must leave them out too.
+   *  Required: a caller that forgets it would print one more pivot than the Workbench shows. */
+  sentKeys: ReadonlySet<string>;
 }
 
 /**
@@ -52,7 +57,7 @@ export function countWorkbenchRunnablePivots(input: WorkbenchQueueInput): number
   });
   const seen = new Set<string>();
   let runnable = 0;
-  for (const p of ranked.filter((c) => c.status === "new")) {
+  for (const p of ranked.filter((c) => c.status === "new" && !input.sentKeys.has(pivotRunKey(c.type, c.value)))) {
     if (runnable >= WORKBENCH_RUNNABLE_LIMIT) break;
     const key = cardDedupeKey({ title: p.actionLabel, target: p.value });
     if (seen.has(key)) continue;
