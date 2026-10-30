@@ -48,7 +48,8 @@ Deno.test("wiring: the block rides ONLY on intermediateSystem, after the cached 
   assertEquals(shapes.length, 3, `declaration, assignment, composition — got: ${shapes.join(" | ")}`);
   assert(shapes.includes('let resumeBriefBlock = "";'));
   assert(shapes.some((l) => l.startsWith("if (briefOutcome.text) resumeBriefBlock =")));
-  assert(shapes.includes("let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective() + resumeBriefBlock;"));
+  // M1 appends the tool-lesson brief (lib/memory-brief.ts) after the resume brief, on this same line and nowhere else.
+  assert(shapes.includes("let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective() + resumeBriefBlock + memoryBriefBlock;"));
 });
 
 Deno.test("wiring: baseSystemPrompt, the finalize prompt, the salvage prompt and the opening gate are untouched by the brief", () => {
