@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { MoreHorizontal, MessagesSquare, Database, FileText, Share2, Activity, LayoutDashboard, Check, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { tabButtonClass, tabIconClass } from "@/components/workspace/tab-recipe";
 import type { WorkspaceTab } from "@/lib/workspace-sections";
 import {
   DropdownMenu,
@@ -126,7 +127,7 @@ export function WorkspaceTabs({
  * Open decisions, styled like the folded case sheet's count so "Evidence 10"
  * is not read as ten evidence items beside the header's "55 evidence logged".
  */
-function DecisionChip({ count, compact = false }: { count: TabCount; compact?: boolean }) {
+export function DecisionChip({ count, compact = false }: { count: TabCount; compact?: boolean }) {
   if (count.value <= 0) return null;
   return (
     <span
@@ -208,20 +209,9 @@ function TabBar({
                 tabIndex={isActive ? 0 : -1}
                 onKeyDown={(e) => onKeyDown(e, idx)}
                 onClick={() => onChange(t.key)}
-                className={cn(
-                  "relative inline-flex h-10 shrink-0 items-center gap-2 rounded-t-md px-3.5 text-[14px] font-medium",
-                  "transition-[color,background-color,box-shadow] duration-fast ease-standard",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                  isActive
-                    ? "bg-surface-2 text-foreground shadow-[inset_0_-2px_0_hsl(var(--brand))]"
-                    : "text-muted-foreground hover:bg-white/[0.03] hover:text-foreground",
-                )}
+                className={tabButtonClass(isActive, "primary")}
               >
-                <Icon
-                  className={cn("h-4 w-4 shrink-0", isActive ? "text-[hsl(var(--brand))]" : "opacity-75")}
-                  strokeWidth={1.8}
-                  aria-hidden
-                />
+                <Icon className={tabIconClass(isActive)} strokeWidth={1.8} aria-hidden />
                 <span className="leading-none">{t.label}</span>
                 <TabCountBadge count={counts?.[t.key]} loading={loading} active={isActive} />
               </button>

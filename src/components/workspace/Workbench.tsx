@@ -8,7 +8,11 @@ import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useReviewStates } from "@/lib/review";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { cn } from "@/lib/utils";
+import { ClipboardList, Network, Sparkles, type LucideIcon } from "lucide-react";
+import { DecisionChip } from "@/components/workspace/WorkspaceTabs";
+import { tabButtonClass, tabIconClass } from "@/components/workspace/tab-recipe";
+import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
+import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
 
 /**
  * The right-hand column of the case desk, as a small workbench: the case sheet
@@ -25,10 +29,10 @@ import { cn } from "@/lib/utils";
  * in Evidence surfaces its detail without a second tab click.
  */
 export type WorkbenchTab = "sheet" | "next" | "connections";
-const TABS: ReadonlyArray<{ key: WorkbenchTab; label: string }> = [
-  { key: "sheet", label: "Sheet" },
-  { key: "next", label: "Next" },
-  { key: "connections", label: "Connections" },
+const TABS: ReadonlyArray<{ key: WorkbenchTab; label: string; icon: LucideIcon }> = [
+  { key: "sheet", label: "Sheet", icon: ClipboardList },
+  { key: "next", label: "Next", icon: Sparkles },
+  { key: "connections", label: "Connections", icon: Network },
 ];
 
 export function Workbench({ threadId }: { threadId: string }) {
@@ -54,6 +58,11 @@ export function Workbench({ threadId }: { threadId: string }) {
   // provider — the Workbench then degrades to its pre-change single-mode
   // behaviour (CaseSheet only, no selection path), which is exactly what
   // those callers used to get.
+  // The Sheet's open calls, from the SAME selector as the Evidence tab's badge
+  // and the sheet's "Needs your call" (`queueTotal`), so the figure cannot differ.
+  const { model, hydrated } = useCaseSheetModel(threadId);
+  const sheetCalls = buildWorkspaceTabCounts(0, hydrated ? model.queueTotal : null).evidence;
+
   const ui = useOptionalWorkspaceUIState();
   const selectedArtifactId = ui?.selectedArtifactId ?? null;
   const clear = ui?.clear ?? (() => {});
@@ -86,7 +95,7 @@ export function Workbench({ threadId }: { threadId: string }) {
   return (
     <div className="flex h-full min-h-0 flex-col" data-workbench>
       {/* Right padding leaves room for the sheet's own fold button. */}
-      <div role="tablist" aria-label="Workbench" className="flex shrink-0 items-center gap-1 border-b border-border-subtle py-2 pl-3 pr-12">
+      <div role="tablist" aria-label="Workbench" className="flex shrink-0 items-stretch gap-1 border-b border-white/[0.07] bg-surface-0 pl-2 pr-12">
         {TABS.map((t, i) => (
           <button
             key={t.key}
@@ -98,12 +107,11 @@ export function Workbench({ threadId }: { threadId: string }) {
             tabIndex={tab === t.key ? 0 : -1}
             onClick={() => select(t.key)}
             onKeyDown={(e) => onKeyDown(e, i)}
-            className={cn(
-              "inline-flex h-8 items-center rounded-md px-2.5 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11",
-              tab === t.key ? "bg-surface-3 text-foreground" : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
-            )}
+            className={tabButtonClass(tab === t.key, "secondary")}
           >
-            {t.label}
+            <t.icon className={tabIconClass(tab === t.key)} strokeWidth={1.8} aria-hidden />
+            <span className="leading-none">{t.label}</span>
+            {t.key === "sheet" && sheetCalls.kind === "decision" && <DecisionChip count={sheetCalls} compact />}
           </button>
         ))}
       </div>
