@@ -150,6 +150,7 @@ import { trimExaResults, archiveAttachment } from "./archiver.ts";
 import { PROVIDER_REQUIREMENTS } from "./capabilities.ts";
 import { agentMemoryOrFilter } from "./pgrest.ts";
 import { shapeShodanResponse, shapeJinaBody } from "./lib/negative-lookup.ts";
+import { evidenceArtifactKey, lookupArtifactIdsForEvidence } from "./lib/evidence-artifact-link.ts";
 
 /**
  * The REAL tool vocabulary, for G1's queued-placeholder gate.
@@ -6063,6 +6064,13 @@ export function buildTools(ctx: ToolContext) {
         // Per-row try/catch so a single bad row doesn't break the hash chain
         // for the rest of the batch.
         let evidence_appended = 0;
+        // Link each evidence row to the artifact it was appended for. Every writer
+        // used to send `_artifact_id: null` (all 17,575 production rows, measured
+        // 2026-10-30). `artifact_id` is NOT part of the hash chain, so this changes
+        // no hash. The lookup is a separate read AFTER the insert, never an
+        // `.insert().select()`: a refused select there would read as a failed
+        // insert and trigger the per-row retry. Any fault fails open to null.
+        const evidenceArtifactIds = await lookupArtifactIdsForEvidence(supabase, threadId, safeRowsForFollowup);
         for (const r of safeRowsForFollowup) {
           try {
             const meta = (r.metadata as Record<string, unknown> | null) ?? {};
@@ -6090,7 +6098,7 @@ export function buildTools(ctx: ToolContext) {
             const evSource = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((r.source as string) ?? null);
             const { error: evErr } = await supabase.rpc("append_evidence", {
               _thread_id: threadId,
-              _artifact_id: null,
+              _artifact_id: evidenceArtifactIds.get(evidenceArtifactKey(r.kind, r.value)) ?? null,
               _tool_name: evToolName,
               _source: evSource,
               _source_url: typeof sourceUrl === "string" ? sourceUrl : null,
