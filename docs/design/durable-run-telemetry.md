@@ -2,8 +2,9 @@
 
 Status: **PROPOSAL ONLY. Nothing here is implemented.** No schema, no edge code, no flag.
 Needs JD's design approval before any of the three PRs in §8 is opened.
-Written 2026-10-30. Builds on telemetry PRs #899/#900/#901, which are merged but **not yet
-deployed** (live `osint-agent` is still `65287b51`).
+Written 2026-10-30. Builds on telemetry PRs #899/#900/#901. Those were merged, then **deployed
+2026-10-30**: live `osint-agent` is `6eb444f`, with `checks.timing_telemetry` ok, verified by
+`/health` and `verify:deploy`. Their measurement has not been read yet.
 
 ## 1. The problem
 
@@ -29,7 +30,17 @@ killed. The timing columns from #899/#900 do not help — they are also written 
 - 105 s is past `FINALIZE_RESERVE_MS` (90 s), so the forced-finalize window had opened. The
   heartbeat pulses every 15 s while the isolate lives, so the isolate most likely died between
   105 s and ~120 s. **That is an inference from the pulse cadence, not a measurement.** What
-  killed it is unknown and is not recoverable from the database.
+  killed it is not recoverable from the database.
+- **Cause, from edge function logs (added 2026-10-30, after the first draft).** Lovable's agent
+  read the `osint-agent` function logs for the window. It reports `CPU Time exceeded` at
+  03:20:28Z, followed by isolate shutdown: about 114 s into the run, 9 s after the last heartbeat,
+  inside the 105 to 120 s estimate above. **This is Lovable's reading of the logs. The assistant
+  cannot read edge logs and has not seen the line itself.** If it holds, the run was killed by the
+  platform's **CPU-time** limit. It was not killed by wall clock, by a provider error or by the
+  client disconnecting (the UI had shown "Live view disconnected" at about the same time).
+- A CPU kill gives the code no chance to run anything else: no `catch`, no `onError`, no
+  `finish()`. That is why the run has no row. It is also the strongest case for this design,
+  because no amount of care inside `finish()` can catch it.
 
 Caveat on the rate: `resumeThread()` overwrites `run_started_at`/`last_heartbeat_at`, so an
 earlier dead run on a thread the analyst later resumed is invisible to this check. 1 of 33 is a
@@ -153,7 +164,15 @@ exist and are only written earlier. That is why it is deferred.
   landing, the row names the previous phase. Phase is therefore a lower bound on how far the run
   got. The doc and the column comment must say so.
 - **Not a root-cause tool.** This tells us *where* a run died, not *why*. The shutdown reason still
-  needs platform logs.
+  needs platform logs; for `06175985` those logs name the CPU-time limit (§1).
+- **CPU, not wall clock, may be the binding limit.** The #899/#900 columns and the phase
+  breadcrumbs are elapsed-time measurements. They cannot show CPU consumption: the 26.7 s
+  `minimax_correlate` call in `06175985` was mostly waiting on the network, not CPU. This design
+  makes a CPU-killed run *visible* and says which phase it was in. It does not say what burned the
+  CPU. That is a separate profiling question (§10). Do not widen this design to answer it.
+- **The breadcrumbs' own CPU cost** is three non-awaited single-row updates per run, which is
+  negligible beside serializing a ~290k-character context each step. Keep it that way: no payloads,
+  no `JSON.stringify` of run state in a breadcrumb.
 
 ## 7. What this does not change
 
@@ -168,7 +187,7 @@ cannot change `recovered`.
 | PR | Scope | Channel | Gate |
 |---|---|---|---|
 | A | Migration only: nullable `finished_at`/`duration_ms`, `last_phase`, `last_phase_offset_ms`, widened `stop_reason` CHECK, column comments. Review `scripts/baseline-metrics.sql`. | schema (JD applies via direct SQL, as for #899) | apply, then verify columns and constraints in production **before** PR B merges |
-| B | Recorder: up-front insert, phase updates, upsert in `finish()`, `DURABLE_TELEMETRY_DISABLED`, `checks.durable_telemetry`, tests. | edge, own deploy cycle | after `6eb444f` is deployed and measured |
+| B | Recorder: up-front insert, phase updates, upsert in `finish()`, `DURABLE_TELEMETRY_DISABLED`, `checks.durable_telemetry`, tests. | edge, own deploy cycle | after `6eb444f`'s measurement is read (deployed 2026-10-30) |
 | C (optional) | `recovery.ts`: after a won claim, stamp the unfinished row `stop_reason='interrupted'`. | edge, own deploy cycle | only if B's rows show the sweeper timing matters |
 
 ## 9. Decisions needed from JD
@@ -176,13 +195,23 @@ cannot change `recovered`.
 1. **Scope:** A-min (recommended) or A-full?
 2. **Nullability:** drop `NOT NULL` on `finished_at`/`duration_ms` (recommended), or keep the
    constraints and write a placeholder plus a `completed` flag?
-3. **Order:** deploy and measure `6eb444f` first (recommended), or accept two edge changes in one
-   build?
+3. **Order:** `6eb444f` is now deployed. Read its measurement before PR B ships (recommended), or
+   start PR B in parallel and ship it as the next build?
 4. **PR C:** include, or leave until B has produced data?
 
 ## 10. Open items outside this design
 
-- The cause of `06175985`'s death needs edge function logs for 03:18 to 03:23Z on 2026-10-30. The
-  assistant cannot read them. Lovable or JD would have to pull them while they exist.
+- ~~The cause of `06175985`'s death needs edge function logs.~~ Pulled by Lovable on 2026-10-30:
+  `CPU Time exceeded` at 03:20:28Z (§1). The assistant has not seen the log line itself.
+- **What consumes the CPU is unknown.** Lovable's audit named candidates that are **profiling
+  targets, not proven causes**:
+  - repeated serialization of the dispatched context, measured at about 287,000 to 299,000
+    characters with 108 active tools; tool-schema serialization was not included in that figure;
+  - repeated serialization of history and tool results;
+  - `minimax_correlate` stringifying its whole artifact array before it truncates the text it sends.
+
+  Measuring CPU per phase is its own small design: the instrument, its overhead, and whether the
+  Supabase runtime exposes a usable CPU clock. It should follow PR B, because B is what makes the
+  killed runs countable in the first place.
 - Whether report-salvage explains the 28 to 96 s unattributed time in forced-finalize runs is still
   unconfirmed. #899/#900 are the instrument for that, and it only starts measuring after deploy.
