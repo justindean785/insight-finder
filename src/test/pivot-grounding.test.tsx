@@ -152,14 +152,14 @@ describe("rendered controls and dispatch boundary", () => {
     expect(onRunAction).not.toHaveBeenCalled();
   });
 
-  it("a real handle renders Preview, previewing never dispatches, Start dispatches once", () => {
+  it("a real handle opens its review first, opening it never dispatches, Start dispatches once", () => {
     const onRunPivot = vi.fn();
     render(<NextSteps
       items={itemsFor(report("Corroborate username jd_case_77 across platforms — Check public profiles"))}
       onRunPivot={onRunPivot}
       onRunAction={vi.fn()}
     />);
-    fireEvent.click(screen.getByRole("button", { name: /^Preview .* on jd_case_77$/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Review and run: .* on jd_case_77$/ }));
     expect(onRunPivot).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Start this pivot" }));
     expect(onRunPivot).toHaveBeenCalledTimes(1);

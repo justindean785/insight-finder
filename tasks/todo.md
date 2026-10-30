@@ -1,5 +1,43 @@
 # tasks/todo.md — remediation workstream (audit 2026-10-10)
 
+## Adaptive evidence workflow — Stage 1 (approved 2026-10-25)
+
+Base: `origin/main` `70766fce`. PR #872 (Table inspector) is untouched and still Request Changes.
+
+- [x] Capability map of correlation, pivot, synthesis, feedback and confidence code (discovery)
+- [x] JD approval of Stage 1 and the integrity decisions, as proposed (2026-10-25)
+- [x] Stage 1 — explained adaptive ranking, read-only. Commit `266894ce` on `claude/adaptive-pivot-explain-stage1`
+  - prior attempts from `tool_usage_log` (SELECT-only, thread-scoped): `src/hooks/useThreadPivotAttempts.ts`, `src/lib/pivot-attempts.ts`
+  - explanation (question, previous attempts, cost = unknown, factors): `src/lib/pivot-rationale.ts`, shown in `NextSteps` best-pivot card
+  - ranking terms (priority only): repeated same-tool lead −60 among searched leads; source row in `conflict` +150 for a new lead
+  - tests: `src/test/pivot-adaptive-stage1.test.ts` (9)
+- [x] Integrity decision 1 — every pivot opens its review before it can run. Commit `e61e7079` on `claude/pivot-preview-before-run` (stacked on Stage 1)
+- [ ] Integrity decisions 2–7 are constraints or later stages: pivot priority never changes confidence or authority (held in Stage 1); correlation calls count toward the paid cap plus a per-case counter (Stage 2/3); yield baselines shown as display only; dismissals stay case-scoped; lineage (#613) before Stage 2
+- [ ] Stage 2 — persisted AI correlation assessments with evidence IDs and versions (edge + schema, separate PRs, after lineage)
+- [ ] Stage 3 — bounded, analyst-triggered AI reconciliation, separately accounted
+- [ ] Stage 4 — analyst feedback as calibration inputs; estimated scores labelled as such
+
+### Results (Stage 1 on `e61e7079`, measured 2026-10-25 in this worktree)
+
+- typecheck: pass
+- eslint on changed files: 0 errors; the 2 warnings are in `ChatWindow.tsx` (react-refresh, unused disable directive), which this change does not touch
+- vitest, full frontend: 228 files, 2849 passed, 1 skipped
+- `npm run build`: pass
+- `npm run test:e2e` (Playwright, cached Chromium 1234): 83 passed, 7 skipped, on the final head. One earlier full run failed `case-integrity › 2b`; it passed 3 of 3 isolated repeats and on the next full run. Recorded as a flake, not hidden.
+- screenshots at 1440×900, 894×617 and 390×844, harness on `origin/main` (before) and on this branch (after): `/private/tmp/claude-501/stage1-shots/before/`, `.../after/` (Stage 1 only), `.../after-preview-contract/`
+- NOT verified: long-list scrolling in the Table inspector (PR #872 not merged, so the inspector is not on this branch); the rationale is shown only in the Next-steps card, not in the Table lens
+
+### Known limits (measured, not assumed)
+
+- Exhaustion ("ran it twice, nothing came of it") cannot be measured: `tool_usage_log` records success, not what a call returned, and no artifact is linked to the run that produced it. Stage 1 uses a repeat signal instead (two live ok runs, one tool). Yield needs lineage (#613).
+- Duplicate-only returns cannot be measured for the same reason.
+- Cost and latency are always shown as unknown.
+- "New since last review" is deferred: no durable last-review timestamp was verified on main.
+
+Not done: no edge, schema, flag, or paid-call change; graph pivots, finding synthesis and cache sweep stay OFF.
+
+---
+
 Plan of record: `docs/plans/REMEDIATION_PLAN_2026-10-10.md`. This file is the checklist and the
 running results. The previous contents (June UI/UX upgrade plan) are preserved verbatim in
 `docs/archive/TODO_2026-06_workspace-ui-plan.md`; its 20 unchecked items belong to retired sub-sections, not current work.

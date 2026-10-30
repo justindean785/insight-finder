@@ -150,7 +150,7 @@ describe("Workbench tabs", () => {
     expect(within(panel).getByTestId("best-pivot")).toBeTruthy();
     expect(within(panel).getAllByRole("button", { name: /Preview|Run now|Review and run/ }).length).toBeGreaterThan(0);
     expect(ran).not.toHaveBeenCalled();
-    fireEvent.click(within(panel).getByRole("button", { name: /^Preview / }));
+    fireEvent.click(within(panel).getByRole("button", { name: /^Review and run: / }));
     expect(ran).not.toHaveBeenCalled(); // opening the Preview starts nothing
     fireEvent.click(within(panel).getByRole("button", { name: "Start this pivot" }));
     expect(ran).toHaveBeenCalledTimes(1);

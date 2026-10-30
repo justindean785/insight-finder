@@ -259,7 +259,7 @@ test.describe("next steps", () => {
     // after hydration; a click in that window can land beside the moving button
     // (seen in a trace). Retry only while the row is still closed, so a click
     // that DID open the preview is never undone by the retry.
-    const run = steps.getByRole("button", { name: /^Preview Verify/ }).first();
+    const run = steps.getByRole("button", { name: /^Review and run: Verify/ }).first();
     await expect(async () => {
       if ((await run.getAttribute("aria-expanded")) !== "true") await run.click();
       await expect(steps.getByText("Before this pivot runs")).toBeVisible({ timeout: 1000 });

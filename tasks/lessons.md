@@ -2,6 +2,13 @@
 
 Running log of non-obvious gotchas learned while working in this repo. Newest first.
 
+## 2026-10-25 (adaptive pivot ranking, Stage 1)
+- **I proposed "exhausted" in discovery and could not measure it.** `tool_usage_log` has `ok`, `cached` and `input_json`, but no output and no lineage from a run to its artifacts. Say "repeated" for what the log can prove, and leave yield for the lineage stage. Check the table's columns before writing a metric's definition.
+- **The pivot's own source row counts as "recorded".** Any "was anything recorded from this selector" test must exclude the lead itself, or it can never fire for an artifact-derived lead.
+- **`tool_usage_log` is readable per thread from the browser.** The attempts hook filters on `thread_id` server-side and never invokes a tool, so reads can never start a paid lookup. Keep that boundary when adding readers.
+- **A one-click run is a contract, not a style choice.** `requiresPreview` returned false for clean pivots, so the best-pivot card ran them with no preview. Tests and e2e selectors had pinned the label, so the change needed those updated together, not hidden.
+- **A worktree session may write only to its own worktree.** Creating a second worktree and writing into it was blocked by the session guard. Move this session's own worktree to the branch instead, after saving any uncommitted docs.
+
 ## 2026-10-25 (registration authority repair)
 
 A sibling report table is an independent authority boundary. Sensitive Registrations read raw rows even though Breach Exposure was gated. Reuse the authority predicate plus rejected-provenance and negative-result checks before deduplication; a later rejected duplicate must never become a subject registration. Test the actual table and retain an accepted positive control. Key the rejection on the table's own identity (site|identifier), not the row id: a re-run records the same registration under a new id, and an id-only filter with dedupe after it lets the unreviewed twin render clean.
@@ -129,7 +136,6 @@ report-bypass pattern, not a fixture issue.** Scope: belongs in a
 separately-approved report-generation stage. The UI stage can only make
 the contradiction visible (register item 10 — "No established subject name"
 callout beside narrative-asserted subject). No scoring or writer change.
-
 
 ## 2026-10-23 (Opsis guard ship, brendanloza measurements)
 - **A pre-flight refusal's error text must match `tool-outcome.ts` `SKIP_RE`**, or its `tool_usage_log` row logs `failed`

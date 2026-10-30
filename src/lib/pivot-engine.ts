@@ -110,6 +110,11 @@ const TIER_SCORE: Record<PivotPriority, number> = { high: 300, medium: 200, low:
 // lead that has already been searched still sits below an unsearched one. This
 // is PRIORITY. It never touches `confidence`, which is copied through untouched.
 const KEY_DECISION_BONUS = 500;
+// Stage 1 adaptive terms. Both are PRIORITY only, sized inside the status band:
+// a lead already searched repeatedly with one tool sinks among searched leads,
+// and a lead whose source row conflicts with the seed gains enough to outrank a
+// high-yield-type lookup with no contradiction behind it. Neither moves a new
+// lead above a searched one.
 const CONF_WEIGHT = 0.6; // source-artifact confidence (READ only, 0..100)
 const YIELD_WEIGHT = 0.5; // expected linkage fan-out per type
 const RECENCY_WEIGHT = 40; // favor the newest discoveries so the list moves

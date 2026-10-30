@@ -147,16 +147,16 @@ describe("NextSteps — a malformed pivot cannot run, a valid one previews first
     );
     const section = screen.getByRole("region", { name: "Next steps" });
     expect(section.querySelector("header")?.textContent).toMatch(/Next steps\s*1$/);
-    expect(screen.getByRole("button", { name: "Run now: Verify email ownership on j@example.com" })).toBeTruthy();
-    const run = screen.getByRole("button", { name: /^Run now/ });
+    expect(screen.getByRole("button", { name: "Review and run: Verify email ownership on j@example.com" })).toBeTruthy();
+    const run = screen.getByRole("button", { name: /^Review and run/ });
     const disclosure = screen.getByRole("button", { name: /couldn't be turned into/ });
     expect(run.compareDocumentPosition(disclosure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("the best pivot has a one-click Run now, and Preview opens the preview first; Start dispatches exactly once", () => {
+  it("the best pivot opens its review first, and Start dispatches exactly once", () => {
     const onRunPivot = vi.fn();
     render(<NextSteps items={itemsFor([validInput])} onRunPivot={onRunPivot} onRunAction={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Preview Verify email ownership on j@example.com" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review and run: Verify email ownership on j@example.com" }));
     expect(onRunPivot).not.toHaveBeenCalled();
     expect(screen.getByText("Before this pivot runs")).toBeTruthy();
     expect(screen.getByText(/Unavailable — the backend does not publish per-pivot estimates/)).toBeTruthy();
@@ -165,15 +165,16 @@ describe("NextSteps — a malformed pivot cannot run, a valid one previews first
     expect(onRunPivot.mock.calls[0][0]).toMatchObject({ target: "j@example.com", targetType: "email" });
   });
 
-  it("Run now starts the best pivot once, with no preview", () => {
+  it("the best pivot has no one-click run: its only action opens the review and dispatches nothing", () => {
     const onRunPivot = vi.fn();
     render(<NextSteps items={itemsFor([validInput])} onRunPivot={onRunPivot} onRunAction={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Run now: Verify email ownership on j@example.com" }));
-    expect(onRunPivot).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText("Before this pivot runs")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Run now/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Review and run: Verify email ownership on j@example.com" }));
+    expect(onRunPivot).not.toHaveBeenCalled();
+    expect(screen.getByText("Before this pivot runs")).toBeTruthy();
   });
 
-  it("a pivot that needs review never offers Run now; its primary action opens the preview", () => {
+  it("a searched pivot also opens its review first; it never offers Run now", () => {
     const onRunPivot = vi.fn();
     render(<NextSteps items={itemsFor([{ ...validInput, status: "searched" }])} onRunPivot={onRunPivot} onRunAction={vi.fn()} />);
     expect(screen.queryByRole("button", { name: /^Run now/ })).toBeNull();
@@ -186,7 +187,7 @@ describe("NextSteps — a malformed pivot cannot run, a valid one previews first
     const mk = (n: number) => ({ ...validInput, id: `email:p${n}@example.com:a${n}`, target: `p${n}@example.com`, action: `Check ${n}` });
     render(<NextSteps items={itemsFor([mk(1), mk(2), mk(3), mk(4), mk(5)])} onRunPivot={vi.fn()} onRunAction={vi.fn()} />);
     expect(screen.getAllByTestId("best-pivot")).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Run now: Check 1 on p1@example.com" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Review and run: Check 1 on p1@example.com" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Run Check 4 on p4@example.com" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Run Check 5 on p5@example.com" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /1 more step/ }));
