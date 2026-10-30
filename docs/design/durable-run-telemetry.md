@@ -101,8 +101,12 @@ On `orchestrator_invocations`:
 - Widen the `stop_reason` CHECK with `'interrupted'`, written only by the optional recovery stamp
   in §8 PR C. Not needed for PR B.
 
-Reading the result: `finished_at IS NULL` and `last_progress` older than `STALE_RUN_AFTER_MS`
-(75 s) means the run died; `last_phase` says where. Existing rows are unchanged
+Reading the result: phase age is **not** a liveness signal. A healthy run can stay in `loop` well
+past 75 s (the forced-finalize window opens at 90 s), and breadcrumbs only move on transitions. A
+row with `finished_at IS NULL` counts as **dead** only when liveness says so: the thread's
+`recovery_reason` is set by the sweeper, or `threads.last_heartbeat_at` is older than
+`STALE_RUN_AFTER_MS` (75 s), the same rule `isStaleActiveThread()` in `recovery.ts` uses.
+Otherwise it is **in flight**. Either way `last_phase` says where the run was. Existing rows are unchanged
 (`finished_at` is already non-null on all of them, `last_phase` NULL = "predates this").
 
 ### 4.2 Recorder (edge, `telemetry.ts` + `index.ts`)
