@@ -92,9 +92,8 @@ export type ComputePivotsInput = {
   reviews?: Record<string, string | null | undefined>;
   /**
    * Prior tool attempts per normalized selector (`summarizeAttempts`). Optional:
-   * without it nothing is marked repeated, and ordering is unchanged. Read-only —
-   * it can demote a searched lead that was repeated with one tool, and never
-   * touches confidence, authority or linkage.
+   * without it nothing is marked repeated. Read-only and DISPLAY ONLY — it never
+   * changes the order, and never touches confidence, authority or linkage.
    */
   attempts?: ReadonlyMap<string, AttemptSummary>;
 };
@@ -111,13 +110,6 @@ const TIER_SCORE: Record<PivotPriority, number> = { high: 300, medium: 200, low:
 // lead that has already been searched still sits below an unsearched one. This
 // is PRIORITY. It never touches `confidence`, which is copied through untouched.
 const KEY_DECISION_BONUS = 500;
-// Stage 1 adaptive terms. Both are PRIORITY only, sized inside the status band:
-// a lead already searched repeatedly with one tool sinks among searched leads,
-// and a lead whose source row conflicts with the seed gains enough to outrank a
-// high-yield-type lookup with no contradiction behind it. Neither moves a new
-// lead above a searched one.
-const REPEAT_PENALTY = 60;
-const CONTRADICTION_GAP_BONUS = 150;
 const CONF_WEIGHT = 0.6; // source-artifact confidence (READ only, 0..100)
 const YIELD_WEIGHT = 0.5; // expected linkage fan-out per type
 const RECENCY_WEIGHT = 40; // favor the newest discoveries so the list moves
@@ -462,9 +454,8 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
         : c.origin === "finding"
           ? "corroboration"
           : "new_records";
-    const adaptive =
-      (repeated ? -REPEAT_PENALTY : 0) +
-      (contradicts ? CONTRADICTION_GAP_BONUS : 0);
+    // DISPLAY ONLY: `repeated` and `contradicts` label the card and feed the
+    // rationale. They add nothing to `score` — a reorder needs JD's sign-off (N1).
 
     const score =
       (status === "new" ? STATUS_RANK_NEW : 0) +
@@ -472,14 +463,13 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
       TIER_SCORE[priority] +
       conf * CONF_WEIGHT +
       TYPE_YIELD[c.type] * YIELD_WEIGHT +
-      recency * RECENCY_WEIGHT +
-      adaptive;
+      recency * RECENCY_WEIGHT;
 
     const factors: string[] = [];
     if (status === "new") factors.push("Not searched yet.");
     else factors.push("Already searched, so it ranks below unsearched leads.");
-    if (repeated) factors.push("Already run twice or more with the same tool, so it sinks among searched leads.");
-    if (contradicts) factors.push("Its source row conflicts with the seed or a cluster, so resolving it is worth a lot.");
+    if (repeated) factors.push("Already run twice or more with the same tool. This is shown for context and does not change the order.");
+    if (contradicts) factors.push("Its source row conflicts with the seed or a cluster. This is shown for context and does not change the order.");
     if (decision === "key") factors.push("Analyst marked it Key.");
     const rationale = buildRationale({ type: c.type, gap, attempts: att, factors });
 

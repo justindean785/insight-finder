@@ -83,8 +83,8 @@ describe("Stage 1 — prior attempts are summarised from the tool log", () => {
   });
 });
 
-describe("Stage 1 — adaptive ranking", () => {
-  it("a lead repeated with one tool sinks below a fresh searched lead", () => {
+describe("Stage 1 — adaptive labels (display only; order unchanged until N1 is signed off)", () => {
+  it("a lead repeated with one tool is labelled repeated, and the order is byte-identical to the no-attempts order", () => {
     const repeated = art({ kind: "email", value: "repeat@x.example", confidence: 70 });
     const fresh = art({ kind: "email", value: "fresh@x.example", confidence: 70 });
     const queried = new Set([normalizeTarget(repeated.value), normalizeTarget(fresh.value)]);
@@ -96,13 +96,16 @@ describe("Stage 1 — adaptive ranking", () => {
       artifacts: [repeated, fresh], seedValue: null, reportPivots: [], skipSet: NONE,
       queriedSet: queried, attempts,
     });
-    const order = out.map((p) => p.value);
-    expect(order.indexOf(fresh.value)).toBeLessThan(order.indexOf(repeated.value));
+    const baseline = computePivots({
+      artifacts: [repeated, fresh], seedValue: null, reportPivots: [], skipSet: NONE, queriedSet: queried,
+    });
+    expect(out.map((p) => p.value)).toEqual(baseline.map((p) => p.value));
+    expect(out.map((p) => p.score)).toEqual(baseline.map((p) => p.score));
     const r = out.find((p) => p.value === repeated.value)!;
     expect(r.rationale?.gap).toBe("repeated");
     expect(r.rationale?.repeated).toBe(true);
     expect(r.rationale?.previous).toBe("2 live runs, 2 ok, 0 failed (hunter).");
-    // The repeat is a ranking fact, never a confidence change.
+    // The repeat is a label, never a score or confidence change.
     expect(r.confidence).toBe(70);
   });
 
@@ -116,20 +119,17 @@ describe("Stage 1 — adaptive ranking", () => {
     expect(out.find((p) => p.value === lead.value)?.rationale?.repeated).toBe(false);
   });
 
-  it("a conflicting source row outranks a comparable lookup with no contradiction behind it", () => {
-    // A domain (low fan-out) whose row conflicts with the seed, newest.
-    const conflict = art({
-      kind: "domain", value: "northgate.example", confidence: 80,
-      created_at: "2026-02-01T00:00:00Z", metadata: { conflict: true },
-    });
-    // An email (high fan-out), no contradiction, older.
+  it("a conflicting source row is labelled contradiction without changing its score", () => {
+    const row = { kind: "domain", value: "northgate.example", confidence: 80, created_at: "2026-02-01T00:00:00Z" };
+    const conflict = art({ ...row, metadata: { conflict: true } });
+    const plain = art({ ...row });
     const highYield = art({ kind: "email", value: "jane@corp.example", confidence: 80, created_at: "2026-01-01T00:00:00Z" });
-    const out = computePivots({
-      artifacts: [highYield, conflict], seedValue: null, reportPivots: [], skipSet: NONE,
-    });
-    const order = out.map((p) => p.value);
-    expect(order.indexOf("northgate.example")).toBeLessThan(order.indexOf("jane@corp.example"));
-    expect(out.find((p) => p.value === "northgate.example")?.rationale?.gap).toBe("contradiction");
+    const withConflict = computePivots({ artifacts: [highYield, conflict], seedValue: null, reportPivots: [], skipSet: NONE });
+    const without = computePivots({ artifacts: [highYield, plain], seedValue: null, reportPivots: [], skipSet: NONE });
+    const c = withConflict.find((p) => p.value === "northgate.example")!;
+    expect(c.rationale?.gap).toBe("contradiction");
+    expect(c.score).toBe(without.find((p) => p.value === "northgate.example")!.score);
+    expect(withConflict.map((p) => p.value)).toEqual(without.map((p) => p.value));
   });
 
   it("a dismissed match never reappears, even with prior attempts present", () => {
