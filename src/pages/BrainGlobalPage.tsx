@@ -277,8 +277,12 @@ export default function BrainGlobalPage() {
     return { sample, total, hidden, hits, avgConf, newSince, highConfidence };
   }, [memories, sinceVisit, deleted]);
 
+  // `loading` is the FIRST read only. `loadMemories` sets memLoading on every
+  // realtime refresh (an agent_memory change, or a tool_usage_log INSERT on
+  // each tool call of a live scan); without this guard the sticky caption
+  // flashed to "… of —" on every one of them.
   const sampleCaption = describeMemorySample({
-    loading: memLoading,
+    loading: memLoading && memoriesTotal.state === "loading",
     sample: stats.sample,
     shown: stats.total,
     hidden: stats.hidden,

@@ -213,6 +213,8 @@ describe("Intelligence header — one honest population per number", () => {
     m.calls = [];
     m.rows = rows(13); m.count = 1700;
     binding!.cb({ eventType: "INSERT" });
+    // A refresh never drops the caption back to the skeleton: the old count stays up until the new one lands.
+    expect(caption()).toBe("12 memories (all stored)");
     await waitFor(() => expect(caption()).toBe("13 most recent of 1,700"));
     const mine = m.calls.filter((c) => c.table === "agent_memory" && c.op === "select");
     expect(mine.filter((c) => c.head)).toHaveLength(1);
