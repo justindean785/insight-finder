@@ -12,24 +12,49 @@ const INDEX = await Deno.readTextFile(new URL("../../functions/osint-agent/index
 const HEALTH = await Deno.readTextFile(new URL("../../functions/osint-agent/health-handler.ts", import.meta.url));
 const MODULE = await Deno.readTextFile(new URL("../../functions/osint-agent/lib/memory-brief.ts", import.meta.url));
 
-Deno.test("wiring: the read starts behind the kill switch, BEFORE the intake await", () => {
+Deno.test("wiring: the read starts behind BOTH switches, BEFORE the intake await, and after the registry is built", () => {
   assertStringIncludes(INDEX, 'from "./lib/memory-brief.ts"');
-  const kickoff = INDEX.indexOf("const toolLessonReads = memoryBriefDisabled() ? null : loadToolLessons(");
+  const kickoff = INDEX.indexOf("const toolLessonReads = memoryBriefDisabled() || !memoryBriefLegacyRowsEnabled() ? null : loadToolLessons((signal) =>");
   const intake = INDEX.indexOf("const intake = await intakePromise;");
+  const registry = INDEX.indexOf("} = buildTools({");
   assert(kickoff > 0 && kickoff < intake, "the read must overlap the intake and review loads");
+  assert(registry > 0 && registry < kickoff, "the registry's tool names are a query predicate, so the registry must exist first");
 });
 
-Deno.test("wiring: the read is the user's own GLOBAL-scope tool: rows only", () => {
+Deno.test("wiring: index.ts delegates the query to toolLessonQuery with the registry's subjects, the freshness cutoff and the abort signal", () => {
   const start = INDEX.indexOf("const toolLessonReads");
-  const slice = INDEX.slice(start, start + 900);
-  assertStringIncludes(slice, '.from("agent_memory")');
-  assertStringIncludes(slice, '.eq("user_id", userId)');
-  assertStringIncludes(slice, '.eq("scope", "global")'); // a case-scoped row must never reach another case
-  assertStringIncludes(slice, '.like("subject", `${TOOL_LESSON_PREFIX}%`)');
+  const slice = INDEX.slice(start, start + 700);
+  assertStringIncludes(slice, "toolLessonQuery(supabase, {");
+  assertStringIncludes(slice, "userId,");
+  assertStringIncludes(slice, "subjects: registeredToolSubjects(Object.keys(tools), TOOL_NAME_ALIASES)");
+  assertStringIncludes(slice, "cutoffIso: freshnessCutoffIso()");
+  assertStringIncludes(slice, "signal,");
+  assertFalse(/\.like\(/.test(slice), "the prefix LIKE is gone: only registered tool subjects are fetched, so retired tools cannot starve the window");
 });
 
-Deno.test("wiring: the block is built from the registry's own tool names and appended to intermediateSystem ONLY", () => {
-  assertStringIncludes(INDEX, "availableTools: new Set(Object.keys(tools))");
+Deno.test("module: the query is the owner's fresh GLOBAL-scope LESSON rows for registered subjects, ordered deterministically, cancellable", () => {
+  const start = MODULE.indexOf("export function toolLessonQuery(");
+  const slice = MODULE.slice(start, start + 1400);
+  assertStringIncludes(slice, '.from("agent_memory")');
+  assertStringIncludes(slice, '.eq("user_id", args.userId)');
+  assertStringIncludes(slice, '.eq("scope", "global")'); // a case-scoped row must never reach another case
+  assertStringIncludes(slice, '.eq("kind", "lesson")');
+  assertStringIncludes(slice, '.in("subject", args.subjects)');
+  assertStringIncludes(slice, '.gte("created_at", args.cutoffIso)');
+  assertStringIncludes(slice, '.order("created_at", { ascending: false })');
+  assertStringIncludes(slice, '.order("id", { ascending: true })');
+  assertStringIncludes(slice, ".limit(MEMORY_BRIEF_FETCH_LIMIT)");
+  assertStringIncludes(slice, ".abortSignal(args.signal)");
+  assertFalse(/order\("confidence"/.test(slice), "confidence is a ratchet, never an ordering key");
+});
+
+Deno.test("module: the builder never sorts by confidence, hit_count or updated_at", () => {
+  const body = MODULE.slice(MODULE.indexOf("export function buildMemoryBrief("), MODULE.indexOf("// ---- loading"));
+  assertFalse(/confidence\)|hit_count\)|updated_at/.test(body), "ranking must be created_at desc, id asc only");
+});
+
+Deno.test("wiring: the block is built from the registry's own tool names (plus aliases) and appended to intermediateSystem ONLY", () => {
+  assertStringIncludes(INDEX, "availableTools: new Set(Object.keys(tools)), aliases: TOOL_NAME_ALIASES");
   assertStringIncludes(INDEX, "baseSystemPrompt + buildPerCycleCompactDirective() + resumeBriefBlock + memoryBriefBlock;");
   const occurrences = INDEX.split("memoryBriefBlock").length - 1;
   // declaration, assignment, and the single append: nothing else may carry it (no finalize/salvage/base path).
@@ -42,6 +67,10 @@ Deno.test("wiring: the block is built from the registry's own tool names and app
 Deno.test("wiring: the event is a structured count-only log and a failed read never throws into the run", () => {
   assertStringIncludes(INDEX, "memoryBriefEvent(threadId, memOutcome");
   assertFalse(/throw\b/.test(MODULE.slice(MODULE.indexOf("export async function loadToolLessons"), MODULE.indexOf("// ---- observability"))));
+  // Attribution (lesson ids, hashes, invocation id) is a separate approval unit (plan §4.11 / Q8, Q13): the M1
+  // build must not carry it. Pinned here so it cannot ride in quietly.
+  const observability = MODULE.slice(MODULE.indexOf("// ---- observability"));
+  assertFalse(/lesson_ids|sha256|invocation_id|digest/.test(observability), "count-only telemetry in the M1 hardening build");
 });
 
 Deno.test("health: the proof key is registered", () => {
@@ -50,7 +79,10 @@ Deno.test("health: the proof key is registered", () => {
 
 Deno.test("prompt budget: the block sits after the cached base, which is unchanged by it", () => {
   const base = "BASE PROMPT ".repeat(50);
-  const block = buildMemoryBrief({ rows: [{ subject: "tool:fofa_search", content: "failed 7 of 7", confidence: 80 }] }).text;
+  const block = buildMemoryBrief({
+    rows: [{ id: "x", kind: "lesson", scope: "global", subject: "tool:fofa_search", content: "failed 7 of 7", created_at: new Date().toISOString() }],
+    disabled: false,
+  }).text;
   assert(block.length > 0 && block.length <= MEMORY_BRIEF_MAX_CHARS);
   const without = base + buildPerCycleCompactDirective();
   const withBlock = without + `\n\n${block}`;

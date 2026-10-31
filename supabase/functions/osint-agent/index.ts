@@ -97,7 +97,8 @@ import {
   type BriefArtifact, type BriefUsageRow, type Page,
 } from "./lib/next-pivot.ts";
 import {
-  buildMemoryBrief, loadToolLessons, memoryBriefDisabled, memoryBriefEvent, MEMORY_BRIEF_FETCH_LIMIT, TOOL_LESSON_PREFIX,
+  buildMemoryBrief, freshnessCutoffIso, loadToolLessons, memoryBriefDisabled, memoryBriefEvent, memoryBriefLegacyRowsEnabled,
+  registeredToolSubjects, toolLessonQuery,
 } from "./lib/memory-brief.ts";
 import { buildTools, TOOL_NAME_ALIASES } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
@@ -984,22 +985,18 @@ Deno.serve(async (req) => {
         .order("created_at", { ascending: true })
         .range(from, to)) as unknown as Page<BriefUsageRow>,
     });
-    // TOOL-LESSON BRIEF (lib/memory-brief.ts, M1): `agent_memory` rows keyed `tool:<name>`, read once per request
-    // and overlapped with the intake and review loads for the same reason as the resume brief above. Unlike the
-    // resume brief it also applies to a first turn. `loadToolLessons` never rejects and has its own deadline.
-    const toolLessonReads = memoryBriefDisabled() ? null : loadToolLessons(() =>
-      supabase
-        .from("agent_memory")
-        .select("id,kind,subject,content,confidence,hit_count")
-        .eq("user_id", userId)
-        // 'global' only: a case-scoped row is about ONE investigation and must not reach another (the scope leak the
-        // agent-memory CI assertion guards against).
-        .eq("scope", "global")
-        .like("subject", `${TOOL_LESSON_PREFIX}%`)
-        .order("confidence", { ascending: false })
-        .limit(MEMORY_BRIEF_FETCH_LIMIT) as unknown as PromiseLike<
-          { data: Array<Record<string, unknown>> | null; error: { message?: string } | null }
-        >);
+    // TOOL-LESSON BRIEF (lib/memory-brief.ts, M1): this user's fresh, GLOBAL-scope `lesson` rows keyed
+    // `tool:<name>` for tools in THIS run's registry (canonical names plus alias keys), read once per request and
+    // overlapped with the intake and review loads for the same reason as the resume brief above. Unlike the resume
+    // brief it also applies to a first turn. The eligibility predicates live in `toolLessonQuery` and are re-checked
+    // row by row in `buildMemoryBrief`; `loadToolLessons` never rejects and its deadline aborts the query.
+    const toolLessonReads = memoryBriefDisabled() || !memoryBriefLegacyRowsEnabled() ? null : loadToolLessons((signal) =>
+      toolLessonQuery(supabase, {
+        userId,
+        subjects: registeredToolSubjects(Object.keys(tools), TOOL_NAME_ALIASES),
+        cutoffIso: freshnessCutoffIso(),
+        signal,
+      }));
     // Resolve the attachment intake started above (it overlapped the preflight
     // + setup). Its summary must be present before the system prompt is built.
     const intake = await intakePromise;
@@ -1091,7 +1088,7 @@ Deno.serve(async (req) => {
     let memoryBriefBlock = "";
     if (toolLessonReads) {
       const lessons = await toolLessonReads;
-      const memOutcome = buildMemoryBrief({ rows: lessons.rows, availableTools: new Set(Object.keys(tools)) });
+      const memOutcome = buildMemoryBrief({ rows: lessons.rows, availableTools: new Set(Object.keys(tools)), aliases: TOOL_NAME_ALIASES });
       console.log(JSON.stringify(memoryBriefEvent(threadId, memOutcome, { ms: lessons.ms, readReason: lessons.reason })));
       if (memOutcome.text) memoryBriefBlock = `\n\n${memOutcome.text}`;
     }
