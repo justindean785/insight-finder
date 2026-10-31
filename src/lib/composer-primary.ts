@@ -8,7 +8,8 @@
  * typing continued this case or began another.
  *
  * Now the button says what it will do:
- *   - a run is live           → Stop
+ *   - a run is live           → Stop (this tab's stream, OR a run this tab is
+ *                               following on the server without a stream)
  *   - no case yet             → Start investigation
  *   - open case, empty box    → Continue (one more cycle), when a cycle may run
  *   - open case, text typed   → Send (a follow-up on THIS case)
@@ -22,6 +23,15 @@ export type ComposerPrimary =
 
 export function composerPrimary(input: {
   isLoading: boolean;
+  /**
+   * The server is running this case and this tab is not receiving the stream
+   * (`shouldFollowServer`, settled by `useHeldTrue`). Stop must stay available:
+   * the run is spending, and the analyst's only lever is the persisted
+   * `status='stopped'` that the edge loop polls every step — which needs no
+   * stream. Measured 2026-10-31 (case 5663c718): after the stream ended the
+   * button fell back to Send while the header still read Analyzing.
+   */
+  followingServer: boolean;
   stopping: boolean;
   isFollowUp: boolean;
   /** A next cycle may start now (`canShowRunControls` and not loading). */
@@ -31,7 +41,10 @@ export function composerPrimary(input: {
   canSubmit: boolean;
   uploading: boolean;
 }): ComposerPrimary {
-  if (input.isLoading) return { kind: "stop", stopping: input.stopping };
+  // Before the start/follow-up split on purpose: a tab opened mid-run before its
+  // messages hydrate has `isFollowUp=false`, and must never offer "Start
+  // investigation" over a live run.
+  if (input.isLoading || input.followingServer) return { kind: "stop", stopping: input.stopping };
   if (!input.isFollowUp) return { kind: "start", disabled: !input.canSubmit || input.uploading };
   if (input.empty && input.canContinue) return { kind: "continue" };
   return { kind: "send", disabled: !input.canSubmit || input.uploading };

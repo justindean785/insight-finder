@@ -2021,8 +2021,11 @@ function ChatWindowInner({
     // Persist "stopped" — this is the status the edge worker's prepareStep polls
     // to abort the in-flight server-side run (the stream is intentionally NOT
     // bound to req.signal, so the browser stop() alone does not halt the
-    // server). A failure here means the server run may keep going, so it is
-    // surfaced as an error rather than a soft warning.
+    // server). It is also the WHOLE mechanism when this tab is following the
+    // server without a stream (reload mid-run, dropped connection): stop()
+    // above is a no-op then, and this write is what ends the run. A failure
+    // here means the server run may keep going, so it is surfaced as an error
+    // rather than a soft warning.
     try {
       const { error: statusError } = await supabase
         .from("threads")
@@ -2629,6 +2632,10 @@ function ChatWindowInner({
   });
   const primary = composerPrimary({
     isLoading,
+    // The settled value, not the raw predicate: a normal run ends with the
+    // stream closing a moment before the row is marked finished, and Stop must
+    // not flash in that gap.
+    followingServer,
     stopping,
     isFollowUp,
     canContinue: runControlsVisible && !isLoading,
