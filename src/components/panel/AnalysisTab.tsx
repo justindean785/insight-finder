@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { caseDisplayLabel } from "@/lib/case-label";
+import { countCustodyCovered, type CoverageEvidence } from "@/lib/custody-coverage";
 
 /**
  * Cross-investigation analysis.
@@ -49,6 +50,7 @@ type ArtifactRow = {
   id: string;
   thread_id: string;
   kind: string;
+  value: string | null;
   confidence: number | null;
   source: string | null;
   metadata: Record<string, unknown> | null;
@@ -84,10 +86,10 @@ export function AnalysisTab() {
       setError(null);
       try {
         const [a, t, th, ev] = await Promise.all([
-          supabase.from("artifacts").select("id,thread_id,kind,confidence,source,metadata").order("created_at", { ascending: false }).limit(5000),
+          supabase.from("artifacts").select("id,thread_id,kind,value,confidence,source,metadata").order("created_at", { ascending: false }).limit(5000),
           supabase.from("tool_usage_log").select("thread_id,ok").order("created_at", { ascending: false }).limit(5000),
           supabase.from("threads").select("id,title,seed_value,status").order("updated_at", { ascending: false }).limit(500),
-          supabase.from("evidence_log").select("artifact_id").order("collected_at", { ascending: false }).limit(5000),
+          supabase.from("evidence_log").select("artifact_id,thread_id,kind,value").order("collected_at", { ascending: false }).limit(5000),
         ]);
         if (cancelled) return;
         // Name the failing query. Promise.all collapses four requests into one
@@ -102,10 +104,13 @@ export function AnalysisTab() {
         if (failed.length) {
           throw new Error(failed.map(([name, err]) => describeNamedError(name, err)).join(" · "));
         }
-        setArtifacts((a.data ?? []) as ArtifactRow[]);
+        const artifactRows = (a.data ?? []) as ArtifactRow[];
+        setArtifacts(artifactRows);
         setTools((t.data ?? []) as ToolRow[]);
         setThreads((th.data ?? []) as ThreadRow[]);
-        setCustodyCount(new Set((ev.data ?? []).map((r: { artifact_id: string }) => r.artifact_id)).size);
+        // Matched on (thread, kind, value): every writer sends artifact_id NULL, so a
+        // distinct-artifact_id count was always 1. See src/lib/custody-coverage.ts.
+        setCustodyCount(countCustodyCovered(artifactRows, (ev.data ?? []) as CoverageEvidence[]));
       } catch (e) {
         if (!cancelled) setError(describeError(e));
       } finally {
