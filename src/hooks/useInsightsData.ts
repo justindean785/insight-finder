@@ -14,7 +14,16 @@ export type ToolUsageSummary = {
 export type InsightsData = {
   /** Server-aggregated over ALL rows (see get_insights_summary RPC). */
   summary: InsightsSummary;
-  memoryCount: number;
+  /**
+   * Exact stored `agent_memory` row count for this user, all time. `null` when
+   * the count query itself failed: the Overview tile then renders `—` rather
+   * than a 0 that reads as "no memories". The header on /brain reads its own
+   * copy of this number from the page loader, on purpose, so it refreshes on
+   * the same realtime channel as the 500-row sample it is the denominator of.
+   */
+  memoryCount: number | null;
+  /** Set when the stored count could not be read. The rest of the summary still renders. */
+  memoryCountError: string | null;
   caseCountExact: number;
   artifactCountExact: number;
   toolSummaries: ToolUsageSummary[];
@@ -64,9 +73,19 @@ export function useInsightsData(userId: string | undefined, enabled: boolean) {
         failed: Math.max(0, t.count - t.ok_count),
       }));
 
+      // A failed count is not a zero. `count ?? 0` used to turn a PostgREST
+      // error into "Memories 0" on the Overview, which is a completeness claim
+      // the data never made (plan 2026-10-31, defect D10).
+      const memoryCountError = memCountRes.error
+        ? memCountRes.error.message || "Could not count memories."
+        : memCountRes.count == null
+          ? "Memory count unavailable."
+          : null;
+
       setData({
         summary,
-        memoryCount: memCountRes.count ?? 0,
+        memoryCount: memoryCountError ? null : (memCountRes.count as number),
+        memoryCountError,
         caseCountExact: caseCountRes.count ?? 0,
         artifactCountExact: artifactCountRes.count ?? 0,
         toolSummaries,

@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { MEMORY_SAMPLE_CAP, describeMemorySample, type MemoryTotal } from "@/lib/memory-population";
 import {
   SOURCE_RELIABILITY_ROW_LIMIT,
   describeSourceReliability,
@@ -74,7 +75,7 @@ type MemoryFilter = typeof MEMORY_FILTERS[number];
 
 const PATTERN_FILTERS = ["ALL", "PHONE", "USERNAME", "EMAIL", "BREACH", "GEO"] as const;
 type PatternFilter = typeof PATTERN_FILTERS[number];
-const PATTERN_SORTS = ["NEWEST", "CONFIDENCE", "RECALLS"] as const;
+const PATTERN_SORTS = ["NEWEST", "CONFIDENCE", "HITS"] as const;
 type PatternSort = typeof PATTERN_SORTS[number];
 const BRAIN_PROMOTED_KEY = "brain_promoted_memories";
 
@@ -136,6 +137,14 @@ export default function BrainGlobalPage() {
   const [patternFilter, setPatternFilter] = useState<PatternFilter>("ALL");
   const [patternSort, setPatternSort] = useState<PatternSort>("NEWEST");
   const [sfCreditsLeft, setSfCreditsLeft] = useState<number | null>(null);
+  // Exact stored row count on `agent_memory` for this user, independent of the
+  // 500-row recent sample this page renders. Tri-state on purpose: "not read
+  // yet" and "the count query failed" used to collapse into one `null`, and
+  // that null rendered "all memories fit in the slice" — a completeness claim
+  // made while the count was still loading or had errored (plan 2026-10-31,
+  // D10). `loading` is set only on the first read, so a realtime refresh
+  // does not flash the caption back to a skeleton.
+  const [memoriesTotal, setMemoriesTotal] = useState<MemoryTotal>({ state: "loading" });
 
   const toggleSuppress = (id: string) => {
     setSuppressed((prev) => {
@@ -175,16 +184,34 @@ export default function BrainGlobalPage() {
     let alive = true;
     const loadMemories = async () => {
       setMemLoading(true);
-      const { data } = await supabase
-        .from("agent_memory")
-        .select("id,kind,subject,subject_kind,content,related_values,confidence,hit_count,last_used_at,created_at,source_thread_id")
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false })
-        .limit(500);
+      // The recent sample and its denominator are read together, in the same
+      // loader, so the realtime channel below refreshes both at once and the
+      // caption never pairs a fresh sample with a stale total. The sample is
+      // capped at 500 newest rows for rendering; the count is the stored
+      // population, exact, no cap.
+      const [sampleRes, countRes] = await Promise.all([
+        supabase
+          .from("agent_memory")
+          .select("id,kind,subject,subject_kind,content,related_values,confidence,hit_count,last_used_at,created_at,source_thread_id")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false })
+          .limit(MEMORY_SAMPLE_CAP),
+        supabase
+          .from("agent_memory")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", user.id),
+      ]);
       if (!alive) return;
-      const list = (data as Memory[] | null) ?? [];
+      const list = (sampleRes.data as Memory[] | null) ?? [];
       setMemories(list);
       setMemLoading(false);
+      // A failed count is NOT zero and NOT "everything fit". It is unavailable,
+      // and the caption says so.
+      setMemoriesTotal(
+        countRes.error || countRes.count == null
+          ? { state: "error" }
+          : { state: "ok", total: countRes.count },
+      );
       const { count: sfUsed } = await supabase
         .from("tool_usage_log")
         .select("id", { count: "exact", head: true })
@@ -226,19 +253,41 @@ export default function BrainGlobalPage() {
     };
   }, [user]);
 
+  // Three populations, each named where it is shown (plan 2026-10-31 §4.1):
+  //   stored  — exact count of every agent_memory row (memoriesTotal)
+  //   sample  — the 500 newest rows this page fetched (memories.length)
+  //   shown   — the sample minus rows hidden in THIS browser (`deleted` set)
+  // Every statistic in the header is over `shown`. Muting (`suppressed`) is a
+  // view effect only and changes none of these numbers.
   const stats = useMemo(() => {
     const visible = memories.filter((m) => !deleted.has(m.id));
+    const sample = memories.length;
     const total = visible.length;
-    const recalls = visible.reduce((s, m) => s + (m.hit_count ?? 0), 0);
+    const hidden = sample - total;
+    const hits = visible.reduce((s, m) => s + (m.hit_count ?? 0), 0);
+    // `null`, not 0: an empty sample has no average, and "0%" would read as a
+    // measured low score.
     const avgConf = total
       ? Math.round(visible.reduce((s, m) => s + (m.confidence ?? 0), 0) / total)
-      : 0;
+      : null;
     const newSince = sinceVisit
       ? visible.filter((m) => new Date(m.created_at).getTime() > new Date(sinceVisit).getTime()).length
       : 0;
     const highConfidence = visible.filter((m) => (m.confidence ?? 0) >= 75).length;
-    return { total, recalls, avgConf, newSince, highConfidence };
+    return { sample, total, hidden, hits, avgConf, newSince, highConfidence };
   }, [memories, sinceVisit, deleted]);
+
+  // `loading` is the FIRST read only. `loadMemories` sets memLoading on every
+  // realtime refresh (an agent_memory change, or a tool_usage_log INSERT on
+  // each tool call of a live scan); without this guard the sticky caption
+  // flashed to "… of —" on every one of them.
+  const sampleCaption = describeMemorySample({
+    loading: memLoading && memoriesTotal.state === "loading",
+    sample: stats.sample,
+    shown: stats.total,
+    hidden: stats.hidden,
+    total: memoriesTotal,
+  });
 
   const filteredMemories = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -255,7 +304,7 @@ export default function BrainGlobalPage() {
       : list.filter((m) => `${m.subject_kind ?? ""} ${m.subject} ${m.content}`.toUpperCase().includes(patternFilter));
     const sorted = [...filtered].sort((a, b) => {
       if (patternSort === "CONFIDENCE") return (b.confidence ?? 0) - (a.confidence ?? 0);
-      if (patternSort === "RECALLS") return (b.hit_count ?? 0) - (a.hit_count ?? 0);
+      if (patternSort === "HITS") return (b.hit_count ?? 0) - (a.hit_count ?? 0);
       return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
     });
     return sorted;
@@ -268,11 +317,12 @@ export default function BrainGlobalPage() {
     <div className="flex-1 min-h-0 overflow-y-auto">
       <header className="sticky top-0 z-10 glass-card border-b border-border-subtle">
         {/* Phone: this header is sticky, so every pixel it takes is permanently
-            gone. Measured at 390px before this change it stood ~330px tall —
-            39% of an 844px viewport — ahead of any content. Padding, title size
-            and the decorative sub-line are scaled per breakpoint; the desktop
-            composition is unchanged. */}
-        <div className="px-4 sm:px-6 pt-4 sm:pt-5 pb-2.5 sm:pb-3 flex items-start gap-2.5 sm:gap-3">
+            gone. Measured at 390px before 2026-10 it stood ~330px tall — 39% of
+            an 844px viewport — ahead of any content. The decorative sub-line
+            ("Aggregate stats, evidence-quality analysis…") is gone at every
+            width now: it restated the title and the tabs. The governance note
+            is NOT decorative and stays at every width. Tokens untouched. */}
+        <div className="px-4 sm:px-6 pt-3 sm:pt-4 pb-2 flex items-start gap-2.5 sm:gap-3">
           <Link
             to="/"
             aria-label="Home"
@@ -287,15 +337,10 @@ export default function BrainGlobalPage() {
             <h1 className="font-display text-base sm:text-xl tracking-tight text-foreground">
               INTELLIGENCE · CROSS-CASE VIEW
             </h1>
-            {/* Decorative: it restates what the title and the tabs below already
-                say. First thing to go on a small screen. The governance note
-                below is NOT decorative and stays at every width. */}
-            <p className="hidden sm:block text-xs text-muted-foreground mt-0.5">
-              Aggregate stats, evidence-quality analysis, saved patterns, and source context across every case.
-            </p>
-            <p className="mt-1 sm:mt-1.5 text-micro text-muted-foreground/80">
+            <p className="mt-1 text-micro text-muted-foreground">
               Pin / mute / hide actions on this screen are local view controls — they do not modify
               the source memory or create an audited governance record.
+              {stats.newSince > 0 && " “New” counts memories created since this browser last opened this screen."}
             </p>
           </div>
           {stats.newSince > 0 && (
@@ -304,17 +349,63 @@ export default function BrainGlobalPage() {
             </span>
           )}
         </div>
-        <div className="px-4 sm:px-6 pb-3 sm:pb-4 flex gap-2 overflow-x-auto scrollbar-thin edge-fade-x">
-          <MetricChip icon={Brain} label="MEMORIES" value={stats.total} />
-          <MetricChip icon={Zap} label="RECALLS" value={stats.recalls} />
-          <MetricChip icon={Target} label="AVG CONFIDENCE" value={`${stats.avgConf}%`} />
-          <MetricChip
-            icon={TrendingUp}
-            label="HIGH CONFIDENCE"
-            value={stats.highConfidence}
-            title="Memories with confidence ≥75%. This is a source/tool confidence score, not an analyst confirmation."
-          />
-          <MetricChip icon={CreditCard} label="SOCIALFETCH" value={sfCreditsLeft != null ? `${sfCreditsLeft.toLocaleString()} left` : "—"} />
+
+        {/* Two chip groups, each titled by the population it describes. The
+            scope is on-screen text, never a `title=` tooltip: a phone has no
+            hover, and the 2026-10-31 audit found "MEMORIES · 500" beside
+            "Memories 1,672" and "AVG CONFIDENCE 66%" beside "Avg confidence 49%"
+            — same labels, two populations (recent sample vs. stored) and two
+            nouns (memory confidence vs. artifact confidence). */}
+        <div className="px-4 sm:px-6 pb-2.5 sm:pb-3 flex flex-col gap-2">
+          <section aria-labelledby="memory-sample-title" data-testid="memory-sample-group">
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <h2 id="memory-sample-title" className="text-eyebrow uppercase tracking-wider text-muted-foreground">
+                Recent memory sample
+              </h2>
+              <span className="text-eyebrow text-muted-foreground" aria-hidden="true">·</span>
+              <span className="text-meta text-foreground tabular-nums" data-testid="memory-sample-caption">
+                {sampleCaption}
+              </span>
+            </div>
+            <div className="mt-1.5 flex gap-2 overflow-x-auto scrollbar-thin edge-fade-x">
+              <MetricChip icon={Zap} label="Hits (recalls + re-saves)" value={stats.hits} />
+              <MetricChip
+                icon={Target}
+                label="Memory confidence (sample)"
+                value={stats.avgConf == null ? "—" : `${stats.avgConf}%`}
+              />
+              <MetricChip icon={TrendingUp} label="High confidence (≥75)" value={stats.highConfidence} />
+            </div>
+            {/* Phone: the sticky header measured 349px at 375 wide with this
+                paragraph open (43% of the viewport), so below `sm` it is a
+                tap-to-open disclosure — still text, still no hover. Desktop
+                keeps it open; the summary is hidden there. */}
+            <details open={!isMobile} className="mt-1.5">
+              <summary className="sm:hidden cursor-pointer text-micro text-muted-foreground underline underline-offset-2 [&::-webkit-details-marker]:hidden list-none">
+                What these numbers mean
+              </summary>
+            <p className="text-micro text-muted-foreground">
+              Over the {stats.total.toLocaleString()} shown rows. A row's hit count rises when
+              {" "}<code className="font-mono">memory_recall</code> surfaces it and when the same lesson is saved again, so
+              hits are not recalls. Memory confidence is a per-memory source/tool score — not the Overview's artifact
+              confidence, not analyst review.
+              {stats.hidden > 0 && " Rows hidden in this browser are excluded from these numbers and still exist in the database."}
+              {" "}Muting changes no number.
+            </p>
+            </details>
+          </section>
+          <section aria-labelledby="credits-group-title" data-testid="credits-group">
+            <h2 id="credits-group-title" className="text-eyebrow uppercase tracking-wider text-muted-foreground">
+              Credits
+            </h2>
+            <div className="mt-1.5 flex gap-2 overflow-x-auto scrollbar-thin edge-fade-x">
+              <MetricChip
+                icon={CreditCard}
+                label="SocialFetch"
+                value={sfCreditsLeft != null ? `${sfCreditsLeft.toLocaleString()} left` : "—"}
+              />
+            </div>
+          </section>
         </div>
         <div className="px-6 pb-3 flex gap-1 border-t border-border-subtle/40 pt-3">
           {SUB_TABS.map((t) => (
@@ -392,14 +483,16 @@ export default function BrainGlobalPage() {
   );
 }
 
+/**
+ * One reading in the header strip. It carries NO `title`: the population a
+ * chip describes is stated by its group caption as text, because a tooltip is
+ * unreachable on a phone and was where the old scope explanations hid.
+ */
 function MetricChip({
-  icon: Icon, label, value, title,
-}: { icon: typeof Brain; label: string; value: string | number; title?: string }) {
+  icon: Icon, label, value,
+}: { icon: typeof Brain; label: string; value: string | number }) {
   return (
-    <div
-      className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-1/60 px-2.5 py-1.5"
-      title={title}
-    >
+    <div className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-1/60 px-2.5 py-1.5">
       <Icon className="w-3 h-3 text-muted-foreground" strokeWidth={1.75} />
       <span className="text-eyebrow uppercase tracking-wider text-muted-foreground">{label}</span>
       <span className="text-data text-muted-foreground">·</span>
@@ -510,8 +603,13 @@ function MemoriesTab({
             </button>
           )}
         </div>
-        <div className="ml-auto text-eyebrow font-mono uppercase tracking-wider text-muted-foreground">
-          MEMORIES · <span className="text-foreground tabular-nums">{totalCount}</span>
+        {/* "MEMORIES · 497" here used to sit under an Overview tile "Memories
+            1,672": same noun, different population. This is the shown count
+            (recent sample minus locally hidden rows), after search and filter. */}
+        <div className="ml-auto text-eyebrow uppercase tracking-wider text-muted-foreground" data-testid="memories-tab-caption">
+          Showing <span className="text-foreground tabular-nums">{memories.length}</span>
+          {memories.length !== totalCount && <> of <span className="text-foreground tabular-nums">{totalCount}</span></>}
+          {" "}in sample
         </div>
       </div>
 
