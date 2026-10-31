@@ -6,7 +6,7 @@
 
 | Thing | Value |
 |---|---|
-| `origin/main` | `9218a8e1` (#932 tests) <- `f52ab811` (#931) <- `b8bee003` (#927) <- `96f6bac6` (#903 docs) <- `6e8498ab` (#906) |
+| `origin/main` | `a753f56e` (#930, merged 13:53Z, verified via API) <- `9218a8e1` (#932 tests) <- `f52ab811` (#931) <- `b8bee003` (#927) <- `96f6bac6` (#903 docs) <- `6e8498ab` (#906) |
 | live `osint-agent` `/health` | build `cb4c6a27` (the #923 FOFA stamp, **newer than the `6eb444f` CLAUDE.md names**), 61 checks, 0 not ok, `deepseek` / `glm-5.2` |
 | undeployed edge runtime on `main` | none: `git diff 185afd8b origin/main -- supabase/functions` is empty. #932 is tests only. |
 | frontend | #927, #931 live via Vercel (Production success per the prior session) |
@@ -14,13 +14,13 @@
 
 Stale line to fix in CLAUDE.md later (docs PR, not now): "live = `6eb444f`" should read `cb4c6a27`.
 
-## 2. Open board: 23 PRs (listing below)
+## 2. Open board: 23 PRs when listed (22 now that #930 merged)
 
 Conflicts measured with `git merge-tree` against `main` (GitHub reports UNKNOWN for most drafts). Channel: F frontend, E edge, S schema, D docs. CI is green on every PR except #804.
 
 | PR | Ch | State | vs `main` | One line |
 |---|---|---|---|---|
-| #930 | F | READY | clean, 3 behind | Grace timer no longer kills next run's stream, finalize window named. Measured 3035/1/256 and e2e 101/13 on its own head. |
+| #930 | F | **MERGED `a753f56e`** (13:53Z; the row below was true when the board was listed, it merged during this session) | - | Grace timer no longer kills next run's stream, finalize window named. Measured 3035/1/256 and e2e 101/13 on its own head. |
 | #929 | E | draft | clean | Orchestrator writes English (rule in base prompt + every intermediate step). Edge 2829/0/6. Kill switch, proof key `checks.response_language`. |
 | #926 | E | draft | clean | `markdown_extract` safeParse never throws on `<url>`. |
 | #925 | E | draft | clean | `breach_check` accepts numeric phone. |
@@ -51,13 +51,14 @@ Note: every edge PR adds one `/health` proof key in `health-handler.ts`, so afte
 ## 3. The two loose ends (both already have PRs)
 
 - **Output-language fix**: [#929](https://github.com/justindean785/insight-finder/pull/929), branch `fix/orchestrator-english-only`, head `07b8b256`, draft, CI green, merges clean. Blocked only on being marked ready, JD's go, and an `edge-deploy` cycle (stamp, surgical sync, Lovable deploy, `/health` shows `checks.response_language`). Its body asks to ship ahead of the approved edge queue because it is a production-visible defect (case `5663c718` closing report in Chinese).
-- **ServerFollowPanel "panel-fix"**: [#930](https://github.com/justindean785/insight-finder/pull/930), branch `fix/server-follow-panel-compact`, head `8eb87e9e`, **READY**, CI green, merges clean. The figures that blocked it are now in the body (vitest 3035/1/256, e2e 101/13, typecheck clean). Remaining step: it predates #931 and #932, so re-run `npm run typecheck`, `npx vitest run` and `npm run test:e2e` after rebasing, then merge.
+- **ServerFollowPanel "panel-fix"**: [#930](https://github.com/justindean785/insight-finder/pull/930), branch `fix/server-follow-panel-compact`, head `8eb87e9e`, **READY**, CI green, merges clean. The figures that blocked it are now in the body (vitest 3035/1/256, e2e 101/13, typecheck clean). **Merged during this session as `a753f56e`; drop it from the candidate list.** Vercel Production proof for that SHA was not checked here.
 
 ## 4. Recommendation for JD
 
 **Next three merges, in order**
 
-1. **#930** (frontend, Vercel). Ready, clean, green, figures measured. Frontend only, so a revert is one Vercel rollback. Do first because it fixes the "Live view disconnected" bug on healthy runs.
+1. ~~#930~~ already merged (see §3). First candidate is now #929.
+   Original reasoning for #930 (frontend, Vercel). Ready, clean, green, figures measured. Frontend only, so a revert is one Vercel rollback. Do first because it fixes the "Live view disconnected" bug on healthy runs.
 2. **#929** (edge, own build). Fixes an observed production defect, 6 files, +151/-6, kill switch ships rule ON, adds nothing to the finalize window (it appends text to the per-cycle directive and the static prompt). Merge is inert until its deploy cycle; do merge and deploy as one step.
 3. **#926** (edge, own build, after #929 is live). 62 lines, removes an uncaught throw. Then the approved queue continues #925, #868, #928.
 
