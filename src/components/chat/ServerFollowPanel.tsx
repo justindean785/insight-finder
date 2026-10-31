@@ -1,5 +1,6 @@
 import { ToolStatusBadge } from "@/components/ui/workspace-primitives";
 import type { ToolEvent } from "@/hooks/useThreadToolActivity";
+import type { FollowMode } from "@/lib/server-follow";
 
 /** Rows kept at all; a long run keeps its newest calls. */
 const MAX_ROWS = 40;
@@ -27,8 +28,9 @@ function fmtDuration(ms: number | null): string | null {
  * and the panel says so instead of inventing progress text. The caller decides
  * when it shows (`ChatWindow`'s settled `followingServer`).
  */
-export function ServerFollowPanel({ active, events }: { active: boolean; events: ToolEvent[] }) {
+export function ServerFollowPanel({ active, events, mode = "disconnected" }: { active: boolean; events: ToolEvent[]; mode?: FollowMode }) {
   if (!active) return null;
+  const finalizing = mode === "finalizing";
   const rows = events.slice(-MAX_ROWS);
   const hidden = events.length - rows.length;
   // Newest last in `rows` (currentRunEvents sorts oldest first): the tail is what is shown.
@@ -51,7 +53,7 @@ export function ServerFollowPanel({ active, events }: { active: boolean; events:
     <section aria-label="Live from the server" className="chat-card w-full min-w-0">
       <div className="chat-card__header">
         <span aria-hidden className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[hsl(var(--brand))] motion-reduce:animate-none" />
-        <span>Live view disconnected — still running on the server</span>
+        <span>{finalizing ? "Writing the report on the server" : "Live view disconnected — still running on the server"}</span>
         <span className="chat-card__header-time font-mono tabular-nums" aria-live="polite">
           {/* THIS run's calls (currentRunEvents); the case bar counts every run. */}
           {events.length} call{events.length === 1 ? "" : "s"} this run
@@ -59,8 +61,9 @@ export function ServerFollowPanel({ active, events }: { active: boolean; events:
       </div>
       <div className="chat-card__body space-y-3">
         <p className="text-meta text-muted-foreground">
-          This page isn&apos;t receiving the live stream, but the investigation is still running on the server.
-          Its tool calls appear below as they&apos;re recorded; the agent&apos;s write-up appears here when the run finishes.
+          {finalizing
+            ? "The tool loop has finished. The server is now checking and saving the findings and writing the closing report; it appears here as soon as it is saved. "
+            : "This page isn't receiving the live stream, but the investigation is still running on the server. Its tool calls appear below as they're recorded; the agent's write-up appears here when the run finishes. "}
           Only this run&apos;s calls are listed; the case bar counts every run of the case.
         </p>
         {rows.length === 0 ? (

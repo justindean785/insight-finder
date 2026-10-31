@@ -70,7 +70,7 @@ import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
 import { humanizeSelector } from "@/lib/humanize-selector";
 import { measureRequestBody, reportRequestBodySize } from "@/lib/request-size";
-import { currentRunEvents, isCurrentRunMessage, shouldEndStreamAfterGrace, shouldFollowServer, shouldForceStreamEnd } from "@/lib/server-follow";
+import { currentRunEvents, followMode, isCurrentRunMessage, shouldEndStreamAfterGrace, shouldFollowServer, shouldForceStreamEnd } from "@/lib/server-follow";
 import { ServerFollowPanel } from "@/components/chat/ServerFollowPanel";
 import { useHeldTrue } from "@/hooks/use-held-true";
 import {
@@ -2595,6 +2595,17 @@ function ChatWindowInner({
   // page was opened mid-run. Settled for 3s, because a normal run ends with the
   // stream closing a moment before the thread is marked finished.
   const followingServer = useHeldTrue(shouldFollowServer({ clientStreaming: isLoading, serverRunActive }), 3_000);
+  // Did this tab's last stream end CLEANLY (the SDK finished, no error)? Then the run
+  // the row still calls running is in its server-side finalize window, not lost.
+  // Reset the moment a new stream opens. See followMode() in lib/server-follow.ts.
+  const [streamEndedCleanly, setStreamEndedCleanly] = useState(false);
+  const cleanEndWasLoadingRef = useRef(isLoading);
+  useEffect(() => {
+    const was = cleanEndWasLoadingRef.current;
+    cleanEndWasLoadingRef.current = isLoading;
+    if (isLoading && !was) setStreamEndedCleanly(false);
+    else if (!isLoading && was) setStreamEndedCleanly(!error);
+  }, [isLoading, error]);
   // When a run this page was not streaming ends, load what it saved. The
   // watchdog below only hears the realtime UPDATE, which a phone asleep at the
   // moment the run finished never receives and nothing replays; the case
@@ -2842,7 +2853,7 @@ function ChatWindowInner({
             // of a healthy run (production 2026-10-31; shouldEndStreamAfterGrace).
             const armedAtMs = Date.now();
             window.setTimeout(() => {
-              if (shouldEndStreamAfterGrace({ clientStreaming: isLoadingRef.current, streamStartedAtMs: streamStartedAtRef.current, armedAtMs })) {
+              if (shouldEndStreamAfterGrace({ clientStreaming: isLoadingRef.current, streamStartedAtMs: streamStartedAtRef.current, armedAtMs, rowUpdatedAt: next.updated_at })) {
                 try { stopRef.current?.(); } catch { /* stream already closed */ }
               }
             }, 8_000);
@@ -3218,6 +3229,7 @@ function ChatWindowInner({
           )}
           <ServerFollowPanel
             active={followingServer}
+            mode={followMode({ streamEndedCleanly })}
             events={currentRunEvents(caseSnapshot?.snapshot?.tools?.events ?? [], caseSnapshot?.snapshot?.run?.startedAt ?? null)}
           />
           {/* ONE card per failure.

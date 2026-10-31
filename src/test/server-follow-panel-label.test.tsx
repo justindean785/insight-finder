@@ -66,3 +66,17 @@ describe("ServerFollowPanel — newest calls visible, the rest behind a toggle",
     expect(latest).not.toHaveTextContent("Call number 0");
   });
 });
+
+describe("ServerFollowPanel — finalize window is named, not called a disconnect", () => {
+  it("finalizing mode says the server is writing the report", () => {
+    render(<ServerFollowPanel active events={[ev(1)]} mode="finalizing" />);
+    const region = screen.getByRole("region", { name: "Live from the server" });
+    expect(region).toHaveTextContent("Writing the report on the server");
+    expect(region).not.toHaveTextContent(/disconnected/i);
+    expect(region).toHaveTextContent("1 call this run");
+  });
+  it("default mode keeps the disconnected wording", () => {
+    render(<ServerFollowPanel active events={[ev(1)]} />);
+    expect(screen.getByRole("region", { name: "Live from the server" })).toHaveTextContent(/Live view disconnected/);
+  });
+});

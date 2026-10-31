@@ -2,6 +2,7 @@ export type TerminalThreadUpdate = {
   status?: string | null;
   recovered_at?: string | null;
   recovery_reason?: string | null;
+  updated_at?: string | null;
 };
 
 export function isTerminalThreadUpdate(row: TerminalThreadUpdate): boolean {
