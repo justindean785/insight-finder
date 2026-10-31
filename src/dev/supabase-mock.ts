@@ -514,9 +514,31 @@ function builder(table: string) {
   const self: Record<string, unknown> = {};
   const chain = () => self;
 
-  for (const m of ["select", "insert", "update", "upsert", "delete", "neq", "is", "gt", "gte", "lt", "lte", "like", "ilike", "not", "or", "filter", "order", "range", "returns", "abortSignal", "overrideTypes"]) {
+  for (const m of ["select", "insert", "upsert", "delete", "neq", "is", "gt", "gte", "lt", "lte", "like", "ilike", "not", "or", "filter", "order", "range", "returns", "abortSignal", "overrideTypes"]) {
     self[m] = chain;
   }
+  // `update(patch)` is applied to the rows the filters select, and a realtime
+  // UPDATE is emitted for each, the way Supabase would. `rows` holds the SAME
+  // object refs as the fixture table, so the patch is visible to every later
+  // read. This is what lets the harness show the analyst's Stop (a client write
+  // of `status='stopped'` on `threads`) reach the case snapshot and the
+  // transcript's watchdog without a server. Applied when the chain is awaited,
+  // after the `.eq()` filters have run. TRAP: `eq()` ignores a column the
+  // fixture rows do not carry, so an update filtered only on such a column
+  // patches EVERY row of the table — give the fixture the column instead.
+  let pendingUpdate: Record<string, unknown> | null = null;
+  self.update = (patch: Record<string, unknown>) => { pendingUpdate = patch ?? {}; return self; };
+  const applyUpdate = () => {
+    if (!pendingUpdate) return;
+    const patch = pendingUpdate;
+    pendingUpdate = null;
+    for (const r of rows) {
+      if (typeof r !== "object" || r === null) continue;
+      const before = { ...(r as Record<string, unknown>) };
+      Object.assign(r as Record<string, unknown>, patch);
+      emit(table, "UPDATE", { new: { ...(r as Record<string, unknown>) }, old: before });
+    }
+  };
   // Equality filters are honoured on columns the fixture rows carry, so a
   // thread-scoped read of the draft thread returns the DRAFT, not the first
   // thread in the table. Columns a fixture does not carry are ignored.
@@ -532,10 +554,12 @@ function builder(table: string) {
   self.limit = (n: number) => { rows = rows.slice(0, n); return self; };
   // `syncing` never answers — the case must render its hydration state.
   const settle = <T,>(v: T): Promise<T> => (SCENARIO === "syncing" ? new Promise<T>(() => {}) : Promise.resolve(v));
-  self.single = () => settle({ data: rows[0] ?? null, error: null });
+  self.single = () => { applyUpdate(); return settle({ data: rows[0] ?? null, error: null }); };
   self.maybeSingle = self.single;
-  self.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
-    settle({ data: rows, error: null, count: rows.length, status: 200 }).then(resolve, reject);
+  self.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
+    applyUpdate();
+    return settle({ data: rows, error: null, count: rows.length, status: 200 }).then(resolve, reject);
+  };
   return self;
 }
 
