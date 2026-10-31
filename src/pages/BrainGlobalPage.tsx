@@ -377,11 +377,14 @@ export default function BrainGlobalPage() {
               <MetricChip icon={TrendingUp} label="High confidence (≥75)" value={stats.highConfidence} />
             </div>
             {/* Phone: the sticky header measured 349px at 375 wide with this
-                paragraph open (43% of the viewport), so below `sm` it is a
+                paragraph open (43% of the viewport), so below `md` it is a
                 tap-to-open disclosure — still text, still no hover. Desktop
-                keeps it open; the summary is hidden there. */}
+                keeps it open; the summary is hidden there. Both breakpoints
+                are 768px: `useIsMobile()` (max-width:767px) and Tailwind's
+                `md:` (min-width:768px) meet exactly, so there is no width at
+                which the disclosure is closed with no summary to open it. */}
             <details open={!isMobile} className="mt-1.5">
-              <summary className="sm:hidden cursor-pointer text-micro text-muted-foreground underline underline-offset-2 [&::-webkit-details-marker]:hidden list-none">
+              <summary className="md:hidden cursor-pointer text-micro text-muted-foreground underline underline-offset-2 [&::-webkit-details-marker]:hidden list-none">
                 What these numbers mean
               </summary>
             <p className="text-micro text-muted-foreground">

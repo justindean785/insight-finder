@@ -71,3 +71,24 @@ for (const viewport of [{ width: 1280, height: 720 }, { width: 375, height: 812 
     });
   });
 }
+
+/**
+ * The disclosure that explains the shown-rows population, the hidden exclusions
+ * and the hit-count definition is open on desktop and tap-to-open below it. The
+ * breakpoint has to match `useIsMobile()` (768px) and Tailwind's `md:` (768px) —
+ * NOT `sm:` (640px). This case covers 720px, inside the former dead zone: the
+ * summary is visible and the paragraph is reachable by clicking it.
+ */
+test.describe("intelligence @ 720px (useIsMobile ↔ md: must agree)", () => {
+  test.use({ viewport: { width: 720, height: 900 }, hasTouch: true });
+
+  test("the explanation disclosure's summary is visible and tappable", async ({ page }) => {
+    await open(page, "/brain?tab=overview");
+    const summary = page.getByText("What these numbers mean");
+    await expect(summary).toBeVisible();
+    const paragraph = page.getByText(/hit count rises when memory_recall surfaces it/);
+    await expect(paragraph).toBeHidden();
+    await summary.click();
+    await expect(paragraph).toBeVisible();
+  });
+});
