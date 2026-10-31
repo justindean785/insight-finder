@@ -87,3 +87,25 @@ export function shouldForceStreamEnd({ clientStreaming, rowState, rowStartedAt, 
   if (!Number.isFinite(start)) return false;
   return start >= streamStartedAtMs - START_SKEW_MS;
 }
+
+/**
+ * The watchdog's 8-second fallback after a normal `finished` update: was the stream
+ * that is STILL loading the one that update was about? A terminal update for run A
+ * arms the timer; if the analyst starts run B inside those 8 seconds (the Next panel
+ * makes this a one-click, eight-second affair), the timer fires while B's fresh
+ * stream is loading and `stop()` kills it — a clean close, no error, no toast — and
+ * the tab drops to "Live view disconnected" at second one of a healthy run.
+ * Measured on production 2026-10-31: run A finished 12:53:01.7, run B started
+ * 12:53:09.9, and B's tab showed the follow panel from its first seconds.
+ *
+ * Only a stream that was already open when the timer was armed may be ended by it.
+ */
+export function shouldEndStreamAfterGrace({ clientStreaming, streamStartedAtMs, armedAtMs }: {
+  clientStreaming: boolean;
+  streamStartedAtMs: number | null;
+  armedAtMs: number;
+}): boolean {
+  if (!clientStreaming) return false;
+  if (streamStartedAtMs === null) return false;
+  return streamStartedAtMs <= armedAtMs;
+}

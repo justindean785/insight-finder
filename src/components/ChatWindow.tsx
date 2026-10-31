@@ -70,7 +70,7 @@ import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
 import { humanizeSelector } from "@/lib/humanize-selector";
 import { measureRequestBody, reportRequestBodySize } from "@/lib/request-size";
-import { currentRunEvents, isCurrentRunMessage, shouldFollowServer, shouldForceStreamEnd } from "@/lib/server-follow";
+import { currentRunEvents, isCurrentRunMessage, shouldEndStreamAfterGrace, shouldFollowServer, shouldForceStreamEnd } from "@/lib/server-follow";
 import { ServerFollowPanel } from "@/components/chat/ServerFollowPanel";
 import { useHeldTrue } from "@/hooks/use-held-true";
 import {
@@ -2794,6 +2794,14 @@ function ChatWindowInner({
   // trailing report/error chunk is still flushing, and aborting here drops it.
   const stopRef = useRef(stop);
   stopRef.current = stop;
+  // When THIS tab's current stream opened (null while idle). Shared by the watchdog's
+  // grace timer below and the stream-outlived-its-run check further down.
+  const streamStartedAtRef = useRef<number | null>(null);
+  if (isLoading) {
+    if (streamStartedAtRef.current === null) streamStartedAtRef.current = Date.now();
+  } else {
+    streamStartedAtRef.current = null;
+  }
   useEffect(() => {
     const channel = supabase
       .channel(`chat-run-watchdog-${threadId}`)
@@ -2826,8 +2834,15 @@ function ChatWindowInner({
             // has already been merged in above, so this can only clear a stuck
             // loading flag — it never discards content a live stream is still
             // flushing (that case already resolved `isLoading` on its own).
+            //
+            // Bound to the stream that was open when this update arrived. A run the
+            // analyst starts INSIDE the grace window (one click in the Next panel) has
+            // its own fresh stream, and this timer must not be the thing that ends it
+            // — that was the clean, error-free "Live view disconnected" at second one
+            // of a healthy run (production 2026-10-31; shouldEndStreamAfterGrace).
+            const armedAtMs = Date.now();
             window.setTimeout(() => {
-              if (isLoadingRef.current) {
+              if (shouldEndStreamAfterGrace({ clientStreaming: isLoadingRef.current, streamStartedAtMs: streamStartedAtRef.current, armedAtMs })) {
                 try { stopRef.current?.(); } catch { /* stream already closed */ }
               }
             }, 8_000);
@@ -2851,12 +2866,6 @@ function ChatWindowInner({
   // stream's). Held for the same 8s grace the watchdog gives a trailing report
   // chunk, then the dead stream is cut and the saved messages are merged, as
   // the watchdog would have done.
-  const streamStartedAtRef = useRef<number | null>(null);
-  if (isLoading) {
-    if (streamStartedAtRef.current === null) streamStartedAtRef.current = Date.now();
-  } else {
-    streamStartedAtRef.current = null;
-  }
   const streamOutlivedRun = useHeldTrue(
     shouldForceStreamEnd({
       clientStreaming: isLoading,

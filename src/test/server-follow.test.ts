@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentRunEvents, isCurrentRunMessage, shouldFollowServer, shouldForceStreamEnd } from "@/lib/server-follow";
+import { currentRunEvents, isCurrentRunMessage, shouldFollowServer, shouldForceStreamEnd, shouldEndStreamAfterGrace } from "@/lib/server-follow";
 import type { ToolEvent } from "@/hooks/useThreadToolActivity";
 
 const ev = (id: string, at: string): ToolEvent => ({ id, at } as unknown as ToolEvent);
@@ -73,5 +73,22 @@ describe("shouldForceStreamEnd — a stream that outlived the run it was streami
   it("does nothing without a recorded run start or a stream start", () => {
     expect(shouldForceStreamEnd({ clientStreaming: true, rowState: "completed", rowStartedAt: null, streamStartedAtMs: streamStart })).toBe(false);
     expect(shouldForceStreamEnd({ clientStreaming: true, rowState: "completed", rowStartedAt: "2026-10-19T18:24:06.000Z", streamStartedAtMs: null })).toBe(false);
+  });
+});
+
+describe("shouldEndStreamAfterGrace — the watchdog's 8s fallback ends only the stream it was armed for", () => {
+  const armedAtMs = 1_000_000;
+  it("ends a stream that was already open when the terminal update arrived and is still loading", () => {
+    expect(shouldEndStreamAfterGrace({ clientStreaming: true, streamStartedAtMs: armedAtMs - 30_000, armedAtMs })).toBe(true);
+    expect(shouldEndStreamAfterGrace({ clientStreaming: true, streamStartedAtMs: armedAtMs, armedAtMs })).toBe(true);
+  });
+  it("NEVER ends a stream that opened after the update (a new run started inside the grace window)", () => {
+    // production 2026-10-31: run A finished, run B started 8.2s later, B's stream was cut at ~1s
+    expect(shouldEndStreamAfterGrace({ clientStreaming: true, streamStartedAtMs: armedAtMs + 8_200, armedAtMs })).toBe(false);
+    expect(shouldEndStreamAfterGrace({ clientStreaming: true, streamStartedAtMs: armedAtMs + 1, armedAtMs })).toBe(false);
+  });
+  it("does nothing when the tab is not streaming", () => {
+    expect(shouldEndStreamAfterGrace({ clientStreaming: false, streamStartedAtMs: armedAtMs - 1, armedAtMs })).toBe(false);
+    expect(shouldEndStreamAfterGrace({ clientStreaming: true, streamStartedAtMs: null, armedAtMs })).toBe(false);
   });
 });

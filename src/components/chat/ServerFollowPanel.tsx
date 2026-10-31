@@ -1,8 +1,16 @@
 import { ToolStatusBadge } from "@/components/ui/workspace-primitives";
 import type { ToolEvent } from "@/hooks/useThreadToolActivity";
 
-/** Rows shown at once; a long run keeps its newest calls in view. */
+/** Rows kept at all; a long run keeps its newest calls. */
 const MAX_ROWS = 40;
+/**
+ * Rows shown before the analyst asks for the rest. Production 2026-10-31 (JD): a
+ * following tab rendered a 21-row wall of SUCCEEDED badges under the agent's text,
+ * which reads as noise, not as a status. The header already carries the count; the
+ * newest few calls are what tells you the run is moving. The rest sit behind a
+ * native <details>, so no state and no re-render on each recorded call.
+ */
+export const VISIBLE_ROWS = 3;
 
 function fmtDuration(ms: number | null): string | null {
   if (ms == null || !Number.isFinite(ms) || ms < 0) return null;
@@ -23,6 +31,22 @@ export function ServerFollowPanel({ active, events }: { active: boolean; events:
   if (!active) return null;
   const rows = events.slice(-MAX_ROWS);
   const hidden = events.length - rows.length;
+  // Newest last in `rows` (currentRunEvents sorts oldest first): the tail is what is shown.
+  const latest = rows.slice(-VISIBLE_ROWS);
+  const earlier = rows.slice(0, Math.max(0, rows.length - VISIBLE_ROWS));
+  const renderRow = (e: ToolEvent) => {
+    const duration = fmtDuration(e.durationMs);
+    return (
+      <li key={e.id} className="flex min-w-0 items-center gap-2.5 px-3 py-2">
+        <ToolStatusBadge status={e.status} className="shrink-0" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-meta text-foreground">{e.displayName}</span>
+          <span className="block font-mono text-data text-muted-foreground [overflow-wrap:anywhere]">{e.toolName}</span>
+        </span>
+        {duration && <span className="shrink-0 font-mono text-data tabular-nums text-muted-foreground">{duration}</span>}
+      </li>
+    );
+  };
   return (
     <section aria-label="Live from the server" className="chat-card w-full min-w-0">
       <div className="chat-card__header">
@@ -42,24 +66,25 @@ export function ServerFollowPanel({ active, events }: { active: boolean; events:
         {rows.length === 0 ? (
           <p className="text-meta text-muted-foreground">Waiting for the first recorded call…</p>
         ) : (
-          <ol className="divide-y divide-border-subtle rounded-md border border-border-subtle">
-            {hidden > 0 && (
-              <li className="px-3 py-2 text-data text-muted-foreground">{hidden} earlier call{hidden === 1 ? "" : "s"} not shown</li>
+          <>
+            <ol aria-label="Latest calls" className="divide-y divide-border-subtle rounded-md border border-border-subtle">
+              {latest.map(renderRow)}
+            </ol>
+            {earlier.length > 0 && (
+              <details className="group">
+                <summary className="cursor-pointer select-none text-meta text-muted-foreground hover:text-foreground">
+                  <span className="group-open:hidden">Show {earlier.length + hidden} earlier call{earlier.length + hidden === 1 ? "" : "s"}</span>
+                  <span className="hidden group-open:inline">Hide earlier calls</span>
+                </summary>
+                <ol aria-label="Earlier calls" className="mt-2 divide-y divide-border-subtle rounded-md border border-border-subtle">
+                  {hidden > 0 && (
+                    <li className="px-3 py-2 text-data text-muted-foreground">{hidden} earlier call{hidden === 1 ? "" : "s"} not shown</li>
+                  )}
+                  {earlier.map(renderRow)}
+                </ol>
+              </details>
             )}
-            {rows.map((e) => {
-              const duration = fmtDuration(e.durationMs);
-              return (
-                <li key={e.id} className="flex min-w-0 items-center gap-2.5 px-3 py-2">
-                  <ToolStatusBadge status={e.status} className="shrink-0" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-meta text-foreground">{e.displayName}</span>
-                    <span className="block font-mono text-data text-muted-foreground [overflow-wrap:anywhere]">{e.toolName}</span>
-                  </span>
-                  {duration && <span className="shrink-0 font-mono text-data tabular-nums text-muted-foreground">{duration}</span>}
-                </li>
-              );
-            })}
-          </ol>
+          </>
         )}
       </div>
     </section>
