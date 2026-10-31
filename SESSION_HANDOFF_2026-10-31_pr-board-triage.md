@@ -14,7 +14,7 @@
 
 Stale line to fix in CLAUDE.md later (docs PR, not now): "live = `6eb444f`" should read `cb4c6a27`.
 
-## 2. Open board: 23 PRs
+## 2. Open board: 23 PRs (listing below)
 
 Conflicts measured with `git merge-tree` against `main` (GitHub reports UNKNOWN for most drafts). Channel: F frontend, E edge, S schema, D docs. CI is green on every PR except #804.
 
@@ -31,7 +31,6 @@ Conflicts measured with `git merge-tree` against `main` (GitHub reports UNKNOWN 
 | #914 | D | draft | clean | Handoff 10-30 "FOFA stamp pending". **Stale**: stamp #923 landed. |
 | #799 | E | draft | clean | Jina 403 no longer suppresses Jina. |
 | #801 | E | draft | clean | `media_leads` + geo workflow. |
-| #868/#799/#801/#912/#925/#926/#928/#929 | E | | | All edit or will edit `health-handler.ts` (one proof key each); after the first deploy each later one needs a rebase. |
 | #800 | E | draft | CONFLICT `tool-cache-version.ts` | Wayback CDX parallel. |
 | #821 | E | draft | CONFLICT `health-handler.ts` | Prompt tier words. |
 | #701 | E | draft | CONFLICT `health-handler.ts` | LeakCheck probe, ships OFF. |
@@ -45,7 +44,9 @@ Conflicts measured with `git merge-tree` against `main` (GitHub reports UNKNOWN 
 | #882 | F | draft | CONFLICT 3 files | Chat/Workbench pivot queues. |
 | #883 | F | draft | CONFLICT 3 files | Recorded-confidence explanations. |
 
-13 conflict with `main`: #516 #593 #613 #701 #738 #763 #793 #800 #804 #821 #882 #883 (12 by this count; #799 and #801 are clean).
+12 conflict with `main`: #516 #593 #613 #701 #738 #763 #793 #800 #804 #821 #882 #883. The prior session's "~13" was an estimate.
+
+Note: every edge PR adds one `/health` proof key in `health-handler.ts`, so after the first deploy each later edge PR needs a rebase.
 
 ## 3. The two loose ends (both already have PRs)
 
