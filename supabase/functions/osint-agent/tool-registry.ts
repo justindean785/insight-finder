@@ -3036,9 +3036,13 @@ export function buildTools(ctx: ToolContext) {
         // our behalf. Constrain to http/https so the only thing we can ask it to
         // retrieve is a web document.
         url: z.string().url()
-          .refine((u) => /^https?:$/.test(new URL(u).protocol), {
-            message: "url must be http or https",
-          })
+          // `z.string().url()` accepts shapes that `new URL()` rejects (e.g. the model wrapping a URL in
+          // <angle-brackets>). An uncaught throw here propagates out of `safeParse` and breaks the SDK's
+          // tool-call contract. Catch the parse failure and treat it as a refine failure — the schema stays
+          // strict (http/https only) without being able to throw.
+          .refine((u) => {
+            try { return /^https?:$/.test(new URL(u).protocol); } catch { return false; }
+          }, { message: "url must be http or https" })
           .describe("Public http(s) URL of the document or page to convert"),
         // Character offset into the converted document. The window is capped so
         // one call cannot flood the turn's context; `next_offset` in the result
