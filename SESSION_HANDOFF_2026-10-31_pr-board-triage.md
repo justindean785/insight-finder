@@ -51,7 +51,7 @@ Note: every edge PR adds one `/health` proof key in `health-handler.ts`, so afte
 ## 3. The two loose ends (both already have PRs)
 
 - **Output-language fix**: [#929](https://github.com/justindean785/insight-finder/pull/929), branch `fix/orchestrator-english-only`, head `07b8b256`, draft, CI green, merges clean. Blocked only on being marked ready, JD's go, and an `edge-deploy` cycle (stamp, surgical sync, Lovable deploy, `/health` shows `checks.response_language`). Its body asks to ship ahead of the approved edge queue because it is a production-visible defect (case `5663c718` closing report in Chinese).
-- **ServerFollowPanel "panel-fix"**: [#930](https://github.com/justindean785/insight-finder/pull/930), branch `fix/server-follow-panel-compact`, head `8eb87e9e`, **READY**, CI green, merges clean. The figures that blocked it are now in the body (vitest 3035/1/256, e2e 101/13, typecheck clean). **Merged during this session as `a753f56e`; drop it from the candidate list.** Vercel Production proof for that SHA was not checked here.
+- **ServerFollowPanel "panel-fix"**: [#930](https://github.com/justindean785/insight-finder/pull/930), branch `fix/server-follow-panel-compact`, head `8eb87e9e`, **READY**, CI green, merges clean. The figures that blocked it are now in the body (vitest 3035/1/256, e2e 101/13, typecheck clean). **Merged during this session as `a753f56e`; drop it from the candidate list.** Vercel Production deployment 7459486759 for that SHA reads `success`.
 
 ## 4. Recommendation for JD
 
@@ -78,4 +78,4 @@ GLM-5.2 primary / Anthropic backup. `RUN_LEASE_DISABLED=true`. `REVEAL_BREACH_DA
 
 ## 6. Proof of anything merged
 
-Nothing merged in this session.
+Nothing was merged by this session. #930 merged separately (`a753f56e`); Vercel Production deployment 7459486759 = success.
