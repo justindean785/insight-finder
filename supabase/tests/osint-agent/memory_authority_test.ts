@@ -10,6 +10,7 @@
 // (needs a full artifact pipeline); it is marked below.
 import { assert, assertEquals, assertFalse, assertMatch, assertStringIncludes } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { assembleBaseSystemPrompt, staticSystemPrompt } from "../../functions/osint-agent/lib/base-prompt.ts";
+import { responseLanguageBlock } from "../../functions/osint-agent/lib/response-language.ts";
 import { routingGuard } from "../../functions/osint-agent/guard.ts";
 import { buildCredentialSafetyRail, buildSystemPromptFull, SYSTEM_PROMPT_FULL, SYSTEM_PROMPT_FULL_LEGACY_MEMORY } from "../../functions/osint-agent/system-prompt.ts";
 import { REVEAL_BREACH_DATA } from "../../functions/osint-agent/reveal-policy.ts";
@@ -123,19 +124,21 @@ Deno.test("assembled prompt: the extraction is behaviour-preserving (same bytes 
   await withSwitch(undefined, () => {
     const vision = "\n## VISION\nsynthetic\n";
     const block = "\n## ANALYST DECISIONS\nsynthetic\n";
-    const old = SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum("domain") + vision + block;
+    // The output-language rule (lib/response-language.ts) is part of the static prompt since 2026-10-31; the
+    // switch-off case below proves the pre-rule bytes are restored exactly.
+    const old = SYSTEM_PROMPT_FULL + responseLanguageBlock() + FINDING_LABELS + buildWorkflowAddendum("domain") + vision + block;
     assertEquals(assembleBaseSystemPrompt({ detectedSeedType: "domain", visionIntakeSummary: vision, analystDecisionsBlock: block }), old);
     // The streamText default site never carried the analyst block.
     assertEquals(
       assembleBaseSystemPrompt({ detectedSeedType: "domain", visionIntakeSummary: vision }),
-      SYSTEM_PROMPT_FULL + FINDING_LABELS + buildWorkflowAddendum("domain") + vision,
+      SYSTEM_PROMPT_FULL + responseLanguageBlock() + FINDING_LABELS + buildWorkflowAddendum("domain") + vision,
     );
   });
 });
 
 Deno.test("kill switch restores the exact legacy wording, and ONLY those two lines differ", async () => {
   await withSwitch("true", () => {
-    assertEquals(staticSystemPrompt(), SYSTEM_PROMPT_FULL_LEGACY_MEMORY);
+    assertEquals(staticSystemPrompt(), SYSTEM_PROMPT_FULL_LEGACY_MEMORY + responseLanguageBlock());
     assertStringIncludes(staticSystemPrompt(), LEGACY_LINES);
     assertEquals(memoryRecallPromptRules(true), LEGACY_LINES);
     assertMatch(staticSystemPrompt(), /previously corroborated/);
@@ -354,7 +357,7 @@ Deno.test("WHITESPACE-ONLY vision / analyst-decision content is appended verbati
   for (const ws of ["", " ", "\n", " \n\t "]) {
     for (const switchValue of [undefined, "true"]) {
       await withSwitch(switchValue, () => {
-        const statik = switchValue ? SYSTEM_PROMPT_FULL_LEGACY_MEMORY : SYSTEM_PROMPT_FULL;
+        const statik = (switchValue ? SYSTEM_PROMPT_FULL_LEGACY_MEMORY : SYSTEM_PROMPT_FULL) + responseLanguageBlock();
         const oldBase = statik + FINDING_LABELS + buildWorkflowAddendum("email") + ws + ws;
         const oldDefault = statik + FINDING_LABELS + buildWorkflowAddendum("email") + ws;
         assertEquals(assembleBaseSystemPrompt({ detectedSeedType: "email", visionIntakeSummary: ws, analystDecisionsBlock: ws }), oldBase);

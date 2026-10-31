@@ -13,9 +13,12 @@ import { SYSTEM_PROMPT_FULL, SYSTEM_PROMPT_FULL_LEGACY_MEMORY } from "../system-
 import { FINDING_LABELS } from "../catalog.ts";
 import { buildWorkflowAddendum } from "../workflow_prompt.ts";
 import { memoryAuthorityWordingDisabled } from "./memory-provenance.ts";
+import { responseLanguageBlock } from "./response-language.ts";
 
 export function staticSystemPrompt(): string {
-  return memoryAuthorityWordingDisabled() ? SYSTEM_PROMPT_FULL_LEGACY_MEMORY : SYSTEM_PROMPT_FULL;
+  // The output-language rule rides the static prompt so finalize and the report see it;
+  // orchestrator-finalize.ts repeats it on every intermediate step (see response-language.ts).
+  return (memoryAuthorityWordingDisabled() ? SYSTEM_PROMPT_FULL_LEGACY_MEMORY : SYSTEM_PROMPT_FULL) + responseLanguageBlock();
 }
 
 export function assembleBaseSystemPrompt(input: {

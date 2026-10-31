@@ -23,6 +23,7 @@
  * grounded strictly in artifacts already gathered.
  */
 import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN } from "./orchestrator-budget.ts";
+import { responseLanguageBlock } from "./lib/response-language.ts";
 
 // Reserve the final stretch of the wall-clock budget for a guaranteed synthesis+record
 // step. Once elapsed enters this window the orchestrator stops issuing new lookups and
@@ -606,7 +607,7 @@ export function buildPerCycleCompactDirective(): string {
     "  ≥90 Confirmed · ≥75 Likely · ≥50 Possible · ≥30 Weak · else Unverified.",
     "If this cycle found nothing new, say so in one short line and pivot. Keep the whole message tight.",
     "You will be told explicitly when to write the full closing report — do NOT pre-empt it here.",
-  ].join("\n");
+  ].join("\n") + responseLanguageBlock();
 }
 
 // ---- First-pass persistence nudge (DeepSeek deferral fix) ----------------------
