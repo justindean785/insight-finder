@@ -136,6 +136,12 @@ export default function BrainGlobalPage() {
   const [patternFilter, setPatternFilter] = useState<PatternFilter>("ALL");
   const [patternSort, setPatternSort] = useState<PatternSort>("NEWEST");
   const [sfCreditsLeft, setSfCreditsLeft] = useState<number | null>(null);
+  // Exact row count on `agent_memory` for this user, independent of the
+  // 500-row display slice. Rendered next to the slice length so the header
+  // strip and the Overview cards cannot look like they disagree: `500 of
+  // 1,672` reads as "slice of total", not as two different answers to the
+  // same question. The audit on 2026-10-31 found exactly that confusion.
+  const [memoriesTotal, setMemoriesTotal] = useState<number | null>(null);
 
   const toggleSuppress = (id: string) => {
     setSuppressed((prev) => {
@@ -191,6 +197,15 @@ export default function BrainGlobalPage() {
         .eq("user_id", user.id)
         .eq("tool_name", "socialfetch_lookup");
       if (alive) setSfCreditsLeft(Math.max(0, SOCIALFETCH_CAP - (sfUsed ?? 0)));
+
+      // Exact count on `agent_memory`. The row list above is capped at 500
+      // for rendering performance; this count is the real population size and
+      // is what the header strip labels as the denominator of the slice.
+      const { count: memTotal } = await supabase
+        .from("agent_memory")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", user.id);
+      if (alive) setMemoriesTotal(memTotal ?? null);
 
       const ids = Array.from(new Set(list.map((m) => m.source_thread_id).filter(Boolean) as string[]));
       if (ids.length) {
@@ -299,22 +314,55 @@ export default function BrainGlobalPage() {
             </p>
           </div>
           {stats.newSince > 0 && (
-            <span className="mt-1 px-2 py-1 rounded-full bg-primary/15 border border-primary/30 text-primary text-eyebrow font-mono uppercase tracking-wider shrink-0">
+            <span
+              className="mt-1 px-2 py-1 rounded-full bg-primary/15 border border-primary/30 text-primary text-eyebrow font-mono uppercase tracking-wider shrink-0"
+              title="Memories created since you last opened this screen in this browser. Local-only — not a server-side 'new' flag."
+            >
               {stats.newSince} new
             </span>
           )}
         </div>
         <div className="px-4 sm:px-6 pb-3 sm:pb-4 flex gap-2 overflow-x-auto scrollbar-thin edge-fade-x">
-          <MetricChip icon={Brain} label="MEMORIES" value={stats.total} />
-          <MetricChip icon={Zap} label="RECALLS" value={stats.recalls} />
-          <MetricChip icon={Target} label="AVG CONFIDENCE" value={`${stats.avgConf}%`} />
+          {/* The RECENT chip is the 500-row slice this page renders, labeled
+              against the real total count. Previously it was labeled
+              "MEMORIES · 500" and sat next to a card below reading
+              "Memories 1,672" — the same noun, two different populations,
+              which read as a bug. Showing the denominator makes the slice
+              visible as a slice. */}
+          <MetricChip
+            icon={Brain}
+            label="RECENT"
+            value={memoriesTotal != null && memoriesTotal > stats.total
+              ? `${stats.total} of ${memoriesTotal.toLocaleString()}`
+              : stats.total}
+            title={memoriesTotal != null && memoriesTotal > stats.total
+              ? `Showing the 500 most-recent memories of ${memoriesTotal.toLocaleString()} total. The Overview tab's Memories card is the full count.`
+              : "All of this user's memories fit in the 500-row display slice."}
+          />
+          <MetricChip
+            icon={Zap}
+            label="RECALLS"
+            value={stats.recalls}
+            title="Sum of hit_count across the recent slice above. A hit is one call to memory_recall that returned a memory. Scoped to the slice, not all-time."
+          />
+          <MetricChip
+            icon={Target}
+            label="AVG CONFIDENCE"
+            value={`${stats.avgConf}%`}
+            title="Average confidence across the recent slice above. The Overview tab's Avg confidence card is the all-time average and uses the full population, so the two can diverge."
+          />
           <MetricChip
             icon={TrendingUp}
             label="HIGH CONFIDENCE"
             value={stats.highConfidence}
-            title="Memories with confidence ≥75%. This is a source/tool confidence score, not an analyst confirmation."
+            title="Memories in the recent slice with confidence ≥75%. This is a source/tool confidence score, not an analyst confirmation."
           />
-          <MetricChip icon={CreditCard} label="SOCIALFETCH" value={sfCreditsLeft != null ? `${sfCreditsLeft.toLocaleString()} left` : "—"} />
+          <MetricChip
+            icon={CreditCard}
+            label="SOCIALFETCH"
+            value={sfCreditsLeft != null ? `${sfCreditsLeft.toLocaleString()} left` : "—"}
+            title="SocialFetch credit balance for this user — independent of the memory slice above."
+          />
         </div>
         <div className="px-6 pb-3 flex gap-1 border-t border-border-subtle/40 pt-3">
           {SUB_TABS.map((t) => (
