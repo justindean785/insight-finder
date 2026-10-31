@@ -523,7 +523,9 @@ function builder(table: string) {
   // read. This is what lets the harness show the analyst's Stop (a client write
   // of `status='stopped'` on `threads`) reach the case snapshot and the
   // transcript's watchdog without a server. Applied when the chain is awaited,
-  // after the `.eq()` filters have run.
+  // after the `.eq()` filters have run. TRAP: `eq()` ignores a column the
+  // fixture rows do not carry, so an update filtered only on such a column
+  // patches EVERY row of the table — give the fixture the column instead.
   let pendingUpdate: Record<string, unknown> | null = null;
   self.update = (patch: Record<string, unknown>) => { pendingUpdate = patch ?? {}; return self; };
   const applyUpdate = () => {
