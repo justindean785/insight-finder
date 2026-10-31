@@ -21,6 +21,7 @@ import {
   type Group,
 } from "@/lib/intel";
 import { deriveInsights } from "@/pages/InsightsDerived";
+import { cn } from "@/lib/utils";
 
 const GROUP_COLOR: Record<Group, string> = {
   identity: "hsl(var(--primary))",
@@ -103,20 +104,35 @@ export function InsightsOverview({ embedded = false }: { embedded?: boolean } = 
         <section className="mt-8 grid grid-cols-2 lg:grid-cols-5 gap-3">
           <StatTile loading={loading} icon={FileSearch} label="Cases" value={totals?.cases ?? 0} />
           <StatTile loading={loading} icon={Activity} label="Artifacts" value={totals?.artifacts ?? 0} />
-          <StatTile loading={loading} icon={Brain} label="Memories" value={totals?.memories ?? 0} />
+          {/* Stored, all time: the one place the full memory population is
+              stated. The header strip on /brain describes a 500-row recent
+              sample and says so; this tile is its denominator. A failed count
+              renders `—`, never 0. */}
+          <StatTile
+            loading={loading}
+            icon={Brain}
+            label="Memories"
+            value={data ? data.memoryCount : 0}
+            sub={data?.memoryCountError ? "Stored count unavailable" : "Stored, all time"}
+          />
           <StatTile
             loading={loading}
             icon={Wrench}
             label="Tool calls"
             value={data?.toolCallsTotal ?? 0}
           />
+          {/* `get_insights_summary` averages `public.artifacts.confidence`. It
+              is NOT memory confidence (that is `agent_memory.confidence`, shown
+              in the /brain header over the recent sample) and not analyst
+              review. The old label "Avg confidence" sat under a header chip
+              "AVG CONFIDENCE" over a different table — same words, two nouns. */}
           <StatTile
             loading={loading}
             icon={TrendingUp}
-            label="Avg confidence"
+            label="Artifact confidence"
             value={totals?.avgConfidence ?? 0}
             suffix="%"
-            sub="Source score — not analyst review"
+            sub="Source score over all artifacts — not memory, not analyst review"
           />
         </section>
 
@@ -139,7 +155,14 @@ export function InsightsOverview({ embedded = false }: { embedded?: boolean } = 
             )}
           </Card>
 
-          <Card title="Top sources" icon={Wifi}>
+          {/* Artifact count grouped by `source`. "Top sources" read as a
+              reliability ranking; it is volume. Reliability (ok / failed over
+              real attempts) lives on the Sources tab. */}
+          <Card
+            title="Most-recorded sources"
+            icon={Wifi}
+            sub="Artifact count by source — volume, not reliability. Reliability is on the Sources tab."
+          >
             {loading ? (
               <SkeletonRows rows={5} />
             ) : derived && derived.topSources.length > 0 ? (
@@ -242,19 +265,25 @@ function StatTile({
   loading: boolean;
   icon: typeof Activity;
   label: string;
-  value: number;
+  /** `null` = the reading is unavailable (its query failed); renders `—`. */
+  value: number | null;
   suffix?: string;
   sub?: string;
 }) {
   return (
     <div className="rounded-2xl border border-border-subtle/80 glass-card p-3.5 sm:p-5">
-      <div className="flex items-center gap-2 text-meta font-medium text-muted-foreground">
-        <Icon className="w-3.5 h-3.5 shrink-0" />
-        <span className="truncate">{label}</span>
+      {/* DESIGN.md Metric Cards: the label row reserves two lines at every
+          width, so a bank keeps every figure on one baseline whatever its
+          labels do — "Artifact confidence" wraps where "Avg confidence" fit. */}
+      <div className="flex items-start gap-2 text-meta font-medium text-muted-foreground min-h-[2lh]">
+        <Icon className="w-3.5 h-3.5 shrink-0 mt-[0.2lh]" />
+        <span className="leading-snug">{label}</span>
       </div>
       <div className="mt-1.5 sm:mt-2 font-display text-2xl sm:text-3xl font-semibold tracking-tight">
         {loading ? (
           <Skeleton className="h-9 w-20" />
+        ) : value == null ? (
+          <span aria-label={`${label} unavailable`}>—</span>
         ) : (
           <>
             {value.toLocaleString()}
@@ -270,18 +299,22 @@ function StatTile({
 function Card({
   title,
   icon: Icon,
+  sub,
   children,
 }: {
   title: string;
   icon: typeof Layers;
+  /** One sentence on what the card measures, as text (no hover on a phone). */
+  sub?: string;
   children: React.ReactNode;
 }) {
   return (
     <div className="rounded-2xl border border-border-subtle/80 glass-card p-5">
-      <div className="flex items-center gap-2 text-title font-semibold text-foreground/90 mb-4">
+      <div className={cn("flex items-center gap-2 text-title font-semibold text-foreground/90", sub ? "mb-1" : "mb-4")}>
         <Icon className="w-3.5 h-3.5" />
         {title}
       </div>
+      {sub && <p className="text-micro text-muted-foreground mb-4">{sub}</p>}
       {children}
     </div>
   );

@@ -179,6 +179,38 @@ const messages = [
 const tool = (id: string, name: string, ok: boolean, ms: number, mins: number, err: string | null = null, cached = false) =>
   ({ id, thread_id: THREAD_ID, user_id: USER_ID, tool_name: name, ok, cached, duration_ms: ms, created_at: iso(mins), error_msg: err, status_code: ok ? 200 : 500, cost_micro_usd: 1200, charged_micro_usd: cached ? 0 : 1200, input_json: {} });
 
+/**
+ * Cross-case memories for the Intelligence page (/brain). Twelve rows: enough
+ * for every kind the page groups, hit counts that are visibly NOT recall counts
+ * (a `hit_count` rises on recall AND on re-save), and confidences averaging 66
+ * so the header's "Memory confidence (sample)" reads differently from the
+ * Overview's "Artifact confidence" (49, from `get_insights_summary` below) —
+ * the two numbers the 2026-10-31 audit saw share one label.
+ *
+ * Scenarios: `?scenario=memories-empty` (0 rows) and `?scenario=memories-overcap`
+ * (520 rows → the page samples 500, the count reads 520, the caption reads
+ * "500 most recent of 520").
+ */
+const memoryRow = (i: number, over: Partial<Record<string, unknown>> = {}) => ({
+  id: `mem-${i}`, user_id: USER_ID, kind: "lesson", subject: `subject-${i}`, subject_kind: "email",
+  content: `Lesson ${i}: a saved observation about how this selector behaved.`, related_values: null,
+  confidence: 60, hit_count: 1, last_used_at: null, created_at: iso(i * 7), source_thread_id: THREAD_ID, ...over,
+});
+const agent_memory = [
+  memoryRow(0, { kind: "pattern", subject: "gmail.com", subject_kind: "email", content: "Gmail seeds rarely resolve through WHOIS; pivot to username reuse first.", confidence: 82, hit_count: 7, last_used_at: iso(3), related_values: ["username_sweep", "gravatar_profile"] }),
+  memoryRow(1, { kind: "lesson", subject: "oathnet_lookup", subject_kind: "breach", content: "oathnet returns bulk corpus rows for common names — quarantine before pivoting.", confidence: 74, hit_count: 4, last_used_at: iso(9) }),
+  memoryRow(2, { kind: "identity", subject: "j.harker@northgate-logistics.com", content: "Verified corporate mailbox; registrant of northgate-logistics.com.", confidence: 88, hit_count: 3, last_used_at: iso(14), related_values: ["jharker88", "northgate-logistics.com"] }),
+  memoryRow(3, { kind: "connection", subject: "jharker88", subject_kind: "username", content: "Handle reused on two platforms; same avatar hash.", confidence: 71, hit_count: 2 }),
+  memoryRow(4, { kind: "pattern", subject: "+1 415", subject_kind: "phone", content: "415 area-code numbers from brokers are mostly VoIP; carrier lookup first.", confidence: 58, hit_count: 5, last_used_at: iso(20) }),
+  memoryRow(5, { kind: "lesson", subject: "socialfetch_lookup", subject_kind: "social", content: "SocialFetch credits burn fastest on username sweeps; prefer a single profile fetch.", confidence: 63, hit_count: 1 }),
+  memoryRow(6, { kind: "identity", subject: "northgate-logistics.com", subject_kind: "domain", content: "Domain registered 2019; RDAP registrant matches staff directory.", confidence: 92, hit_count: 0 }),
+  memoryRow(7, { kind: "lesson", subject: "firecrawl_scrape", content: "Staff directories behind a login time out at 15s; use the wayback copy.", confidence: 47, hit_count: 2 }),
+  memoryRow(8, { kind: "pattern", subject: "stocktonfreight.example", subject_kind: "breach", content: "Domain-breach corpora list every mailbox; none is linkage to the subject.", confidence: 55, hit_count: 3 }),
+  memoryRow(9, { kind: "connection", subject: "harker.logistics", subject_kind: "username", content: "Linkage confirmed by analyst after collision review.", confidence: 69, hit_count: 1 }),
+  memoryRow(10, { kind: "lesson", subject: "indicia_person", subject_kind: "geo", content: "Two broker residences for one subject is a conflict, not corroboration.", confidence: 52, hit_count: 0 }),
+  memoryRow(11, { kind: "identity", subject: "Oakland, California, US", subject_kind: "geo", content: "Single-broker location; not promotable.", confidence: 41, hit_count: 1 }),
+];
+
 const tool_usage_log = [
   tool("t1", "hunter_verify", true, 812, 41),
   tool("t2", "exa_search", true, 2341, 40),
@@ -285,7 +317,7 @@ const SYNTHETIC: Record<string, unknown[]> = {
     { id: "r3", artifact_id: "twin-ip-a", thread_id: THREAD_ID, user_id: USER_ID, state: "dismissed", created_at: iso(6), note: "carrier NAT egress — not the subject's line" },
   ],
   user_credits: [{ user_id: USER_ID, credits_remaining: 466, credits_total: 500, updated_at: iso(4) }],
-  agent_memory: [], investigation_cache: [], client_errors: [],
+  agent_memory, investigation_cache: [], client_errors: [],
 };
 
 const FIXTURES: Record<string, unknown[]> = SNAPSHOT?.tables ?? SYNTHETIC;
@@ -386,6 +418,15 @@ if (!SNAPSHOT && mainThread) {
   }
 }
 
+// Memory-population scenarios for /brain. Independent of the thread scenarios
+// above: the page reads `agent_memory` only.
+if (!SNAPSHOT) {
+  if (SCENARIO === "memories-empty") FIXTURES.agent_memory = [];
+  if (SCENARIO === "memories-overcap") {
+    FIXTURES.agent_memory = Array.from({ length: 520 }, (_, i) => memoryRow(i, { confidence: 40 + (i % 50), hit_count: i % 4 }));
+  }
+}
+
 /** Realtime: channels register their postgres_changes bindings here so a
  *  scenario can push an UPDATE the way Supabase would. */
 type Binding = { table: string; event: string; cb: (payload: unknown) => void };
@@ -438,7 +479,22 @@ const RPC: Record<string, unknown> = {
   // (thread_id, artifacts, tool_calls) — loadCaseMetrics maps those exact
   // names, so anything else silently renders the cases list as all-zero.
   get_case_metrics: [{ thread_id: THREAD_ID, artifacts: artifacts.length, tool_calls: tool_usage_log.length }],
-  get_insights_summary: [{ total_threads: 12, total_artifacts: 96, confirmed_artifacts: 24, credits_used: 341 }],
+  // Shape of the production RPC (`InsightsSummary`). The old stub was an array
+  // of a different record, so the Overview rendered every card empty in the
+  // harness. `avg_confidence` is over public.artifacts — the tile says so.
+  get_insights_summary: {
+    kind_counts: [{ kind: "email", count: 31 }, { kind: "username", count: 12 }, { kind: "domain", count: 9 }, { kind: "phone", count: 8 }, { kind: "breach_exposure", count: 22 }, { kind: "location", count: 6 }, { kind: "social_profile", count: 8 }],
+    source_counts: [{ source: "oathnet_lookup", count: 38 }, { source: "indicia_address", count: 17 }, { source: "hunter_verify", count: 11 }, { source: "exa_search", count: 10 }, { source: "socialfetch", count: 7 }, { source: "whois_lookup", count: 5 }],
+    day_counts: Array.from({ length: 14 }, (_, i) => ({ day: new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10), count: [3, 0, 7, 12, 4, 0, 1, 9, 2, 0, 5, 6, 0, 8][i] })),
+    top_cases: [{ thread_id: THREAD_ID, title: "James Harker — logistics", artifact_count: artifacts.length, last_at: iso(4) }],
+    conf_buckets: { ge80: 9, b50: 27, b20: 44, lt20: 16, unscored: 0 },
+    avg_confidence: 49,
+    tool_counts: tool_usage_log.reduce<Array<{ tool_name: string; count: number; ok_count: number }>>((acc, t) => {
+      const row = acc.find((r) => r.tool_name === t.tool_name) ?? (acc.push({ tool_name: t.tool_name, count: 0, ok_count: 0 }), acc[acc.length - 1]);
+      row.count += 1; if (t.ok) row.ok_count += 1; return acc;
+    }, []),
+    tool_calls_total: tool_usage_log.length,
+  },
   has_role: false,
   // CustodyTab.verify() reads { ok, total, first_break } — the old
   // { valid, checked, broken_at } shape produced `ok: undefined`, which the
