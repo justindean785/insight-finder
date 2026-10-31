@@ -89,8 +89,10 @@ describe("shouldEndStreamAfterGrace — the watchdog's 8s fallback ends only the
   });
   it("bounds by the row's own updated_at when the update was heard late (throttled tab)", () => {
     const rowUpdatedAt = new Date(armedAtMs - 6_000).toISOString(); // finished 6s before this tab heard it
-    // a stream opened 3s after the finish but 3s BEFORE the late delivery: a new run, keep it
-    expect(shouldEndStreamAfterGrace({ clientStreaming: true, streamStartedAtMs: armedAtMs - 3_000, armedAtMs, rowUpdatedAt })).toBe(false);
+    // a stream opened 6s after the finish (past the 5s clock-skew allowance) but BEFORE the late delivery: a new run, keep it
+    expect(shouldEndStreamAfterGrace({ clientStreaming: true, streamStartedAtMs: armedAtMs + 100, armedAtMs: armedAtMs + 10_000, rowUpdatedAt })).toBe(false);
+    // a stream opened within the skew allowance of the finish is still treated as the finished run's
+    expect(shouldEndStreamAfterGrace({ clientStreaming: true, streamStartedAtMs: armedAtMs - 3_000, armedAtMs, rowUpdatedAt })).toBe(true);
     // a stream open since before the finish: the stuck one, end it
     expect(shouldEndStreamAfterGrace({ clientStreaming: true, streamStartedAtMs: armedAtMs - 30_000, armedAtMs, rowUpdatedAt })).toBe(true);
     // unparseable updated_at falls back to the delivery time

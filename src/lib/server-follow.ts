@@ -111,8 +111,9 @@ export function shouldEndStreamAfterGrace({ clientStreaming, streamStartedAtMs, 
 }): boolean {
   if (!clientStreaming) return false;
   if (streamStartedAtMs === null) return false;
+  // Server and browser clocks differ; allow the same skew the run-start comparisons use.
   const rowMs = rowUpdatedAt ? Date.parse(rowUpdatedAt) : NaN;
-  const bound = Number.isFinite(rowMs) ? Math.min(armedAtMs, rowMs) : armedAtMs;
+  const bound = Number.isFinite(rowMs) ? Math.min(armedAtMs, rowMs + START_SKEW_MS) : armedAtMs;
   return streamStartedAtMs <= bound;
 }
 
