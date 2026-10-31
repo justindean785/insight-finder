@@ -8,7 +8,7 @@
 |---|---|
 | `origin/main` | `a753f56e` (#930, merged 13:53Z, verified via API) <- `9218a8e1` (#932 tests) <- `f52ab811` (#931) <- `b8bee003` (#927) <- `96f6bac6` (#903 docs) <- `6e8498ab` (#906) |
 | live `osint-agent` `/health` | build `cb4c6a27` (the #923 FOFA stamp, **newer than the `6eb444f` CLAUDE.md names**), 61 checks, 0 not ok, `deepseek` / `glm-5.2` |
-| undeployed edge runtime on `main` | none: `git diff 185afd8b origin/main -- supabase/functions` is empty. #932 is tests only. |
+| undeployed edge runtime on `main` | none: `git diff 185afd8b origin/main -- supabase/functions` is empty. `185afd8b` is the #923 stamp commit that sets `BUILD_MARKER` to `cb4c6a27`; the live `/health` build matching that marker is the deploy proof, and the empty diff shows `main` has no edge runtime change since that stamp. #932 is tests only. |
 | frontend | #927, #931 live via Vercel (Production success per the prior session) |
 | baselines | vitest 3027/1/256 and e2e 102/13 on 2026-10-31 after #931 (prior session); edge 2821/0/6 |
 
