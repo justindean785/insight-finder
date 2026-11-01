@@ -126,6 +126,7 @@ import {
 import { redactErrorMessage } from "./lib/redact-error.ts";
 import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
 import { inputFailureRowsForStep } from "./lib/tool-input-failure.ts";
+import { wrapToolsWithMediaLeads } from "./lib/media-leads.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
 // Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
@@ -1619,7 +1620,10 @@ Deno.serve(async (req) => {
         : undefined,
       system: assembleBaseSystemPrompt({ detectedSeedType, visionIntakeSummary }),
       messages: trimmedMessages,
-      tools: wrapToolsWithCache(tools, {
+      // media-leads wraps OUTSIDE the cache wrapper on purpose: the cache row, the
+      // tool_usage_log row and the custody record keep the original result, and the
+      // model additionally sees `media_leads` on scrape/profile results.
+      tools: wrapToolsWithMediaLeads(wrapToolsWithCache(tools, {
         investigationId: threadId,
         userId,
         supabase,
@@ -1645,7 +1649,7 @@ Deno.serve(async (req) => {
         hasCorrelateDispatchBudget: () =>
           ORCHESTRATOR_WALL_CLOCK_MS - (Date.now() - runStartedAt) >= requiredCompletionMs(),
         onHeartbeat: () => heartbeat?.pulse(),
-      }),
+      })),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call
       // for a name that is NOT in the live registry (hallucinations like exify /
       // hackerone_lookup). Validate the emitted name against the wrapped tool set

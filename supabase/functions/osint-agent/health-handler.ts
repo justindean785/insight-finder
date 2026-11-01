@@ -84,6 +84,7 @@ import { socialfetchCoercionSelfTest } from "./lib/socialfetch-input.ts";
 import { correlateSeedDefaultSelfTest } from "./lib/thread-seed.ts";
 import { detectSeedServer } from "./validation.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
+import { mediaLeadsSelfTest } from "./lib/media-leads.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -620,6 +621,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // silent; `enabled:false` means TOOL_INPUT_OBJECT_REPAIR_DISABLED is set. Its
   // PRESENCE proves this build is live.
   r.checks.tool_input_object_repair = toolInputObjectRepairSelfTest();
+
+  // Do scrape/profile results carry `media_leads` for the GeoSeer chain
+  // (lib/media-leads.ts)? A self-test on a fixed synthetic result, pure and silent;
+  // `enabled:false` means MEDIA_LEADS_DISABLED is set. Its PRESENCE proves this
+  // build is live.
+  r.checks.media_leads = mediaLeadsSelfTest();
 
   // Do stream errors record the provider's status and code WITHOUT the response
   // body (stream-error-classify.ts)? A self-test on a synthetic error, pure.
