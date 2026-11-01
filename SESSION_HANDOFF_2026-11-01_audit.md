@@ -87,6 +87,24 @@ Assistant messages created since 2026-10-31 12:00Z with any CJK character (`[一
 
 ## 7. Next steps (ranked)
 
+**JD's priority (2026-11-01, after asking where the "new memories tab" went): the memory program goes first.** Only its Stage 1 has shipped: #927 / PR-F1 (merged 10-31 12:48Z, live) made every number on `/brain` name its population. The rest is in `docs/plans/2026-10-31-intelligence-memory-plan.md`: PR-F2 (lesson review UI) and PR-F3 (learning-loop pane) have no code and no PR, and `tool_lessons` exists nowhere in `src/` or `supabase/migrations`. #928 (M1 brief) is a draft and inert (0 `tool:` rows in `agent_memory`).
+
+**The ordering below is my proposal and departs from the plan's §3 order; it needs JD's confirmation (plan Q2).** The plan puts #926, #925, #868 and the M1 deploy (PR-E4) ahead of schema. I put the observation clock first. Why: candidates need `invocation_id` on `tool_usage_log` rows (PR-E5) to count distinct invocations, so **nothing the review UI would show can exist until PR-E5 is live and data has accrued**. M1 (#928) does nothing until PR-E6 reads active lessons, so deploying it early spends an edge cycle for one `/health` key. The independent bug fixes (#926, #925, #868) are not prerequisites (plan §1.2), so they fill the unavoidable waiting window.
+
+| # | PR | Channel | Who acts | What you can see afterwards |
+|---|---|---|---|---|
+| M1 | **Decisions:** confirm Q6 (`invocation_id` + `tool_lessons`; Q11 already approved the single-table shape), accept Q10 (exposure is lost for runs that die before `finish()` until #903 PR B), accept Q9's initial thresholds (5 attempts / 3 invocations / 2 threads / 60% / 14 d), and the order itself (Q2) | none | JD | nothing |
+| M2 | **PR-S1** migration: `tool_usage_log.invocation_id` + the `tool_lessons` table + `.github/ci/assert-tool-lessons.sql` (§4.6). Additive. Do not bundle #613 lineage | schema | Claude writes, **JD applies and verifies first** | nothing yet |
+| M3 | **PR-E5** stamp `invocation_id` on every new log row (§4.7; kill switch `OBSERVATION_IDENTITY_DISABLED`; `checks.observation_identity`). Touches `cache.ts` and `index.ts`, so full edge-deploy cycle, own build | edge | Claude, deploy on JD's go | `/health` key; the data clock starts |
+| M4 | **Waiting window, edge slots reused:** #926 -> #925 -> #868, then PR-E4 (#928 hardening, re-read U1 right before deploy) | edge, one build each | Claude, JD's go each | the fixes; M1 brief present but inert |
+| M5 | **PR-S1b** aggregator in **dry-run**; JD reads what candidates it *would* create from real data | schema | Claude writes, JD applies | the first real list of would-be lessons |
+| M6 | **PR-F2** review UI (frontend; can be built against fixtures right after M2 and ships on merge, showing an empty state until M5 produces candidates) | frontend | Claude | **the new Memories/learning queue: approve / reject / revoke** |
+| M7 | **PR-E6** M1 reads active lessons, then PR-S2 -> PR-E8 (attribution; Q8) -> **PR-F3** learning-loop pane | edge/schema/frontend | JD's go each | lessons reach runs; exposure and outcomes visible |
+
+Not promised: dates. The review UI shows nothing real until M3 has been live long enough for a key to meet the thresholds. Lessons only change which tool is tried; they are never a source or corroboration (#721, #928).
+
+Everything after this line is the earlier ranking, now behind the memory program, except items that run on other channels in parallel (frontend scan-QA, read-only reviews).
+
 1. **JD: answer #903's four decisions** and say whether the salvage finding warrants a termination design note (§3). No code before that.
 1a. **Read-only / offline, no go needed (from Lovable's audit, §9):** review #912 against current `main` (the evidence-row to artifact link; trace insert -> per-item linkage -> report/export, duplicate values across sources, partial insert failure, analyst rejection, unchanged hashes and authority), and write a **failing offline test** for the checkpoint marker (`index.ts:594` advances before the RPC result; a mocked failure then finalization must keep the exact unpaid delta; do not blind-retry a non-idempotent increment). Any fix PR is edge, its own build, and needs JD's go.
 2. **Frontend scan-QA PRs**, one each, frontend only, ready not draft: alias-twin label first; the redaction fix built with tests and **left draft until JD signs off**; the DNS label after JD picks wording. Needs its own branch per PR. `npm run test:e2e` by hand before merging anything under `src/`.
