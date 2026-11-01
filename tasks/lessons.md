@@ -265,3 +265,36 @@ callout beside narrative-asserted subject). No scoring or writer change.
   bare argument** when the host surface runs the block through a route that
   does not evaluate shell syntax. For user-facing blocks with a Run button,
   put commands on their own lines and keep comments outside the fence.
+
+## 2026-11-01
+- **A code review is not read until its BODY is read.** Graphify posts a review *body*
+  carrying its substantive findings and, separately, inline threads carrying only
+  deterministic coupling notes. On #935 the body named two of the three defects
+  ("Previous user's run data stays on screen after the user changes or logs out",
+  "Step-token read uses .limit(2000) above PostgREST's 1,000-row cap") at 02:48Z. I read only
+  the inline threads via `get_review_comments`, saw three resolved coupling notes, judged the
+  review clear, and merged at 03:07Z — nineteen minutes later. The defects reached production
+  and needed a second PR (#937) to remove. **`get_review_comments` returns threads only; the
+  findings can live in `get_reviews`.** Read both, on every PR, before merging. Resolving every
+  thread is not clearance.
+- **"Verified the production path" requires tracing the render guard, not just the state
+  owner.** I reported the #935 user-switch defect to JD as a live production bug because
+  `useAuth` nulls `user` in place on SIGNED_OUT. It is not: `BrainGlobalPage.tsx:320` is
+  `if (!user) return <Navigate to="/auth" replace />`, so the tabs unmount before stale
+  figures or a stuck `loading` can be seen. The fix is worth keeping as hardening, but it was
+  described with more severity than the evidence carried. Before calling a UI defect
+  reachable, follow the data to the component that actually renders it and check what guards
+  the mount.
+- **A bot's attribution can be right when my own reading was incomplete.** I told JD an audit
+  had misattributed findings to Graphify that "Graphify did not make". The audit was correct;
+  I had only read the threads. Check the primary source again before accusing a secondary one
+  of fabricating — the cheaper error is re-reading, and the expensive one is a confident
+  correction in the wrong direction.
+- **Severity-ordered classification must not interleave an authoritative signal with a
+  heuristic one.** `classifyFailure` ORed an HTTP status test against a regex per branch, in
+  severity order, so a lower-priority code lost to a higher-priority regex: HTTP 500 with
+  "upstream quota service unavailable" matched `quota` and read as a credential refusal —
+  reporting a dead key for a provider that was merely down. Authoritative signal first,
+  heuristic strictly as a fallback, and keep an explicit escape for unrecognized codes
+  (FOFA answers HTTP 200 with an error body). I first judged this a preference and had to
+  reverse; the repro that settled it took one minute.
