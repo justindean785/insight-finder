@@ -23,6 +23,7 @@
  * grounded strictly in artifacts already gathered.
  */
 import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN } from "./orchestrator-budget.ts";
+import { FINALIZE_PERSIST_DECISION_LINES, LEGACY_FINALIZE_PERSIST_DECISION_LINES, findingPromptV2Disabled } from "./lib/finding-prompt.ts";
 
 // Reserve the final stretch of the wall-clock budget for a guaranteed synthesis+record
 // step. Once elapsed enters this window the orchestrator stops issuing new lookups and
@@ -715,9 +716,8 @@ export function buildFinalizePersistDirective(): string {
     "Do NOT start any new lookups, pivots, or web searches.",
     "This is the PERSISTENCE phase. Do not write narration or the report yet.",
     "You MUST make exactly one tool call:",
-    "- Call record_artifacts with every tool-supported finding not yet persisted; OR",
-    "- Call finalize_no_findings with a short reason if there is genuinely no additional",
-    "  supported finding to persist.",
+    // An ARTIFACT decision, worded as one (lib/finding-prompt.ts); FINDING_PROMPT_V2_DISABLED restores the old lines.
+    ...(findingPromptV2Disabled() ? LEGACY_FINALIZE_PERSIST_DECISION_LINES : FINALIZE_PERSIST_DECISION_LINES),
     "Never invent an artifact merely to satisfy this phase.",
   ].join("\n");
 }

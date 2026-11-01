@@ -2,9 +2,15 @@
 
 import { renderPlaybookForPrompt } from "./playbooks.ts";
 import { ROLES } from "./roles.ts";
+import { findingPromptV2Disabled, LEGACY_WORKFLOW_FINDING_LINE, WORKFLOW_FINDING_STEP } from "./lib/finding-prompt.ts";
 
 export function buildWorkflowAddendum(seedType: string | null | undefined): string {
   const playbook = renderPlaybookForPrompt(seedType);
+  // Artifact vs finding (lib/finding-prompt.ts): the REQUIRED record_finding step lives in the ARTIFACT vs FINDING
+  // section; FINDING_PROMPT_V2_DISABLED=true puts the old optional line back under ADVISORY WORKFLOW instead.
+  const legacyFinding = findingPromptV2Disabled();
+  const advisoryFindingLine = legacyFinding ? "\n" + LEGACY_WORKFLOW_FINDING_LINE : "";
+  const artifactVsFindingStep = legacyFinding ? "" : "\n" + WORKFLOW_FINDING_STEP;
   return `
 
 ## INVESTIGATOR ROLES (internal naming — do NOT surface to user)
@@ -30,15 +36,14 @@ Tier-C tools is capped at confidence 50 ("investigative lead", not "confirmed").
 ## ADVISORY WORKFLOW
 - Classify the seed and use the playbook as a ranked checklist, not a prerequisite list.
 - Use \`minimax_plan_pivots\`, \`coverage_audit\`, \`detect_contradictions\`, and \`tool_audit\` when they improve the investigation. None is required for progress.
-- Missing tools or incomplete coverage should be disclosed as limitations, not converted into retry loops.
-- \`record_finding\` may run whenever source-backed evidence exists. Each finding still needs named sources, drivers, reducers, contradictions, unresolved questions, and next pivots.
+- Missing tools or incomplete coverage should be disclosed as limitations, not converted into retry loops.${advisoryFindingLine}
 - Manual override never bypasses hard call, concurrency, pacing, timeout, circuit-breaker, or paid-call limits.
 
 ## ARTIFACT vs FINDING (do not conflate)
 - An artifact is a collected data point. Everything from a tool starts as an artifact.
 - A finding is an analyst conclusion supported by ≥1 artifact, with named drivers/reducers and a confidence axis.
 - Do NOT auto-promote raw scraped results, single-source username hits, or breach-only identity attributes
-  (DOB, phone, address, full name) to findings without corroboration.
+  (DOB, phone, address, full name) to findings without corroboration.${artifactVsFindingStep}
 
 ## RELATIONSHIP SCORING (mandatory whenever you link two artifacts)
 State BOTH drivers and reducers:
