@@ -208,3 +208,18 @@ export function formatUsd(usd: number | null | undefined): string {
   if (!isNum(usd)) return "—";
   return usd < 1 ? `$${usd.toFixed(3)}` : `$${usd.toFixed(2)}`;
 }
+
+/**
+ * The newest run in the list, whatever it recorded. A run with no recorded cost is still the
+ * latest run: callers show its cost as unknown instead of reaching back to an older run that
+ * happens to have one (Codex review on #935).
+ */
+export function latestRun(rows: readonly InvocationRow[]): InvocationRow | null {
+  let best: InvocationRow | null = null;
+  let bestT = -Infinity;
+  for (const r of rows) {
+    const t = new Date(r.started_at).getTime();
+    if (Number.isFinite(t) && t > bestT) { best = r; bestT = t; }
+  }
+  return best;
+}

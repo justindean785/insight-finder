@@ -8,6 +8,7 @@ import {
   formatDuration,
   formatTokens,
   formatUsd,
+  latestRun,
   type InvocationRow,
 } from "@/lib/run-economics";
 
@@ -222,5 +223,19 @@ describe("formatUsd", () => {
 
   it("shows an em dash for a cost that was never recorded, not $0", () => {
     expect(formatUsd(null)).toBe("—");
+  });
+});
+
+describe("latestRun", () => {
+  it("returns the newest run even when its cost was not recorded, instead of borrowing an older run's cost", () => {
+    const newest = inv({ started_at: daysAgo(0.1), credits_micro_usd: null });
+    const older = inv({ started_at: daysAgo(2), credits_micro_usd: 400_000 });
+    const r = latestRun([older, newest]);
+    expect(r?.id).toBe(newest.id);
+    expect(r?.credits_micro_usd).toBeNull();
+  });
+
+  it("returns null for an empty list", () => {
+    expect(latestRun([])).toBeNull();
   });
 });

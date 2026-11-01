@@ -99,6 +99,22 @@ for (const viewport of [{ width: 1280, height: 720 }, { width: 375, height: 812 
       expect(await noHorizontalOverflow(page)).toBe(true);
     });
 
+    test("yesterday's ledger total is not shown as today's spend", async ({ page }) => {
+      await open(page, "/brain?tab=credits&scenario=credits-stale-day");
+      const account = page.getByTestId("credit-account");
+      await expect(account).toContainText("$0.188 spent in total");
+      await expect(account).toContainText("$0.000 today");
+      await expect(account).not.toContainText("$0.041");
+    });
+
+    test("when the newest run has no recorded cost, 'last run' is unknown, not an older run's cost", async ({ page }) => {
+      await open(page, "/brain?tab=credits&scenario=runs-newest-unrecorded");
+      const spend = page.getByTestId("spend-card");
+      await expect(spend).toContainText("— last run");
+      await expect(spend).not.toContainText("$0.233 last run"); // the next-newest run's cost
+      await expect(page.getByTestId("run-row").nth(0)).toContainText("cost not recorded");
+    });
+
     test("no finished runs: the tab says so and shows no figures", async ({ page }) => {
       await open(page, "/brain?tab=credits&scenario=runs-empty");
       await expect(page.getByTestId("run-econ-empty")).toContainText("No finished runs in the last 30 days");

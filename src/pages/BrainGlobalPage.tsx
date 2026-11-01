@@ -17,7 +17,7 @@ import { BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MEMORY_SAMPLE_CAP, describeMemorySample, type MemoryTotal } from "@/lib/memory-population";
 import { describeCreditAccount, type CreditAccount } from "@/lib/credit-account";
-import { formatUsd } from "@/lib/run-economics";
+import { formatUsd, latestRun } from "@/lib/run-economics";
 import { useRunEconomics } from "@/hooks/useRunEconomics";
 import { RunEconomicsPanel } from "@/components/brain/RunEconomicsPanel";
 import {
@@ -1211,7 +1211,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
         supabase.from("threads").select("id, title, cost_micro_usd, updated_at")
           .eq("user_id", user.id).order("updated_at", { ascending: false }).limit(500),
         supabase.from("user_credits")
-          .select("balance_micro_usd,spent_micro_usd,daily_spent_micro_usd,unlimited,blocked")
+          .select("balance_micro_usd,spent_micro_usd,daily_spent_micro_usd,daily_window_start,unlimited,blocked")
           .eq("user_id", user.id).maybeSingle(),
       ]);
       if (!alive) return;
@@ -1233,7 +1233,8 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
 
   const sfLeft = Math.max(0, SOCIALFETCH_CAP - socialUsed);
   const sfPct = Math.min(100, (socialUsed / SOCIALFETCH_CAP) * 100);
-  const lastRun = economics.recent.find((r) => r.credits_micro_usd != null);
+  // The newest run, even if its cost was never recorded: formatUsd then shows an em dash.
+  const lastRun = latestRun(economics.recent);
 
   return (
     <div className="space-y-5">
@@ -1308,7 +1309,7 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
             <Sparkline data={economics.daily} />
           </div>
           <div className="text-data text-muted-foreground mt-3 font-mono">
-            per day, last 14 days · {formatUsd(lastRun ? (lastRun.credits_micro_usd as number) / 1_000_000 : null)} last run
+            per day, last 14 days · {formatUsd(lastRun?.credits_micro_usd == null ? null : lastRun.credits_micro_usd / 1_000_000)} last run
           </div>
         </div>
       </div>

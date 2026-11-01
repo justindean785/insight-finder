@@ -266,6 +266,9 @@ interface HarnessSnapshot {
 // day boundary. Expected figures for e2e/credits.spec.ts (30-day window = 8 runs; the 40-day
 // row is outside it): spend30 $1.77, spend14 $1.36, one unknown-cost run, forced share 3/7
 // = 43%, salvage 126.3 s of 711.6 s timed = 18%.
+// The ledger resets the daily total when daily_window_start is before today (UTC); a fixture window
+// that starts today keeps "spent today" meaningful whatever day the harness runs on.
+const startOfTodayUtc = () => { const d = new Date(); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString(); };
 const ago = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
 const invocation = (id: string, hoursAgo: number, over: Partial<Record<string, unknown>> = {}) => ({
   id, thread_id: THREAD_ID, user_id: USER_ID, provider: "deepseek", model_id: "glm-5.2",
@@ -369,7 +372,7 @@ const SYNTHETIC: Record<string, unknown[]> = {
   // a part-spent grant is the default; `?scenario=credits-unlimited` is the owner account.
   user_credits: [{
     user_id: USER_ID, balance_micro_usd: 312_450, spent_micro_usd: 187_550, daily_spent_micro_usd: 41_200,
-    daily_window_start: iso(300), unlimited: false, blocked: false, created_at: iso(60_000), updated_at: iso(4),
+    daily_window_start: startOfTodayUtc(), unlimited: false, blocked: false, created_at: iso(60_000), updated_at: iso(4),
   }],
   orchestrator_invocations, orchestrator_step_metrics,
   agent_memory, investigation_cache: [], client_errors: [],
@@ -480,6 +483,14 @@ if (!SNAPSHOT && mainThread) {
 if (!SNAPSHOT) {
   if (SCENARIO === "credits-unlimited") {
     FIXTURES.user_credits = [{ ...(SYNTHETIC.user_credits[0] as Record<string, unknown>), unlimited: true, balance_micro_usd: 0, spent_micro_usd: 0, daily_spent_micro_usd: 0 }];
+  }
+  // A beta user whose last debit was yesterday: the column still holds yesterday's total.
+  if (SCENARIO === "credits-stale-day") {
+    FIXTURES.user_credits = [{ ...(SYNTHETIC.user_credits[0] as Record<string, unknown>), daily_window_start: ago(30) }];
+  }
+  // The newest run has no recorded cost: "last run" must say so, not borrow an older run's.
+  if (SCENARIO === "runs-newest-unrecorded") {
+    FIXTURES.orchestrator_invocations = orchestrator_invocations.map((r) => (r.id === "inv-0001" ? { ...r, credits_micro_usd: null } : r));
   }
   if (SCENARIO === "runs-empty") {
     FIXTURES.orchestrator_invocations = [];
