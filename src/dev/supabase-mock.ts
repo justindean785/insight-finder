@@ -257,6 +257,64 @@ interface HarnessSnapshot {
   user?: { id?: string; email?: string };
 }
 
+
+// ── Tool outcomes for /brain → Sources → "What works, what doesn't" ─────────────────────────────
+// Rows are RELATIVE TO NOW (the tab windows by the real clock; `iso()` is pinned to Aug 9 and would
+// fall outside it). Designed so every figure can be derived by hand — e2e/tool-observations.spec.ts
+// asserts these, not numbers read back from the code:
+//   jina_reader_scrape   30d: 6 ok + 6 failed (4 refused 403, 2 server 503) = 12 attempts; last 14d:
+//                        8 attempts, 6 failed (75%), 3 cases  -> FLAGGED, mostly plan/credential refusals
+//   memory_save          6 attempts, all rejected input (400), 2 cases       -> FLAGGED, mostly input rejected
+//   gemini_deep_dork     5 attempts, 3 timeouts (no status code), 2 ok, 2 cases -> FLAGGED at exactly 60%
+//   serus_darkweb_scan   13 attempts: 8 server errors 20 days ago, 5 ok in the last 14 days -> recovered, NOT flagged
+//   http_fingerprint     6 attempts, all 502, ONE case                       -> NOT flagged (single case)
+//   fofa_search          4 attempts, all refused (HTTP 200 + permission text) -> NOT flagged (below 5 attempts)
+//   oathnet_lookup       11 attempts, 1 refused; plus 3 empties and 2 cache hits that must not count
+//   exa_search           12 ok
+//   jina_reader_scrape also carries 2 skipped calls, which must not count.
+// Totals: 8 tools, 69 real attempts, 34 failed (9 plan/credential, 19 timeouts and server errors, 6 input rejected).
+const OBS_DAY = 86_400_000;
+let obsSeq = 0;
+const obsRow = (tool: string, daysAgo: number, thread: string, over: Partial<Record<string, unknown>> = {}) => {
+  obsSeq += 1;
+  return {
+    id: `obs-${obsSeq}`, user_id: USER_ID, thread_id: thread, tool_name: tool, ok: true, outcome: "ok", cached: false,
+    cost_micro_usd: 0, charged_micro_usd: 0, duration_ms: 900, status_code: null, error_msg: null, input_json: null,
+    created_at: new Date(Date.now() - daysAgo * OBS_DAY).toISOString(), ...over,
+  };
+};
+const obsFail = (tool: string, daysAgo: number, thread: string, status: number | null, msg: string) =>
+  obsRow(tool, daysAgo, thread, { ok: false, outcome: "failed", status_code: status, error_msg: msg });
+const T1 = "11111111-2222-4333-8444-555555555555", T2 = "obs-thread-2", T3 = "obs-thread-3";
+const toolObservationRows = [
+  // jina_reader_scrape
+  obsRow("jina_reader_scrape", 20, T1), obsRow("jina_reader_scrape", 21, T2), obsRow("jina_reader_scrape", 22, T3), obsRow("jina_reader_scrape", 23, T1),
+  obsFail("jina_reader_scrape", 1, T1, 403, "HTTP 403"), obsFail("jina_reader_scrape", 2, T2, 403, "HTTP 403"),
+  obsFail("jina_reader_scrape", 3, T3, 403, "HTTP 403"), obsFail("jina_reader_scrape", 4, T1, 403, "HTTP 403"),
+  obsFail("jina_reader_scrape", 5, T2, 503, "upstream returned HTTP 503"), obsFail("jina_reader_scrape", 6, T3, 503, "upstream returned HTTP 503"),
+  obsRow("jina_reader_scrape", 7, T1), obsRow("jina_reader_scrape", 8, T2),
+  obsRow("jina_reader_scrape", 1, T1, { outcome: "skipped", ok: true }), obsRow("jina_reader_scrape", 2, T2, { outcome: "skipped", ok: true }),
+  // memory_save
+  ...[1, 2, 3, 4, 5, 6].map((d, i) => obsFail("memory_save", d, i % 2 ? T2 : T1, 400, "Invalid input: expected object, received string")),
+  // gemini_deep_dork
+  obsFail("gemini_deep_dork", 1, T1, null, "request timed out after 25000ms"), obsFail("gemini_deep_dork", 2, T2, null, "request timed out after 25000ms"),
+  obsFail("gemini_deep_dork", 3, T1, null, "The operation was aborted"), obsRow("gemini_deep_dork", 4, T2), obsRow("gemini_deep_dork", 5, T1),
+  // serus_darkweb_scan
+  ...[19, 20, 21, 22, 23, 24, 25, 26].map((d, i) => obsFail("serus_darkweb_scan", d, [T1, T2, T3][i % 3], 500, "upstream returned HTTP 500")),
+  ...[1, 2, 3, 4, 5].map((d, i) => obsRow("serus_darkweb_scan", d, [T1, T2, T3][i % 3])),
+  // http_fingerprint
+  ...[1, 2, 3, 4, 5, 6].map((d) => obsFail("http_fingerprint", d, T1, 502, "upstream returned HTTP 502")),
+  // fofa_search
+  ...[1, 2, 3, 4].map((d, i) => obsFail("fofa_search", d, i % 2 ? T2 : T1, 200, "fofa 200: [820001] No permission to search as_organization field")),
+  // oathnet_lookup: 10 ok + 1 refused real attempts; 3 empties and 2 cache hits that must not count
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((d, i) => obsRow("oathnet_lookup", d, [T1, T2, T3][i % 3])),
+  obsFail("oathnet_lookup", 11, T1, 403, "Your plan does not include this endpoint"),
+  ...[1, 2, 3].map((d) => obsRow("oathnet_lookup", d, T1, { outcome: "empty", ok: true })),
+  ...[1, 2].map((d) => obsRow("oathnet_lookup", d, T2, { cached: true })),
+  // exa_search
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((d, i) => obsRow("exa_search", d, [T1, T2][i % 2])),
+];
+
 const SYNTHETIC: Record<string, unknown[]> = {
   threads: [{
     id: THREAD_ID, user_id: USER_ID, title: "James Harker — logistics", archive_attachments: false,
@@ -420,6 +478,11 @@ if (!SNAPSHOT && mainThread) {
 
 // Memory-population scenarios for /brain. Independent of the thread scenarios
 // above: the page reads `agent_memory` only.
+// Tool-observation scenario for /brain → Sources: appends the relative-dated outcome rows above.
+if (!SNAPSHOT && SCENARIO === "tool-observations") {
+  FIXTURES.tool_usage_log = [...(FIXTURES.tool_usage_log ?? []), ...toolObservationRows];
+}
+
 if (!SNAPSHOT) {
   if (SCENARIO === "memories-empty") FIXTURES.agent_memory = [];
   if (SCENARIO === "memories-overcap") {

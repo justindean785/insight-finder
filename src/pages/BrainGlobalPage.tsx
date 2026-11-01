@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import { BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useToolObservations } from "@/hooks/useToolObservations";
+import { ToolObservationsPanel } from "@/components/brain/ToolObservationsPanel";
 import { MEMORY_SAMPLE_CAP, describeMemorySample, type MemoryTotal } from "@/lib/memory-population";
 import {
   SOURCE_RELIABILITY_ROW_LIMIT,
@@ -1012,6 +1014,7 @@ function reliabilityColor(p: number | null): string {
 
 export function SourcesTab() {
   const { user } = useAuth();
+  const observations = useToolObservations(user?.id);
   const [rows, setRows] = useState<SourceReliability[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [reviews, setReviews] = useState<ReviewSummary>({ confirmed: 0, key: 0, recheck: 0, dismissed: 0 });
@@ -1071,6 +1074,8 @@ export function SourcesTab() {
         <FeedbackChip label="NEEDS RECHECK" value={reviews.recheck} tone="hsl(var(--brain-status-warn))" />
         <FeedbackChip label="DISMISSED" value={reviews.dismissed} tone="hsl(var(--brain-status-bad))" />
       </div>
+
+      <ToolObservationsPanel state={observations} />
 
       <div className="rounded-xl border border-border-subtle bg-surface-1/40 overflow-hidden">
         <div className="px-3 py-2 border-b border-border-subtle/60 flex items-center">

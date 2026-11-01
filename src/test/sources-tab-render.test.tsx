@@ -13,7 +13,9 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const m = vi.hoisted(() => ({
   logs: [] as Record<string, unknown>[],
-  calls: [] as { table: string; op: string; args: unknown[] }[],
+  // `q` numbers each .from() chain, so a test can look at ONE query: the tab now makes two reads of tool_usage_log.
+  calls: [] as { table: string; op: string; args: unknown[]; q: number }[],
+  nextQuery: 0,
   // Stable identity: the tab's effect depends on `user`, so a fresh object per render would re-run it forever.
   auth: { user: { id: "u1" }, loading: false },
 }));
@@ -21,9 +23,10 @@ const m = vi.hoisted(() => ({
 vi.mock("@/hooks/useAuth", () => ({ useAuth: () => m.auth }));
 vi.mock("@/integrations/supabase/client", () => {
   const chain = (table: string) => {
+    const q = ++m.nextQuery;
     const node: Record<string, unknown> = {};
-    for (const op of ["select", "eq", "gte", "in", "order", "limit"]) {
-      node[op] = (...args: unknown[]) => { m.calls.push({ table, op, args }); return node; };
+    for (const op of ["select", "eq", "gte", "in", "order", "limit", "range"]) {
+      node[op] = (...args: unknown[]) => { m.calls.push({ table, op, args, q }); return node; };
     }
     node.then = (resolve: (v: unknown) => void) =>
       resolve({ data: table === "tool_usage_log" ? m.logs : [], error: null });
@@ -38,13 +41,15 @@ const iso = (daysAgo: number) => new Date(Date.now() - daysAgo * 24 * 3600 * 100
 const log = (tool: string, outcome: string, daysAgo = 1) =>
   ({ tool_name: tool, outcome, cached: false, created_at: iso(daysAgo) });
 
-beforeEach(() => { m.logs = []; m.calls = []; });
+beforeEach(() => { m.logs = []; m.calls = []; m.nextQuery = 0; });
 
 describe("SourcesTab", () => {
   it("queries outcome, live calls, a 30-day window, newest first", async () => {
     render(<SourcesTab />);
     await waitFor(() => expect(m.calls.some((c) => c.table === "tool_usage_log" && c.op === "limit")).toBe(true));
-    const q = m.calls.filter((c) => c.table === "tool_usage_log");
+    // The original source-reliability read is the tool_usage_log query that ends in .limit().
+    const sourceQuery = m.calls.find((c) => c.table === "tool_usage_log" && c.op === "limit")!.q;
+    const q = m.calls.filter((c) => c.table === "tool_usage_log" && c.q === sourceQuery);
     const sel = q.find((c) => c.op === "select")!.args[0] as string;
     expect(sel).toContain("outcome");
     expect(sel).not.toMatch(/\bok\b/);
@@ -60,7 +65,7 @@ describe("SourcesTab", () => {
   it("a tool with only skips shows no percentage, not 100%", async () => {
     m.logs = Array.from({ length: 40 }, () => log("username_sweep", "skipped"));
     render(<SourcesTab />);
-    await screen.findByText("username_sweep");
+    expect((await screen.findAllByText("username_sweep")).length).toBeGreaterThan(0); // listed in both the new panel and SOURCE WEIGHTS
     expect(screen.getByText("no attempts")).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/100%/);
   });
@@ -72,7 +77,7 @@ describe("SourcesTab", () => {
       ...Array.from({ length: 20 }, () => log("leakcheck_lookup", "skipped")),
     ];
     render(<SourcesTab />);
-    await screen.findByText("leakcheck_lookup");
+    expect((await screen.findAllByText("leakcheck_lookup")).length).toBeGreaterThan(0);
     expect(screen.getByText("70%")).toBeTruthy();
     expect(screen.getByText("10 attempts")).toBeTruthy();
     expect(screen.queryByText(/30 runs|runs/)).toBeNull();
