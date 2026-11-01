@@ -124,6 +124,32 @@ test.describe("canonical case snapshot", () => {
     await expect(page.getByText("Interrupted response.")).toHaveCount(1);
   });
 
+  test("2g · a run followed from the server can be stopped from here, and the case settles without duplicates", async ({ page }) => {
+    // Measured 2026-10-31 (case 5663c718): the stream ended, the header still
+    // read Analyzing, and the composer fell back to Send — the analyst had no way
+    // to stop a run that kept spending. Stop writes `status='stopped'` on the
+    // thread; the edge loop polls that status every step and needs no stream.
+    await open(page, `${THREAD}?scenario=running-elsewhere`);
+    const header = page.getByRole("region", { name: "Case summary" });
+    const live = page.getByRole("region", { name: "Live from the server" });
+    await expect(live).toBeVisible();
+    await expect(header.getByText(RUNNING)).toBeVisible();
+    // The follow state settles for 3s before the transcript acts on it.
+    const stop = page.getByRole("button", { name: "Stop investigation" });
+    await expect(stop).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("button", { name: "Send" })).toHaveCount(0);
+    await stop.click();
+    // The harness applies the thread update and emits the realtime UPDATE the
+    // way Supabase would; the case snapshot and the watchdog both hear it.
+    await expect(header.locator('[data-run-state="stopped"]')).toBeVisible({ timeout: 10_000 });
+    await expect(header.getByText(RUNNING)).toHaveCount(0);
+    await expect(live).toHaveCount(0);
+    await expect(stop).toHaveCount(0);
+    // The transcript reconciled once: the previous reply is still there exactly once.
+    await expect(page.getByText("Earlier run: the breach sweep found two reused handles and")).toHaveCount(1);
+    await expect(page.getByText("Interrupted response.")).toHaveCount(1);
+  });
+
   test("2f · a stream that never ends is cut once the row says its run finished, and the report loads", async ({ page }) => {
     // A half-open stream (a CPU-killed isolate, a socket that silently died)
     // keeps this tab "streaming" forever, which also pins the case to Running.

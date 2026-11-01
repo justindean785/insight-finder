@@ -257,11 +257,119 @@ interface HarnessSnapshot {
   user?: { id?: string; email?: string };
 }
 
+
+// ── Tool outcomes for /brain → Sources → "What works, what doesn't" ─────────────────────────────
+// Rows are RELATIVE TO NOW (the tab windows by the real clock; `iso()` is pinned to Aug 9 and would
+// fall outside it). Designed so every figure can be derived by hand — e2e/tool-observations.spec.ts
+// asserts these, not numbers read back from the code:
+//   jina_reader_scrape   30d: 6 ok + 6 failed (4 refused 403, 2 server 503) = 12 attempts; last 14d:
+//                        8 attempts, 6 failed (75%), 3 cases  -> FLAGGED, mostly plan/credential refusals
+//   memory_save          6 attempts, all rejected input (400), 2 cases       -> FLAGGED, mostly input rejected
+//   gemini_deep_dork     5 attempts, 3 timeouts (no status code), 2 ok, 2 cases -> FLAGGED at exactly 60%
+//   serus_darkweb_scan   13 attempts: 8 server errors 20 days ago, 5 ok in the last 14 days -> recovered, NOT flagged
+//   http_fingerprint     6 attempts, all 502, ONE case                       -> NOT flagged (single case)
+//   fofa_search          4 attempts, all refused (HTTP 200 + permission text) -> NOT flagged (below 5 attempts)
+//   oathnet_lookup       11 attempts, 1 refused; plus 3 empties and 2 cache hits that must not count
+//   exa_search           12 ok
+//   jina_reader_scrape also carries 2 skipped calls, which must not count.
+// Totals: 8 tools, 69 real attempts, 34 failed (9 plan/credential, 19 timeouts and server errors, 6 input rejected).
+const OBS_DAY = 86_400_000;
+let obsSeq = 0;
+const obsRow = (tool: string, daysAgo: number, thread: string, over: Partial<Record<string, unknown>> = {}) => {
+  obsSeq += 1;
+  return {
+    id: `obs-${obsSeq}`, user_id: USER_ID, thread_id: thread, tool_name: tool, ok: true, outcome: "ok", cached: false,
+    cost_micro_usd: 0, charged_micro_usd: 0, duration_ms: 900, status_code: null, error_msg: null, input_json: null,
+    created_at: new Date(Date.now() - daysAgo * OBS_DAY).toISOString(), ...over,
+  };
+};
+const obsFail = (tool: string, daysAgo: number, thread: string, status: number | null, msg: string) =>
+  obsRow(tool, daysAgo, thread, { ok: false, outcome: "failed", status_code: status, error_msg: msg });
+const T1 = "11111111-2222-4333-8444-555555555555", T2 = "obs-thread-2", T3 = "obs-thread-3";
+const toolObservationRows = [
+  // jina_reader_scrape
+  obsRow("jina_reader_scrape", 20, T1), obsRow("jina_reader_scrape", 21, T2), obsRow("jina_reader_scrape", 22, T3), obsRow("jina_reader_scrape", 23, T1),
+  obsFail("jina_reader_scrape", 1, T1, 403, "HTTP 403"), obsFail("jina_reader_scrape", 2, T2, 403, "HTTP 403"),
+  obsFail("jina_reader_scrape", 3, T3, 403, "HTTP 403"), obsFail("jina_reader_scrape", 4, T1, 403, "HTTP 403"),
+  obsFail("jina_reader_scrape", 5, T2, 503, "upstream returned HTTP 503"), obsFail("jina_reader_scrape", 6, T3, 503, "upstream returned HTTP 503"),
+  obsRow("jina_reader_scrape", 7, T1), obsRow("jina_reader_scrape", 8, T2),
+  obsRow("jina_reader_scrape", 1, T1, { outcome: "skipped", ok: true }), obsRow("jina_reader_scrape", 2, T2, { outcome: "skipped", ok: true }),
+  // memory_save
+  ...[1, 2, 3, 4, 5, 6].map((d, i) => obsFail("memory_save", d, i % 2 ? T2 : T1, 400, "Invalid input: expected object, received string")),
+  // gemini_deep_dork
+  obsFail("gemini_deep_dork", 1, T1, null, "request timed out after 25000ms"), obsFail("gemini_deep_dork", 2, T2, null, "request timed out after 25000ms"),
+  obsFail("gemini_deep_dork", 3, T1, null, "The operation was aborted"), obsRow("gemini_deep_dork", 4, T2), obsRow("gemini_deep_dork", 5, T1),
+  // serus_darkweb_scan
+  ...[19, 20, 21, 22, 23, 24, 25, 26].map((d, i) => obsFail("serus_darkweb_scan", d, [T1, T2, T3][i % 3], 500, "upstream returned HTTP 500")),
+  ...[1, 2, 3, 4, 5].map((d, i) => obsRow("serus_darkweb_scan", d, [T1, T2, T3][i % 3])),
+  // http_fingerprint
+  ...[1, 2, 3, 4, 5, 6].map((d) => obsFail("http_fingerprint", d, T1, 502, "upstream returned HTTP 502")),
+  // fofa_search
+  ...[1, 2, 3, 4].map((d, i) => obsFail("fofa_search", d, i % 2 ? T2 : T1, 200, "fofa 200: [820001] No permission to search as_organization field")),
+  // oathnet_lookup: 10 ok + 1 refused real attempts; 3 empties and 2 cache hits that must not count
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((d, i) => obsRow("oathnet_lookup", d, [T1, T2, T3][i % 3])),
+  obsFail("oathnet_lookup", 11, T1, 403, "Your plan does not include this endpoint"),
+  ...[1, 2, 3].map((d) => obsRow("oathnet_lookup", d, T1, { outcome: "empty", ok: true })),
+  ...[1, 2].map((d) => obsRow("oathnet_lookup", d, T2, { cached: true })),
+  // exa_search
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((d, i) => obsRow("exa_search", d, [T1, T2][i % 2])),
+];
+
+// ── Per-run telemetry for /brain → Credits ──────────────────────────────────
+// Shaped like `orchestrator_invocations` / `orchestrator_step_metrics`
+// (supabase/migrations/20260908000000_orchestrator_telemetry.sql, plus the timing columns of
+// 20261029210000). Timestamps are RELATIVE TO NOW, unlike `iso()` which is pinned to Aug 9:
+// the Credits tab windows by the real clock, so pinned dates would all fall outside its
+// 30-day window and the tab would render empty. Offsets sit mid-day so no run is near a
+// day boundary. Expected figures for e2e/credits.spec.ts (30-day window = 8 runs; the 40-day
+// row is outside it): spend30 $1.77, spend14 $1.36, one unknown-cost run, forced share 3/7
+// = 43%, salvage 126.3 s of 711.6 s timed = 18%.
+// The ledger resets the daily total when daily_window_start is before today (UTC); a fixture window
+// that starts today keeps "spent today" meaningful whatever day the harness runs on.
+const startOfTodayUtc = () => { const d = new Date(); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString(); };
+const ago = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
+const invocation = (id: string, hoursAgo: number, over: Partial<Record<string, unknown>> = {}) => ({
+  id, thread_id: THREAD_ID, user_id: USER_ID, provider: "deepseek", model_id: "glm-5.2",
+  started_at: ago(hoursAgo), finished_at: ago(hoursAgo), created_at: ago(hoursAgo),
+  duration_ms: 100_000, step_count: 8, tool_call_count: 12, finish_reason: "stop",
+  stop_reason: "natural_stop", finalize_started: false, credits_micro_usd: 150_000,
+  persist_ms: 2_000, salvage_ms: null, cluster_ms: 1_500, salvage_outcome: "none", unfinished_steps: 0,
+  first_step_offset_ms: 90, loop_end_offset_ms: null, error_message: null,
+  ...over,
+});
+const orchestrator_invocations = [
+  invocation("inv-0001", 2, { duration_ms: 84_700, step_count: 7, tool_call_count: 11, credits_micro_usd: 142_300 }),
+  invocation("inv-0002", 5, { stop_reason: "finalize_forced", finalize_started: true, duration_ms: 154_200, step_count: 8, tool_call_count: 14, credits_micro_usd: 232_900, persist_ms: 55_500, salvage_ms: 53_700, salvage_outcome: "ok" }),
+  invocation("inv-0003", 26, { duration_ms: 160_300, step_count: 7, tool_call_count: 12, credits_micro_usd: 198_400, persist_ms: 76_000, salvage_ms: 72_600, salvage_outcome: "ok" }),
+  invocation("inv-0004", 78, { stop_reason: "finalize_forced", finalize_started: true, duration_ms: 162_300, step_count: 11, tool_call_count: 19, credits_micro_usd: 487_000, persist_ms: 1_100 }),
+  invocation("inv-0005", 150, { stop_reason: "stream_error", duration_ms: 57, step_count: 0, tool_call_count: 0, credits_micro_usd: 0, persist_ms: 0, cluster_ms: null, error_message: "stream error" }),
+  // A run recorded before the cost column carried a value, and before the ending was classified.
+  invocation("inv-0006", 222, { stop_reason: "unknown", credits_micro_usd: null, persist_ms: null, cluster_ms: null, salvage_outcome: null, unfinished_steps: null }),
+  // A run recorded before timing shipped: cost and ending present, every timing column NULL.
+  invocation("inv-0007", 270, { duration_ms: 118_000, credits_micro_usd: 301_500, persist_ms: null, cluster_ms: null, salvage_outcome: null, unfinished_steps: null }),
+  invocation("inv-0008", 438, { stop_reason: "finalize_forced", finalize_started: true, duration_ms: 150_000, step_count: 12, tool_call_count: 21, credits_micro_usd: 410_000 }),
+  // Outside the 30-day window: must not reach any figure on the tab.
+  invocation("inv-0009", 966, { credits_micro_usd: 900_000 }),
+];
+const stepRow = (inv: string, n: number, input: number | null, output: number | null) => ({
+  id: `${inv}-s${n}`, invocation_id: inv, thread_id: THREAD_ID, user_id: USER_ID, step_number: n,
+  step_wall_ms: 9_000, context_chars: 180_000, input_tokens: input, output_tokens: output,
+  tool_call_count: 1, tool_names: [], finish_reason: "tool-calls", created_at: ago(2),
+});
+const orchestrator_step_metrics = [
+  stepRow("inv-0001", 1, 41_000, 600), stepRow("inv-0001", 2, 48_500, 450), stepRow("inv-0001", 3, 52_000, 1_900),
+  // One step with no usage: the run's token total must read as a floor, not as an exact sum.
+  stepRow("inv-0002", 1, 60_000, 700), stepRow("inv-0002", 2, null, null), stepRow("inv-0002", 3, 71_000, 2_400),
+  stepRow("inv-0003", 1, 60_000, 2_100), stepRow("inv-0003", 2, 64_000, 1_800),
+];
+
 const SYNTHETIC: Record<string, unknown[]> = {
   threads: [{
     id: THREAD_ID, user_id: USER_ID, title: "James Harker — logistics", archive_attachments: false,
     seed_value: "j.harker@northgate-logistics.com", seed_type: "email",
-    status: "finished", credits_used: 34, cost_micro_usd: 187_400,
+    // Equals the sum of this case's recorded runs below (all nine, including the one outside the
+    // 30-day window), so the Credits tab's "all time" figure is not smaller than its 30-day one.
+    status: "finished", credits_used: 34, cost_micro_usd: 2_672_100,
     recovered_at: null, recovery_reason: null,
     created_at: iso(46), updated_at: iso(4), last_heartbeat_at: iso(4), run_started_at: iso(45),
   }, {
@@ -316,7 +424,15 @@ const SYNTHETIC: Record<string, unknown[]> = {
     // fold the pair and render it FAILED, not keep the other twin authoritative.
     { id: "r3", artifact_id: "twin-ip-a", thread_id: THREAD_ID, user_id: USER_ID, state: "dismissed", created_at: iso(6), note: "carrier NAT egress — not the subject's line" },
   ],
-  user_credits: [{ user_id: USER_ID, credits_remaining: 466, credits_total: 500, updated_at: iso(4) }],
+  // Real columns (supabase/migrations/20260629_user_credits.sql). This row used to carry
+  // `credits_remaining` / `credits_total`, which the table does not have, so the sidebar chip
+  // read `balance_micro_usd` as missing and rendered "Out of beta credits $0". A beta user with
+  // a part-spent grant is the default; `?scenario=credits-unlimited` is the owner account.
+  user_credits: [{
+    user_id: USER_ID, balance_micro_usd: 312_450, spent_micro_usd: 187_550, daily_spent_micro_usd: 41_200,
+    daily_window_start: startOfTodayUtc(), unlimited: false, blocked: false, created_at: iso(60_000), updated_at: iso(4),
+  }],
+  orchestrator_invocations, orchestrator_step_metrics,
   agent_memory, investigation_cache: [], client_errors: [],
 };
 
@@ -420,6 +536,31 @@ if (!SNAPSHOT && mainThread) {
 
 // Memory-population scenarios for /brain. Independent of the thread scenarios
 // above: the page reads `agent_memory` only.
+// Tool-observation scenario for /brain → Sources: appends the relative-dated outcome rows above.
+if (!SNAPSHOT && SCENARIO === "tool-observations") {
+  FIXTURES.tool_usage_log = [...(FIXTURES.tool_usage_log ?? []), ...toolObservationRows];
+}
+
+// Credits scenarios for /brain → Credits: the owner account (never debited) and a user with
+// no recorded runs. Same independence from the thread scenarios as the memory ones below.
+if (!SNAPSHOT) {
+  if (SCENARIO === "credits-unlimited") {
+    FIXTURES.user_credits = [{ ...(SYNTHETIC.user_credits[0] as Record<string, unknown>), unlimited: true, balance_micro_usd: 0, spent_micro_usd: 0, daily_spent_micro_usd: 0 }];
+  }
+  // A beta user whose last debit was yesterday: the column still holds yesterday's total.
+  if (SCENARIO === "credits-stale-day") {
+    FIXTURES.user_credits = [{ ...(SYNTHETIC.user_credits[0] as Record<string, unknown>), daily_window_start: ago(30) }];
+  }
+  // The newest run has no recorded cost: "last run" must say so, not borrow an older run's.
+  if (SCENARIO === "runs-newest-unrecorded") {
+    FIXTURES.orchestrator_invocations = orchestrator_invocations.map((r) => (r.id === "inv-0001" ? { ...r, credits_micro_usd: null } : r));
+  }
+  if (SCENARIO === "runs-empty") {
+    FIXTURES.orchestrator_invocations = [];
+    FIXTURES.orchestrator_step_metrics = [];
+  }
+}
+
 if (!SNAPSHOT) {
   if (SCENARIO === "memories-empty") FIXTURES.agent_memory = [];
   if (SCENARIO === "memories-overcap") {
@@ -514,9 +655,31 @@ function builder(table: string) {
   const self: Record<string, unknown> = {};
   const chain = () => self;
 
-  for (const m of ["select", "insert", "update", "upsert", "delete", "neq", "is", "gt", "gte", "lt", "lte", "like", "ilike", "not", "or", "filter", "order", "range", "returns", "abortSignal", "overrideTypes"]) {
+  for (const m of ["select", "insert", "upsert", "delete", "neq", "is", "gt", "gte", "lt", "lte", "like", "ilike", "not", "or", "filter", "order", "range", "returns", "abortSignal", "overrideTypes"]) {
     self[m] = chain;
   }
+  // `update(patch)` is applied to the rows the filters select, and a realtime
+  // UPDATE is emitted for each, the way Supabase would. `rows` holds the SAME
+  // object refs as the fixture table, so the patch is visible to every later
+  // read. This is what lets the harness show the analyst's Stop (a client write
+  // of `status='stopped'` on `threads`) reach the case snapshot and the
+  // transcript's watchdog without a server. Applied when the chain is awaited,
+  // after the `.eq()` filters have run. TRAP: `eq()` ignores a column the
+  // fixture rows do not carry, so an update filtered only on such a column
+  // patches EVERY row of the table — give the fixture the column instead.
+  let pendingUpdate: Record<string, unknown> | null = null;
+  self.update = (patch: Record<string, unknown>) => { pendingUpdate = patch ?? {}; return self; };
+  const applyUpdate = () => {
+    if (!pendingUpdate) return;
+    const patch = pendingUpdate;
+    pendingUpdate = null;
+    for (const r of rows) {
+      if (typeof r !== "object" || r === null) continue;
+      const before = { ...(r as Record<string, unknown>) };
+      Object.assign(r as Record<string, unknown>, patch);
+      emit(table, "UPDATE", { new: { ...(r as Record<string, unknown>) }, old: before });
+    }
+  };
   // Equality filters are honoured on columns the fixture rows carry, so a
   // thread-scoped read of the draft thread returns the DRAFT, not the first
   // thread in the table. Columns a fixture does not carry are ignored.
@@ -532,10 +695,12 @@ function builder(table: string) {
   self.limit = (n: number) => { rows = rows.slice(0, n); return self; };
   // `syncing` never answers — the case must render its hydration state.
   const settle = <T,>(v: T): Promise<T> => (SCENARIO === "syncing" ? new Promise<T>(() => {}) : Promise.resolve(v));
-  self.single = () => settle({ data: rows[0] ?? null, error: null });
+  self.single = () => { applyUpdate(); return settle({ data: rows[0] ?? null, error: null }); };
   self.maybeSingle = self.single;
-  self.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
-    settle({ data: rows, error: null, count: rows.length, status: 200 }).then(resolve, reject);
+  self.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
+    applyUpdate();
+    return settle({ data: rows, error: null, count: rows.length, status: 200 }).then(resolve, reject);
+  };
   return self;
 }
 

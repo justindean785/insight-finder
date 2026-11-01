@@ -5,6 +5,7 @@
 
 import { convertToModelMessages, streamText, generateText, stepCountIs, type UIMessage, type ModelMessage } from "npm:ai@6";
 import { classifyRunEnd, runEndLogDisabled, runEndNote } from "./lib/run-end.ts";
+import { probeMaxTokens, resolveDeepseekThinking, toSdkProviderOptions } from "./lib/glm-thinking.ts";
 import { PERSIST_ON_CLIENT_CANCEL_ENV, persistOnClientCancelEnabled } from "./lib/client-cancel.ts";
 
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
@@ -19,6 +20,7 @@ import {
   GROK_ORCHESTRATOR_MODEL_ID,
   deepseekGateway, DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL, DEEPSEEK_VENDOR_HOST,
+  DEEPSEEK_THINKING_MODE, DEEPSEEK_REASONING_EFFORT,
   anthropicGateway, ANTHROPIC_MODEL_ID, ANTHROPIC_THINKING, ANTHROPIC_EFFORT, ANTHROPIC_RUN_LIMITS,
   degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
   promptBudgetHardCeilingEnabled,
@@ -96,6 +98,10 @@ import {
   buildResumeBrief, loadBriefInputs, nextPivotBriefDisabled, nextPivotBriefEvent,
   type BriefArtifact, type BriefUsageRow, type Page,
 } from "./lib/next-pivot.ts";
+import {
+  buildMemoryBrief, freshnessCutoffIso, loadToolLessons, memoryBriefDisabled, memoryBriefEvent, memoryBriefLegacyRowsEnabled,
+  registeredToolSubjects, toolLessonQuery,
+} from "./lib/memory-brief.ts";
 import { buildTools, TOOL_NAME_ALIASES } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
 import { isMessageSchemaError, classifyStreamProviderError, describeStreamError } from "./stream-error-classify.ts";
@@ -120,6 +126,7 @@ import {
 import { redactErrorMessage } from "./lib/redact-error.ts";
 import { orchestratorFaultResponse } from "./lib/orchestrator-fault.ts";
 import { inputFailureRowsForStep } from "./lib/tool-input-failure.ts";
+import { wrapToolsWithMediaLeads } from "./lib/media-leads.ts";
 
 // ---- Orchestrator resilience knobs (Phase 1: MissingToolResults crash) --------
 // Explicit per-step output-token ceiling. Root cause of the crash: MiniMax emits
@@ -140,6 +147,22 @@ const ORCHESTRATOR_MAX_OUTPUT_TOKENS = 8192;
 // Set false = disable parallelism. (cache.ts return-on-throw + the message
 // sanitizer are the defense-in-depth net if a provider ever ignores this flag.)
 const ORCHESTRATOR_PARALLEL_TOOL_CALLS = false;
+// Thinking mode for the lead ("deepseek") slot, resolved ONCE from the configured
+// model id + operator overrides. Shared by the main stream and the salvage synthesis
+// so the two can never drift apart again: before this, the main stream disabled
+// thinking and salvage sent no providerOptions at all, which on a GLM model that
+// defaults to thinking-ON meant salvage silently ran full reasoning over the whole
+// run context. See lib/glm-thinking.ts.
+const deepseekThinking = resolveDeepseekThinking({
+  modelId: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
+  modeOverride: DEEPSEEK_THINKING_MODE,
+  effort: DEEPSEEK_REASONING_EFFORT,
+});
+// The AI SDK needs the CAMELCASE effort key: a snake_case `reasoning_effort` in
+// providerOptions is spread in and then overwritten with undefined by the SDK's own
+// `reasoning_effort: compatibleOptions.reasoningEffort` line. Raw-fetch probes use
+// `.options` (wire shape); every streamText/generateText call uses this one.
+const deepseekThinkingSdk = toSdkProviderOptions(deepseekThinking.options);
 // MAX_ORCHESTRATOR_STEPS (named ~30 step cap) + ORCHESTRATOR_WALL_CLOCK_MS (clean
 // wall-clock deadline) now live in ./orchestrator-budget.ts alongside the context
 // budget, so all of the orchestrator's step/size knobs share one testable source.
@@ -835,8 +858,13 @@ Deno.serve(async (req) => {
               body: JSON.stringify({
                 model: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
                 messages: [{ role: "user", content: "ping" }],
-                max_tokens: 4,
+                // Raw fetch, so this takes the WIRE shape, not the SDK shape. The
+                // ceiling lifts only when thinking is on: reasoning tokens are emitted
+                // before any content, so a 4-token cap can truncate the probe into a
+                // failure and pivot a healthy run onto the Anthropic fallback.
+                max_tokens: probeMaxTokens(deepseekThinking.options),
                 temperature: 0,
+                ...deepseekThinking.options,
               }),
               signal: ctrl.signal,
             });
@@ -981,6 +1009,18 @@ Deno.serve(async (req) => {
         .order("created_at", { ascending: true })
         .range(from, to)) as unknown as Page<BriefUsageRow>,
     });
+    // TOOL-LESSON BRIEF (lib/memory-brief.ts, M1): this user's fresh, GLOBAL-scope `lesson` rows keyed
+    // `tool:<name>` for tools in THIS run's registry (canonical names plus alias keys), read once per request and
+    // overlapped with the intake and review loads for the same reason as the resume brief above. Unlike the resume
+    // brief it also applies to a first turn. The eligibility predicates live in `toolLessonQuery` and are re-checked
+    // row by row in `buildMemoryBrief`; `loadToolLessons` never rejects and its deadline aborts the query.
+    const toolLessonReads = memoryBriefDisabled() || !memoryBriefLegacyRowsEnabled() ? null : loadToolLessons((signal) =>
+      toolLessonQuery(supabase, {
+        userId,
+        subjects: registeredToolSubjects(Object.keys(tools), TOOL_NAME_ALIASES),
+        cutoffIso: freshnessCutoffIso(),
+        signal,
+      }));
     // Resolve the attachment intake started above (it overlapped the preflight
     // + setup). Its summary must be present before the system prompt is built.
     const intake = await intakePromise;
@@ -1064,6 +1104,17 @@ Deno.serve(async (req) => {
         readReason: briefInputs.reason,
       })));
       if (briefOutcome.text) resumeBriefBlock = `\n\n${briefOutcome.text}`;
+    }
+    // ---- TOOL-LESSON BRIEF (lib/memory-brief.ts) ----------------------------------------------------
+    // Appended ONLY to `intermediateSystem`, like the resume brief: the cached base, the finalize prompt and the
+    // salvage prompt stay byte-identical. Lessons for tools not in this run's registry are dropped. Context only:
+    // it can change which tool is tried, never what a finding means. Logged as counts, never a lesson body.
+    let memoryBriefBlock = "";
+    if (toolLessonReads) {
+      const lessons = await toolLessonReads;
+      const memOutcome = buildMemoryBrief({ rows: lessons.rows, availableTools: new Set(Object.keys(tools)), aliases: TOOL_NAME_ALIASES });
+      console.log(JSON.stringify(memoryBriefEvent(threadId, memOutcome, { ms: lessons.ms, readReason: lessons.reason })));
+      if (memOutcome.text) memoryBriefBlock = `\n\n${memOutcome.text}`;
     }
     // ---- Prompt-size instrument (A1) -----------------------------------------
     // `approxPromptChars` above stays exactly as it is: it is an INPUT TO PROVIDER
@@ -1456,7 +1507,7 @@ Deno.serve(async (req) => {
         // directive to record already-supported findings now (don't wait for correlate,
         // don't fabricate). Counts come from THIS request's stepMessages and the latch
         // is a closure local, so the nudge state is request-scoped by construction.
-        let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective() + resumeBriefBlock;
+        let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective() + resumeBriefBlock + memoryBriefBlock;
         // A provider suppressed for the run (401/402 in this or an earlier invocation,
         // 429/5xx/timeouts for the window) is withheld from the step's tool set, so the
         // model cannot spend a step asking for a tool that can only answer with a
@@ -1543,12 +1594,16 @@ Deno.serve(async (req) => {
       // provider name; the SDK drops non-matching keys silently.
       // - MiniMax primary → serial tool calls (long-standing behavior, see
       //   ORCHESTRATOR_PARALLEL_TOOL_CALLS).
-      // - DeepSeek primary → serial tool calls + thinking disabled for the
-      //   canary. DeepSeek V4 defaults to thinking-mode, and thinking-mode
-      //   requires round-tripping `reasoning_content` across every subsequent
-      //   request; @ai-sdk/openai-compatible has not been proven to carry that
-      //   field through multi-round streamed tool calls, and enabling parallel
-      //   calls compounds the risk of missing/malformed tool-result pairing
+      // - DeepSeek primary → serial tool calls + the thinking mode the MODEL ID
+      //   allows (lib/glm-thinking.ts). Pre-5.3 GLM/DeepSeek default to
+      //   thinking-mode and are explicitly disabled here; GLM-5.3 and its Flash
+      //   variants force thinking ON and 400 on `type:"disabled"`, so the
+      //   resolver sends `enabled` + a low reasoning_effort for those. We never
+      //   send `clear_thinking:false`, so the STANDARD endpoint keeps clearing
+      //   prior reasoning and the client never has to echo `reasoning_content`
+      //   back — @ai-sdk/openai-compatible has not been proven to carry that
+      //   field through multi-round streamed tool calls. Enabling parallel
+      //   calls would compound the risk of missing/malformed tool-result pairing
       //   that produced prior orchestrator failures (MiniMax's exact crash).
       // - Anthropic as GLM's backup after a failed preflight (E2b) → the same Anthropic
       //   options as the pin. (The START fallback adds them on its own copy of the call.)
@@ -1559,13 +1614,16 @@ Deno.serve(async (req) => {
         : minimaxIsPrimary
         ? { minimax: { parallel_tool_calls: ORCHESTRATOR_PARALLEL_TOOL_CALLS } }
         : deepseekIsPrimary
-        ? { deepseek: { parallel_tool_calls: false, thinking: { type: "disabled" } } }
+        ? { deepseek: { parallel_tool_calls: false, ...deepseekThinkingSdk } }
         : anthropicIsPrimary
         ? anthropicProviderOptions({ thinking: ANTHROPIC_THINKING, effort: ANTHROPIC_EFFORT })
         : undefined,
       system: assembleBaseSystemPrompt({ detectedSeedType, visionIntakeSummary }),
       messages: trimmedMessages,
-      tools: wrapToolsWithCache(tools, {
+      // media-leads wraps OUTSIDE the cache wrapper on purpose: the cache row, the
+      // tool_usage_log row and the custody record keep the original result, and the
+      // model additionally sees `media_leads` on scrape/profile results.
+      tools: wrapToolsWithMediaLeads(wrapToolsWithCache(tools, {
         investigationId: threadId,
         userId,
         supabase,
@@ -1591,7 +1649,7 @@ Deno.serve(async (req) => {
         hasCorrelateDispatchBudget: () =>
           ORCHESTRATOR_WALL_CLOCK_MS - (Date.now() - runStartedAt) >= requiredCompletionMs(),
         onHeartbeat: () => heartbeat?.pulse(),
-      }),
+      })),
       // Unknown-tool guard (Phase B4): the model occasionally emits a tool call
       // for a name that is NOT in the live registry (hallucinations like exify /
       // hackerone_lookup). Validate the emitted name against the wrapped tool set
@@ -2174,9 +2232,17 @@ Deno.serve(async (req) => {
               salvageOutcome = "skipped_budget";
               throw new Error("salvage synthesis skipped: anthropic run budget exhausted");
             }
+            // Salvage used to send NO providerOptions at all. On a GLM model — where
+            // thinking is ON by default — that meant salvage ran full reasoning over
+            // the entire run context while the main loop ran with thinking disabled: a
+            // silent asymmetry, in the one window where the run has no time to spare.
+            // The `deepseek` key is namespaced, so @ai-sdk drops it when the active
+            // model is not the deepseek slot; this is inert on the Anthropic path.
             const salvage = await generateText({
               model: orchestratorModel,
               maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
+              // Same thinking mode as the main loop (see the salvage note above).
+              providerOptions: { deepseek: { ...deepseekThinkingSdk } },
               system: baseSystemPrompt,
               prompt: salvagePrompt,
             });

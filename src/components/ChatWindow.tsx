@@ -70,7 +70,7 @@ import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
 import { humanizeSelector } from "@/lib/humanize-selector";
 import { measureRequestBody, reportRequestBodySize } from "@/lib/request-size";
-import { currentRunEvents, isCurrentRunMessage, shouldFollowServer, shouldForceStreamEnd } from "@/lib/server-follow";
+import { currentRunEvents, followMode, isCurrentRunMessage, shouldEndStreamAfterGrace, shouldFollowServer, shouldForceStreamEnd } from "@/lib/server-follow";
 import { ServerFollowPanel } from "@/components/chat/ServerFollowPanel";
 import { useHeldTrue } from "@/hooks/use-held-true";
 import {
@@ -2008,11 +2008,15 @@ function ChatWindowInner({
     setShowJumpToLatest(false);
   }, []);
 
+  // Set by every client-side abort of the stream (analyst Stop, the watchdog); read when the
+  // stream ends to tell a clean finish from an abort, which the SDK also ends without an error.
+  const clientStoppedRef = useRef(false);
   const stopInvestigation = useCallback(async () => {
     if (stopping) return;
     setStopping(true);
     // Abort the in-flight browser stream FIRST so the UI stops immediately,
     // regardless of whether the status write below succeeds.
+    clientStoppedRef.current = true; // an abort ends without an error; it is not a clean finish (see streamEndedCleanly)
     try {
       stop();
     } catch (abortErr) {
@@ -2021,8 +2025,11 @@ function ChatWindowInner({
     // Persist "stopped" — this is the status the edge worker's prepareStep polls
     // to abort the in-flight server-side run (the stream is intentionally NOT
     // bound to req.signal, so the browser stop() alone does not halt the
-    // server). A failure here means the server run may keep going, so it is
-    // surfaced as an error rather than a soft warning.
+    // server). It is also the WHOLE mechanism when this tab is following the
+    // server without a stream (reload mid-run, dropped connection): stop()
+    // above is a no-op then, and this write is what ends the run. A failure
+    // here means the server run may keep going, so it is surfaced as an error
+    // rather than a soft warning.
     try {
       const { error: statusError } = await supabase
         .from("threads")
@@ -2595,6 +2602,31 @@ function ChatWindowInner({
   // page was opened mid-run. Settled for 3s, because a normal run ends with the
   // stream closing a moment before the thread is marked finished.
   const followingServer = useHeldTrue(shouldFollowServer({ clientStreaming: isLoading, serverRunActive }), 3_000);
+  // Did this tab's last stream end CLEANLY (the SDK finished, no error)? Then the run
+  // the row still calls running is in its server-side finalize window, not lost.
+  // Reset the moment a new stream opens. See followMode() in lib/server-follow.ts.
+  // Bound to the run that owned the stream: a run started from ANOTHER tab after this
+  // tab's clean finish has its own start time, and must read as disconnected, not finalizing.
+  const [streamEndedCleanly, setStreamEndedCleanly] = useState(false);
+  const cleanEndWasLoadingRef = useRef(isLoading);
+  const cleanEndRunRef = useRef<string | null>(null);
+  useEffect(() => {
+    const was = cleanEndWasLoadingRef.current;
+    cleanEndWasLoadingRef.current = isLoading;
+    if (isLoading && !was) {
+      clientStoppedRef.current = false;
+      cleanEndRunRef.current = null;
+      setStreamEndedCleanly(false);
+    } else if (!isLoading && was) {
+      const clean = !error && !clientStoppedRef.current;
+      cleanEndRunRef.current = clean ? serverRunStartedAt : null;
+      setStreamEndedCleanly(clean);
+    }
+  }, [isLoading, error, serverRunStartedAt]);
+  useEffect(() => {
+    // The row now describes a different run than the one this tab finished cleanly.
+    if (streamEndedCleanly && cleanEndRunRef.current !== serverRunStartedAt) setStreamEndedCleanly(false);
+  }, [serverRunStartedAt, streamEndedCleanly]);
   // When a run this page was not streaming ends, load what it saved. The
   // watchdog below only hears the realtime UPDATE, which a phone asleep at the
   // moment the run finished never receives and nothing replays; the case
@@ -2629,6 +2661,10 @@ function ChatWindowInner({
   });
   const primary = composerPrimary({
     isLoading,
+    // The settled value, not the raw predicate: a normal run ends with the
+    // stream closing a moment before the row is marked finished, and Stop must
+    // not flash in that gap.
+    followingServer,
     stopping,
     isFollowUp,
     canContinue: runControlsVisible && !isLoading,
@@ -2794,6 +2830,14 @@ function ChatWindowInner({
   // trailing report/error chunk is still flushing, and aborting here drops it.
   const stopRef = useRef(stop);
   stopRef.current = stop;
+  // When THIS tab's current stream opened (null while idle). Shared by the watchdog's
+  // grace timer below and the stream-outlived-its-run check further down.
+  const streamStartedAtRef = useRef<number | null>(null);
+  if (isLoading) {
+    if (streamStartedAtRef.current === null) streamStartedAtRef.current = Date.now();
+  } else {
+    streamStartedAtRef.current = null;
+  }
   useEffect(() => {
     const channel = supabase
       .channel(`chat-run-watchdog-${threadId}`)
@@ -2804,6 +2848,7 @@ function ChatWindowInner({
           const next = (payload.new as TerminalThreadUpdate | null) ?? {};
           if (!isTerminalThreadUpdate(next)) return;
           if (shouldAbortClientStream(next)) {
+            clientStoppedRef.current = true;
             try { stopRef.current?.(); } catch { /* stream already closed */ }
           }
           // Give a healthy browser branch one render turn to receive its trailing
@@ -2826,8 +2871,16 @@ function ChatWindowInner({
             // has already been merged in above, so this can only clear a stuck
             // loading flag — it never discards content a live stream is still
             // flushing (that case already resolved `isLoading` on its own).
+            //
+            // Bound to the stream that was open when this update arrived. A run the
+            // analyst starts INSIDE the grace window (one click in the Next panel) has
+            // its own fresh stream, and this timer must not be the thing that ends it
+            // — that was the clean, error-free "Live view disconnected" at second one
+            // of a healthy run (production 2026-10-31; shouldEndStreamAfterGrace).
+            const armedAtMs = Date.now();
             window.setTimeout(() => {
-              if (isLoadingRef.current) {
+              if (shouldEndStreamAfterGrace({ clientStreaming: isLoadingRef.current, streamStartedAtMs: streamStartedAtRef.current, armedAtMs, rowUpdatedAt: next.updated_at })) {
+                clientStoppedRef.current = true;
                 try { stopRef.current?.(); } catch { /* stream already closed */ }
               }
             }, 8_000);
@@ -2851,12 +2904,6 @@ function ChatWindowInner({
   // stream's). Held for the same 8s grace the watchdog gives a trailing report
   // chunk, then the dead stream is cut and the saved messages are merged, as
   // the watchdog would have done.
-  const streamStartedAtRef = useRef<number | null>(null);
-  if (isLoading) {
-    if (streamStartedAtRef.current === null) streamStartedAtRef.current = Date.now();
-  } else {
-    streamStartedAtRef.current = null;
-  }
   const streamOutlivedRun = useHeldTrue(
     shouldForceStreamEnd({
       clientStreaming: isLoading,
@@ -3209,6 +3256,7 @@ function ChatWindowInner({
           )}
           <ServerFollowPanel
             active={followingServer}
+            mode={followMode({ streamEndedCleanly })}
             events={currentRunEvents(caseSnapshot?.snapshot?.tools?.events ?? [], caseSnapshot?.snapshot?.run?.startedAt ?? null)}
           />
           {/* ONE card per failure.

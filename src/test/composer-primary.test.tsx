@@ -4,7 +4,7 @@ import { composerPrimary } from "@/lib/composer-primary";
 import { RunChips, RunMenu } from "@/components/pivots/RunControls";
 
 const base = {
-  isLoading: false, stopping: false, isFollowUp: true, canContinue: true,
+  isLoading: false, followingServer: false, stopping: false, isFollowUp: true, canContinue: true,
   empty: true, canSubmit: false, uploading: false,
 };
 
@@ -12,6 +12,23 @@ describe("composerPrimary — one primary action that says what it does", () => 
   it("a live run is always Stop", () => {
     expect(composerPrimary({ ...base, isLoading: true })).toEqual({ kind: "stop", stopping: false });
     expect(composerPrimary({ ...base, isLoading: true, stopping: true })).toEqual({ kind: "stop", stopping: true });
+  });
+
+  it("a run this tab is following on the server, with no live stream, is Stop too", () => {
+    // Measured 2026-10-31 (case 5663c718): the stream ended, the header still read
+    // Analyzing, and the button fell back to Send — no way to stop a run that was
+    // still spending. The persisted `stopped` status the server polls needs no stream.
+    expect(composerPrimary({ ...base, followingServer: true })).toEqual({ kind: "stop", stopping: false });
+    expect(composerPrimary({ ...base, followingServer: true, stopping: true })).toEqual({ kind: "stop", stopping: true });
+    // Typed text does not turn it into Send while the run is live elsewhere.
+    expect(composerPrimary({ ...base, followingServer: true, empty: false, canSubmit: true })).toEqual({ kind: "stop", stopping: false });
+    // A tab opened mid-run before its messages hydrate must never offer Start over a live run.
+    expect(composerPrimary({ ...base, followingServer: true, isFollowUp: false })).toEqual({ kind: "stop", stopping: false });
+  });
+
+  it("once the server run has ended, following releases the button to its usual action", () => {
+    expect(composerPrimary({ ...base, followingServer: false })).toEqual({ kind: "continue" });
+    expect(composerPrimary({ ...base, followingServer: false, empty: false, canSubmit: true })).toEqual({ kind: "send", disabled: false });
   });
 
   it("no case yet is Start investigation, gated on the preflight", () => {

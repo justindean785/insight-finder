@@ -205,6 +205,22 @@ export const DEEPSEEK_ORCHESTRATOR_MODEL_ID =
   (Deno.env.get("DEEPSEEK_ORCHESTRATOR_MODEL_ID") || "deepseek-v4-pro").trim();
 
 /**
+ * Thinking-mode controls for the lead ("deepseek") slot. See lib/glm-thinking.ts for
+ * the contract: GLM-5.3 and its Flash/FlashX variants FORCE thinking on and reject
+ * `thinking: { type: "disabled" }` outright, so the model id alone cannot be switched
+ * to a 5.3 model without these.
+ *
+ * DEEPSEEK_THINKING_MODE is the kill switch and cuts both ways:
+ *   "disabled" — pin the pre-5.3 shape on a running build (instant recovery).
+ *   "enabled"  — opt an unrecognised model into forced-thinking mode.
+ *   unset/"auto" (default) — decide from the model id.
+ * DEEPSEEK_REASONING_EFFORT defaults to "low", the value Z.AI's migration notice
+ * prescribes; "high"/"max" cost wall-clock this orchestrator does not have.
+ */
+export const DEEPSEEK_THINKING_MODE = (Deno.env.get("DEEPSEEK_THINKING_MODE") ?? "").trim();
+export const DEEPSEEK_REASONING_EFFORT = (Deno.env.get("DEEPSEEK_REASONING_EFFORT") ?? "").trim();
+
+/**
  * Base URL for the lead ("deepseek" slot) orchestrator provider. The slot is
  * OpenAI-compatible, so it can point at ANY compatible vendor without touching
  * the orchestrator plumbing. Defaults to DeepSeek. The gateway, the run
@@ -216,6 +232,10 @@ export const DEEPSEEK_ORCHESTRATOR_MODEL_ID =
 //   DEEPSEEK_BASE_URL=https://api.z.ai/api/paas/v4
 //   DEEPSEEK_ORCHESTRATOR_MODEL_ID=glm-5.2
 // No code change or redeploy is needed — the default below keeps DeepSeek.
+// ⚠️ A GLM-5.3 model id (glm-5.3 / glm-5.3-flash / glm-5.3-flashx) is NOT a pure
+// secret change on a build older than lib/glm-thinking.ts: 5.3 rejects
+// `thinking: { type: "disabled" }` and every orchestrator call and /health canary
+// 400s. On a build that HAS the resolver it is secret-only again.
 export const DEEPSEEK_BASE_URL = (
   (Deno.env.get("DEEPSEEK_BASE_URL") || "https://api.deepseek.com/v1").trim()
 ).replace(/\/+$/, "");

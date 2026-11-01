@@ -1,4 +1,5 @@
 import { breachExposureGuardSelfTest } from "./lib/breach-exposure-guard.ts";
+import { describeThinking, probeMaxTokens, resolveDeepseekThinking } from "./lib/glm-thinking.ts";
 import { dispatchSelectorAliasesSelfTest } from "./lib/dispatch-selector.ts";
 import { providerBusyQueueSelfTest } from "./lib/provider-busy-queue.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -16,6 +17,7 @@ import {
   OSINT_AGENT_PROBE_SECRET,
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL,
+  DEEPSEEK_THINKING_MODE, DEEPSEEK_REASONING_EFFORT, DEEPSEEK_VENDOR_HOST,
   ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY,
   lovableGateway, geminiDirectGateway, ALLOW_LOVABLE_FALLBACK,
   promptBudgetHardCeilingEnabled,
@@ -27,9 +29,13 @@ import { anthropicModelRejectsForcedToolChoice, anthropicOrchestratorHealth } fr
 import { anthropicFallbackDisabled, orchestratorFallbackHealth } from "./lib/orchestrator-fallback.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn, opsisStartClassificationSelfTest } from "./lib/opsis.ts";
-import { opsisFinalizeCollectSelfTest } from "./orchestrator-finalize.ts";
+import { buildFinalizePersistDirective, opsisFinalizeCollectSelfTest } from "./orchestrator-finalize.ts";
+import { findingPromptSelfTest } from "./lib/finding-prompt.ts";
+import { staticSystemPrompt } from "./lib/base-prompt.ts";
+import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { opsisResultsHintSelfTest, opsisSearchGuardSelfTest } from "./lib/opsis-search-guard.ts";
 import { nextPivotBriefSelfTest } from "./lib/next-pivot.ts";
+import { memoryBriefSelfTest } from "./lib/memory-brief.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
@@ -40,6 +46,7 @@ import {
 } from "./lib/credential-health.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
 import { negativeLookupSelfTest } from "./lib/negative-lookup.ts";
+import { jinaTarget403SelfTest } from "./lib/jina-http-error.ts";
 import { toolInputFailureSelfTest } from "./lib/tool-input-failure.ts";
 import { runEndSelfTest } from "./lib/run-end.ts";
 import { timingTelemetrySelfTest } from "./telemetry.ts";
@@ -79,6 +86,7 @@ import { correlateSeedDefaultSelfTest } from "./lib/thread-seed.ts";
 import { responseLanguageSelfTest } from "./lib/response-language.ts";
 import { detectSeedServer } from "./validation.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
+import { mediaLeadsSelfTest } from "./lib/media-leads.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -188,6 +196,11 @@ export async function checkDeepseek(deps?: {
   const apiKey = deps?.apiKey ?? DEEPSEEK_API_KEY;
   const model = deps?.model ?? DEEPSEEK_ORCHESTRATOR_MODEL_ID;
   const doFetch = deps?.doFetch ?? fetch;
+  const canaryThinking = resolveDeepseekThinking({
+    modelId: model,
+    modeOverride: DEEPSEEK_THINKING_MODE,
+    effort: DEEPSEEK_REASONING_EFFORT,
+  }).options;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 5_000);
   try {
@@ -197,11 +210,15 @@ export async function checkDeepseek(deps?: {
       body: JSON.stringify({
         model,
         messages: [{ role: "user", content: "ping" }],
-        max_tokens: 4,
+        // Raw fetch, so the WIRE shape is correct here (the SDK shape is only for
+        // providerOptions). Match the live orchestrator's thinking mode: a GLM-5.3
+        // model 400s on `type:"disabled"`, so a hardcoded canary would report the
+        // orchestrator dead on a build that actually works and `verify:deploy` would
+        // read the lie. The token ceiling lifts with thinking because reasoning
+        // tokens precede any content. lib/glm-thinking.ts is the one source.
+        max_tokens: probeMaxTokens(canaryThinking),
         temperature: 0,
-        // Non-thinking canary: match the live orchestrator's request shape and keep
-        // the paid health ping to a single cheap token.
-        thinking: { type: "disabled" },
+        ...canaryThinking,
       }),
       signal: ctrl.signal,
     });
@@ -412,7 +429,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   ]);
   // Role labels: only the SELECTED provider is "active"; the other is a "fallback"
   // diagnostic. So MiniMax is never labeled active when DeepSeek is selected.
-  r.checks.deepseek = { ...deepseekCheck, role: providerRole(selected.provider, "deepseek") };
+  // `vendor_host` is the one place /health names the ACTUAL vendor. The slot is called
+  // "deepseek" for historical reasons but is served by api.z.ai; without this, the only
+  // proof of vendor was a DB row written after a run.
+  r.checks.deepseek = { ...deepseekCheck, role: providerRole(selected.provider, "deepseek"), vendor_host: DEEPSEEK_VENDOR_HOST };
   r.checks.minimax = { ...minimaxCheck, role: providerRole(selected.provider, "minimax") };
   // Anthropic orchestrator (primary by pin; GLM's backup since E2b — `role`). Config + cost-control posture only; deliberately NO
   // network probe — a ping would spend prepaid credits on every /health. Reports presence
@@ -442,6 +462,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // with versioned cache keys is the one running (see lib/tool-cache-version.ts).
   r.checks.tool_cache_version = describeToolCacheVersions();
   r.checks.negative_lookup_semantics = negativeLookupSelfTest();
+  // A raw 403 from r.jina.ai is one page refusing the reader: does it still leave Jina
+  // available for the run? Pure, no DB; presence proves the build (lib/jina-http-error.ts).
+  r.checks.jina_target_403 = jinaTarget403SelfTest();
   r.checks.tool_input_failure_log = toolInputFailureSelfTest();
   // Why a run's persistence/finish handler fired (lib/run-end.ts). Pure, no DB; presence proves the build.
   r.checks.run_end_log = runEndSelfTest();
@@ -484,6 +507,26 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
 
   // Are OLD record_artifacts tool-call inputs compacted to kind+value under budget pressure
   // (orchestrator-budget.ts)? Pure. PRESENCE proves the deployed bundle; `ok` tracks the kill switch.
+  // Behavioural proof that THIS build resolves the deepseek slot's thinking mode from
+  // the model id instead of hardcoding `disabled`. Its PRESENCE proves the build; the
+  // detail names the mode actually being sent, which is the one thing an operator needs
+  // when switching DEEPSEEK_ORCHESTRATOR_MODEL_ID between a 5.2 and a 5.3 model. Pure.
+  {
+    const t = resolveDeepseekThinking({
+      modelId: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
+      modeOverride: DEEPSEEK_THINKING_MODE,
+      effort: DEEPSEEK_REASONING_EFFORT,
+    });
+    r.checks.glm_thinking_mode = {
+      // A 5.3 model with thinking forced OFF by an override is the one combination
+      // that cannot work — every call would 400. Flag it rather than hide it.
+      ok: !(t.forcedByModel && t.options.thinking.type === "disabled"),
+      detail: t.forcedByModel && t.options.thinking.type === "disabled"
+        ? `${describeThinking(t, DEEPSEEK_ORCHESTRATOR_MODEL_ID, DEEPSEEK_VENDOR_HOST)} — INVALID: this model forces thinking and will reject every request; clear DEEPSEEK_THINKING_MODE`
+        : describeThinking(t, DEEPSEEK_ORCHESTRATOR_MODEL_ID, DEEPSEEK_VENDOR_HOST),
+    };
+  }
+
   {
     const on = recordArtifactsInputCompactEnabled();
     r.checks.record_artifacts_input_compact = {
@@ -584,6 +627,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // PRESENCE proves this build is live.
   r.checks.tool_input_object_repair = toolInputObjectRepairSelfTest();
 
+  // Do scrape/profile results carry `media_leads` for the GeoSeer chain
+  // (lib/media-leads.ts)? A self-test on a fixed synthetic result, pure and silent;
+  // `enabled:false` means MEDIA_LEADS_DISABLED is set. Its PRESENCE proves this
+  // build is live.
+  r.checks.media_leads = mediaLeadsSelfTest();
+
   // Do stream errors record the provider's status and code WITHOUT the response
   // body (stream-error-classify.ts)? A self-test on a synthetic error, pure.
   r.checks.stream_error_detail = streamErrorDetailSelfTest();
@@ -660,6 +709,22 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // intermediate steps only? Pure probe of the module; `switch` reports NEXT_PIVOT_BRIEF_DISABLED. PRESENCE proves the deployed
   // bundle; it does NOT prove index.ts still appends the block (pinned in CI by next_pivot_wiring_test.ts).
   r.checks.next_pivot_brief = nextPivotBriefSelfTest();
+  // Are `tool:<name>` lessons from earlier runs rendered as a capped, context-only block (selector memories and unregistered
+  // tools excluded)? Pure; `switch` reports MEMORY_BRIEF_DISABLED. PRESENCE proves the deployed bundle; the index.ts wiring
+  // (intermediate system only, never the base) is pinned in CI by memory_brief_wiring_test.ts.
+  r.checks.memory_brief = memoryBriefSelfTest();
+
+  // Does the prompt the model reads distinguish an ARTIFACT (record_artifacts, an observation) from a FINDING
+  // (record_finding, an adjudicated claim the server scores and the only rows the Evidence Record renders) on all three
+  // surfaces — system prompt, workflow addendum, finalize persist directive? Pure probe over the RENDERED text
+  // (lib/finding-prompt.ts); `switch` reports FINDING_PROMPT_V2_DISABLED (LEGACY = pre-change wording). PRESENCE proves
+  // the deployed bundle. It does NOT prove the model calls record_finding more often — that is a tool_usage_log
+  // measurement (audit 2026-11-01 §2). finalize_no_findings's description is pinned by finding_prompt_test.ts.
+  r.checks.finding_prompt = findingPromptSelfTest({
+    systemPrompt: staticSystemPrompt(),
+    workflowAddendum: buildWorkflowAddendum(null),
+    persistDirective: buildFinalizePersistDirective(),
+  });
 
   // Is a near-miss tool input (kind alias, query→seed, numeric string, number→string, stray whitespace) coerced INSIDE
   // the schema when — and only when — the result validates? Pure. PRESENCE proves the deployed bundle; `switch` reports
@@ -920,14 +985,20 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     };
     const [ds, mm, gk, gm] = await Promise.all([
       probeProvider("deepseek", !!DEEPSEEK_API_KEY, async (signal) => {
+        const probeThinking = resolveDeepseekThinking({
+          modelId: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
+          modeOverride: DEEPSEEK_THINKING_MODE,
+          effort: DEEPSEEK_REASONING_EFFORT,
+        }).options;
         const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
           method: "POST",
           headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({
             model: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
             messages: [{ role: "user", content: "ping" }],
-            max_tokens: 4,
-            thinking: { type: "disabled" },
+            // Same reasons as the orchestrator canary above — never hardcode either.
+            max_tokens: probeMaxTokens(probeThinking),
+            ...probeThinking,
           }),
           signal,
         });

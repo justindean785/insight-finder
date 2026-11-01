@@ -137,6 +137,7 @@ import { augmentDorkQuery, isTemplateOrSampleUrl, scoreDorkRelevance, applyDorkR
 import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 
 import { TOOL_CATALOG, CATALOG_CACHE, FINDING_LABELS } from "./catalog.ts";
+import { FINALIZE_NO_FINDINGS_DESCRIPTION, LEGACY_FINALIZE_NO_FINDINGS_DESCRIPTION, findingPromptV2Disabled } from "./lib/finding-prompt.ts";
 import { beginCycle, recordFindingSummary } from "./runtime-policy.ts";
 import { serus_darkweb_scan } from "./tools/serus.ts";
 import { okWithSuccessFlag, isHackertargetApiError, isCrtshOk, dohTypeError, blockchairError } from "./tool_response.ts";
@@ -150,6 +151,8 @@ import { trimExaResults, archiveAttachment } from "./archiver.ts";
 import { PROVIDER_REQUIREMENTS } from "./capabilities.ts";
 import { agentMemoryOrFilter } from "./pgrest.ts";
 import { shapeShodanResponse, shapeJinaBody } from "./lib/negative-lookup.ts";
+import { evidenceArtifactKey, lookupArtifactIdsForEvidence } from "./lib/evidence-artifact-link.ts";
+import { shapeJinaHttpError } from "./lib/jina-http-error.ts";
 
 /**
  * The REAL tool vocabulary, for G1's queued-placeholder gate.
@@ -2237,10 +2240,12 @@ export function buildTools(ctx: ToolContext) {
     breach_check: tool({
       description:
         "Check whether an email, username, or PERSON NAME appears in public breach datasets. Primary source: stolen.tax — fans out in parallel to (a) OsintCat `database-search` (returns site+password combos), (b) Snusbase (returns identity records: name/phone/address/DOB — so a full NAME is a valid query here), and (c) OsintCat plain `breach` mode. Returns combined hit count + per-source raw data. Falls back to the leakcheck public endpoint if stolen.tax is unavailable. Pass `email` for email seeds, or `value` for a username, phone, or a person's full NAME (name hits carry same-name collision risk — treat as [VERIFY] until a selector overlaps).",
-      inputSchema: memoSchema("breach_check", () => z.object({
+      // Wrapped explicitly: the .refine() makes this a ZodEffects, which memoSchema's generic wrapper skips — so a phone
+      // sent as a number was rejected before execute instead of getting the generic number→string rule.
+      inputSchema: memoSchema("breach_check", () => coercedSchema("breach_check", {}, z.object({
         email: z.string().min(1).optional(),
         value: z.string().min(1).optional(),
-      }).refine((v) => !!(v.email || v.value), { message: "Provide `email` or `value`" })),
+      }).refine((v) => !!(v.email || v.value), { message: "Provide `email` or `value`" }))),
       execute: async ({ email, value }) => {
         const query = (email ?? value ?? "").trim();
         if (!query) return { error: "missing query" };
@@ -4904,12 +4909,9 @@ export function buildTools(ctx: ToolContext) {
           if (!r.ok) {
             // 422 = unprocessable URL (paywall, JS app, binary, login wall, etc.)
             // 451/403 = blocked by origin. Do NOT retry — signal the agent to pivot.
-            const hint = r.status === 422
-              ? "jina cannot parse this URL — try a different source or wayback snapshot"
-              : r.status === 451 || r.status === 403
-                ? "origin blocked — try wayback_snapshots or a different result"
-                : undefined;
-            return { error: `jina ${r.status}`, status: r.status, url: clean, hint };
+            // A 403 is that page refusing the reader, not a dead key, so it must not
+            // suppress Jina for the run — see lib/jina-http-error.ts.
+            return shapeJinaHttpError(clean, r.status);
           }
           const text = await r.text();
           // A 200 can wrap an ORIGIN error ("Warning: Target URL returned error 404").
@@ -6063,6 +6065,13 @@ export function buildTools(ctx: ToolContext) {
         // Per-row try/catch so a single bad row doesn't break the hash chain
         // for the rest of the batch.
         let evidence_appended = 0;
+        // Link each evidence row to the artifact it was appended for. Every writer
+        // used to send `_artifact_id: null` (all 17,575 production rows, measured
+        // 2026-10-30). `artifact_id` is NOT part of the hash chain, so this changes
+        // no hash. The lookup is a separate read AFTER the insert, never an
+        // `.insert().select()`: a refused select there would read as a failed
+        // insert and trigger the per-row retry. Any fault fails open to null.
+        const evidenceArtifactIds = await lookupArtifactIdsForEvidence(supabase, threadId, safeRowsForFollowup);
         for (const r of safeRowsForFollowup) {
           try {
             const meta = (r.metadata as Record<string, unknown> | null) ?? {};
@@ -6090,7 +6099,7 @@ export function buildTools(ctx: ToolContext) {
             const evSource = llmAsserted ? LLM_ASSERTED_PROVENANCE : ((r.source as string) ?? null);
             const { error: evErr } = await supabase.rpc("append_evidence", {
               _thread_id: threadId,
-              _artifact_id: null,
+              _artifact_id: evidenceArtifactIds.get(evidenceArtifactKey(r.kind, r.value)) ?? null,
               _tool_name: evToolName,
               _source: evSource,
               _source_url: typeof sourceUrl === "string" ? sourceUrl : null,
@@ -6800,9 +6809,9 @@ export function buildTools(ctx: ToolContext) {
   // their matching forced-finalize phase. They give `toolChoice: required` a safe,
   // non-fabricating escape when there is nothing valid to persist or remember.
   (tools as ToolRegistry).finalize_no_findings = tool({
-    description:
-      "Finalize-only decision: declare that every tool-supported finding is already persisted. " +
-      "Never call during normal investigation work.",
+    // The ARTIFACT-persistence decision of the persist phase, described as one (lib/finding-prompt.ts). The wire
+    // contract below (name, reason enum, return shape) is unchanged; FINDING_PROMPT_V2_DISABLED restores the old text.
+    description: findingPromptV2Disabled() ? LEGACY_FINALIZE_NO_FINDINGS_DESCRIPTION : FINALIZE_NO_FINDINGS_DESCRIPTION,
     inputSchema: memoSchema("finalize_no_findings", () => z.object({
       reason: z.enum(["all_supported_findings_already_persisted", "no_tool_supported_findings"]),
     }).strict()),

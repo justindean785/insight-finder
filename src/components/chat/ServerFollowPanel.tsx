@@ -1,8 +1,17 @@
 import { ToolStatusBadge } from "@/components/ui/workspace-primitives";
 import type { ToolEvent } from "@/hooks/useThreadToolActivity";
+import type { FollowMode } from "@/lib/server-follow";
 
-/** Rows shown at once; a long run keeps its newest calls in view. */
+/** Rows kept at all; a long run keeps its newest calls. */
 const MAX_ROWS = 40;
+/**
+ * Rows shown before the analyst asks for the rest. Production 2026-10-31 (JD): a
+ * following tab rendered a 21-row wall of SUCCEEDED badges under the agent's text,
+ * which reads as noise, not as a status. The header already carries the count; the
+ * newest few calls are what tells you the run is moving. The rest sit behind a
+ * native <details>, so no state and no re-render on each recorded call.
+ */
+export const VISIBLE_ROWS = 3;
 
 function fmtDuration(ms: number | null): string | null {
   if (ms == null || !Number.isFinite(ms) || ms < 0) return null;
@@ -19,15 +28,32 @@ function fmtDuration(ms: number | null): string | null {
  * and the panel says so instead of inventing progress text. The caller decides
  * when it shows (`ChatWindow`'s settled `followingServer`).
  */
-export function ServerFollowPanel({ active, events }: { active: boolean; events: ToolEvent[] }) {
+export function ServerFollowPanel({ active, events, mode = "disconnected" }: { active: boolean; events: ToolEvent[]; mode?: FollowMode }) {
   if (!active) return null;
+  const finalizing = mode === "finalizing";
   const rows = events.slice(-MAX_ROWS);
   const hidden = events.length - rows.length;
+  // Newest last in `rows` (currentRunEvents sorts oldest first): the tail is what is shown.
+  const latest = rows.slice(-VISIBLE_ROWS);
+  const earlier = rows.slice(0, Math.max(0, rows.length - VISIBLE_ROWS));
+  const renderRow = (e: ToolEvent) => {
+    const duration = fmtDuration(e.durationMs);
+    return (
+      <li key={e.id} className="flex min-w-0 items-center gap-2.5 px-3 py-2">
+        <ToolStatusBadge status={e.status} className="shrink-0" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-meta text-foreground">{e.displayName}</span>
+          <span className="block font-mono text-data text-muted-foreground [overflow-wrap:anywhere]">{e.toolName}</span>
+        </span>
+        {duration && <span className="shrink-0 font-mono text-data tabular-nums text-muted-foreground">{duration}</span>}
+      </li>
+    );
+  };
   return (
     <section aria-label="Live from the server" className="chat-card w-full min-w-0">
       <div className="chat-card__header">
         <span aria-hidden className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[hsl(var(--brand))] motion-reduce:animate-none" />
-        <span>Live view disconnected — still running on the server</span>
+        <span>{finalizing ? "Writing the report on the server" : "Live view disconnected — still running on the server"}</span>
         <span className="chat-card__header-time font-mono tabular-nums" aria-live="polite">
           {/* THIS run's calls (currentRunEvents); the case bar counts every run. */}
           {events.length} call{events.length === 1 ? "" : "s"} this run
@@ -35,31 +61,33 @@ export function ServerFollowPanel({ active, events }: { active: boolean; events:
       </div>
       <div className="chat-card__body space-y-3">
         <p className="text-meta text-muted-foreground">
-          This page isn&apos;t receiving the live stream, but the investigation is still running on the server.
-          Its tool calls appear below as they&apos;re recorded; the agent&apos;s write-up appears here when the run finishes.
+          {finalizing
+            ? "The tool loop has finished. The server is now checking and saving the findings and writing the closing report; it appears here as soon as it is saved. "
+            : "This page isn't receiving the live stream, but the investigation is still running on the server. Its tool calls appear below as they're recorded; the agent's write-up appears here when the run finishes. "}
           Only this run&apos;s calls are listed; the case bar counts every run of the case.
         </p>
         {rows.length === 0 ? (
           <p className="text-meta text-muted-foreground">Waiting for the first recorded call…</p>
         ) : (
-          <ol className="divide-y divide-border-subtle rounded-md border border-border-subtle">
-            {hidden > 0 && (
-              <li className="px-3 py-2 text-data text-muted-foreground">{hidden} earlier call{hidden === 1 ? "" : "s"} not shown</li>
+          <>
+            <ol aria-label="Latest calls" className="divide-y divide-border-subtle rounded-md border border-border-subtle">
+              {latest.map(renderRow)}
+            </ol>
+            {earlier.length > 0 && (
+              <details className="group">
+                <summary className="cursor-pointer select-none text-meta text-muted-foreground hover:text-foreground">
+                  <span className="group-open:hidden">Show {earlier.length + hidden} earlier call{earlier.length + hidden === 1 ? "" : "s"}</span>
+                  <span className="hidden group-open:inline">Hide earlier calls</span>
+                </summary>
+                <ol aria-label="Earlier calls" className="mt-2 divide-y divide-border-subtle rounded-md border border-border-subtle">
+                  {hidden > 0 && (
+                    <li className="px-3 py-2 text-data text-muted-foreground">{hidden} earlier call{hidden === 1 ? "" : "s"} not shown</li>
+                  )}
+                  {earlier.map(renderRow)}
+                </ol>
+              </details>
             )}
-            {rows.map((e) => {
-              const duration = fmtDuration(e.durationMs);
-              return (
-                <li key={e.id} className="flex min-w-0 items-center gap-2.5 px-3 py-2">
-                  <ToolStatusBadge status={e.status} className="shrink-0" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-meta text-foreground">{e.displayName}</span>
-                    <span className="block font-mono text-data text-muted-foreground [overflow-wrap:anywhere]">{e.toolName}</span>
-                  </span>
-                  {duration && <span className="shrink-0 font-mono text-data tabular-nums text-muted-foreground">{duration}</span>}
-                </li>
-              );
-            })}
-          </ol>
+          </>
         )}
       </div>
     </section>

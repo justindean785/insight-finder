@@ -87,3 +87,45 @@ export function shouldForceStreamEnd({ clientStreaming, rowState, rowStartedAt, 
   if (!Number.isFinite(start)) return false;
   return start >= streamStartedAtMs - START_SKEW_MS;
 }
+
+/**
+ * The watchdog's 8-second fallback after a normal `finished` update: was the stream
+ * that is STILL loading the one that update was about? A terminal update for run A
+ * arms the timer; if the analyst starts run B inside those 8 seconds (the Next panel
+ * makes this a one-click, eight-second affair), the timer fires while B's fresh
+ * stream is loading and `stop()` kills it — a clean close, no error, no toast — and
+ * the tab drops to "Live view disconnected" at second one of a healthy run.
+ * Measured on production 2026-10-31: run A finished 12:53:01.7, run B started
+ * 12:53:09.9, and B's tab showed the follow panel from its first seconds.
+ *
+ * Only a stream that was already open when the timer was armed may be ended by it.
+ */
+export function shouldEndStreamAfterGrace({ clientStreaming, streamStartedAtMs, armedAtMs, rowUpdatedAt }: {
+  clientStreaming: boolean;
+  streamStartedAtMs: number | null;
+  /** When this tab heard the terminal update. */
+  armedAtMs: number;
+  /** The row's own `updated_at`, when the payload carries it: a throttled or backgrounded tab can hear
+   *  the update seconds late, and a stream opened in that gap is still not the one the update was about. */
+  rowUpdatedAt?: string | null;
+}): boolean {
+  if (!clientStreaming) return false;
+  if (streamStartedAtMs === null) return false;
+  // Server and browser clocks differ; allow the same skew the run-start comparisons use.
+  const rowMs = rowUpdatedAt ? Date.parse(rowUpdatedAt) : NaN;
+  const bound = Number.isFinite(rowMs) ? Math.min(armedAtMs, rowMs + START_SKEW_MS) : armedAtMs;
+  return streamStartedAtMs <= bound;
+}
+
+/**
+ * What the follow panel is looking at. A stream that ENDED CLEANLY (no error, no
+ * abort) while the row still reads running is the server's finalize window — the
+ * tool loop is over and the server is salvaging/persisting the report (measured
+ * 2026-10-31: 72s salvage + 75s persist after the stream closed). That is not a
+ * disconnect and must not be called one. A stream that errored, or a tab that never
+ * had one (reload, second tab), IS following a run it cannot hear.
+ */
+export type FollowMode = "disconnected" | "finalizing";
+export function followMode({ streamEndedCleanly }: { streamEndedCleanly: boolean }): FollowMode {
+  return streamEndedCleanly ? "finalizing" : "disconnected";
+}

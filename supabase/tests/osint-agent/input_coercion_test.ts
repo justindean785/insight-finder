@@ -106,6 +106,16 @@ Deno.test("PRODUCTION oathnet_lookup type alias spellings validate; value number
   assertEquals(ok("oathnet_lookup", { type: "email", value: "  a@example.invalid " }).value, "a@example.invalid");
 });
 
+// breach_check's schema is `z.object(...).refine(...)` — a ZodEffects, not a ZodObject — so memoSchema's generic
+// wrapper skipped it and a phone sent as a NUMBER was rejected before execute ("Expected string, received number").
+Deno.test("PRODUCTION breach_check `{value}` sent as a number validates as its string; padding trimmed; refine kept", () => {
+  assertStrictEquals(ok("breach_check", { value: 6175550100 }).value, "6175550100");
+  assertEquals(ok("breach_check", { value: " +16175550100 " }).value, "+16175550100");
+  assertEquals(ok("breach_check", { email: " a@example.invalid " }).email, "a@example.invalid");
+  rejected("breach_check", {});
+  rejected("breach_check", { value: "" });
+});
+
 // ── PRODUCTION rejections measured on thread 0ea52455 (2026-10-21, build aae1152 LIVE) ─────────
 
 Deno.test("PRODUCTION oathnet_lookup `{identifierType, value}` (the Serus spelling) validates as `{type, value}`; identifier/identifierValue carry the value", () => {
@@ -258,6 +268,7 @@ Deno.test("KILL SWITCH: INPUT_COERCION_DISABLED=true restores every production r
     rejected("oathnet_lookup", { type: "email_address", value: "a@example.invalid" });
     rejected("minimax_correlate", { seed: 6175550100, artifacts: [] });
     rejected("rapidapi_breach_search", { email: " a@example.invalid " });
+    rejected("breach_check", { value: 6175550100 });
     // and the untouched strict paths still pass
     ok("google_dorks", { seed: ADDR, kind: "address" });
     ok("gemini_deep_dork", { seed: "x", kind: "other" });
@@ -305,6 +316,9 @@ Deno.test("model-facing JSON schemas stay objects with the same properties; gemi
   assertEquals(Object.keys(j.properties ?? {}).sort(), ["maxChars", "url"]);
   const o = await props("oathnet_lookup");
   assertEquals(Object.keys(o.properties ?? {}).sort(), ["dbnames", "filter_id", "type", "value"]);
+  const b = await props("breach_check");
+  assertEquals(b.type, "object");
+  assertEquals(Object.keys(b.properties ?? {}).sort(), ["email", "value"]);
 });
 
 // ── logging: value-free event per coerced field ────────────────────────────────
