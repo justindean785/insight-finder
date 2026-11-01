@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const m = vi.hoisted(() => ({
-  pages: [] as Array<{ data: unknown[] | null; error: { message: string } | null } | "throw">,
+  pages: [] as Array<{ data: unknown[] | null; error: { message: string } | null } | "throw" | "pending">,
   calls: [] as { op: string; args: unknown[] }[],
 }));
 
@@ -24,9 +24,9 @@ vi.mock("@/integrations/supabase/client", () => ({
       node.range = (...args: unknown[]) => {
         m.calls.push({ op: "range", args });
         const next = m.pages.shift() ?? { data: [], error: null };
-        return next === "throw"
-          ? { then: () => { throw new Error("network down"); } }
-          : Promise.resolve(next);
+        if (next === "throw") return { then: () => { throw new Error("network down"); } };
+        if (next === "pending") return new Promise(() => {}); // never settles
+        return Promise.resolve(next);
       };
       return node;
     },
@@ -75,5 +75,41 @@ describe("useToolObservations", () => {
     const { result } = renderHook(() => useToolObservations(undefined));
     expect(result.current.loading).toBe(true);
     expect(m.calls).toEqual([]);
+  });
+
+  // Observations are per-account. `useAuth` nulls the user in place on SIGNED_OUT while the
+  // page stays mounted, so without an explicit reset the previous account's tool outcomes
+  // stayed on screen — the same defect fixed for the Credits hook in #937.
+  it("drops the previous user's observations the moment the user changes", async () => {
+    m.pages = [{ data: [ok("exa_search"), ok("exa_search")], error: null }];
+    const { result, rerender } = renderHook(({ u }: { u: string | undefined }) => useToolObservations(u), {
+      initialProps: { u: "u1" as string | undefined },
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.summary.tools).toHaveLength(1);
+
+    // u2's read never settles. Whatever is on screen now is what a user switch exposes.
+    m.pages = ["pending"];
+    rerender({ u: "u2" });
+
+    expect(result.current.summary.tools).toEqual([]);
+    expect(result.current.summary.totals.attempts).toBe(0);
+    expect(result.current.loading).toBe(true);
+  });
+
+  it("clears the observations on sign-out, when the hook stays mounted with no user", async () => {
+    m.pages = [{ data: [ok("exa_search")], error: null }];
+    const { result, rerender } = renderHook(({ u }: { u: string | undefined }) => useToolObservations(u), {
+      initialProps: { u: "u1" as string | undefined },
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.summary.tools).toHaveLength(1);
+
+    const before = m.calls.length;
+    rerender({ u: undefined });
+
+    expect(result.current.summary.tools).toEqual([]);
+    expect(result.current.summary.totals.attempts).toBe(0);
+    expect(m.calls.length).toBe(before); // signed out: nothing is read
   });
 });

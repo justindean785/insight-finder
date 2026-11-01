@@ -45,10 +45,18 @@ const EMPTY_SUMMARY: ObservationSummary = {
   totals: { tools: 0, attempts: 0, failed: 0, classes: { transport: 0, credential_plan: 0, rate_limited: 0, input_rejected: 0, other: 0 } },
 };
 
+const EMPTY_STATE: ToolObservationsState = { loading: true, error: null, summary: EMPTY_SUMMARY, truncated: false };
+
 export function useToolObservations(userId: string | undefined): ToolObservationsState {
-  const [state, setState] = useState<ToolObservationsState>({ loading: true, error: null, summary: EMPTY_SUMMARY, truncated: false });
+  const [state, setState] = useState<ToolObservationsState>(EMPTY_STATE);
 
   useEffect(() => {
+    // Observations belong to the user they were read for. On a switch of account — and on a
+    // sign-out, which leaves this hook mounted with no userId — the previous user's tool
+    // outcomes must leave the screen at once rather than staying up until (or unless) a later
+    // read replaces them. EMPTY_STATE is a stable module constant, so this is a no-op
+    // re-render on first mount.
+    setState(EMPTY_STATE);
     if (!userId) return;
     let alive = true;
     (async () => {
@@ -70,7 +78,7 @@ export function useToolObservations(userId: string | undefined): ToolObservation
         );
         if (!alive) return;
         if (read.error) {
-          setState({ loading: false, error: read.error, summary: EMPTY_SUMMARY, truncated: false });
+          setState({ ...EMPTY_STATE, loading: false, error: read.error });
           return;
         }
         setState({ loading: false, error: null, summary: summarizeToolObservations(read.rows, now), truncated: read.truncated });
@@ -78,7 +86,7 @@ export function useToolObservations(userId: string | undefined): ToolObservation
         // A read that THROWS (network drop, a client fault) must end the loading state with a visible
         // error. Left uncaught it is an unhandled rejection and the panel reads "Reading…" forever.
         if (!alive) return;
-        setState({ loading: false, error: e instanceof Error ? e.message : "The read failed.", summary: EMPTY_SUMMARY, truncated: false });
+        setState({ ...EMPTY_STATE, loading: false, error: e instanceof Error ? e.message : "The read failed." });
       }
     })();
     return () => { alive = false; };
