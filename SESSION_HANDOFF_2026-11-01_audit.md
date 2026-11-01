@@ -3,6 +3,57 @@
 > Dated measurement, not a state. Taken 2026-11-01 ~00:40Z from `origin/main` `5743177`. Everything here was re-measured this session unless it is marked "attributed" (someone else's number) or "inference".
 > Nothing was deployed. Changed this session: #738 and #914 closed, #933 merged, this docs PR opened.
 
+## 0. SESSION CLOSE (2026-11-01 ~03:10Z) — read this first; it supersedes §7's ordering and §10
+
+JD asked to stop at an easy place and continue in a fresh session. Sections 1-9 below are the earlier audit and are still accurate as dated measurements.
+
+### Where everything stands (measured 03:10Z)
+| Thing | State |
+|---|---|
+| `origin/main` | `5743177` (#933). Nothing merged since. |
+| **#935** W1-A, real per-run credit economics on `/brain → Credits` | **READY**, head `96105c9`, CI **green**, mergeable clean. Codex raised 2 P2s (stale "today" spend; "last run" borrowing an older run's cost): **both verified and fixed**, replied, resolved. Graphify raised 3 advisory coupling notes: traced, replied, resolved, no code change. **Waiting on JD's "merge".** |
+| **#936** W1-B, what works / what doesn't for every tool (Sources tab) | **DRAFT**, head `73a9205`, CI **running** at last read (Migrations green; Frontend and Edge in progress). **Next session: mark READY once CI is green**, then read Codex AND Graphify threads. |
+| **#934** this docs PR | **DRAFT**, head `2db386f` (+ this section), CI green on the previous head. Waiting on JD to say ready. Not merged, so a fresh clone of `main` does NOT contain this file: read it with `git fetch origin claude/project-audit-next-steps-onxj6h && git show origin/claude/project-audit-next-steps-onxj6h:SESSION_HANDOFF_2026-11-01_audit.md`. |
+| closed this session (JD's word) | #738, #914. Merged: #933. |
+
+Branches (all pushed, working tree clean): `claude/project-audit-next-steps-onxj6h` (#934), `claude/run-economics-onxj6h` (#935), `claude/tool-observations-onxj6h` (#936). JD approved one new branch per PR, named `claude/<topic>-onxj6h`.
+
+### Subscriptions and check-ins (they do NOT carry over)
+- This session was subscribed to **#934, #935, #936**. It unsubscribes at close so the new session can take over. **The new session must `subscribe_pr_activity` on all three.**
+- One-shot check-in `trig_01WXvqbd1tUHqS32FB7eftF9` (was due ~03:26Z, bound to the old session) is **deleted** at close. The new session re-arms its own (`send_later`, ~50 min, then ~4 h; stop after 3 empty check-ins). `trig_019Uirv3aFDd6Sz7o24Dc316` already fired.
+
+### JD's standing decisions (this session)
+- **Memory program first**; "make the upgrade extensive": real data, credit usage, a brain that shows what works and what doesn't. Approved plan: `/root/.claude/plans/audit-current-state-and-effervescent-hammock.md` (local to the old container and may be gone; its substance is in §7's M1-M7 table and in the two PR bodies).
+- "Go" is read as approval to **build Wave 1 (frontend only) under the repo's rules**. It is NOT a go to apply schema, deploy an edge build, change credential masking, flip a secret/flag, or auto-activate lessons. Each keeps its own named go.
+- Chinese output "was already fixed": #929 stays a kill-switched draft, no deploy.
+- Closing PRs: only #738 and #914 were authorized.
+- No merge without JD's named go. Standing: GLM-5.2 primary / Anthropic backup; `RUN_LEASE_DISABLED=true`; `REVEAL_BREACH_DATA` on; `MAX_PAID_CALLS` bounded.
+
+### What was built (details are in the PR bodies; do not re-derive)
+- **W1-A #935:** `src/lib/run-economics.ts`, `credit-account.ts`, `fetch-all-pages.ts`, `src/hooks/useRunEconomics.ts`, `src/components/brain/RunEconomicsPanel.tsx`; reads `orchestrator_invocations` / `orchestrator_step_metrics` (owner-scoped SELECT policy checked in production). Key honesty rules: null cost is "not recorded", never $0; internal meter, not an invoice; finished runs only; no tool-vs-model split until `invocation_id` exists. A real-data check caught that the owner has **355 runs in 30 days**, so the first 200-row read would have mislabelled 17 days as 30 (now paged, relabels itself when capped).
+- **W1-B #936:** `src/lib/tool-observation-classes.ts`, `src/hooks/useToolObservations.ts`, `src/components/brain/ToolObservationsPanel.tsx`. **Deviation from the memory plan §4.8:** `input_rejected` is split out of "other" (41% of failures, 180 of 436); 62% of failed calls carry no `status_code`, so kinds are read from the redacted `error_msg` (a heuristic, stated on screen). Flag = plan thresholds over 14 days (>=5 attempts, >=60% failed, >=2 cases). `fofa_search` is flagged only for failures that predate the #908 fix (0 calls since); the PR says so. `fetch-all-pages.ts` and its test are **byte-identical copies** of #935's, so either merge order is clean.
+- Both PRs touch `src/pages/BrainGlobalPage.tsx` and `src/dev/supabase-mock.ts` in different regions. **After #935 merges, bring #936 up to date with a MERGE COMMIT, never a rebase**, then re-run its checks.
+- Baselines on the PR branches, all measured locally (CI's Frontend job also passed on #935; I did not read its count): #935 vitest 3075/1/259, e2e 108/13; #936 vitest 3095/1/260, e2e 108/13. `main` is 3037/1/256 and 102/13.
+
+### Exact next steps, in order
+1. Re-measure (below), `subscribe_pr_activity` on #934/#935/#936, re-arm one check-in.
+2. #936: when CI is green, mark READY; wait for **Codex AND Graphify**; read every thread explicitly; fix only what you can verify; reply on each thread with the footer; resolve. Never merge.
+3. Tell JD #935 (and then #936) are ready for his "merge". After he merges #935, merge `main` into #936 and re-run `npx vitest run`, `npm run typecheck`, `npm run lint`, `npm run build`, `PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium npm run test:e2e`.
+4. Then **W1-C, brain growth** (Overview + Memories, frontend only, reads `agent_memory`): memories added per day (30 d), mix by kind, most re-used memories, copy that says "stored memory, not verified knowledge". New branch `claude/brain-growth-onxj6h` from `origin/main`. Test first; harness fixtures relative to now; e2e figures derived by hand; before/after screenshots at 1280 and 375; real-data expected figures from a read-only aggregate (counts only).
+5. Then W1-D QoL (one small PR each): alias-twin note; "target unreachable" label (JD picks the wording); the redaction fix for `PASSWORDS_LIST_RE` (deletes neighbouring cells including **Source**; credential masking is integrity-critical: **build it, leave it DRAFT until JD signs off**).
+6. Wave 2 (schema -> `invocation_id` stamping -> aggregator -> review UI) needs JD's answers to Q6, Q9 (thresholds), Q10 and a named go per step; see §7's M1-M7 table. **Do not start it unprompted.**
+
+### Open questions for JD
+- Merge #935? Mark #934 ready? (Both need his word.)
+- **Security observation, untouched:** in production `anon` and `authenticated` hold the full default privilege set (including TRUNCATE) on `orchestrator_invocations` and `orchestrator_step_metrics`, although the migration granted only SELECT. RLS does not cover TRUNCATE and the web API exposes no TRUNCATE verb, so it looks like defense-in-depth only. Chase it or leave it?
+- DNS-failure label wording; redaction-fix sign-off.
+
+### Observed in a run JD pasted at close (unverified: from the pasted text only, no stored artifacts read)
+An investigation of the handle `lild6x` ended with "**7 independent breach/credential-exposure sources queried — all clean**" and "the handle is a dead end". Worth a look by whoever next touches report language, against CLAUDE.md's rule that a lookup that found nothing is a result, not corroboration: (a) Snusbase, OathNet and Cloudsint are all breach aggregators with overlapping corpora, so "independent" overstates; (b) zero hits on a bare username says little about a person; (c) the same run reported LeakCheck 403 and Indicia 400 (matching the tool failures W1-B surfaces), then retried Indicia. The output was **English** (consistent with JD's "Chinese is fixed"), and the `[HISTORICAL MODEL OUTPUT]` labels from #831 were visible in it. Not investigated further; no action taken.
+
+### Opening prompt for the new session
+> Read `CLAUDE.md` and this handoff: `git fetch origin claude/project-audit-next-steps-onxj6h && git show origin/claude/project-audit-next-steps-onxj6h:SESSION_HANDOFF_2026-11-01_audit.md` (section 0 first). Re-measure before anything else: one `/health` read (build should still be `cb4c6a27`), `git ls-remote origin refs/heads/main refs/heads/deploy/live`, and `list_pull_requests` (look at `draft`). Then `subscribe_pr_activity` on #934, #935 and #936 and re-arm one check-in. **Do not merge, deploy, run DDL, change flags or secrets, close a PR, or touch credential masking without JD's explicit named go.** Then follow "Exact next steps" in section 0: mark #936 ready once its CI is green and read Codex and Graphify, then build W1-C on a new branch `claude/brain-growth-onxj6h`.
+
 ## 1. State re-measured
 
 | Thing | Value | How |
@@ -145,6 +196,6 @@ Lovable (mirror side) wrote an independent read-only audit at ~00:39-00:42Z and 
 
 **Where it differs from this handoff.** It ranks "review #912, then reproduce the checkpoint defect offline" first; I ranked the finalize-window measurement and docs first. These do not conflict: both are read-only/offline and both precede any edge deploy. It lists #929 as a candidate; JD has since said the Chinese output is fixed. It did not have the salvage finding in §3, which bears on its "closeout variability" point: the variability is salvage (16 of 32 runs), not persistence.
 
-## 10. Opening prompt for the next session
+## 10. Opening prompt for the next session (SUPERSEDED by section 0 above)
 
 > Read `CLAUDE.md`, `SESSION_HANDOFF_2026-10-31_pr-board-triage.md` and `SESSION_HANDOFF_2026-11-01_audit.md`. Re-measure first: one `/health` read (build should still be `cb4c6a27`), `git ls-remote origin refs/heads/main refs/heads/deploy/live`, and `list_pull_requests` (look at `draft`). **Do not deploy, run DDL, change flags or secrets, close a PR, or touch credential masking without JD's explicit go.** Then do the step JD names from §7 of the audit handoff.
