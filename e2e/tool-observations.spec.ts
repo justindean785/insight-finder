@@ -69,6 +69,10 @@ for (const viewport of [{ width: 1280, height: 720 }, { width: 375, height: 812 
 
     test("the list orders flagged tools first and states exclusions as text", async ({ page }) => {
       await open(page, "/brain?tab=sources&scenario=tool-observations");
+      // `evaluateAll` snapshots the DOM once with no auto-retry, unlike an `expect(locator)`
+      // assertion. Read before the rows render and it returns [], failing against the 8 expected
+      // tools as if the ORDER were wrong. Wait for the rows to exist first, then snapshot.
+      await expect(page.getByTestId("obs-row")).toHaveCount(8);
       const tools = await page.getByTestId("obs-row").evaluateAll((els) => els.map((e) => e.getAttribute("data-tool")));
       expect(tools).toEqual([
         "jina_reader_scrape", "memory_save", "gemini_deep_dork",

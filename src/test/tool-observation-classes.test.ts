@@ -229,3 +229,43 @@ describe("describeAttention", () => {
     expect(describeAttention(t)).toBe("5 of 5 real attempts failed in the last 14 days (100%) · a mix of failure kinds");
   });
 });
+
+describe("summarizeToolObservations — legacy rows with no recorded outcome", () => {
+  // `outcome` is nullable and older rows predate it. Such a row is dropped rather than guessed,
+  // but the tool accumulator was created BEFORE that check, so a tool whose only rows are legacy
+  // appeared in the list with every figure zero — a ghost that inflates `totals.tools` and tells
+  // the analyst a tool was exercised when nothing about it was recorded.
+  it("drops a NULL-outcome row without creating a zero-attempt ghost tool", () => {
+    const s = summarizeToolObservations(
+      [row({ tool_name: "exa_search" }), row({ tool_name: "legacy_only_tool", outcome: null })],
+      NOW,
+    );
+    expect(s.tools.map((t) => t.tool)).toEqual(["exa_search"]);
+    expect(s.totals.tools).toBe(1);
+  });
+
+  it("drops an unrecognized outcome the same way", () => {
+    const s = summarizeToolObservations([row({ tool_name: "weird_tool", outcome: "banana" })], NOW);
+    expect(s.tools).toEqual([]);
+    expect(s.totals.tools).toBe(0);
+  });
+
+  // A legacy row must not erase a tool that also has real rows, nor count toward its figures.
+  it("keeps a tool that has real rows alongside a legacy one, counting only the real ones", () => {
+    const s = summarizeToolObservations(
+      [row({ tool_name: "exa_search" }), row({ tool_name: "exa_search", outcome: null })],
+      NOW,
+    );
+    expect(s.tools).toHaveLength(1);
+    expect(s.tools[0]).toMatchObject({ tool: "exa_search", attempts: 1, ok: 1, failed: 0, skipped: 0, empty: 0 });
+  });
+
+  // skipped/empty are deliberately surfaced, so they MUST still create an entry.
+  it("still lists a tool whose only rows are skipped or empty", () => {
+    const s = summarizeToolObservations(
+      [row({ tool_name: "skip_tool", outcome: "skipped" }), row({ tool_name: "empty_tool", outcome: "empty" })],
+      NOW,
+    );
+    expect(s.tools.map((t) => t.tool).sort()).toEqual(["empty_tool", "skip_tool"]);
+  });
+});

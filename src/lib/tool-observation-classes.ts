@@ -138,10 +138,14 @@ export function summarizeToolObservations(rows: readonly ObservationRow[], nowMs
     if (r.cached !== false) continue; // live calls only; a replay is not an attempt
     const t = new Date(r.created_at).getTime();
     if (!Number.isFinite(t) || t < cutoff) continue;
+    // NULL / unknown outcome: dropped, never guessed — and dropped BEFORE the accumulator exists,
+    // so a tool whose only rows are legacy cannot appear as a zero-attempt ghost that inflates
+    // `totals.tools` and implies the tool was exercised when nothing about it was recorded.
+    const o = r.outcome;
+    if (o !== "ok" && o !== "failed" && o !== "skipped" && o !== "empty") continue;
     const a = acc(r.tool_name);
-    if (r.outcome === "skipped") { a.skipped++; continue; }
-    if (r.outcome === "empty") { a.empty++; continue; }
-    if (r.outcome !== "ok" && r.outcome !== "failed") continue; // NULL / unknown: dropped, never guessed
+    if (o === "skipped") { a.skipped++; continue; } // surfaced on purpose, not an attempt
+    if (o === "empty") { a.empty++; continue; }
 
     const isRecent = t >= recentCutoff;
     if (isRecent) {
