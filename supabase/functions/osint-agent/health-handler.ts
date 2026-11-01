@@ -35,6 +35,7 @@ import { staticSystemPrompt } from "./lib/base-prompt.ts";
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { opsisResultsHintSelfTest, opsisSearchGuardSelfTest } from "./lib/opsis-search-guard.ts";
 import { nextPivotBriefSelfTest } from "./lib/next-pivot.ts";
+import { memoryBriefSelfTest } from "./lib/memory-brief.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
@@ -696,6 +697,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // intermediate steps only? Pure probe of the module; `switch` reports NEXT_PIVOT_BRIEF_DISABLED. PRESENCE proves the deployed
   // bundle; it does NOT prove index.ts still appends the block (pinned in CI by next_pivot_wiring_test.ts).
   r.checks.next_pivot_brief = nextPivotBriefSelfTest();
+  // Are `tool:<name>` lessons from earlier runs rendered as a capped, context-only block (selector memories and unregistered
+  // tools excluded)? Pure; `switch` reports MEMORY_BRIEF_DISABLED. PRESENCE proves the deployed bundle; the index.ts wiring
+  // (intermediate system only, never the base) is pinned in CI by memory_brief_wiring_test.ts.
+  r.checks.memory_brief = memoryBriefSelfTest();
 
   // Does the prompt the model reads distinguish an ARTIFACT (record_artifacts, an observation) from a FINDING
   // (record_finding, an adjudicated claim the server scores and the only rows the Evidence Record renders) on all three

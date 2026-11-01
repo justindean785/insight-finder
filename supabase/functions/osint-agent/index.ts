@@ -98,6 +98,10 @@ import {
   buildResumeBrief, loadBriefInputs, nextPivotBriefDisabled, nextPivotBriefEvent,
   type BriefArtifact, type BriefUsageRow, type Page,
 } from "./lib/next-pivot.ts";
+import {
+  buildMemoryBrief, freshnessCutoffIso, loadToolLessons, memoryBriefDisabled, memoryBriefEvent, memoryBriefLegacyRowsEnabled,
+  registeredToolSubjects, toolLessonQuery,
+} from "./lib/memory-brief.ts";
 import { buildTools, TOOL_NAME_ALIASES } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
 import { isMessageSchemaError, classifyStreamProviderError, describeStreamError } from "./stream-error-classify.ts";
@@ -1004,6 +1008,18 @@ Deno.serve(async (req) => {
         .order("created_at", { ascending: true })
         .range(from, to)) as unknown as Page<BriefUsageRow>,
     });
+    // TOOL-LESSON BRIEF (lib/memory-brief.ts, M1): this user's fresh, GLOBAL-scope `lesson` rows keyed
+    // `tool:<name>` for tools in THIS run's registry (canonical names plus alias keys), read once per request and
+    // overlapped with the intake and review loads for the same reason as the resume brief above. Unlike the resume
+    // brief it also applies to a first turn. The eligibility predicates live in `toolLessonQuery` and are re-checked
+    // row by row in `buildMemoryBrief`; `loadToolLessons` never rejects and its deadline aborts the query.
+    const toolLessonReads = memoryBriefDisabled() || !memoryBriefLegacyRowsEnabled() ? null : loadToolLessons((signal) =>
+      toolLessonQuery(supabase, {
+        userId,
+        subjects: registeredToolSubjects(Object.keys(tools), TOOL_NAME_ALIASES),
+        cutoffIso: freshnessCutoffIso(),
+        signal,
+      }));
     // Resolve the attachment intake started above (it overlapped the preflight
     // + setup). Its summary must be present before the system prompt is built.
     const intake = await intakePromise;
@@ -1087,6 +1103,17 @@ Deno.serve(async (req) => {
         readReason: briefInputs.reason,
       })));
       if (briefOutcome.text) resumeBriefBlock = `\n\n${briefOutcome.text}`;
+    }
+    // ---- TOOL-LESSON BRIEF (lib/memory-brief.ts) ----------------------------------------------------
+    // Appended ONLY to `intermediateSystem`, like the resume brief: the cached base, the finalize prompt and the
+    // salvage prompt stay byte-identical. Lessons for tools not in this run's registry are dropped. Context only:
+    // it can change which tool is tried, never what a finding means. Logged as counts, never a lesson body.
+    let memoryBriefBlock = "";
+    if (toolLessonReads) {
+      const lessons = await toolLessonReads;
+      const memOutcome = buildMemoryBrief({ rows: lessons.rows, availableTools: new Set(Object.keys(tools)), aliases: TOOL_NAME_ALIASES });
+      console.log(JSON.stringify(memoryBriefEvent(threadId, memOutcome, { ms: lessons.ms, readReason: lessons.reason })));
+      if (memOutcome.text) memoryBriefBlock = `\n\n${memOutcome.text}`;
     }
     // ---- Prompt-size instrument (A1) -----------------------------------------
     // `approxPromptChars` above stays exactly as it is: it is an INPUT TO PROVIDER
@@ -1479,7 +1506,7 @@ Deno.serve(async (req) => {
         // directive to record already-supported findings now (don't wait for correlate,
         // don't fabricate). Counts come from THIS request's stepMessages and the latch
         // is a closure local, so the nudge state is request-scoped by construction.
-        let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective() + resumeBriefBlock;
+        let intermediateSystem = baseSystemPrompt + buildPerCycleCompactDirective() + resumeBriefBlock + memoryBriefBlock;
         // A provider suppressed for the run (401/402 in this or an earlier invocation,
         // 429/5xx/timeouts for the window) is withheld from the step's tool set, so the
         // model cannot spend a step asking for a tool that can only answer with a

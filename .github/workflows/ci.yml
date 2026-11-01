@@ -165,6 +165,14 @@ jobs:
       - name: Agent memory scope assertion
         run: psql --set ON_ERROR_STOP=1 -f .github/ci/assert-agent-memory-scope.sql
 
+      # The tool-lesson brief (M1) reads agent_memory as the authenticated role; its
+      # isolation is RLS. psql here is the postgres superuser, which bypasses RLS, so
+      # this script SETs the real role, guards that the switch took and that the
+      # role cannot bypass RLS, then drives cross-user read AND write. Rolls itself
+      # back; see .github/ci/assert-memory-brief-rls.sql.
+      - name: Memory brief RLS assertion
+        run: psql --set ON_ERROR_STOP=1 -f .github/ci/assert-memory-brief-rls.sql
+
       # S1a admission lease: its TypeScript tests drive a fake chain; this drives the SAME
       # conditional UPDATE on a real Postgres against the migrated threads table — the
       # predicate matrix, "a leased row refuses the next lease", and the version clause
