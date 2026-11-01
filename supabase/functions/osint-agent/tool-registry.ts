@@ -137,6 +137,7 @@ import { augmentDorkQuery, isTemplateOrSampleUrl, scoreDorkRelevance, applyDorkR
 import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 
 import { TOOL_CATALOG, CATALOG_CACHE, FINDING_LABELS } from "./catalog.ts";
+import { FINALIZE_NO_FINDINGS_DESCRIPTION, LEGACY_FINALIZE_NO_FINDINGS_DESCRIPTION, findingPromptV2Disabled } from "./lib/finding-prompt.ts";
 import { beginCycle, recordFindingSummary } from "./runtime-policy.ts";
 import { serus_darkweb_scan } from "./tools/serus.ts";
 import { okWithSuccessFlag, isHackertargetApiError, isCrtshOk, dohTypeError, blockchairError } from "./tool_response.ts";
@@ -6800,9 +6801,9 @@ export function buildTools(ctx: ToolContext) {
   // their matching forced-finalize phase. They give `toolChoice: required` a safe,
   // non-fabricating escape when there is nothing valid to persist or remember.
   (tools as ToolRegistry).finalize_no_findings = tool({
-    description:
-      "Finalize-only decision: declare that every tool-supported finding is already persisted. " +
-      "Never call during normal investigation work.",
+    // The ARTIFACT-persistence decision of the persist phase, described as one (lib/finding-prompt.ts). The wire
+    // contract below (name, reason enum, return shape) is unchanged; FINDING_PROMPT_V2_DISABLED restores the old text.
+    description: findingPromptV2Disabled() ? LEGACY_FINALIZE_NO_FINDINGS_DESCRIPTION : FINALIZE_NO_FINDINGS_DESCRIPTION,
     inputSchema: memoSchema("finalize_no_findings", () => z.object({
       reason: z.enum(["all_supported_findings_already_persisted", "no_tool_supported_findings"]),
     }).strict()),

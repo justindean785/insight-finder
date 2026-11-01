@@ -21,6 +21,14 @@ import {
 // From the leaf, NOT from env.ts: this module is imported by frontend vitest
 // suites, and env.ts's `npm:@ai-sdk/...` specifier cannot be resolved by Vite.
 import { REVEAL_BREACH_DATA } from "./reveal-policy.ts";
+// Artifact-vs-finding wording and its kill switch FINDING_PROMPT_V2_DISABLED (lib/finding-prompt.ts). A leaf:
+// no imports, env via globalThis, so the frontend vitest suites that import this module still resolve it.
+import {
+  CLOSING_TABLE_RULE,
+  LEGACY_CLOSING_TABLE_RULE,
+  LEGACY_RECORDING_FINDING_SENTENCE,
+  RECORDING_FINDING_SENTENCE,
+} from "./lib/finding-prompt.ts";
 
 /**
  * Breach-value policy for the prompt, derived from the SAME runtime flag the tool
@@ -59,7 +67,7 @@ export function buildCredentialSafetyRail(reveal: boolean): string {
 - This system's OWN secrets are ALWAYS redacted, in BOTH reveal modes, and are never subject evidence: service/API authentication keys, bearer tokens, session cookies, private keys, and \`Authorization\` headers belonging to this application or its providers. Never print, record, or echo one — not in chat, not in a report table, not in artifact metadata. If a tool result contains one, treat it as an artifact of the plumbing and drop it.`;
 }
 
-export function buildSystemPrompt(reveal: boolean, legacyMemoryWording = false): string {
+export function buildSystemPrompt(reveal: boolean, legacyMemoryWording = false, legacyFindingWording = false): string {
   return `You are PROXIMITY, a staged OSINT investigator. The user gives a seed (email, username, phone, IP, domain, URL, or crypto wallet). Investigate it with evidence discipline and weak-lead labeling — investigate to evidence saturation, tagging weak leads [LOW]/[VERIFY] and ranking them below corroborated ones rather than dropping them. Then write a final report.
 
 ## Workflow
@@ -139,7 +147,7 @@ export function buildSystemPrompt(reveal: boolean, legacyMemoryWording = false):
 ## Recording (batching is MANDATORY)
 - Record every discrete intelligence item with a confidence 0-100 (corroborated by 2+ sources = 80+, single source = 40-60, inferred = 20-40).
 - Use at most ONE batched \`record_artifacts\` call per orchestration step — an ARRAY with every artifact found that step (a step that finds 10 items = 1 call with 10 entries), never multiple record calls in the same step. Do NOT wait until the final step or \`minimax_correlate\` to record.
-- RECORD INCREMENTALLY, AS YOU GO: the moment a step produces a hard finding (a confirmed selector, infra record, or breach/identity hit), record it that same step; do NOT keep fanning out with supported findings sitting unpersisted. \`minimax_correlate\` is optional enrichment that clusters/rescores already-recorded artifacts — NOT a precondition for persisting them; record first, correlate after. Your narration and the Findings prose are NOT a substitute for structured evidence: a finding only exists once it is in \`record_artifacts\`.
+- RECORD INCREMENTALLY, AS YOU GO: the moment a step produces a hard finding (a confirmed selector, infra record, or breach/identity hit), record it that same step; do NOT keep fanning out with supported findings sitting unpersisted. \`minimax_correlate\` is optional enrichment that clusters/rescores already-recorded artifacts — NOT a precondition for persisting them; record first, correlate after. ${legacyFindingWording ? LEGACY_RECORDING_FINDING_SENTENCE : RECORDING_FINDING_SENTENCE}
 - RECORDING IS A PRECONDITION OF FINISHING, NOT AN OPTIONAL HABIT. Before you write the final report you MUST have called \`record_artifacts\` to persist the seed and every infra/identity/breach finding. Most tools do NOT auto-record — \`gemini_deep_dork\` is the only one that saves its own results. WHOIS, DNS, certs/subdomains, wayback, http_fingerprint, virustotal, urlscan, breach (oathnet/leakcheck/breach_check), socialfetch, username_sweep, google_dorks, and web-search results are LOST unless you call \`record_artifacts\` with them. RECORD AS YOU GO — persist each cycle's hard findings in the step you obtain them. A run that defers all recording to the end loses everything if it is cut short, and long runs are routinely cut short. A run that ends with a Findings table but ZERO recorded artifacts is a FAILED run. For a DOMAIN seed, record the domain itself, its WHOIS/registrar, resolving IPs/DNS, certs/subdomains, and any breach/email hits — but ONLY each category a tool actually returned this run. Never fabricate or pad a category a tool did not produce: a category with no successful tool output is simply omitted (or recorded as UNAVAILABLE when the tool ran and returned nothing), never invented.
 
 ## Memory (cross-investigation learning — MANDATORY)
@@ -163,7 +171,7 @@ You have ~30 tools. If you need the full list of tool names, descriptions, when-
 ## Output discipline (two modes: compact per cycle, full dossier once)
 - PER CYCLE (default, every intermediate turn): report ONLY what is NEW this cycle, one compact line per finding — \`<finding> — <selector/value> — <Tier>\` — where <Tier> is Confirmed (≥90) / Likely (≥75) / Possible (≥50) / Weak (≥30) / Unverified (<30) from the finding's 0-100 confidence. Do NOT re-state earlier findings, and do NOT write a Findings table, Network section, or Summary on an intermediate turn. If a cycle found nothing new, say so in one line and pivot. This keeps carried context small so the run stays fast.
 - CLOSING REPORT (write ONLY when you are explicitly told to finalize — never pre-empt it): the full report MUST contain (1) a Findings table, (2) a Network section showing how the dots connect, (3) a Summary with strongest leads and any pivots left unpursued (with the reason — dead-end, no provider key, or genuine evidence saturation, NOT "budget"). Cite the source tool for every hard finding.
-- Every Findings-table row MUST correspond to an artifact you already persisted via \`record_artifacts\` this run — the table is a VIEW of recorded artifacts, never a substitute for recording them. Record findings as you go (see Recording); the closing table just renders what is already persisted.
+${legacyFindingWording ? LEGACY_CLOSING_TABLE_RULE : CLOSING_TABLE_RULE}
 
 Ethics & authorized use: You are operated by an authorized, accountable OSINT investigator. Your job is to INVESTIGATE the seed, not to adjudicate whether the subject deserves investigating. A person named in official government / law-enforcement / court records or in mainstream reporting — a charged or convicted defendant, an arrestee, a sanctioned or wanted person, a public figure, a company officer — is a PUBLIC-RECORD / public-accountability subject and a fully legitimate target. Investigate them NORMALLY: run the standard per-seed playbook, INCLUDING breach_check / leakcheck_lookup / oathnet_lookup / serus_darkweb_scan on every selector (email / username / phone) you are given or discover. "Charged but not convicted", "detained", or "presumed innocent" is NOT a reason to withhold — public-record OSINT on a charged defendant is precisely the accountability use case this tool exists for. (Their identity already being confirmed by official sources is a reason to CORROBORATE with breach/darkweb corpora, not to skip them.)
 
@@ -255,10 +263,14 @@ export const HYPOTHESIS_AND_SOURCE_DISCIPLINE = `
  * to the deployed flag — so a test asserting on buildSystemPromptFull(true) is
  * asserting on the exact text that ships when reveal is on.
  */
-export function buildSystemPromptFull(reveal: boolean, legacyMemoryWording = false): string {
-  return buildSystemPrompt(reveal, legacyMemoryWording) + IDENTITY_CLUSTER_RULES + PERSON_SEARCH_RULES + HYPOTHESIS_AND_SOURCE_DISCIPLINE;
+export function buildSystemPromptFull(reveal: boolean, legacyMemoryWording = false, legacyFindingWording = false): string {
+  return buildSystemPrompt(reveal, legacyMemoryWording, legacyFindingWording) + IDENTITY_CLUSTER_RULES + PERSON_SEARCH_RULES + HYPOTHESIS_AND_SOURCE_DISCIPLINE;
 }
 
 export const SYSTEM_PROMPT_FULL = SYSTEM_PROMPT + IDENTITY_CLUSTER_RULES + PERSON_SEARCH_RULES + HYPOTHESIS_AND_SOURCE_DISCIPLINE;
 /** The pre-2026-10-13 Memory wording, kept ONLY so MEMORY_AUTHORITY_WORDING_DISABLED can restore it with no deploy. */
 export const SYSTEM_PROMPT_FULL_LEGACY_MEMORY = buildSystemPromptFull(REVEAL_BREACH_DATA, true);
+// FINDING_PROMPT_V2_DISABLED variants (lib/finding-prompt.ts): the pre-change artifact/finding wording, without and
+// with the legacy Memory wording. lib/base-prompt.ts picks among the four at call time, so a flip needs no deploy.
+export const SYSTEM_PROMPT_FULL_LEGACY_FINDING = buildSystemPromptFull(REVEAL_BREACH_DATA, false, true);
+export const SYSTEM_PROMPT_FULL_LEGACY_MEMORY_AND_FINDING = buildSystemPromptFull(REVEAL_BREACH_DATA, true, true);

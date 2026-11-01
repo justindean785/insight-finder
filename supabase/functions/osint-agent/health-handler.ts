@@ -29,7 +29,10 @@ import { anthropicModelRejectsForcedToolChoice, anthropicOrchestratorHealth } fr
 import { anthropicFallbackDisabled, orchestratorFallbackHealth } from "./lib/orchestrator-fallback.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn, opsisStartClassificationSelfTest } from "./lib/opsis.ts";
-import { opsisFinalizeCollectSelfTest } from "./orchestrator-finalize.ts";
+import { buildFinalizePersistDirective, opsisFinalizeCollectSelfTest } from "./orchestrator-finalize.ts";
+import { findingPromptSelfTest } from "./lib/finding-prompt.ts";
+import { staticSystemPrompt } from "./lib/base-prompt.ts";
+import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { opsisResultsHintSelfTest, opsisSearchGuardSelfTest } from "./lib/opsis-search-guard.ts";
 import { nextPivotBriefSelfTest } from "./lib/next-pivot.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
@@ -693,6 +696,18 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // intermediate steps only? Pure probe of the module; `switch` reports NEXT_PIVOT_BRIEF_DISABLED. PRESENCE proves the deployed
   // bundle; it does NOT prove index.ts still appends the block (pinned in CI by next_pivot_wiring_test.ts).
   r.checks.next_pivot_brief = nextPivotBriefSelfTest();
+
+  // Does the prompt the model reads distinguish an ARTIFACT (record_artifacts, an observation) from a FINDING
+  // (record_finding, an adjudicated claim the server scores and the only rows the Evidence Record renders) on all three
+  // surfaces — system prompt, workflow addendum, finalize persist directive? Pure probe over the RENDERED text
+  // (lib/finding-prompt.ts); `switch` reports FINDING_PROMPT_V2_DISABLED (LEGACY = pre-change wording). PRESENCE proves
+  // the deployed bundle. It does NOT prove the model calls record_finding more often — that is a tool_usage_log
+  // measurement (audit 2026-11-01 §2). finalize_no_findings's description is pinned by finding_prompt_test.ts.
+  r.checks.finding_prompt = findingPromptSelfTest({
+    systemPrompt: staticSystemPrompt(),
+    workflowAddendum: buildWorkflowAddendum(null),
+    persistDirective: buildFinalizePersistDirective(),
+  });
 
   // Is a near-miss tool input (kind alias, query→seed, numeric string, number→string, stray whitespace) coerced INSIDE
   // the schema when — and only when — the result validates? Pure. PRESENCE proves the deployed bundle; `switch` reports
