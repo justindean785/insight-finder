@@ -269,3 +269,44 @@ describe("summarizeToolObservations — legacy rows with no recorded outcome", (
     expect(s.tools.map((t) => t.tool).sort()).toEqual(["empty_tool", "skip_tool"]);
   });
 });
+
+describe("classifyFailure — an explicit status code outranks the error text", () => {
+  // The branches used to be ordered by severity, each ORing a code test with a text test, so a
+  // lower-priority code lost to a higher-priority regex. A 5xx whose body merely mentions a
+  // quota then read as "plan or credential refusal" — telling the analyst a key is dead when
+  // the provider is simply down, on the one panel whose job is what works and what doesn't.
+  it("a 5xx that mentions a quota is a server error, not a credential refusal", () => {
+    expect(classifyFailure({ status_code: 500, error_msg: "upstream quota service unavailable" })).toBe("transport");
+  });
+
+  it("a 400 naming the api_key field is input the tool rejected, not a credential refusal", () => {
+    expect(classifyFailure({ status_code: 400, error_msg: "invalid api key field type" })).toBe("input_rejected");
+  });
+
+  it("a 403 whose body says 'rate limit' is still a credential/plan refusal", () => {
+    expect(classifyFailure({ status_code: 403, error_msg: "rate limit on your plan" })).toBe("credential_plan");
+  });
+
+  it("a 422 mentioning a connection is input rejected", () => {
+    expect(classifyFailure({ status_code: 422, error_msg: "connection parameter invalid" })).toBe("input_rejected");
+  });
+
+  // The fallback still matters: 62% of failed calls carry no status code at all.
+  it("falls back to the text when there is no status code", () => {
+    expect(classifyFailure({ status_code: null, error_msg: "request timed out after 25000ms" })).toBe("transport");
+    expect(classifyFailure({ status_code: null, error_msg: "Your plan does not include this endpoint" })).toBe("credential_plan");
+  });
+
+  // FOFA answers HTTP 200 with an error body (CLAUDE.md, "A 403 is not a dead credential").
+  // 200 is not a recognized failure code, so the text must still decide.
+  it("uses the text when the code is not a recognized failure code, as FOFA's HTTP 200 needs", () => {
+    expect(
+      classifyFailure({ status_code: 200, error_msg: "fofa 200: [820001] No permission to search as_organization field" }),
+    ).toBe("credential_plan");
+    expect(classifyFailure({ status_code: 404, error_msg: "malformed selector" })).toBe("input_rejected");
+  });
+
+  it("is 'other' when neither the code nor the text says anything useful", () => {
+    expect(classifyFailure({ status_code: 418, error_msg: "teapot" })).toBe("other");
+  });
+});

@@ -60,13 +60,30 @@ const TRANSPORT_RE =
 const INPUT_RE =
   /invalid|validation|schema|expected|required|unrecognized|malformed|bad request|must be|not a valid|input/i;
 
+/**
+ * A recognized HTTP status is what the server itself said happened, so it decides. The text
+ * heuristics are a FALLBACK, for the ~62% of failed calls that carry no status code at all.
+ *
+ * The two must not be interleaved. They were ordered by severity with each branch ORing a code
+ * test against a regex, so a lower-priority code lost to a higher-priority regex: HTTP 500 with
+ * "upstream quota service unavailable" matched `quota` and read as a plan/credential refusal —
+ * telling the analyst a key is dead when the provider is merely down, on the one panel whose
+ * job is to say what works and what doesn't.
+ *
+ * An UNRECOGNIZED code still falls through to the text on purpose: FOFA answers HTTP 200 with
+ * an error body (CLAUDE.md, "A 403 is not a dead credential"), and only the text classifies it.
+ */
 export function classifyFailure(r: { status_code: number | null; error_msg: string | null }): FailureClass {
   const code = r.status_code;
   const text = r.error_msg ?? "";
-  if (code === 429 || RATE_RE.test(text)) return "rate_limited";
-  if (code === 401 || code === 402 || code === 403 || CREDENTIAL_RE.test(text)) return "credential_plan";
-  if (code === 408 || (code != null && code >= 500 && code <= 599) || TRANSPORT_RE.test(text)) return "transport";
-  if (code === 400 || code === 422 || INPUT_RE.test(text)) return "input_rejected";
+  if (code === 429) return "rate_limited";
+  if (code === 401 || code === 402 || code === 403) return "credential_plan";
+  if (code === 408 || (code != null && code >= 500 && code <= 599)) return "transport";
+  if (code === 400 || code === 422) return "input_rejected";
+  if (RATE_RE.test(text)) return "rate_limited";
+  if (CREDENTIAL_RE.test(text)) return "credential_plan";
+  if (TRANSPORT_RE.test(text)) return "transport";
+  if (INPUT_RE.test(text)) return "input_rejected";
   return "other";
 }
 
