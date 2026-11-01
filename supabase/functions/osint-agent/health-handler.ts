@@ -1,4 +1,5 @@
 import { breachExposureGuardSelfTest } from "./lib/breach-exposure-guard.ts";
+import { describeThinking, probeMaxTokens, resolveDeepseekThinking } from "./lib/glm-thinking.ts";
 import { dispatchSelectorAliasesSelfTest } from "./lib/dispatch-selector.ts";
 import { providerBusyQueueSelfTest } from "./lib/provider-busy-queue.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -16,6 +17,7 @@ import {
   OSINT_AGENT_PROBE_SECRET,
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL,
+  DEEPSEEK_THINKING_MODE, DEEPSEEK_REASONING_EFFORT, DEEPSEEK_VENDOR_HOST,
   ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY,
   lovableGateway, geminiDirectGateway, ALLOW_LOVABLE_FALLBACK,
   promptBudgetHardCeilingEnabled,
@@ -187,6 +189,11 @@ export async function checkDeepseek(deps?: {
   const apiKey = deps?.apiKey ?? DEEPSEEK_API_KEY;
   const model = deps?.model ?? DEEPSEEK_ORCHESTRATOR_MODEL_ID;
   const doFetch = deps?.doFetch ?? fetch;
+  const canaryThinking = resolveDeepseekThinking({
+    modelId: model,
+    modeOverride: DEEPSEEK_THINKING_MODE,
+    effort: DEEPSEEK_REASONING_EFFORT,
+  }).options;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 5_000);
   try {
@@ -196,11 +203,15 @@ export async function checkDeepseek(deps?: {
       body: JSON.stringify({
         model,
         messages: [{ role: "user", content: "ping" }],
-        max_tokens: 4,
+        // Raw fetch, so the WIRE shape is correct here (the SDK shape is only for
+        // providerOptions). Match the live orchestrator's thinking mode: a GLM-5.3
+        // model 400s on `type:"disabled"`, so a hardcoded canary would report the
+        // orchestrator dead on a build that actually works and `verify:deploy` would
+        // read the lie. The token ceiling lifts with thinking because reasoning
+        // tokens precede any content. lib/glm-thinking.ts is the one source.
+        max_tokens: probeMaxTokens(canaryThinking),
         temperature: 0,
-        // Non-thinking canary: match the live orchestrator's request shape and keep
-        // the paid health ping to a single cheap token.
-        thinking: { type: "disabled" },
+        ...canaryThinking,
       }),
       signal: ctrl.signal,
     });
@@ -411,7 +422,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   ]);
   // Role labels: only the SELECTED provider is "active"; the other is a "fallback"
   // diagnostic. So MiniMax is never labeled active when DeepSeek is selected.
-  r.checks.deepseek = { ...deepseekCheck, role: providerRole(selected.provider, "deepseek") };
+  // `vendor_host` is the one place /health names the ACTUAL vendor. The slot is called
+  // "deepseek" for historical reasons but is served by api.z.ai; without this, the only
+  // proof of vendor was a DB row written after a run.
+  r.checks.deepseek = { ...deepseekCheck, role: providerRole(selected.provider, "deepseek"), vendor_host: DEEPSEEK_VENDOR_HOST };
   r.checks.minimax = { ...minimaxCheck, role: providerRole(selected.provider, "minimax") };
   // Anthropic orchestrator (primary by pin; GLM's backup since E2b — `role`). Config + cost-control posture only; deliberately NO
   // network probe — a ping would spend prepaid credits on every /health. Reports presence
@@ -483,6 +497,26 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
 
   // Are OLD record_artifacts tool-call inputs compacted to kind+value under budget pressure
   // (orchestrator-budget.ts)? Pure. PRESENCE proves the deployed bundle; `ok` tracks the kill switch.
+  // Behavioural proof that THIS build resolves the deepseek slot's thinking mode from
+  // the model id instead of hardcoding `disabled`. Its PRESENCE proves the build; the
+  // detail names the mode actually being sent, which is the one thing an operator needs
+  // when switching DEEPSEEK_ORCHESTRATOR_MODEL_ID between a 5.2 and a 5.3 model. Pure.
+  {
+    const t = resolveDeepseekThinking({
+      modelId: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
+      modeOverride: DEEPSEEK_THINKING_MODE,
+      effort: DEEPSEEK_REASONING_EFFORT,
+    });
+    r.checks.glm_thinking_mode = {
+      // A 5.3 model with thinking forced OFF by an override is the one combination
+      // that cannot work — every call would 400. Flag it rather than hide it.
+      ok: !(t.forcedByModel && t.options.thinking.type === "disabled"),
+      detail: t.forcedByModel && t.options.thinking.type === "disabled"
+        ? `${describeThinking(t, DEEPSEEK_ORCHESTRATOR_MODEL_ID, DEEPSEEK_VENDOR_HOST)} — INVALID: this model forces thinking and will reject every request; clear DEEPSEEK_THINKING_MODE`
+        : describeThinking(t, DEEPSEEK_ORCHESTRATOR_MODEL_ID, DEEPSEEK_VENDOR_HOST),
+    };
+  }
+
   {
     const on = recordArtifactsInputCompactEnabled();
     r.checks.record_artifacts_input_compact = {
@@ -915,14 +949,20 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     };
     const [ds, mm, gk, gm] = await Promise.all([
       probeProvider("deepseek", !!DEEPSEEK_API_KEY, async (signal) => {
+        const probeThinking = resolveDeepseekThinking({
+          modelId: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
+          modeOverride: DEEPSEEK_THINKING_MODE,
+          effort: DEEPSEEK_REASONING_EFFORT,
+        }).options;
         const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
           method: "POST",
           headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({
             model: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
             messages: [{ role: "user", content: "ping" }],
-            max_tokens: 4,
-            thinking: { type: "disabled" },
+            // Same reasons as the orchestrator canary above — never hardcode either.
+            max_tokens: probeMaxTokens(probeThinking),
+            ...probeThinking,
           }),
           signal,
         });
