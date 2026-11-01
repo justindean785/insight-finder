@@ -1,4 +1,5 @@
 import { breachExposureGuardSelfTest } from "./lib/breach-exposure-guard.ts";
+import { describeThinking, resolveDeepseekThinking } from "./lib/glm-thinking.ts";
 import { dispatchSelectorAliasesSelfTest } from "./lib/dispatch-selector.ts";
 import { providerBusyQueueSelfTest } from "./lib/provider-busy-queue.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -16,6 +17,7 @@ import {
   OSINT_AGENT_PROBE_SECRET,
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL,
+  DEEPSEEK_THINKING_MODE, DEEPSEEK_REASONING_EFFORT,
   ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY,
   lovableGateway, geminiDirectGateway, ALLOW_LOVABLE_FALLBACK,
   promptBudgetHardCeilingEnabled,
@@ -198,9 +200,15 @@ export async function checkDeepseek(deps?: {
         messages: [{ role: "user", content: "ping" }],
         max_tokens: 4,
         temperature: 0,
-        // Non-thinking canary: match the live orchestrator's request shape and keep
-        // the paid health ping to a single cheap token.
-        thinking: { type: "disabled" },
+        // Match the live orchestrator's request shape exactly, including thinking
+        // mode: a GLM-5.3 model 400s on `type:"disabled"`, so a hardcoded canary
+        // would report the orchestrator dead on a build that actually works (and
+        // `verify:deploy` would read the lie). lib/glm-thinking.ts is the one source.
+        ...resolveDeepseekThinking({
+          modelId: model,
+          modeOverride: DEEPSEEK_THINKING_MODE,
+          effort: DEEPSEEK_REASONING_EFFORT,
+        }).options,
       }),
       signal: ctrl.signal,
     });
@@ -483,6 +491,26 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
 
   // Are OLD record_artifacts tool-call inputs compacted to kind+value under budget pressure
   // (orchestrator-budget.ts)? Pure. PRESENCE proves the deployed bundle; `ok` tracks the kill switch.
+  // Behavioural proof that THIS build resolves the deepseek slot's thinking mode from
+  // the model id instead of hardcoding `disabled`. Its PRESENCE proves the build; the
+  // detail names the mode actually being sent, which is the one thing an operator needs
+  // when switching DEEPSEEK_ORCHESTRATOR_MODEL_ID between a 5.2 and a 5.3 model. Pure.
+  {
+    const t = resolveDeepseekThinking({
+      modelId: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
+      modeOverride: DEEPSEEK_THINKING_MODE,
+      effort: DEEPSEEK_REASONING_EFFORT,
+    });
+    r.checks.glm_thinking_mode = {
+      // A 5.3 model with thinking forced OFF by an override is the one combination
+      // that cannot work — every call would 400. Flag it rather than hide it.
+      ok: !(t.forcedByModel && t.options.thinking.type === "disabled"),
+      detail: t.forcedByModel && t.options.thinking.type === "disabled"
+        ? `${describeThinking(t, DEEPSEEK_ORCHESTRATOR_MODEL_ID)} — INVALID: this model forces thinking and will reject every request; clear DEEPSEEK_THINKING_MODE`
+        : describeThinking(t, DEEPSEEK_ORCHESTRATOR_MODEL_ID),
+    };
+  }
+
   {
     const on = recordArtifactsInputCompactEnabled();
     r.checks.record_artifacts_input_compact = {
@@ -922,7 +950,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
             model: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
             messages: [{ role: "user", content: "ping" }],
             max_tokens: 4,
-            thinking: { type: "disabled" },
+            // Same reason as the orchestrator canary above — never hardcode this.
+            ...resolveDeepseekThinking({
+              modelId: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
+              modeOverride: DEEPSEEK_THINKING_MODE,
+              effort: DEEPSEEK_REASONING_EFFORT,
+            }).options,
           }),
           signal,
         });

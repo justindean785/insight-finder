@@ -5,6 +5,7 @@
 
 import { convertToModelMessages, streamText, generateText, stepCountIs, type UIMessage, type ModelMessage } from "npm:ai@6";
 import { classifyRunEnd, runEndLogDisabled, runEndNote } from "./lib/run-end.ts";
+import { resolveDeepseekThinking } from "./lib/glm-thinking.ts";
 import { PERSIST_ON_CLIENT_CANCEL_ENV, persistOnClientCancelEnabled } from "./lib/client-cancel.ts";
 
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
@@ -19,6 +20,7 @@ import {
   GROK_ORCHESTRATOR_MODEL_ID,
   deepseekGateway, DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL, DEEPSEEK_VENDOR_HOST,
+  DEEPSEEK_THINKING_MODE, DEEPSEEK_REASONING_EFFORT,
   anthropicGateway, ANTHROPIC_MODEL_ID, ANTHROPIC_THINKING, ANTHROPIC_EFFORT, ANTHROPIC_RUN_LIMITS,
   degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
   promptBudgetHardCeilingEnabled,
@@ -140,6 +142,17 @@ const ORCHESTRATOR_MAX_OUTPUT_TOKENS = 8192;
 // Set false = disable parallelism. (cache.ts return-on-throw + the message
 // sanitizer are the defense-in-depth net if a provider ever ignores this flag.)
 const ORCHESTRATOR_PARALLEL_TOOL_CALLS = false;
+// Thinking mode for the lead ("deepseek") slot, resolved ONCE from the configured
+// model id + operator overrides. Shared by the main stream and the salvage synthesis
+// so the two can never drift apart again: before this, the main stream disabled
+// thinking and salvage sent no providerOptions at all, which on a GLM model that
+// defaults to thinking-ON meant salvage silently ran full reasoning over the whole
+// run context. See lib/glm-thinking.ts.
+const deepseekThinking = resolveDeepseekThinking({
+  modelId: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
+  modeOverride: DEEPSEEK_THINKING_MODE,
+  effort: DEEPSEEK_REASONING_EFFORT,
+});
 // MAX_ORCHESTRATOR_STEPS (named ~30 step cap) + ORCHESTRATOR_WALL_CLOCK_MS (clean
 // wall-clock deadline) now live in ./orchestrator-budget.ts alongside the context
 // budget, so all of the orchestrator's step/size knobs share one testable source.
@@ -1543,12 +1556,16 @@ Deno.serve(async (req) => {
       // provider name; the SDK drops non-matching keys silently.
       // - MiniMax primary → serial tool calls (long-standing behavior, see
       //   ORCHESTRATOR_PARALLEL_TOOL_CALLS).
-      // - DeepSeek primary → serial tool calls + thinking disabled for the
-      //   canary. DeepSeek V4 defaults to thinking-mode, and thinking-mode
-      //   requires round-tripping `reasoning_content` across every subsequent
-      //   request; @ai-sdk/openai-compatible has not been proven to carry that
-      //   field through multi-round streamed tool calls, and enabling parallel
-      //   calls compounds the risk of missing/malformed tool-result pairing
+      // - DeepSeek primary → serial tool calls + the thinking mode the MODEL ID
+      //   allows (lib/glm-thinking.ts). Pre-5.3 GLM/DeepSeek default to
+      //   thinking-mode and are explicitly disabled here; GLM-5.3 and its Flash
+      //   variants force thinking ON and 400 on `type:"disabled"`, so the
+      //   resolver sends `enabled` + a low reasoning_effort for those. We never
+      //   send `clear_thinking:false`, so the STANDARD endpoint keeps clearing
+      //   prior reasoning and the client never has to echo `reasoning_content`
+      //   back — @ai-sdk/openai-compatible has not been proven to carry that
+      //   field through multi-round streamed tool calls. Enabling parallel
+      //   calls would compound the risk of missing/malformed tool-result pairing
       //   that produced prior orchestrator failures (MiniMax's exact crash).
       // - Anthropic as GLM's backup after a failed preflight (E2b) → the same Anthropic
       //   options as the pin. (The START fallback adds them on its own copy of the call.)
@@ -1559,7 +1576,7 @@ Deno.serve(async (req) => {
         : minimaxIsPrimary
         ? { minimax: { parallel_tool_calls: ORCHESTRATOR_PARALLEL_TOOL_CALLS } }
         : deepseekIsPrimary
-        ? { deepseek: { parallel_tool_calls: false, thinking: { type: "disabled" } } }
+        ? { deepseek: { parallel_tool_calls: false, ...deepseekThinking.options } }
         : anthropicIsPrimary
         ? anthropicProviderOptions({ thinking: ANTHROPIC_THINKING, effort: ANTHROPIC_EFFORT })
         : undefined,
@@ -2174,9 +2191,17 @@ Deno.serve(async (req) => {
               salvageOutcome = "skipped_budget";
               throw new Error("salvage synthesis skipped: anthropic run budget exhausted");
             }
+            // Salvage used to send NO providerOptions at all. On a GLM model — where
+            // thinking is ON by default — that meant salvage ran full reasoning over
+            // the entire run context while the main loop ran with thinking disabled: a
+            // silent asymmetry, in the one window where the run has no time to spare.
+            // The `deepseek` key is namespaced, so @ai-sdk drops it when the active
+            // model is not the deepseek slot; this is inert on the Anthropic path.
             const salvage = await generateText({
               model: orchestratorModel,
               maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
+              // Same thinking mode as the main loop (see the salvage note above).
+              providerOptions: { deepseek: { ...deepseekThinking.options } },
               system: baseSystemPrompt,
               prompt: salvagePrompt,
             });
