@@ -19,6 +19,7 @@
 // It does NOT claim the model now calls record_finding — that is a tool_usage_log measurement after deploy.
 import { assert, assertEquals, assertFalse, assertStringIncludes } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { assembleBaseSystemPrompt, staticSystemPrompt } from "../../functions/osint-agent/lib/base-prompt.ts";
+import { responseLanguageBlock } from "../../functions/osint-agent/lib/response-language.ts";
 import {
   buildSystemPromptFull,
   SYSTEM_PROMPT_FULL,
@@ -251,9 +252,10 @@ Deno.test("default: finalize_no_findings describes the ARTIFACT decision; name, 
 Deno.test("kill switch: FINDING_PROMPT_V2_DISABLED=true restores the pre-change wording VERBATIM on every surface", async () => {
   await withEnv({ [SWITCH]: "true", [MEMORY_SWITCH]: undefined }, async () => {
     // Surface 1
+    // staticSystemPrompt() = the selected wording variant + the output-language rule (lib/response-language.ts).
     const s = staticSystemPrompt();
-    assertEquals(s, SYSTEM_PROMPT_FULL_LEGACY_FINDING);
-    assertEquals(s, buildSystemPromptFull(REVEAL_BREACH_DATA, false, true));
+    assertEquals(s, SYSTEM_PROMPT_FULL_LEGACY_FINDING + responseLanguageBlock());
+    assertEquals(s, buildSystemPromptFull(REVEAL_BREACH_DATA, false, true) + responseLanguageBlock());
     assertStringIncludes(s, LEGACY_RECORDING);
     assertStringIncludes(s, LEGACY_TABLE);
     assertFalse(s.includes(RECORDING_FINDING_SENTENCE));
@@ -273,12 +275,12 @@ Deno.test("kill switch: FINDING_PROMPT_V2_DISABLED=true restores the pre-change 
 });
 
 Deno.test("kill switch: the two wording switches compose — each combination picks its own pre-built variant", async () => {
-  await withEnv(bothOff, () => assertEquals(staticSystemPrompt(), SYSTEM_PROMPT_FULL));
-  await withEnv({ [SWITCH]: undefined, [MEMORY_SWITCH]: "true" }, () => assertEquals(staticSystemPrompt(), SYSTEM_PROMPT_FULL_LEGACY_MEMORY));
-  await withEnv({ [SWITCH]: "true", [MEMORY_SWITCH]: undefined }, () => assertEquals(staticSystemPrompt(), SYSTEM_PROMPT_FULL_LEGACY_FINDING));
+  await withEnv(bothOff, () => assertEquals(staticSystemPrompt(), SYSTEM_PROMPT_FULL + responseLanguageBlock()));
+  await withEnv({ [SWITCH]: undefined, [MEMORY_SWITCH]: "true" }, () => assertEquals(staticSystemPrompt(), SYSTEM_PROMPT_FULL_LEGACY_MEMORY + responseLanguageBlock()));
+  await withEnv({ [SWITCH]: "true", [MEMORY_SWITCH]: undefined }, () => assertEquals(staticSystemPrompt(), SYSTEM_PROMPT_FULL_LEGACY_FINDING + responseLanguageBlock()));
   await withEnv({ [SWITCH]: "true", [MEMORY_SWITCH]: "true" }, () => {
-    assertEquals(staticSystemPrompt(), SYSTEM_PROMPT_FULL_LEGACY_MEMORY_AND_FINDING);
-    assertEquals(staticSystemPrompt(), buildSystemPromptFull(REVEAL_BREACH_DATA, true, true));
+    assertEquals(staticSystemPrompt(), SYSTEM_PROMPT_FULL_LEGACY_MEMORY_AND_FINDING + responseLanguageBlock());
+    assertEquals(staticSystemPrompt(), buildSystemPromptFull(REVEAL_BREACH_DATA, true, true) + responseLanguageBlock());
     assertStringIncludes(staticSystemPrompt(), LEGACY_RECORDING);
   });
   // #831's own guarantee is intact: the memory variant with the new finding wording still carries that wording.
