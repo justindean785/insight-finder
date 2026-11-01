@@ -308,3 +308,71 @@ Evidence (outside repository): /tmp/registration-before.log, /tmp/registration-f
 No authenticated production case inspection, paid scan, merge, or deployment. Deployed frontend SHA is not established; no attribution of this defect to the redesign is claimed. Separate pivot investigation was paused and preserved only on local branch repair/case-pivot-queue (ea082f1); it is not included in this PR.
 
 Remaining UI limitation observed during this eligibility check: the unchanged mobile registrations table wraps source labels and identifiers tightly. This is a separate layout defect, not fixed or claimed resolved here.
+
+## Wave 1 review pass — #935 merge failure, #937 repair, #936 at 5169043 (2026-11-01)
+
+- [x] Merge #935 on JD's named go; squash `d26742c`. **This was done without reading the
+      review BODY**, which already named two of its three defects. See lessons.md 2026-11-01.
+- [x] Verify the three #935 defects against source before fixing (not taken on trust).
+- [x] Ship #937 (account reset, paged step-token read, thrown-read handling); merged `e42373a`.
+- [x] Confirm #937 reached production, not merely merged: Vercel deployment
+      `dpl_HEYQztuBqrsMJjZyV15aaUhpitmG`, `target: production`, `state: READY`,
+      `githubCommitSha e42373ad50f65969570a4591ba65d222d4ca43db`.
+- [x] #936: merge `main` twice with merge commits (never rebase) — `bfce57c`, then `e42373a` in.
+- [x] #936 finding 1 (stale observations on account change) — fixed `e94cb1a`.
+- [x] #936 finding 4 (no-outcome rows create ghost tools) — fixed `6f67f42`, mutation-checked.
+- [x] #936 finding 5 (order spec snapshots DOM without waiting) — fixed `6f67f42`.
+- [x] #936 finding 3 (error text outranks explicit status) — **reversed my own "preference"
+      call** and fixed in `5169043` after `500 + "upstream quota service unavailable"`
+      reproduced as `credential_plan`. Mutation-checked; FOFA HTTP-200 fallback pinned.
+- [x] #936 finding 2 (loading forever when `userId` undefined) — traced unreachable:
+      `src/pages/BrainGlobalPage.tsx:320` returns `<Navigate to="/auth" replace />` on `!user`.
+- [x] Reply on and resolve all three Graphify coupling threads (no code change).
+- [x] Verify the salvage `providerOptions` claim from source rather than repeating it.
+- [ ] **Codex review of #936 — has never run at any head.** Not clearance until it does.
+- [ ] Re-measure the production `180 of 436 input_rejected` figure; `classifyFailure` changed.
+
+### Outstanding decisions for JD
+
+1. **Harden finding 2, or leave it?** Unreachable today only because of the `!user` redirect
+   guard in `BrainGlobalPage`. One line (`loading: false` when there is no user) makes the
+   exported hook correct standalone; leaving it keeps the diff minimal. The same question
+   applies to `useRunEconomics`, already merged, which would need its own follow-up PR.
+2. **Re-measure 180/436 before it is cited again?** It is computed by `classifyFailure`,
+   which `5169043` changed, and it is the stated rationale for Wave 2. `query_database`
+   is available again this session, so a counts-only aggregate is now possible.
+3. **What ships next** — W1-C brain growth (JD's standing order) vs #887/#888 honest source
+   counts (both external audits rank these first). Not started either way.
+
+### Evidence
+
+- #936 head `5169043943ec0593a06de9f8b93117a21f51a443`; base `origin/main` `e42373a`.
+- Graphify review body (the only one, on `4170c45`):
+  https://github.com/justindean785/insight-finder/pull/936#pullrequestreview-5726227010
+- Graphify review body on #935, posted 02:48Z, merged 03:07Z:
+  https://github.com/justindean785/insight-finder/pull/935#pullrequestreview-5726151473
+- #936 CI run on `5169043`: https://github.com/justindean785/insight-finder/actions/runs/41272554995
+- Salvage call site without `providerOptions`: `supabase/functions/osint-agent/index.ts:2177`;
+  main stream with them: `:1555`.
+
+### Results
+
+The failure this pass corrects is procedural, not a coding error. #935 was green, mergeable and
+had every inline thread resolved; its defects were sitting in the review body I never opened. The
+same bot had filed the same class of finding on #936, which is how the pattern became visible.
+
+Local gates on `5169043`: vitest 3147 passed / 1 skipped / 263 files; typecheck clean; lint 0
+errors / 15 pre-existing warnings; build clean with no `harness.local` in `dist/`; e2e 118 passed
+/ 13 skipped. CI on the same head: Edge and Migrations green, Frontend in progress at time of
+writing, Workspace e2e **skipped by repository policy** (`ci.yml` runs it on push to `main` only),
+so the browser contract for this PR is covered **only** by the local run above — stated, not
+claimed as CI-passed.
+
+Two claims corrected rather than defended: the #935 user-switch defect is hardening, not a
+reachable production path; and an external audit's attribution of findings to Graphify, which I
+had wrongly called a misattribution, was correct.
+
+Not done, deliberately: no merge, no deploy, no DDL, no flag or secret change, no roadmap work
+(salvage `providerOptions`, request modes, `{{FINDINGS_TABLE}}`, Wave 2 schema, TRUNCATE revoke).
+The salvage omission is confirmed at source; its causal link to the 61.8s p50 salvage tail is not,
+and is not asserted.
