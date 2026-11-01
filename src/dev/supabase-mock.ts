@@ -257,11 +257,58 @@ interface HarnessSnapshot {
   user?: { id?: string; email?: string };
 }
 
+// ── Per-run telemetry for /brain → Credits ──────────────────────────────────
+// Shaped like `orchestrator_invocations` / `orchestrator_step_metrics`
+// (supabase/migrations/20260908000000_orchestrator_telemetry.sql, plus the timing columns of
+// 20261029210000). Timestamps are RELATIVE TO NOW, unlike `iso()` which is pinned to Aug 9:
+// the Credits tab windows by the real clock, so pinned dates would all fall outside its
+// 30-day window and the tab would render empty. Offsets sit mid-day so no run is near a
+// day boundary. Expected figures for e2e/credits.spec.ts (30-day window = 8 runs; the 40-day
+// row is outside it): spend30 $1.77, spend14 $1.36, one unknown-cost run, forced share 3/7
+// = 43%, salvage 126.3 s of 711.6 s timed = 18%.
+const ago = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
+const invocation = (id: string, hoursAgo: number, over: Partial<Record<string, unknown>> = {}) => ({
+  id, thread_id: THREAD_ID, user_id: USER_ID, provider: "deepseek", model_id: "glm-5.2",
+  started_at: ago(hoursAgo), finished_at: ago(hoursAgo), created_at: ago(hoursAgo),
+  duration_ms: 100_000, step_count: 8, tool_call_count: 12, finish_reason: "stop",
+  stop_reason: "natural_stop", finalize_started: false, credits_micro_usd: 150_000,
+  persist_ms: 2_000, salvage_ms: null, cluster_ms: 1_500, salvage_outcome: "none", unfinished_steps: 0,
+  first_step_offset_ms: 90, loop_end_offset_ms: null, error_message: null,
+  ...over,
+});
+const orchestrator_invocations = [
+  invocation("inv-0001", 2, { duration_ms: 84_700, step_count: 7, tool_call_count: 11, credits_micro_usd: 142_300 }),
+  invocation("inv-0002", 5, { stop_reason: "finalize_forced", finalize_started: true, duration_ms: 154_200, step_count: 8, tool_call_count: 14, credits_micro_usd: 232_900, persist_ms: 55_500, salvage_ms: 53_700, salvage_outcome: "ok" }),
+  invocation("inv-0003", 26, { duration_ms: 160_300, step_count: 7, tool_call_count: 12, credits_micro_usd: 198_400, persist_ms: 76_000, salvage_ms: 72_600, salvage_outcome: "ok" }),
+  invocation("inv-0004", 78, { stop_reason: "finalize_forced", finalize_started: true, duration_ms: 162_300, step_count: 11, tool_call_count: 19, credits_micro_usd: 487_000, persist_ms: 1_100 }),
+  invocation("inv-0005", 150, { stop_reason: "stream_error", duration_ms: 57, step_count: 0, tool_call_count: 0, credits_micro_usd: 0, persist_ms: 0, cluster_ms: null, error_message: "stream error" }),
+  // A run recorded before the cost column carried a value, and before the ending was classified.
+  invocation("inv-0006", 222, { stop_reason: "unknown", credits_micro_usd: null, persist_ms: null, cluster_ms: null, salvage_outcome: null, unfinished_steps: null }),
+  // A run recorded before timing shipped: cost and ending present, every timing column NULL.
+  invocation("inv-0007", 270, { duration_ms: 118_000, credits_micro_usd: 301_500, persist_ms: null, cluster_ms: null, salvage_outcome: null, unfinished_steps: null }),
+  invocation("inv-0008", 438, { stop_reason: "finalize_forced", finalize_started: true, duration_ms: 150_000, step_count: 12, tool_call_count: 21, credits_micro_usd: 410_000 }),
+  // Outside the 30-day window: must not reach any figure on the tab.
+  invocation("inv-0009", 966, { credits_micro_usd: 900_000 }),
+];
+const stepRow = (inv: string, n: number, input: number | null, output: number | null) => ({
+  id: `${inv}-s${n}`, invocation_id: inv, thread_id: THREAD_ID, user_id: USER_ID, step_number: n,
+  step_wall_ms: 9_000, context_chars: 180_000, input_tokens: input, output_tokens: output,
+  tool_call_count: 1, tool_names: [], finish_reason: "tool-calls", created_at: ago(2),
+});
+const orchestrator_step_metrics = [
+  stepRow("inv-0001", 1, 41_000, 600), stepRow("inv-0001", 2, 48_500, 450), stepRow("inv-0001", 3, 52_000, 1_900),
+  // One step with no usage: the run's token total must read as a floor, not as an exact sum.
+  stepRow("inv-0002", 1, 60_000, 700), stepRow("inv-0002", 2, null, null), stepRow("inv-0002", 3, 71_000, 2_400),
+  stepRow("inv-0003", 1, 60_000, 2_100), stepRow("inv-0003", 2, 64_000, 1_800),
+];
+
 const SYNTHETIC: Record<string, unknown[]> = {
   threads: [{
     id: THREAD_ID, user_id: USER_ID, title: "James Harker — logistics", archive_attachments: false,
     seed_value: "j.harker@northgate-logistics.com", seed_type: "email",
-    status: "finished", credits_used: 34, cost_micro_usd: 187_400,
+    // Equals the sum of this case's recorded runs below (all nine, including the one outside the
+    // 30-day window), so the Credits tab's "all time" figure is not smaller than its 30-day one.
+    status: "finished", credits_used: 34, cost_micro_usd: 2_672_100,
     recovered_at: null, recovery_reason: null,
     created_at: iso(46), updated_at: iso(4), last_heartbeat_at: iso(4), run_started_at: iso(45),
   }, {
@@ -316,7 +363,15 @@ const SYNTHETIC: Record<string, unknown[]> = {
     // fold the pair and render it FAILED, not keep the other twin authoritative.
     { id: "r3", artifact_id: "twin-ip-a", thread_id: THREAD_ID, user_id: USER_ID, state: "dismissed", created_at: iso(6), note: "carrier NAT egress — not the subject's line" },
   ],
-  user_credits: [{ user_id: USER_ID, credits_remaining: 466, credits_total: 500, updated_at: iso(4) }],
+  // Real columns (supabase/migrations/20260629_user_credits.sql). This row used to carry
+  // `credits_remaining` / `credits_total`, which the table does not have, so the sidebar chip
+  // read `balance_micro_usd` as missing and rendered "Out of beta credits $0". A beta user with
+  // a part-spent grant is the default; `?scenario=credits-unlimited` is the owner account.
+  user_credits: [{
+    user_id: USER_ID, balance_micro_usd: 312_450, spent_micro_usd: 187_550, daily_spent_micro_usd: 41_200,
+    daily_window_start: iso(300), unlimited: false, blocked: false, created_at: iso(60_000), updated_at: iso(4),
+  }],
+  orchestrator_invocations, orchestrator_step_metrics,
   agent_memory, investigation_cache: [], client_errors: [],
 };
 
@@ -420,6 +475,18 @@ if (!SNAPSHOT && mainThread) {
 
 // Memory-population scenarios for /brain. Independent of the thread scenarios
 // above: the page reads `agent_memory` only.
+// Credits scenarios for /brain → Credits: the owner account (never debited) and a user with
+// no recorded runs. Same independence from the thread scenarios as the memory ones below.
+if (!SNAPSHOT) {
+  if (SCENARIO === "credits-unlimited") {
+    FIXTURES.user_credits = [{ ...(SYNTHETIC.user_credits[0] as Record<string, unknown>), unlimited: true, balance_micro_usd: 0, spent_micro_usd: 0, daily_spent_micro_usd: 0 }];
+  }
+  if (SCENARIO === "runs-empty") {
+    FIXTURES.orchestrator_invocations = [];
+    FIXTURES.orchestrator_step_metrics = [];
+  }
+}
+
 if (!SNAPSHOT) {
   if (SCENARIO === "memories-empty") FIXTURES.agent_memory = [];
   if (SCENARIO === "memories-overcap") {

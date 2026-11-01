@@ -16,6 +16,10 @@ import {
 import { BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MEMORY_SAMPLE_CAP, describeMemorySample, type MemoryTotal } from "@/lib/memory-population";
+import { describeCreditAccount, type CreditAccount } from "@/lib/credit-account";
+import { formatUsd } from "@/lib/run-economics";
+import { useRunEconomics } from "@/hooks/useRunEconomics";
+import { RunEconomicsPanel } from "@/components/brain/RunEconomicsPanel";
 import {
   SOURCE_RELIABILITY_ROW_LIMIT,
   describeSourceReliability,
@@ -1180,105 +1184,48 @@ function SavedContextExplainer() {
 
 export const SOCIALFETCH_CAP = 10000;
 
-type RunRow = {
-  threadId: string;
-  title: string;
-  date: string;
-  tools: number;
-  costUsd: number;
-};
-
 function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) {
   const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [socialUsed, setSocialUsed] = useState(0);
   const [socialLastUsed, setSocialLastUsed] = useState<string | null>(null);
-  const [totalSpendUsd, setTotalSpendUsd] = useState(0);
+  const [allTimeUsd, setAllTimeUsd] = useState(0);
   const [caseCount, setCaseCount] = useState(0);
-  const [lastRunUsd, setLastRunUsd] = useState(0);
-  const [avgRunUsd, setAvgRunUsd] = useState(0);
-  const [spark, setSpark] = useState<number[]>([]);
-  const [runs, setRuns] = useState<RunRow[]>([]);
+  const [titles, setTitles] = useState<Map<string, string>>(new Map());
+  const [account, setAccount] = useState<CreditAccount>({ kind: "unavailable" });
+  const economics = useRunEconomics(user?.id);
 
   useEffect(() => {
     if (!user) return;
     let alive = true;
     (async () => {
       setLoading(true);
-      const [{ data: logs }, { data: threads }] = await Promise.all([
-        supabase
-          .from("tool_usage_log")
-          .select("tool_name, thread_id, cost_micro_usd, charged_micro_usd, created_at")
-          .eq("user_id", user.id)
-          .order("created_at", { ascending: false })
-          .limit(5000),
-        supabase
-          .from("threads")
-          .select("id, title, cost_micro_usd, updated_at")
-          .eq("user_id", user.id)
-          .order("updated_at", { ascending: false })
-          .limit(500),
+      // SocialFetch is counted exactly (head count) and only for its own tool, so a large
+      // log of other tools can no longer push its calls out of a row-capped read.
+      const [sfCount, sfLast, { data: threads }, { data: creditRow }] = await Promise.all([
+        supabase.from("tool_usage_log").select("id", { count: "exact", head: true })
+          .eq("user_id", user.id).eq("tool_name", "socialfetch_lookup"),
+        supabase.from("tool_usage_log").select("created_at")
+          .eq("user_id", user.id).eq("tool_name", "socialfetch_lookup")
+          .order("created_at", { ascending: false }).limit(1),
+        supabase.from("threads").select("id, title, cost_micro_usd, updated_at")
+          .eq("user_id", user.id).order("updated_at", { ascending: false }).limit(500),
+        supabase.from("user_credits")
+          .select("balance_micro_usd,spent_micro_usd,daily_spent_micro_usd,unlimited,blocked")
+          .eq("user_id", user.id).maybeSingle(),
       ]);
       if (!alive) return;
 
-      const logRows = (logs ?? []) as Array<{
-        tool_name: string; thread_id: string | null; cost_micro_usd: number; charged_micro_usd: number | null; created_at: string;
-      }>;
-      const threadRows = (threads ?? []) as Array<{
-        id: string; title: string; cost_micro_usd: number; updated_at: string;
-      }>;
+      setSocialUsed(sfCount.count ?? 0);
+      setSocialLastUsed((sfLast.data as Array<{ created_at: string }> | null)?.[0]?.created_at ?? null);
+      setAccount(describeCreditAccount(creditRow));
 
-      // SocialFetch usage = count of socialfetch_lookup calls.
-      const sfCalls = logRows.filter((l) => l.tool_name === "socialfetch_lookup");
-      setSocialUsed(sfCalls.length);
-      setSocialLastUsed(sfCalls[0]?.created_at ?? null);
-
-      // Total spend across cases.
-      const total = threadRows.reduce((s, t) => s + (Number(t.cost_micro_usd) || 0), 0) / 1_000_000;
-      const withSpend = threadRows.filter((t) => (Number(t.cost_micro_usd) || 0) > 0);
-      setTotalSpendUsd(total);
-      setCaseCount(withSpend.length);
-
-      // Per-run breakdown: group logs by thread_id, take last 10 distinct threads.
-      const byThread = new Map<string, { cost: number; tools: Set<string>; date: string }>();
-      for (const l of logRows) {
-        if (!l.thread_id) continue;
-        const cur = byThread.get(l.thread_id) ?? { cost: 0, tools: new Set<string>(), date: l.created_at };
-        const charged = l.charged_micro_usd ?? l.cost_micro_usd;
-        cur.cost += (Number(charged) || 0) / 1_000_000;
-        cur.tools.add(l.tool_name);
-        if (l.created_at > cur.date) cur.date = l.created_at;
-        byThread.set(l.thread_id, cur);
-      }
-      const titleMap = new Map(threadRows.map((t) => [t.id, t.title]));
-      const runRows: RunRow[] = Array.from(byThread.entries())
-        .map(([threadId, v]) => ({
-          threadId,
-          title: titleMap.get(threadId) ?? "Untitled case",
-          date: v.date,
-          tools: v.tools.size,
-          costUsd: v.cost,
-        }))
-        .sort((a, b) => b.date.localeCompare(a.date))
-        .slice(0, 10);
-      setRuns(runRows);
-
-      setLastRunUsd(runRows[0]?.costUsd ?? 0);
-      const allRunCosts = Array.from(byThread.values()).map((v) => v.cost).filter((c) => c > 0);
-      setAvgRunUsd(allRunCosts.length ? allRunCosts.reduce((a, b) => a + b, 0) / allRunCosts.length : 0);
-
-      // Sparkline: spend per day, last 14 days.
-      const days = 14;
-      const buckets = new Array(days).fill(0);
-      const now = Date.now();
-      for (const l of logRows) {
-        const ageDays = Math.floor((now - new Date(l.created_at).getTime()) / 86_400_000);
-        if (ageDays >= 0 && ageDays < days) {
-          const charged = l.charged_micro_usd ?? l.cost_micro_usd;
-          buckets[days - 1 - ageDays] += (Number(charged) || 0) / 1_000_000;
-        }
-      }
-      setSpark(buckets);
+      const threadRows = (threads ?? []) as Array<{ id: string; title: string; cost_micro_usd: number }>;
+      setTitles(new Map(threadRows.map((t) => [t.id, t.title])));
+      // Per-case meter totals. These include runs from before per-run telemetry existed, so
+      // they are labelled "all time" and are not expected to equal the 30-day figure.
+      setAllTimeUsd(threadRows.reduce((sum, t) => sum + (Number(t.cost_micro_usd) || 0), 0) / 1_000_000);
+      setCaseCount(threadRows.filter((t) => (Number(t.cost_micro_usd) || 0) > 0).length);
       setLoading(false);
     })();
     return () => { alive = false; };
@@ -1286,10 +1233,44 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
 
   const sfLeft = Math.max(0, SOCIALFETCH_CAP - socialUsed);
   const sfPct = Math.min(100, (socialUsed / SOCIALFETCH_CAP) * 100);
+  const lastRun = economics.recent.find((r) => r.credits_micro_usd != null);
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Account card — what the account can spend, said plainly for each account kind. */}
+        <div className="rounded-xl p-5 bg-brain-card border border-brain-border" data-testid="credit-account">
+          <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider font-mono text-muted-foreground mb-3">
+            <CreditCard className="w-3.5 h-3.5" strokeWidth={1.5} />
+            Account
+          </div>
+          {loading ? (
+            <div className="text-sm text-muted-foreground">Loading…</div>
+          ) : account.kind === "unlimited" ? (
+            <>
+              <div className="stat-figure font-display text-2xl font-semibold">Unlimited</div>
+              <div className="text-xs text-muted-foreground mt-1 leading-snug">
+                This account is never debited, so there is no balance to run down. Spend is read from the per-run
+                meter below.
+              </div>
+            </>
+          ) : account.kind === "beta" ? (
+            <>
+              <div className="flex items-baseline gap-2">
+                <div className="stat-figure font-display text-3xl font-semibold">{formatUsd(account.balanceUsd)}</div>
+                <div className="text-xs text-muted-foreground">{account.depleted ? "balance used up" : "balance left"}</div>
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                {formatUsd(account.spentUsd)} spent in total · {formatUsd(account.todayUsd)} today
+              </div>
+            </>
+          ) : account.kind === "blocked" ? (
+            <div className="text-sm text-muted-foreground">This account is blocked from running investigations.</div>
+          ) : (
+            <div className="text-sm text-muted-foreground">Account balance could not be read.</div>
+          )}
+        </div>
+
         {/* SocialFetch Credits card */}
         <div className="rounded-xl p-5 bg-brain-card border border-brain-border">
           <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider font-mono text-muted-foreground mb-3">
@@ -1313,73 +1294,26 @@ function CreditsTab({ onOpenCase }: { onOpenCase: (threadId: string) => void }) 
           </div>
         </div>
 
-        {/* Total API Spend card */}
-        <div className="rounded-xl p-5 bg-brain-card border border-brain-border">
+        {/* Spend card — all-time per-case meter, with the last 14 days drawn from per-run data. */}
+        <div className="rounded-xl p-5 bg-brain-card border border-brain-border" data-testid="spend-card">
           <div className="flex items-center gap-2 text-eyebrow uppercase tracking-wider font-mono text-muted-foreground mb-3">
             <BarChart3 className="w-3.5 h-3.5" strokeWidth={1.5} />
-            Total API Spend
+            Spend · all time
           </div>
           <div className="flex items-baseline gap-2">
-            <div className="stat-figure font-display text-3xl font-semibold">
-              ${totalSpendUsd.toFixed(2)}
-            </div>
-            <div className="text-xs text-muted-foreground">across {caseCount} cases</div>
+            <div className="stat-figure font-display text-3xl font-semibold">{formatUsd(allTimeUsd)}</div>
+            <div className="text-xs text-muted-foreground">across {caseCount} {caseCount === 1 ? "case" : "cases"}</div>
           </div>
           <div className="mt-4">
-            <Sparkline data={spark} />
+            <Sparkline data={economics.daily} />
           </div>
           <div className="text-data text-muted-foreground mt-3 font-mono">
-            ${lastRunUsd.toFixed(3)} last run · avg ${avgRunUsd.toFixed(3)}/run
+            per day, last 14 days · {formatUsd(lastRun ? (lastRun.credits_micro_usd as number) / 1_000_000 : null)} last run
           </div>
         </div>
       </div>
 
-      {/* Per-run breakdown */}
-      <div className="rounded-xl bg-brain-card border border-brain-border overflow-hidden">
-        <div className="px-5 py-3 border-b border-brain-border text-eyebrow uppercase tracking-wider font-mono text-muted-foreground">
-          Last 10 Runs
-        </div>
-        {loading ? (
-          <div className="p-6 text-sm text-muted-foreground">Loading…</div>
-        ) : runs.length === 0 ? (
-          <div className="p-6 text-sm text-muted-foreground">No runs yet.</div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-eyebrow uppercase tracking-wider font-mono text-muted-foreground/70">
-                <th className="text-left font-normal px-5 py-2">Case</th>
-                <th className="text-left font-normal px-5 py-2">Date</th>
-                <th className="text-left font-normal px-5 py-2">Tools</th>
-                <th className="text-right font-normal px-5 py-2">Cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runs.map((r) => (
-                <tr key={r.threadId} className="border-t border-brain-border/60 hover:bg-white/[0.02]">
-                  <td className="px-5 py-2.5">
-                    <button
-                      onClick={() => onOpenCase(r.threadId)}
-                      className="text-foreground hover:text-primary text-left truncate max-w-[28ch]"
-                    >
-                      {r.title}
-                    </button>
-                  </td>
-                  <td className="px-5 py-2.5 text-muted-foreground text-xs">{timeAgo(r.date)}</td>
-                  <td className="px-5 py-2.5 text-muted-foreground text-xs tabular-nums">{r.tools}</td>
-                  <td className="px-5 py-2.5 text-right font-mono text-foreground tabular-nums">
-                    ${r.costUsd.toFixed(3)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      <p className="text-data text-muted-foreground leading-relaxed">
-        API costs are driven by tool count and data volume per run. Pivot-heavy investigations cost more.
-        Use Cost-Aware Mode in Insight Finder settings to cap per-run spend.
-      </p>
+      <RunEconomicsPanel state={economics} titles={titles} onOpenCase={onOpenCase} />
     </div>
   );
 }
