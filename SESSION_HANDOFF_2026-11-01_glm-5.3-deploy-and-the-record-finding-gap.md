@@ -72,25 +72,46 @@ right values; nothing carries them to the surface.
 
 ---
 
-## 3. The cost meter does not measure the model
+## 3. The cost meter prices every model the same
 
-Traced in `index.ts`: `onCost` is fed by exactly two sources — `meterAnthropicUsage`
-(**Anthropic only**) and tool list prices from `costs.ts`. There is **no GLM/deepseek
-token metering anywhere**.
+**Corrected after Codex caught an error in the first draft of this handoff.** My original
+claim — "there is no GLM token metering" — was **wrong**. Do not act on it.
 
-Therefore:
-- `orchestrator_invocations.credits_micro_usd` is **tool spend only** for every GLM run.
-- The ~9x token saving from Flash ($0.15/$0.50 vs $1.40/$4.40 per MTok) is **invisible**
-  in the app, including on `/brain → Credits` (#935, W1-A).
-- **Actual Z.AI spend is off-ledger and unbounded from the app's side.** The budget
-  machinery bounds tool spend only. Z.AI ran out of balance on 2026-10-13 with nothing
-  in-app watching; this is why.
-- Read real model spend from the Z.AI dashboard, not from Insight Finder.
+GLM step tokens **are** metered. `index.ts` `onStepFinish`, after the Anthropic branch
+returns:
 
-Per CLAUDE.md: no cost claim stronger than "internal meter". That caveat is doing more
-work than anyone realised.
+```ts
+const [inRate, outRate] = useFallback ? [0.3, 2.5] : [0.3, 1.2];
+const micro = Math.round(inTok * inRate + outTok * outRate);
+if (micro > 0) onCost(micro);
+```
 
----
+Flat micro-USD per token, **hardcoded and model-blind**. So the real defect is mispricing,
+not absence — and it points in opposite directions for the two models:
+
+| Model | Meter (in / out, $/MTok) | Actual Z.AI | Effect |
+|---|---|---|---|
+| `glm-5.2` | 0.30 / 1.20 | 1.40 / 4.40 | **under**-charges ~4.7x in, ~3.7x out |
+| `glm-5.3-flash` | 0.30 / 1.20 | 0.15 / 0.50 | **over**-charges 2x in, 2.4x out |
+
+Consequences for reading any figure in §4:
+- The glm-5.2 baseline **understates** true model spend by roughly 4x.
+- The glm-5.3-flash figure **overstates** it by roughly 2x.
+- So the apparent "35% cheaper" badly understates the real saving — the two eras are
+  priced on opposite sides of the truth. The honest statement remains: **you cannot read
+  the Flash saving out of this app.** Use the Z.AI dashboard.
+
+**A second, genuine gap:** GLM **salvage** tokens are not metered at all. Salvage calls
+`generateText`, and the only meter on it is `if (anthropicActive()) meterAnthropicUsage(...)`.
+On the GLM path nothing records it — and salvage is 40–60s of generation emitting
+44k–124k characters. That spend is invisible.
+
+**For whoever fixes this: do NOT add a new `onCost` feed on the deepseek path.** One
+already exists; a second would double-charge. The work is (a) replace the flat rates with
+a per-model rate table keyed on the configured model id, in the shape of
+`ANTHROPIC_RATES_MICRO_USD_PER_TOKEN` in `costs.ts`, with a deliberately pessimistic
+unknown-model fallback and a `/health` `pricing_known` flag as that table already does;
+and (b) meter GLM salvage.
 
 ## 4. Baselines — use these, not per-case figures
 
@@ -187,8 +208,9 @@ intends to drive it.
 1. **`{{FINDINGS_TABLE}}` server-side expansion.** §2. Highest value in the product.
    Frontend/edge split matters — read CLAUDE.md's constraints before designing.
 2. **Heartbeat fix + durable admission row.** §5. Two separate PRs, not one.
-3. **Meter GLM tokens** so `/brain → Credits` means something and Z.AI spend is bounded.
-   §3. Needs a rates table for the GLM models and an `onCost` feed on the deepseek path.
+3. **Fix GLM token PRICING** (the meter exists — see §3). Per-model rate table replacing
+   the flat 0.3/1.2, plus metering for GLM salvage, which is currently unmetered. Do not
+   add a second `onCost` feed.
 4. **More glm-5.3-flash runs.** n=1. Watch `finalize_forced` rate against the 37%
    baseline and whether "no salvage" holds.
 5. **#936** merge, `indicia_web_dbs` schema, CLAUDE.md refresh — all small.
