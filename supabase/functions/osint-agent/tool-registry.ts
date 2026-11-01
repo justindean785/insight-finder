@@ -2238,10 +2238,12 @@ export function buildTools(ctx: ToolContext) {
     breach_check: tool({
       description:
         "Check whether an email, username, or PERSON NAME appears in public breach datasets. Primary source: stolen.tax — fans out in parallel to (a) OsintCat `database-search` (returns site+password combos), (b) Snusbase (returns identity records: name/phone/address/DOB — so a full NAME is a valid query here), and (c) OsintCat plain `breach` mode. Returns combined hit count + per-source raw data. Falls back to the leakcheck public endpoint if stolen.tax is unavailable. Pass `email` for email seeds, or `value` for a username, phone, or a person's full NAME (name hits carry same-name collision risk — treat as [VERIFY] until a selector overlaps).",
-      inputSchema: memoSchema("breach_check", () => z.object({
+      // Wrapped explicitly: the .refine() makes this a ZodEffects, which memoSchema's generic wrapper skips — so a phone
+      // sent as a number was rejected before execute instead of getting the generic number→string rule.
+      inputSchema: memoSchema("breach_check", () => coercedSchema("breach_check", {}, z.object({
         email: z.string().min(1).optional(),
         value: z.string().min(1).optional(),
-      }).refine((v) => !!(v.email || v.value), { message: "Provide `email` or `value`" })),
+      }).refine((v) => !!(v.email || v.value), { message: "Provide `email` or `value`" }))),
       execute: async ({ email, value }) => {
         const query = (email ?? value ?? "").trim();
         if (!query) return { error: "missing query" };
