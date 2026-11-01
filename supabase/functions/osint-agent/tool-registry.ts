@@ -152,6 +152,7 @@ import { PROVIDER_REQUIREMENTS } from "./capabilities.ts";
 import { agentMemoryOrFilter } from "./pgrest.ts";
 import { shapeShodanResponse, shapeJinaBody } from "./lib/negative-lookup.ts";
 import { evidenceArtifactKey, lookupArtifactIdsForEvidence } from "./lib/evidence-artifact-link.ts";
+import { shapeJinaHttpError } from "./lib/jina-http-error.ts";
 
 /**
  * The REAL tool vocabulary, for G1's queued-placeholder gate.
@@ -4908,12 +4909,9 @@ export function buildTools(ctx: ToolContext) {
           if (!r.ok) {
             // 422 = unprocessable URL (paywall, JS app, binary, login wall, etc.)
             // 451/403 = blocked by origin. Do NOT retry — signal the agent to pivot.
-            const hint = r.status === 422
-              ? "jina cannot parse this URL — try a different source or wayback snapshot"
-              : r.status === 451 || r.status === 403
-                ? "origin blocked — try wayback_snapshots or a different result"
-                : undefined;
-            return { error: `jina ${r.status}`, status: r.status, url: clean, hint };
+            // A 403 is that page refusing the reader, not a dead key, so it must not
+            // suppress Jina for the run — see lib/jina-http-error.ts.
+            return shapeJinaHttpError(clean, r.status);
           }
           const text = await r.text();
           // A 200 can wrap an ORIGIN error ("Warning: Target URL returned error 404").

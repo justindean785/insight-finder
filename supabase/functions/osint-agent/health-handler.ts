@@ -46,6 +46,7 @@ import {
 } from "./lib/credential-health.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
 import { negativeLookupSelfTest } from "./lib/negative-lookup.ts";
+import { jinaTarget403SelfTest } from "./lib/jina-http-error.ts";
 import { toolInputFailureSelfTest } from "./lib/tool-input-failure.ts";
 import { runEndSelfTest } from "./lib/run-end.ts";
 import { timingTelemetrySelfTest } from "./telemetry.ts";
@@ -460,6 +461,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // with versioned cache keys is the one running (see lib/tool-cache-version.ts).
   r.checks.tool_cache_version = describeToolCacheVersions();
   r.checks.negative_lookup_semantics = negativeLookupSelfTest();
+  // A raw 403 from r.jina.ai is one page refusing the reader: does it still leave Jina
+  // available for the run? Pure, no DB; presence proves the build (lib/jina-http-error.ts).
+  r.checks.jina_target_403 = jinaTarget403SelfTest();
   r.checks.tool_input_failure_log = toolInputFailureSelfTest();
   // Why a run's persistence/finish handler fired (lib/run-end.ts). Pure, no DB; presence proves the build.
   r.checks.run_end_log = runEndSelfTest();
