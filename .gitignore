@@ -67,3 +67,42 @@ telemetry/
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+
+# ---- Hygiene additions (repo-hygiene PR) ----------------------------------
+# Environment: every variant stays local; only the template is tracked.
+# Order matters: the negation must come AFTER the pattern it carves out of.
+.env.*
+!.env.example
+
+# Python (scripts/build-fixture.py exists)
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Tool caches
+.eslintcache
+.turbo/
+.cache/
+.npm/
+
+# Key material
+*.pem
+*.key
+
+# Local case data (anchored so src/components/evidence/ stays trackable)
+/evidence/
+/local-data/
+
+# Supabase local state
+supabase/.branches/
+
+# Workstation notes
+.remember/
+
+# OS
+Thumbs.db
+Desktop.ini
