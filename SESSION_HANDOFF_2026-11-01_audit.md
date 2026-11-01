@@ -88,6 +88,7 @@ Assistant messages created since 2026-10-31 12:00Z with any CJK character (`[一
 ## 7. Next steps (ranked)
 
 1. **JD: answer #903's four decisions** and say whether the salvage finding warrants a termination design note (§3). No code before that.
+1a. **Read-only / offline, no go needed (from Lovable's audit, §9):** review #912 against current `main` (the evidence-row to artifact link; trace insert -> per-item linkage -> report/export, duplicate values across sources, partial insert failure, analyst rejection, unchanged hashes and authority), and write a **failing offline test** for the checkpoint marker (`index.ts:594` advances before the RPC result; a mocked failure then finalization must keep the exact unpaid delta; do not blind-retry a non-idempotent increment). Any fix PR is edge, its own build, and needs JD's go.
 2. **Frontend scan-QA PRs**, one each, frontend only, ready not draft: alias-twin label first; the redaction fix built with tests and **left draft until JD signs off**; the DNS label after JD picks wording. Needs its own branch per PR. `npm run test:e2e` by hand before merging anything under `src/`.
 3. **Next edge build, on JD's go, one build each:** usage-meter shadow log (new) before #926 -> #925 -> #868. #929 only if Chinese output recurs. #928 held.
 4. **Board hygiene, JD decides each:** #793, #804, #882, mirror #117.
@@ -104,6 +105,28 @@ Standing decisions unchanged: GLM-5.2 primary / Anthropic backup; `RUN_LEASE_DIS
 
 The earlier figures (edge 2821, vitest 2965/247, e2e 95/13 on `6596812`) are stale. The older dated figures further down CLAUDE.md's edge/frontend/e2e bullets are historical and keep their own dates.
 
-## 9. Opening prompt for the next session
+## 9. Cross-check of Lovable's own 2026-11-01 audit
+
+Lovable (mirror side) wrote an independent read-only audit at ~00:39-00:42Z and JD forwarded it. It is an input, not evidence. Source claims were re-read in canonical code; its database figures were **not** re-run by me.
+
+**Confirmed against canonical code**
+
+| Lovable claim | What I read | Result |
+|---|---|---|
+| `index.ts:586-603`: checkpoint marker advances before the RPC reports success | `lastCheckpointMicroUsd = runCostMicroUsd` at `:594`; the `increment_thread_cost` RPC at `:599`; failure only `console.warn`s (`:601-602`). The final write (`:2389`) is inside `if (assistant)` (`:2381`) and uses the already-advanced marker, so a failed checkpoint delta is never recovered. The code comment at `:2385-2387` accepts under-counting. | Mechanism CONFIRMED. Impact is a HYPOTHESIS until a failed-RPC test runs. |
+| Same area: do not blindly retry | `increment_thread_cost` is an additive RPC, so a retry after a lost response would double count | CONFIRMED by reading; agreed. |
+| Planner menu includes Hunter, omits Opsis/FOFA | `baseToolList` (`tool-registry.ts:1150-1207`) has `hunter_*`, no `opsis_*`/`fofa_search` | CONFIRMED. It only shapes the `minimax_plan_pivots` helper's suggestions; the main orchestrator sees the full registry (Opsis was called 3 times in Lovable's sample). Whether the omission is deliberate for paid tools is UNKNOWN. |
+| A plain `/health` is not side-effect-free | `health-handler.ts:408-411` calls `checkDeepseek()` and `checkMinimax()` on every request; `checkDeepseek` POSTs a 4-token `chat/completions` ping (`:193-206`); MiniMax is skipped only if healthy within 60 s | CONFIRMED. **I made 2 such calls this session.** Cost is negligible (the browser already fires one per open case every 30 s), but "read-only" was loose wording. CLAUDE.md now says so. |
+| 97/97 new evidence rows have no `artifact_id` | #910's commit message measured 17,575/17,575 on 10-30, so this is the same known gap | Consistent. #912 is the fix; I have not reviewed it. |
+
+**Independent agreement:** the 00:24 persist of 55.559 s including 53.769 s of salvage is the same row as my `92832117`. The 20 open PRs match my count before #934 opened. Main `5743177`, marker `cb4c6a27` and mirror HEAD `4169da6` match.
+
+**One nuance it blurs.** The checkpoint defect affects `threads.cost_micro_usd` only. The user's credit debit (`debit_user_credits`, `index.ts:571-584`) runs inside `onCost` on every call, independent of the checkpoint, so a failed checkpoint does not change what a user is debited.
+
+**Not verified by me:** its memory-supersession findings (`lib/memory-supersession.ts`, `lib/cross-case-reviews.ts`), every database figure (8-invocation baseline, Opsis $0.90, tool failure classes, token and cost totals), and the claim that Hunter was never selected.
+
+**Where it differs from this handoff.** It ranks "review #912, then reproduce the checkpoint defect offline" first; I ranked the finalize-window measurement and docs first. These do not conflict: both are read-only/offline and both precede any edge deploy. It lists #929 as a candidate; JD has since said the Chinese output is fixed. It did not have the salvage finding in §3, which bears on its "closeout variability" point: the variability is salvage (16 of 32 runs), not persistence.
+
+## 10. Opening prompt for the next session
 
 > Read `CLAUDE.md`, `SESSION_HANDOFF_2026-10-31_pr-board-triage.md` and `SESSION_HANDOFF_2026-11-01_audit.md`. Re-measure first: one `/health` read (build should still be `cb4c6a27`), `git ls-remote origin refs/heads/main refs/heads/deploy/live`, and `list_pull_requests` (look at `draft`). **Do not deploy, run DDL, change flags or secrets, close a PR, or touch credential masking without JD's explicit go.** Then do the step JD names from §7 of the audit handoff.

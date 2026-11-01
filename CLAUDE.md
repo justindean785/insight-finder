@@ -56,7 +56,7 @@ with a good handoff is more accurate than a third summary.
 
 > ⚠️ **Dated state is NOT kept in this file any more** (it went stale faster than it was edited and cost ~5k tokens on every session).
 > Re-measure instead of trusting any number you read: `curl "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1"`
-> (build + `checks.*` proof keys), `git log origin/main`, `git fetch origin refs/heads/deploy/live:refs/heads/deploy/live`, and the newest
+> (build + `checks.*` proof keys; a plain probe is cheap but not free: it sends a 4-token `chat/completions` ping to the GLM provider, and to MiniMax unless one succeeded in the last 60 s — `health-handler.ts` `checkDeepseek`/`checkMinimax`; read it once, don't loop it), `git log origin/main`, `git fetch origin refs/heads/deploy/live:refs/heads/deploy/live`, and the newest
 > `SESSION_HANDOFF_*.md`. The old dated blocks (2026-09-13 .. 2026-09-22) are archived verbatim in
 > `docs/archive/CLAUDE_STATE_HISTORY_2026-09.md`.
 >
