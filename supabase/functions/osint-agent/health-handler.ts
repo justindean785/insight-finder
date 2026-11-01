@@ -17,7 +17,7 @@ import {
   OSINT_AGENT_PROBE_SECRET,
   DEEPSEEK_API_KEY, DEEPSEEK_ORCHESTRATOR_MODEL_ID, PRIMARY_ORCHESTRATOR_MODEL_ID,
   DEEPSEEK_BASE_URL,
-  DEEPSEEK_THINKING_MODE, DEEPSEEK_REASONING_EFFORT,
+  DEEPSEEK_THINKING_MODE, DEEPSEEK_REASONING_EFFORT, DEEPSEEK_VENDOR_HOST,
   ORCHESTRATOR_PROVIDER, LOVABLE_API_KEY,
   lovableGateway, geminiDirectGateway, ALLOW_LOVABLE_FALLBACK,
   promptBudgetHardCeilingEnabled,
@@ -419,7 +419,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   ]);
   // Role labels: only the SELECTED provider is "active"; the other is a "fallback"
   // diagnostic. So MiniMax is never labeled active when DeepSeek is selected.
-  r.checks.deepseek = { ...deepseekCheck, role: providerRole(selected.provider, "deepseek") };
+  // `vendor_host` is the one place /health names the ACTUAL vendor. The slot is called
+  // "deepseek" for historical reasons but is served by api.z.ai; without this, the only
+  // proof of vendor was a DB row written after a run.
+  r.checks.deepseek = { ...deepseekCheck, role: providerRole(selected.provider, "deepseek"), vendor_host: DEEPSEEK_VENDOR_HOST };
   r.checks.minimax = { ...minimaxCheck, role: providerRole(selected.provider, "minimax") };
   // Anthropic orchestrator (primary by pin; GLM's backup since E2b — `role`). Config + cost-control posture only; deliberately NO
   // network probe — a ping would spend prepaid credits on every /health. Reports presence
@@ -506,8 +509,8 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       // that cannot work — every call would 400. Flag it rather than hide it.
       ok: !(t.forcedByModel && t.options.thinking.type === "disabled"),
       detail: t.forcedByModel && t.options.thinking.type === "disabled"
-        ? `${describeThinking(t, DEEPSEEK_ORCHESTRATOR_MODEL_ID)} — INVALID: this model forces thinking and will reject every request; clear DEEPSEEK_THINKING_MODE`
-        : describeThinking(t, DEEPSEEK_ORCHESTRATOR_MODEL_ID),
+        ? `${describeThinking(t, DEEPSEEK_ORCHESTRATOR_MODEL_ID, DEEPSEEK_VENDOR_HOST)} — INVALID: this model forces thinking and will reject every request; clear DEEPSEEK_THINKING_MODE`
+        : describeThinking(t, DEEPSEEK_ORCHESTRATOR_MODEL_ID, DEEPSEEK_VENDOR_HOST),
     };
   }
 

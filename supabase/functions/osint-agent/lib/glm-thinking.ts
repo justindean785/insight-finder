@@ -112,8 +112,18 @@ export function resolveDeepseekThinking(input: {
     : { options: { thinking: { type } }, forcedByModel, source };
 }
 
-/** One-line description for /health and logs. Never includes a key or a secret. */
-export function describeThinking(r: ThinkingResolution, modelId: string): string {
+/**
+ * One-line description for /health and logs. Never includes a key or a secret.
+ *
+ * `vendorHost` is included because the slot is named "deepseek" for historical reasons
+ * (it predates the move to Z.AI) while actually being served by api.z.ai. Until this,
+ * /health said only `selected_provider: "deepseek"` and NOTHING anywhere named the real
+ * vendor — the only proof was an `orchestrator_invocations.model_id` row written AFTER a
+ * run. For the instrument a deploy is verified with, that is a gap: "which vendor is this
+ * build actually talking to" should be answerable from /health alone.
+ */
+export function describeThinking(r: ThinkingResolution, modelId: string, vendorHost?: string): string {
   const effort = r.options.reasoning_effort ? `, reasoning_effort=${r.options.reasoning_effort}` : "";
-  return `${modelId}: thinking=${r.options.thinking.type}${effort} (${r.source})`;
+  const where = vendorHost ? ` @ ${vendorHost}` : "";
+  return `${modelId}${where}: thinking=${r.options.thinking.type}${effort} (${r.source})`;
 }

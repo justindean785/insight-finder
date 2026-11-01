@@ -99,3 +99,15 @@ Deno.test("describeThinking names the mode without leaking a key", () => {
   const d = resolveDeepseekThinking({ modelId: "glm-5.2" });
   assertEquals(describeThinking(d, "glm-5.2"), "glm-5.2: thinking=disabled (default)");
 });
+
+Deno.test("describeThinking names the REAL vendor when a host is supplied", () => {
+  // The slot is called "deepseek" for historical reasons but is served by api.z.ai.
+  // /health must be able to answer "which vendor is this build talking to" on its own.
+  const r = resolveDeepseekThinking({ modelId: "glm-5.2" });
+  assertEquals(describeThinking(r, "glm-5.2", "api.z.ai"), "glm-5.2 @ api.z.ai: thinking=disabled (default)");
+  const f = resolveDeepseekThinking({ modelId: "glm-5.3-flash" });
+  assertEquals(
+    describeThinking(f, "glm-5.3-flash", "api.z.ai"),
+    "glm-5.3-flash @ api.z.ai: thinking=enabled, reasoning_effort=low (model-forced)",
+  );
+});
