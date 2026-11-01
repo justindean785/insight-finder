@@ -1,5 +1,5 @@
 import { breachExposureGuardSelfTest } from "./lib/breach-exposure-guard.ts";
-import { describeThinking, resolveDeepseekThinking } from "./lib/glm-thinking.ts";
+import { describeThinking, probeMaxTokens, resolveDeepseekThinking } from "./lib/glm-thinking.ts";
 import { dispatchSelectorAliasesSelfTest } from "./lib/dispatch-selector.ts";
 import { providerBusyQueueSelfTest } from "./lib/provider-busy-queue.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -189,6 +189,11 @@ export async function checkDeepseek(deps?: {
   const apiKey = deps?.apiKey ?? DEEPSEEK_API_KEY;
   const model = deps?.model ?? DEEPSEEK_ORCHESTRATOR_MODEL_ID;
   const doFetch = deps?.doFetch ?? fetch;
+  const canaryThinking = resolveDeepseekThinking({
+    modelId: model,
+    modeOverride: DEEPSEEK_THINKING_MODE,
+    effort: DEEPSEEK_REASONING_EFFORT,
+  }).options;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 5_000);
   try {
@@ -198,17 +203,15 @@ export async function checkDeepseek(deps?: {
       body: JSON.stringify({
         model,
         messages: [{ role: "user", content: "ping" }],
-        max_tokens: 4,
+        // Raw fetch, so the WIRE shape is correct here (the SDK shape is only for
+        // providerOptions). Match the live orchestrator's thinking mode: a GLM-5.3
+        // model 400s on `type:"disabled"`, so a hardcoded canary would report the
+        // orchestrator dead on a build that actually works and `verify:deploy` would
+        // read the lie. The token ceiling lifts with thinking because reasoning
+        // tokens precede any content. lib/glm-thinking.ts is the one source.
+        max_tokens: probeMaxTokens(canaryThinking),
         temperature: 0,
-        // Match the live orchestrator's request shape exactly, including thinking
-        // mode: a GLM-5.3 model 400s on `type:"disabled"`, so a hardcoded canary
-        // would report the orchestrator dead on a build that actually works (and
-        // `verify:deploy` would read the lie). lib/glm-thinking.ts is the one source.
-        ...resolveDeepseekThinking({
-          modelId: model,
-          modeOverride: DEEPSEEK_THINKING_MODE,
-          effort: DEEPSEEK_REASONING_EFFORT,
-        }).options,
+        ...canaryThinking,
       }),
       signal: ctrl.signal,
     });
@@ -946,19 +949,20 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     };
     const [ds, mm, gk, gm] = await Promise.all([
       probeProvider("deepseek", !!DEEPSEEK_API_KEY, async (signal) => {
+        const probeThinking = resolveDeepseekThinking({
+          modelId: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
+          modeOverride: DEEPSEEK_THINKING_MODE,
+          effort: DEEPSEEK_REASONING_EFFORT,
+        }).options;
         const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
           method: "POST",
           headers: { Authorization: `Bearer ${DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({
             model: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
             messages: [{ role: "user", content: "ping" }],
-            max_tokens: 4,
-            // Same reason as the orchestrator canary above — never hardcode this.
-            ...resolveDeepseekThinking({
-              modelId: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
-              modeOverride: DEEPSEEK_THINKING_MODE,
-              effort: DEEPSEEK_REASONING_EFFORT,
-            }).options,
+            // Same reasons as the orchestrator canary above — never hardcode either.
+            max_tokens: probeMaxTokens(probeThinking),
+            ...probeThinking,
           }),
           signal,
         });

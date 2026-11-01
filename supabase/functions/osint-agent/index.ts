@@ -5,7 +5,7 @@
 
 import { convertToModelMessages, streamText, generateText, stepCountIs, type UIMessage, type ModelMessage } from "npm:ai@6";
 import { classifyRunEnd, runEndLogDisabled, runEndNote } from "./lib/run-end.ts";
-import { resolveDeepseekThinking } from "./lib/glm-thinking.ts";
+import { probeMaxTokens, resolveDeepseekThinking, toSdkProviderOptions } from "./lib/glm-thinking.ts";
 import { PERSIST_ON_CLIENT_CANCEL_ENV, persistOnClientCancelEnabled } from "./lib/client-cancel.ts";
 
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
@@ -153,6 +153,11 @@ const deepseekThinking = resolveDeepseekThinking({
   modeOverride: DEEPSEEK_THINKING_MODE,
   effort: DEEPSEEK_REASONING_EFFORT,
 });
+// The AI SDK needs the CAMELCASE effort key: a snake_case `reasoning_effort` in
+// providerOptions is spread in and then overwritten with undefined by the SDK's own
+// `reasoning_effort: compatibleOptions.reasoningEffort` line. Raw-fetch probes use
+// `.options` (wire shape); every streamText/generateText call uses this one.
+const deepseekThinkingSdk = toSdkProviderOptions(deepseekThinking.options);
 // MAX_ORCHESTRATOR_STEPS (named ~30 step cap) + ORCHESTRATOR_WALL_CLOCK_MS (clean
 // wall-clock deadline) now live in ./orchestrator-budget.ts alongside the context
 // budget, so all of the orchestrator's step/size knobs share one testable source.
@@ -848,8 +853,13 @@ Deno.serve(async (req) => {
               body: JSON.stringify({
                 model: DEEPSEEK_ORCHESTRATOR_MODEL_ID,
                 messages: [{ role: "user", content: "ping" }],
-                max_tokens: 4,
+                // Raw fetch, so this takes the WIRE shape, not the SDK shape. The
+                // ceiling lifts only when thinking is on: reasoning tokens are emitted
+                // before any content, so a 4-token cap can truncate the probe into a
+                // failure and pivot a healthy run onto the Anthropic fallback.
+                max_tokens: probeMaxTokens(deepseekThinking.options),
                 temperature: 0,
+                ...deepseekThinking.options,
               }),
               signal: ctrl.signal,
             });
@@ -1576,7 +1586,7 @@ Deno.serve(async (req) => {
         : minimaxIsPrimary
         ? { minimax: { parallel_tool_calls: ORCHESTRATOR_PARALLEL_TOOL_CALLS } }
         : deepseekIsPrimary
-        ? { deepseek: { parallel_tool_calls: false, ...deepseekThinking.options } }
+        ? { deepseek: { parallel_tool_calls: false, ...deepseekThinkingSdk } }
         : anthropicIsPrimary
         ? anthropicProviderOptions({ thinking: ANTHROPIC_THINKING, effort: ANTHROPIC_EFFORT })
         : undefined,
@@ -2201,7 +2211,7 @@ Deno.serve(async (req) => {
               model: orchestratorModel,
               maxOutputTokens: ORCHESTRATOR_MAX_OUTPUT_TOKENS,
               // Same thinking mode as the main loop (see the salvage note above).
-              providerOptions: { deepseek: { ...deepseekThinking.options } },
+              providerOptions: { deepseek: { ...deepseekThinkingSdk } },
               system: baseSystemPrompt,
               prompt: salvagePrompt,
             });

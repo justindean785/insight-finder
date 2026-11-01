@@ -113,6 +113,59 @@ export function resolveDeepseekThinking(input: {
 }
 
 /**
+ * SDK-shaped provider options for `providerOptions.deepseek`.
+ *
+ * ⚠️ WHY THIS EXISTS AND WHY IT IS NOT THE WIRE SHAPE. `DeepseekThinkingOptions` above
+ * is the WIRE body, correct for the raw `fetch` probes. It is WRONG for the AI SDK.
+ * @ai-sdk/openai-compatible@1 builds its request body as (dist/index.mjs ~:369-377):
+ *
+ *     ...Object.fromEntries(Object.entries(providerOptions[name]).filter(
+ *       ([key]) => !Object.keys(openaiCompatibleProviderOptions.shape).includes(key))),
+ *     reasoning_effort: compatibleOptions.reasoningEffort,
+ *
+ * The spread carries an unrecognised snake_case `reasoning_effort` through — and then
+ * the very next line OVERWRITES it with `compatibleOptions.reasoningEffort`, which is
+ * parsed from the CAMELCASE `reasoningEffort` key. Pass snake_case and the value is
+ * replaced by `undefined` and dropped by JSON.stringify: the request silently goes out
+ * at the vendor's DEFAULT effort (`max` on GLM-5.3) — the opposite of the wall-clock
+ * safeguard — while the raw-fetch /health canary still reports `low`, so the instrument
+ * lies about the thing it exists to prove.
+ *
+ * `thinking` has no such collision (it is not in the SDK's schema shape), so it rides
+ * the spread unchanged in both shapes. Only the effort key has to be translated.
+ *
+ * Caught by Codex on #938. The `parallel_tool_calls` precedent in index.ts is sound —
+ * it is genuinely unrecognised — but it does NOT generalise to a key the SDK derives.
+ */
+export interface DeepseekThinkingSdkOptions {
+  thinking: { type: ThinkingType };
+  reasoningEffort?: ReasoningEffort;
+}
+
+export function toSdkProviderOptions(o: DeepseekThinkingOptions): DeepseekThinkingSdkOptions {
+  return o.reasoning_effort
+    ? { thinking: o.thinking, reasoningEffort: o.reasoning_effort }
+    : { thinking: o.thinking };
+}
+
+/**
+ * Output-token ceiling for a /health or preflight PROBE.
+ *
+ * The probes send `max_tokens: 4` — enough for a one-token "ping" reply when the model
+ * is not reasoning. With thinking forced on (GLM-5.3) the reasoning tokens are produced
+ * BEFORE any answer, so a 4-token ceiling can truncate the response before a single
+ * content token exists, or be rejected outright. A probe that fails for its own
+ * token budget would read as "the orchestrator is down". Raised only when thinking is
+ * on, so the cheap non-thinking ping is unchanged.
+ */
+export const PROBE_MAX_TOKENS_THINKING = 64;
+export const PROBE_MAX_TOKENS_PLAIN = 4;
+
+export function probeMaxTokens(o: DeepseekThinkingOptions): number {
+  return o.thinking.type === "enabled" ? PROBE_MAX_TOKENS_THINKING : PROBE_MAX_TOKENS_PLAIN;
+}
+
+/**
  * One-line description for /health and logs. Never includes a key or a secret.
  *
  * `vendorHost` is included because the slot is named "deepseek" for historical reasons
