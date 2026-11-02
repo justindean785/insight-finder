@@ -62,9 +62,11 @@ export function useAgentAssessment(threadId: string): AgentAssessmentApi {
   // view) have no provider and then simply get no assessment.
   const snapshot = useOptionalCaseSnapshot()?.snapshot ?? null;
   const review = useReviewStates(threadId);
+  // Optional chaining on every field: a standalone or test snapshot can be a
+  // partial object, and a card in the transcript must never take the page down.
   const items = useMemo(() => snapshot?.items ?? [], [snapshot?.items]);
-  const seedValue = snapshot?.seed.value ?? null;
-  const running = snapshot?.hydrated === true && snapshot.run.state === "running";
+  const seedValue = snapshot?.seed?.value ?? null;
+  const running = snapshot?.hydrated === true && snapshot.run?.state === "running";
 
   const reviews = useMemo(() => {
     const m: Record<string, ReviewAdjustment> = {};
