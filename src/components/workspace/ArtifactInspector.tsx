@@ -470,9 +470,15 @@ function Metric({ label, value, amber = false, unresolvedWord = "Unresolved" }: 
         <span>{label}</span>
         <b className="font-medium tabular-nums text-[13px] text-foreground">{value === null ? unresolvedWord : `${Math.round(value)}%`}</b>
       </div>
-      <div className="h-1 overflow-hidden rounded-full bg-white/[0.08]" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={value === null ? undefined : Math.round(value)} aria-valuetext={value === null ? unresolvedWord : `${Math.round(value)} percent`}>
-        <i className={cn("block h-full rounded-full", amber ? "bg-[hsl(var(--warning))]" : "bg-[hsl(var(--confidence-high))]")} style={{ width: `${pct}%` }} />
-      </div>
+      {/* A meter needs a value: with none, the track is decoration and the word
+          above carries the meaning (axe aria-required-attr, found by the R4 e2e). */}
+      {value === null ? (
+        <div className="h-1 overflow-hidden rounded-full bg-white/[0.08]" aria-hidden />
+      ) : (
+        <div className="h-1 overflow-hidden rounded-full bg-white/[0.08]" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(value)} aria-valuetext={`${Math.round(value)} percent`}>
+          <i className={cn("block h-full rounded-full", amber ? "bg-[hsl(var(--warning))]" : "bg-[hsl(var(--confidence-high))]")} style={{ width: `${pct}%` }} />
+        </div>
+      )}
     </div>
   );
 }
