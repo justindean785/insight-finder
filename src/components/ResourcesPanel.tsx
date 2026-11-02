@@ -7,7 +7,7 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   Mail, Globe, User as UserIcon, Network, ShieldAlert, Image as ImgIcon, Tag,
   Copy, CheckCircle2, XCircle, Star, ShieldQuestion, EyeOff, ChevronRight, Radar,
-  AlertTriangle, RotateCcw, Loader2, Unlink,
+  AlertTriangle, RotateCcw, Loader2, Unlink, Search, ArrowRight,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,9 @@ import { evidenceStatus, classLabel } from "@/lib/evidence-status";
 import { independentSourceClasses } from "@/lib/intel";
 import { ANALYST_ACTIONABLE_STATES, authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
 import { statusFilterForAuthority } from "@/lib/evidence-status-filter";
+import { compareEvidence, EVIDENCE_SORT_LABEL, matchesQuery, type EvidenceSortMode } from "@/lib/evidence-sort";
+import { useAgentAssessment } from "@/hooks/useAgentAssessment";
+import { formatDelta, LINKAGE_ATTENTION_BELOW, type AgentAssessment, type AssessmentDelta, type AssessmentReport } from "@/lib/agent-assessment";
 import { isQuarantined, clusterDefaultOpen } from "@/lib/quarantine";
 import {
   canReleaseLinkage, releasePatch,
@@ -132,8 +135,8 @@ function writeClusterPrefs(threadId: string, prefs: Record<string, boolean>): vo
   try { localStorage.setItem(CLUSTER_PREFS_KEY(threadId), JSON.stringify(prefs)); } catch { /* preference only */ }
 }
 
-export type EvidenceStatusFilter = "analyst" | "all" | "strong" | "review" | "quarantined" | "weak" | "excluded";
-export type EvidenceSortMode = "strength" | "confidence" | "newest";
+export type EvidenceStatusFilter = "analyst" | "all" | "strong" | "review" | "conflict" | "quarantined" | "weak" | "excluded";
+export type { EvidenceSortMode };
 
 /**
  * Which AUTHORITY states each quick-filter admits.
@@ -168,15 +171,25 @@ export const STATUS_FILTER_GROUPS: Record<EvidenceStatusFilter, Set<string> | nu
   all: null,
   strong: new Set(["verified", "infrastructure", "probable"]),
   review: new Set(["review", "conflict"]),
+  // Case desk R4: the prototype's "Conflicts" chip. A SUBSET of `review`, so the
+  // Analyst view (strong ∪ review) is unchanged and a conflict row still answers
+  // to "Unresolved"; `statusFilterForAuthority` picks this narrower group for a
+  // conflict hand-off.
+  conflict: new Set(["conflict"]),
   quarantined: new Set(["quarantined"]),
   weak: new Set(["weak"]),
   excluded: new Set(["failed"]),
 };
 
 function ArtifactsList({
-  items, onSelect, review, statusFilter, onShowAll, sortMode, loading, error, onRetry, threadId,
+  items, onSelect, review, statusFilter, onShowAll, sortMode, loading, error, onRetry, threadId, query = "", assessment = null, deltas = {},
 }: {
   items: Artifact[];
+  /** Search terms (Case desk R4): value, kind, source and recorded reasons; never scores. */
+  query?: string;
+  /** The R2 assessment, for the Linkage column and the linkage sort. Null when no provider is mounted. */
+  assessment?: AssessmentReport | null;
+  deltas?: Record<string, AssessmentDelta>;
   /** Escape hatch out of a filter that is hiding everything. */
   onShowAll?: () => void;
   /** Scopes the remembered fold/unfold choices to this case. */
@@ -211,9 +224,10 @@ function ArtifactsList({
   // each kind by the chosen mode so the strongest evidence surfaces first.
   // Not memoized on `review` so toggling a review state re-filters immediately.
   const allow = STATUS_FILTER_GROUPS[statusFilter];
-  const filtered = allow
-    ? items.filter((a) => allow.has(authorityFor(a, review.get(a.id)).state))
-    : items;
+  const q = query.trim();
+  const filtered = items.filter((a) =>
+    (allow ? allow.has(authorityFor(a, review.get(a.id)).state) : true) && (q ? matchesQuery(a, q) : true),
+  );
 
   const grouped = useMemo(() => {
     const byGroup = {} as Record<Group, Record<string, Artifact[]>>;
@@ -221,22 +235,17 @@ function ArtifactsList({
       const g = groupForKind(a.kind);
       ((byGroup[g] ??= {})[a.kind] ??= []).push(a);
     }
-    const conf = (a: Artifact) => {
-      const fp = ((a.metadata ?? {}) as Record<string, unknown>).false_positive === true;
-      return fp ? -1 : effectiveConfidenceOrZero(a);
-    };
-    const cmp = (a: Artifact, b: Artifact) => {
-      if (sortMode === "newest") {
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-      }
-      if (sortMode === "strength") {
-        const ra = LEDGER_SORT_RANK[authorityFor(a, review.get(a.id)).state];
-        const rb = LEDGER_SORT_RANK[authorityFor(b, review.get(b.id)).state];
-        if (ra !== rb) return ra - rb;
-        return conf(b) - conf(a);
-      }
-      return conf(b) - conf(a); // "confidence"
-    };
+    // Every mode but Authority is a pure comparator (lib/evidence-sort.ts);
+    // Authority needs the analyst's verdicts, so it is built here.
+    const byConfidence = compareEvidence("confidence", assessment);
+    const cmp = sortMode === "strength"
+      ? (a: Artifact, b: Artifact) => {
+          const ra = LEDGER_SORT_RANK[authorityFor(a, review.get(a.id)).state];
+          const rb = LEDGER_SORT_RANK[authorityFor(b, review.get(b.id)).state];
+          if (ra !== rb) return ra - rb;
+          return byConfidence(a, b);
+        }
+      : compareEvidence(sortMode, assessment);
     for (const g of Object.keys(byGroup) as Group[]) {
       for (const k of Object.keys(byGroup[g])) byGroup[g][k].sort(cmp);
     }
@@ -245,7 +254,7 @@ function ArtifactsList({
     // reference), so a verdict change never re-ran this memo and the strength
     // ordering stayed stale until something else re-rendered the list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, sortMode, statusFilter, review.revision]);
+  }, [filtered, sortMode, statusFilter, review.revision, assessment]);
 
   // A FILTER hiding everything must never look like an empty case.
   //
@@ -262,9 +271,11 @@ function ArtifactsList({
             Nothing in this view
           </div>
           <div className="max-w-md text-[13px] leading-relaxed text-muted-foreground">
-            {statusFilter === "analyst"
-              ? `This case has no findings or review items yet. All ${items.length} artifact${items.length === 1 ? "" : "s"} are leads, quarantined or excluded — collected, but not yet corroborated enough to act on.`
-              : `No artifact matches this filter. ${items.length} artifact${items.length === 1 ? "" : "s"} on this case.`}
+            {q
+              ? `No artifact matches “${q}” in this view. ${items.length} artifact${items.length === 1 ? "" : "s"} on this case.`
+              : statusFilter === "analyst"
+                ? `This case has no findings or review items yet. All ${items.length} artifact${items.length === 1 ? "" : "s"} are leads, quarantined or excluded — collected, but not yet corroborated enough to act on.`
+                : `No artifact matches this filter. ${items.length} artifact${items.length === 1 ? "" : "s"} on this case.`}
           </div>
           {onShowAll && (
             <button
@@ -443,10 +454,10 @@ function ArtifactsList({
         </div>
       )}
       <div className="ledger-head" role="presentation">
-        <span data-ledger-col="value">Evidence</span>
-        <span data-ledger-col="status">Authority</span>
+        <span data-ledger-col="value">Finding</span>
+        <span data-ledger-col="status">Evidence basis</span>
         <span data-ledger-col="source">Source</span>
-        <span data-ledger-col="confidence" className="text-right">Conf.</span>
+        <span data-ledger-col="confidence" className="text-right" title="Subject linkage (the identity-cluster engine's score for the seed's cluster) over finding support (the recorded, capped confidence)">Linkage</span>
       </div>
       {GROUP_ORDER.filter((g) => grouped[g] && Object.keys(grouped[g]).length).map((g) => {
         const Icon = GROUP_ICON[g];
@@ -591,12 +602,12 @@ function ArtifactsList({
                             </span>
                           )}
                         </div>
-                        {renderDisplayRows(partitionBulkCorpusRows(band.rows), onSelect, review, true)}
+                        {renderDisplayRows(partitionBulkCorpusRows(band.rows), onSelect, review, true, assessment, deltas)}
                       </div>
                     );
                   })}
 
-                  {open && !bands && renderDisplayRows(partitionBulkCorpusRows(list), onSelect, review, uniformProv != null)}
+                  {open && !bands && renderDisplayRows(partitionBulkCorpusRows(list), onSelect, review, uniformProv != null, assessment, deltas)}
                 </div>
               );
             })}
@@ -624,6 +635,8 @@ function renderDisplayRows(
   onSelect: (a: Artifact) => void,
   review: ReturnType<typeof useReviewStates>,
   hideProv: boolean,
+  assessment: AssessmentReport | null = null,
+  deltas: Record<string, AssessmentDelta> = {},
 ) {
   return rows.map((row) => {
     if (row.type === "single") {
@@ -634,6 +647,8 @@ function renderDisplayRows(
           onSelect={onSelect}
           review={review}
           hideProv={hideProv}
+          assessment={assessment?.byId[row.artifact.id] ?? null}
+          delta={deltas[row.artifact.id] ?? null}
         />
       );
     }
@@ -706,12 +721,15 @@ function BulkCorpusGroupRow({
 }
 
 export function ArtifactRow({
-  a, onSelect, review, hideProv,
+  a, onSelect, review, hideProv, assessment = null, delta = null,
 }: {
   a: Artifact;
   onSelect: (a: Artifact) => void;
   review: ReturnType<typeof useReviewStates>;
   hideProv: boolean;
+  /** The R2 assessment for this row (Case desk R4): the Linkage figure. Null outside a case provider. */
+  assessment?: AgentAssessment | null;
+  delta?: AssessmentDelta | null;
 }) {
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
   const fp = meta.false_positive === true;
@@ -856,6 +874,12 @@ export function ArtifactRow({
           </span>
 
           <span className="flex shrink-0 items-center justify-end gap-0.5" data-ledger-col="confidence">
+            <span className="flex flex-col items-end gap-1">
+            {/* Subject linkage (Case desk R4): the identity-cluster engine's
+                score for the seed's cluster, from the R2 assessment. A word,
+                not 0%, when the engine has none — "Unresolved" for a row no
+                selector joins to the seed, "Unproven" for a quarantined row. */}
+            {assessment && <LinkageFigure assessment={assessment} delta={delta} />}
             {/* An analyst-confirmed row shows the decision in words and no
                 rule: a magnitude bar beside "Analyst-confirmed" would re-assert
                 the very figure the words replace. The words wrap to two lines
@@ -875,6 +899,7 @@ export function ArtifactRow({
                 </span>
               </span>
             )}
+            </span>
             {/* The ⓘ stays on every scored row — on an analyst-confirmed row it
                 is where the machine score is still read. */}
             {shown.effective != null && (
@@ -891,6 +916,42 @@ export function ArtifactRow({
         <ArtifactPeek artifact={a} confColor={confColor} attested={attested} />
       </HoverCardContent>
     </HoverCard>
+  );
+}
+
+/**
+ * The Linkage cell (Case desk R4). The figure is the R2 assessment's
+ * `subjectLinkage` — green at 70 and above, amber below (the prototype's
+ * rule) — with the change since the previous assessment beside it. Null
+ * linkage is a WORD: "Unproven" on a quarantined row (linkage is what the
+ * quarantine says is unproven), "Unresolved" otherwise. The finding-support
+ * figure keeps its own line beneath, so the two numbers are never confused.
+ */
+function LinkageFigure({ assessment, delta }: { assessment: AgentAssessment; delta: AssessmentDelta | null }) {
+  const l = assessment.subjectLinkage;
+  const change = delta ? formatDelta(delta.linkage) : null;
+  if (l === null) {
+    const word = assessment.group === "quarantined" ? "Unproven" : "Unresolved";
+    return (
+      <span
+        data-linkage="none"
+        className="text-[11px] leading-none text-subtle-foreground"
+        title={assessment.verdict}
+      >
+        {word}
+      </span>
+    );
+  }
+  const amber = l < LINKAGE_ATTENTION_BELOW;
+  return (
+    <span
+      data-linkage={l}
+      className={cn("flex items-baseline gap-1 text-[13px] font-medium leading-none tabular-nums", amber ? "text-[hsl(var(--warning))]" : "text-[hsl(var(--confidence-high))]")}
+      title={`${assessment.verdict}${change ? ` · ${change} since the previous assessment` : ""}`}
+    >
+      {Math.round(l)}%
+      {change && <small className="text-[11px] font-normal">{(delta?.linkage ?? 0) > 0 ? "↑" : "↓"} {Math.abs(Math.round(delta?.linkage ?? 0))}</small>}
+    </span>
   );
 }
 
@@ -1378,15 +1439,22 @@ export function EvidenceBoard({
   threadId,
   focusRequest,
   filterRequest,
+  sortRequest,
 }: {
   threadId: string;
   /** Open one row, whatever filter the board was left on. `n` is a nonce. */
   focusRequest?: { id: string; n: number } | null;
   /** Open on the quick filter holding this authority state. `n` is a nonce. */
   filterRequest?: { state: string; n: number } | null;
+  /** Switch the sort (the banner's "View changes" asks for Newest first). `n` is a nonce. */
+  sortRequest?: { mode: EvidenceSortMode; n: number } | null;
 }) {
   const { items, updateLocal, loading, error, retry } = useThreadArtifacts(threadId);
   const review = useReviewStates(threadId);
+  // The R2 assessment: the Linkage column, the linkage sort and the group chips'
+  // meaning all read from it. Null outside a case provider (standalone renders).
+  const assessment = useAgentAssessment(threadId);
+  const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Artifact | null>(null);
   const [statusFilter, setStatusFilter] = useState<EvidenceStatusFilter>("analyst");
   // Also publish selection to the shared workspace UI state, so the Workbench's
@@ -1435,14 +1503,23 @@ export function EvidenceBoard({
     setStatusFilter(statusFilterForAuthority(filterRequest.state, STATUS_FILTER_GROUPS, "all"));
     setFilteredNonce(filterRequest.n);
   }, [filterRequest, filteredNonce]);
-  const [sortMode, setSortMode] = useState<EvidenceSortMode>("strength");
+  // Linkage confidence leads, as in the prototype: what the case is about is
+  // which rows are the subject's.
+  const [sortMode, setSortMode] = useState<EvidenceSortMode>("linkage");
+  const [sortedNonce, setSortedNonce] = useState<number | null>(null);
+  useEffect(() => {
+    if (!sortRequest || sortRequest.n === sortedNonce) return;
+    setSortMode(sortRequest.mode);
+    setSortedNonce(sortRequest.n);
+  }, [sortRequest, sortedNonce]);
 
   // Live counts per quick-filter so the analyst sees how much sits in each bucket.
   const counts = useMemo(() => {
-    const c = { analyst: 0, all: items.length, strong: 0, review: 0, quarantined: 0, weak: 0, excluded: 0 };
+    const c = { analyst: 0, all: items.length, strong: 0, review: 0, conflict: 0, quarantined: 0, weak: 0, excluded: 0 };
     for (const a of items) {
       const s = authorityFor(a, review.get(a.id)).state;
       if (STATUS_FILTER_GROUPS.analyst!.has(s)) c.analyst++;
+      if (STATUS_FILTER_GROUPS.conflict!.has(s)) c.conflict++;
       if (STATUS_FILTER_GROUPS.strong!.has(s)) c.strong++;
       else if (STATUS_FILTER_GROUPS.review!.has(s)) c.review++;
       else if (STATUS_FILTER_GROUPS.quarantined!.has(s)) c.quarantined++;
@@ -1458,43 +1535,51 @@ export function EvidenceBoard({
 
   const slot = useToolbarSlot();
 
+  // The prototype's chips, each still ONE of STATUS_FILTER_GROUPS (no second
+  // taxonomy): Supported = strong, Unresolved = review (which keeps conflicts in
+  // the Analyst union), Conflicts = the conflict subset, Quarantined, then Leads
+  // and Excluded behind More.
   const filterOptions: CompactOption<EvidenceStatusFilter>[] = [
     { key: "analyst", label: "Analyst view", count: counts.analyst, hint: "Everything that needs a decision — leads and exclusions hidden" },
     { key: "all", label: "All", count: counts.all },
-    { key: "strong", label: "Findings", count: counts.strong, tone: "ok" },
+    { key: "strong", label: "Supported", count: counts.strong, tone: "ok", hint: "Verified, infrastructure and probable rows — the engine's supported findings" },
     {
-      key: "review", label: "Needs review", count: counts.review, tone: "warn",
+      key: "review", label: "Unresolved", count: counts.review, tone: "warn",
       // The tab badge's "to decide" counts a different set: conflicts plus quarantined rows awaiting a
       // linkage call. Quarantined rows are listed under Quarantined, not here, so the two differ.
       hint: "Rows that need another source, and conflicts. Not the tab's \"to decide\" count, which adds quarantined rows awaiting a linkage call.",
     },
+    ...(counts.conflict > 0
+      ? [{ key: "conflict" as const, label: "Conflicts", count: counts.conflict, tone: "warn" as const, hint: "Rows that contradict the seed or another identity cluster" }]
+      : []),
     // Only offered when there is something in it — an always-present
     // "Quarantined 0" trains analysts to stop reading the number.
     ...(counts.quarantined > 0
-      ? [{ key: "quarantined" as const, label: "Quarantined", count: counts.quarantined }]
+      ? [{ key: "quarantined" as const, label: "Quarantined", count: counts.quarantined, hint: "Recorded and disclosed, withheld from identity — linkage to the subject is unproven" }]
       : []),
     { key: "weak", label: "Leads", count: counts.weak },
     { key: "excluded", label: "Excluded", count: counts.excluded, tone: "danger" },
   ];
-  const sortOptions: CompactOption<EvidenceSortMode>[] = [
-    { key: "strength", label: "Strength" },
-    { key: "confidence", label: "Confidence" },
-    { key: "newest", label: "Newest" },
-  ];
+  const sortOptions: CompactOption<EvidenceSortMode>[] = (["linkage", "confidence", "strength", "newest", "name"] as const)
+    .map((key) => ({ key, label: EVIDENCE_SORT_LABEL[key] }));
 
-  // One toolbar row: the common filters inline, the rest behind More, sort as a
-  // labelled menu, the legend beside it. Below `sm` it all folds into a single
-  // Filters button that states the active choices.
+  // The toolbar row (prototype): search, then the sort menu, the legend beside
+  // it. The chips get their own line above the ledger (below). Below `sm` the
+  // filters and sort fold into one Filters button that states the active choices.
   const controls = items.length > 0 ? (
     <>
-      <div className="hidden min-w-0 flex-wrap items-center justify-end gap-2 sm:flex">
-        <CompactFilter<EvidenceStatusFilter>
-          label="Filter evidence"
-          options={filterOptions}
-          primary={["analyst", "all", "review"]}
-          active={statusFilter}
-          onChange={setStatusFilter}
+      <label className="relative min-w-[8rem] flex-1 sm:max-w-[22rem]">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-subtle-foreground" aria-hidden />
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search selectors, sources or reasons…"
+          aria-label="Search evidence"
+          className="h-8 w-full rounded-md border border-border bg-surface-1 pl-8 pr-2 text-[12px] text-foreground outline-none placeholder:text-subtle-foreground focus-visible:border-[hsl(var(--brand)/0.6)] focus-visible:ring-1 focus-visible:ring-ring"
         />
+      </label>
+      <div className="hidden items-center gap-2 sm:flex">
         <MenuSelect<EvidenceSortMode> label="Sort" options={sortOptions} active={sortMode} onChange={setSortMode} />
         <AuthorityLegend />
       </div>
@@ -1521,6 +1606,17 @@ export function EvidenceBoard({
       </div>
     </>
   ) : null;
+  const chips = items.length > 0 ? (
+    <div className="hidden flex-wrap items-center gap-1.5 border-b border-border-subtle px-3 py-2 sm:flex" data-evidence-chips>
+      <CompactFilter<EvidenceStatusFilter>
+        label="Filter evidence"
+        options={filterOptions}
+        primary={["analyst", "all", "strong", "review", "conflict", "quarantined"]}
+        active={statusFilter}
+        onChange={setStatusFilter}
+      />
+    </div>
+  ) : null;
 
   // G-2: pick the first open conflict as the banner's target. The "two
   // candidates" are: the conflict row itself (A) and the strongest
@@ -1545,34 +1641,42 @@ export function EvidenceBoard({
       {controls && (slot
         ? createPortal(controls, slot)
         : <div className="flex flex-wrap items-center justify-end gap-2 border-b border-border-subtle px-2 py-2">{controls}</div>)}
+      {chips}
       <ArtifactsList
         items={items}
         threadId={threadId}
         onSelect={handleSelect}
         review={review}
         statusFilter={statusFilter}
-        onShowAll={() => setStatusFilter("all")}
+        onShowAll={() => { setStatusFilter("all"); setQuery(""); }}
         sortMode={sortMode}
+        query={query}
+        assessment={assessment.report}
+        deltas={assessment.deltas}
         loading={loading}
         error={error}
         onRetry={retry}
       />
       {compareCandidates && (
+        // The prototype's conflict box: amber, with the engine's own reason and
+        // the one action — Compare candidates — which opens a view over existing
+        // data and re-adjudicates nothing.
         <div
           data-conflict-banner
-          className="flex flex-wrap items-center justify-between gap-2 border-t border-[hsl(var(--authority-conflict)/0.35)] bg-[hsl(var(--authority-conflict)/0.08)] px-4 py-2 text-[12.5px]"
+          className="mx-4 my-4 rounded-[7px] border border-[hsl(var(--warning)/0.35)] bg-[hsl(var(--warning)/0.06)] px-4 py-3.5"
         >
-          <span className="text-foreground">
-            <span className="font-semibold text-[hsl(var(--authority-conflict))]">One connection needs explanation</span>
-            <span className="ml-2 text-muted-foreground">— two candidates compete for the same selector.</span>
-          </span>
-          <button
-            type="button"
-            onClick={() => setCompareOpen(true)}
-            className="inline-flex h-7 items-center rounded-md border border-border-subtle bg-surface-3 px-2.5 text-[12.5px] font-medium text-foreground transition-colors hover:bg-surface-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            Compare candidates →
-          </button>
+          <div className="flex flex-wrap items-center gap-2 text-[12px] font-medium text-[hsl(var(--warning))]">
+            <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
+            <span>One connection needs explanation</span>
+            <button
+              type="button"
+              onClick={() => setCompareOpen(true)}
+              className="ml-auto inline-flex items-center gap-1 text-[11px] font-medium text-foreground/80 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Compare candidates <ArrowRight className="h-3 w-3" aria-hidden />
+            </button>
+          </div>
+          <p className="mt-1.5 max-w-[570px] pl-6 text-[11px] leading-relaxed text-muted-foreground">{compareCandidates.reason}</p>
         </div>
       )}
       <CompareCandidatesDialog
@@ -1582,7 +1686,7 @@ export function EvidenceBoard({
         candidateB={compareCandidates?.conflictB ?? null}
         reason={compareCandidates?.reason ?? ""}
         reviewOf={review.get}
-        onFocusNextPivots={() => window.dispatchEvent(new CustomEvent("swarmbot:workbench-tab", { detail: { tab: "next" } }))}
+        onFocusNextPivots={() => window.dispatchEvent(new CustomEvent("swarmbot:workbench-tab", { detail: { tab: "pivots" } }))}
       />
       <ArtifactDrawer
         artifact={workbenchHandlesDetail ? null : selected}

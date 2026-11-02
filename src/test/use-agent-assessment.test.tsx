@@ -24,12 +24,13 @@ const state = vi.hoisted(() => ({
   running: false,
   reviews: {} as Record<string, string>,
 }));
-vi.mock("@/hooks/useCaseSnapshot", () => ({
-  useCaseSnapshot: () => ({
+vi.mock("@/hooks/useCaseSnapshot", () => {
+  const api = () => ({
     refresh: async () => {},
     snapshot: { hydrated: true, items: state.items, seed: { value: SEED, type: "email", caseTitle: null }, run: { state: state.running ? "running" : "completed" } },
-  }),
-}));
+  });
+  return { useCaseSnapshot: api, useOptionalCaseSnapshot: api };
+});
 vi.mock("@/lib/review", () => ({
   useReviewStates: () => ({ map: state.reviews, availability: "ok", get: (id: string) => state.reviews[id] ?? "new" }),
 }));

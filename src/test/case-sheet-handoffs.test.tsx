@@ -68,7 +68,8 @@ describe("case sheet handoffs", () => {
 describe("statusFilterForAuthority", () => {
   it("picks the narrowest board filter that holds the state", () => {
     expect(statusFilterForAuthority("review")).toBe("review");
-    expect(statusFilterForAuthority("conflict")).toBe("review");
+    // Case desk R4: the Conflicts chip is the narrower home for a conflict row.
+    expect(statusFilterForAuthority("conflict")).toBe("conflict");
     expect(statusFilterForAuthority("quarantined")).toBe("quarantined");
     expect(statusFilterForAuthority("weak")).toBe("weak");
     expect(statusFilterForAuthority("failed")).toBe("excluded");
