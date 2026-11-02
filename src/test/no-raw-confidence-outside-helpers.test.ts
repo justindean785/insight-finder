@@ -61,11 +61,6 @@ const ALLOWED: Array<{ file: string; count: number; why: string }> = [
     why: "c.confidence is IdentityCluster.confidence, built from effectiveConfidenceOrZero(a) at src/lib/intel.ts:2920 (see comment there).",
   },
   {
-    file: "src/components/workspace/LiveBoard.tsx",
-    count: 4,
-    why: "c.confidence is IdentityCluster.confidence (sort, strength word, bar width, figure), the same cluster score ClustersTab prints, built from effectiveConfidenceOrZero(a) at src/lib/intel.ts.",
-  },
-  {
     file: "src/components/panel/CustodyTab.tsx",
     count: 2,
     why: "r.confidence is from the evidence_log table (chain-of-custody record), not Artifact. The chain faithfully records what was captured, not a UI-filtered value.",

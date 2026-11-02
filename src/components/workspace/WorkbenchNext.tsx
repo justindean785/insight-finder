@@ -15,12 +15,32 @@ import type { ReviewAdjustment } from "@/lib/intel";
  * Unlike the transcript's rail it is not gated on the latest message being report-shaped, so it works from the case's
  * own recorded selectors too; it never offers the generic "ask the agent" prompts, which are a chat concern.
  */
-export function WorkbenchNext({ threadId, openRequest = null }: {
+type PivotQueue = ReturnType<typeof useWorkbenchPivots>;
+
+export function WorkbenchNext({ threadId, openRequest = null, pivots }: {
   threadId: string;
-  /** Open this pivot's preview: a request from the Live board. `n` makes a repeat request distinct. */
+  /** Open this pivot's preview: a request from another surface. `n` makes a repeat request distinct. */
   openRequest?: { key: string; n: number } | null;
+  /** The queue, computed ONCE by the Workbench (it also feeds the tab badge). Standalone renders compute their own. */
+  pivots?: PivotQueue;
 }) {
-  const { snapshot, review, artifacts, artifactsById, caseRunning, runViews, seed, skip, items } = useWorkbenchPivots(threadId);
+  // Hooks cannot be conditional, so the owned-queue case is its own component:
+  // a Workbench-provided queue must not be computed a second time here.
+  if (pivots) return <WorkbenchNextView threadId={threadId} openRequest={openRequest} pivots={pivots} />;
+  return <WorkbenchNextOwned threadId={threadId} openRequest={openRequest} />;
+}
+
+function WorkbenchNextOwned({ threadId, openRequest }: { threadId: string; openRequest: { key: string; n: number } | null }) {
+  const pivots = useWorkbenchPivots(threadId);
+  return <WorkbenchNextView threadId={threadId} openRequest={openRequest} pivots={pivots} />;
+}
+
+function WorkbenchNextView({ threadId, openRequest, pivots }: {
+  threadId: string;
+  openRequest: { key: string; n: number } | null;
+  pivots: PivotQueue;
+}) {
+  const { snapshot, review, artifacts, artifactsById, caseRunning, runViews, seed, skip, items } = pivots;
   const [open, setOpen] = useState<string | null>(null);
   useEffect(() => {
     if (openRequest) setOpen(openRequest.key);
@@ -80,6 +100,10 @@ export function WorkbenchNext({ threadId, openRequest = null }: {
 
   return (
     <div data-workbench-next className="p-3">
+      <div className="px-2 pb-2 pt-1">
+        <div className="text-[11px] uppercase tracking-[0.09em] text-subtle-foreground">Recommended next</div>
+        <p className="mt-1.5 text-[11px] text-muted-foreground">Ranked by expected case value, not record volume. Every run opens its preview first.</p>
+      </div>
       {!hasPivotRunner(threadId) && (
         <p className="border-b border-border-subtle px-5 py-2 text-[12.5px] text-muted-foreground">
           Pivots run from the Investigate tab. Open this case in the workspace to run them.

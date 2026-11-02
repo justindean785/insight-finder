@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { ArtifactInspector } from "@/components/workspace/ArtifactInspector";
 import { CaseSheet } from "@/components/workspace/CaseSheet";
 import { WorkbenchConnections } from "@/components/workspace/WorkbenchConnections";
@@ -7,9 +7,9 @@ import { useOptionalWorkspaceUIState, useWorkspaceUIState } from "@/hooks/useWor
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useReviewStates } from "@/lib/review";
+import { useWorkbenchPivots } from "@/hooks/useWorkbenchPivots";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { Activity, ClipboardList, Network, Sparkles, type LucideIcon } from "lucide-react";
-import { LiveBoard } from "@/components/workspace/LiveBoard";
+import { ClipboardList, Network, Sparkles, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DecisionChip } from "@/components/workspace/WorkspaceTabs";
 import { tabButtonClass, tabIconClass } from "@/components/workspace/tab-recipe";
@@ -17,40 +17,53 @@ import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
 import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
 
 /**
- * The right-hand column of the case desk, as a small workbench: the case sheet
- * (default), the ranked next pivots, and the connections of one entity.
+ * The right-hand column of the case desk — JD's prototype's ONE inspector
+ * (R3, 2026-11-02), with three tabs:
+ *
+ *  - **Finding**: the selected artifact's assessment (ArtifactInspector); with
+ *    nothing selected, the case sheet (subject, evidence distribution, the
+ *    "Needs your call" queue). A selection in Evidence or the Graph switches
+ *    here, so a click surfaces its detail without a second tab click. Exactly
+ *    one detail surface, never two.
+ *  - **Next pivots**: the ranked queue from `useWorkbenchPivots`, every Run
+ *    behind its Preview. The tab carries the runnable count.
+ *  - **Connections**: the selected entity's relationships, from the same graph
+ *    the Graph tab draws; "Open graph" reaches the 4th workspace tab.
+ *
+ * The old Live / Sheet / Next keys are still accepted on the
+ * `swarmbot:workbench-tab` event and the `request` prop (ChatWindow's "Open Next
+ * pivots" sends `next`), so no caller had to change on the same day.
  * Nothing here is a new authority or a new path to a run.
- *
- * The Sheet tab is dual-mode. When nothing is selected, it shows the
- * case-level summary (subject, evidence distribution, "Needs your call"
- * queue). When an Evidence row is selected via the shared
- * {@link WorkspaceUIStateProvider}, the same tab becomes a selected-finding
- * inspector — exactly ONE right-hand surface, never two.
- *
- * A selection also auto-switches the Workbench to the Sheet tab, so a click
- * in Evidence surfaces its detail without a second tab click.
  */
-export type WorkbenchTab = "live" | "sheet" | "next" | "connections";
+export type WorkbenchTab = "finding" | "pivots" | "connections";
 const TABS: ReadonlyArray<{ key: WorkbenchTab; label: string; icon: LucideIcon }> = [
-  // Live is the default: what the agent is doing, the connections forming and
-  // the next pivots, on one surface (JD, 2026-11-02 — the rail read as static).
-  { key: "live", label: "Live", icon: Activity },
-  { key: "sheet", label: "Sheet", icon: ClipboardList },
-  { key: "next", label: "Next", icon: Sparkles },
+  { key: "finding", label: "Finding", icon: ClipboardList },
+  { key: "pivots", label: "Next pivots", icon: Sparkles },
   { key: "connections", label: "Connections", icon: Network },
 ];
+
+/** Accepts the pre-R3 tab names from older callers and events. */
+export function normalizeWorkbenchTab(raw: unknown): WorkbenchTab | null {
+  switch (raw) {
+    case "finding": case "sheet": case "live": return "finding";
+    case "pivots": case "next": return "pivots";
+    case "connections": return "connections";
+    default: return null;
+  }
+}
 
 export function Workbench({ threadId, request = null, onRequestConsumed }: {
   threadId: string;
   /** A tab (and optionally a pivot to open) requested while the rail was folded, so
    *  the request is not lost to a Workbench that was not mounted yet. */
-  request?: { tab: WorkbenchTab; open?: string; n: number } | null;
+  request?: { tab: WorkbenchTab | string; open?: string; n: number } | null;
   /** Called once the request is applied, so a later remount does not replay it. */
   onRequestConsumed?: () => void;
 }) {
-  const [tab, setTab] = useState<WorkbenchTab>(request?.tab ?? "live");
+  const initial = normalizeWorkbenchTab(request?.tab) ?? "finding";
+  const [tab, setTab] = useState<WorkbenchTab>(initial);
   // Panels stay mounted once visited, so a half-read list, an open Preview and a selection survive a tab switch.
-  const [visited, setVisited] = useState<ReadonlySet<WorkbenchTab>>(() => new Set<WorkbenchTab>([request?.tab ?? "live"]));
+  const [visited, setVisited] = useState<ReadonlySet<WorkbenchTab>>(() => new Set<WorkbenchTab>([initial]));
   const [openRequest, setOpenRequest] = useState<{ key: string; n: number } | null>(
     request?.open ? { key: request.open, n: request.n } : null,
   );
@@ -69,50 +82,54 @@ export function Workbench({ threadId, request = null, onRequestConsumed }: {
     refs.current[TABS[next].key]?.focus();
   };
 
-  // Optional: standalone renders (CaseViewPage read-only, tests) have no
-  // provider — the Workbench then degrades to its pre-change single-mode
-  // behaviour (CaseSheet only, no selection path), which is exactly what
-  // those callers used to get.
-  // The Sheet's open calls, from the SAME selector as the Evidence tab's badge
+  // The Finding tab's open calls, from the SAME selector as the Evidence tab's badge
   // and the sheet's "Needs your call" (`queueTotal`), so the figure cannot differ.
   const { model, hydrated } = useCaseSheetModel(threadId);
   const sheetCalls = buildWorkspaceTabCounts(0, hydrated ? model.queueTotal : null).evidence;
 
+  // One pivot queue for the tab badge and the panel: the hook is called once here
+  // and handed down, so the number on the tab and the list behind it are the same version.
+  const pivots = useWorkbenchPivots(threadId);
+  const runnable = useMemo(
+    () => pivots.items.filter((it) => it.kind === "pivot" && it.validation.status === "valid").length,
+    [pivots.items],
+  );
+  const pivotsReady = Boolean(pivots.snapshot?.hydrated) && pivots.review.availability === "ok";
+
+  // Optional: standalone renders (CaseViewPage read-only, tests) have no
+  // provider — the Workbench then degrades to the case sheet with no selection path.
   const ui = useOptionalWorkspaceUIState();
   const selectedArtifactId = ui?.selectedArtifactId ?? null;
   const clear = ui?.clear ?? (() => {});
-  // Auto-switch to Sheet when a selection appears, so Evidence row click
-  // doesn't leave the detail hiding behind the Next or Connections tab.
-  // Preserve the user's tab choice when selection returns to null.
+  // A selection surfaces its detail: switch to Finding. The analyst's tab choice is kept when selection returns to null.
   useEffect(() => {
-    if (selectedArtifactId) select("sheet");
+    if (selectedArtifactId) select("finding");
   }, [selectedArtifactId]);
 
   useEffect(() => {
     if (!request) return;
-    select(request.tab);
+    const target = normalizeWorkbenchTab(request.tab);
+    if (target) select(target);
     if (request.open) setOpenRequest({ key: request.open, n: request.n });
     // One-shot: the owner clears it, so returning to this tab later (a remount with a
-    // selected Evidence row) does not jump back to Next and hide the inspector.
+    // selected Evidence row) does not jump back to Next pivots and hide the inspector.
     onRequestConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [request]);
 
   // The transcript's compact "Open Next pivots" affordance dispatches this
   // event so the single actionable queue on the right-hand Workbench gets the
-  // focus without duplicating Run buttons in the chat. See ChatWindow.tsx and
-  // register item 1 ("single Next-steps queue").
+  // focus without duplicating Run buttons in the chat. See ChatWindow.tsx.
   useEffect(() => {
     const onJump = (e: Event) => {
-      const detail = (e as CustomEvent<{ tab?: WorkbenchTab; open?: string }>).detail;
-      const target = detail?.tab;
-      if (target === "live" || target === "sheet" || target === "next" || target === "connections") {
-        select(target);
-        if (target === "next" && typeof detail?.open === "string") setOpenRequest({ key: detail.open, n: Date.now() });
-        // Hand keyboard focus to the newly-selected tab button so the next
-        // ArrowLeft/ArrowRight keystroke lands in the right place.
-        queueMicrotask(() => refs.current[target]?.focus());
-      }
+      const detail = (e as CustomEvent<{ tab?: string; open?: string }>).detail;
+      const target = normalizeWorkbenchTab(detail?.tab);
+      if (!target) return;
+      select(target);
+      if (target === "pivots" && typeof detail?.open === "string") setOpenRequest({ key: detail.open, n: Date.now() });
+      // Hand keyboard focus to the newly-selected tab button so the next
+      // ArrowLeft/ArrowRight keystroke lands in the right place.
+      queueMicrotask(() => refs.current[target]?.focus());
     };
     window.addEventListener("swarmbot:workbench-tab", onJump as EventListener);
     return () => window.removeEventListener("swarmbot:workbench-tab", onJump as EventListener);
@@ -120,8 +137,8 @@ export function Workbench({ threadId, request = null, onRequestConsumed }: {
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-workbench>
-      {/* Right padding leaves room for the sheet's own fold button. */}
-      <div role="tablist" aria-label="Workbench" className="flex shrink-0 items-stretch gap-1 border-b border-white/[0.07] bg-surface-0 pl-2 pr-12">
+      {/* 58px tab row (prototype `.panel-tabs`). Right padding leaves room for the sheet's own fold button. */}
+      <div role="tablist" aria-label="Workbench" className="flex h-[52px] shrink-0 items-stretch gap-4 border-b border-border-subtle bg-surface-0 pl-5 pr-12">
         {TABS.map((t, i) => (
           <button
             key={t.key}
@@ -133,12 +150,14 @@ export function Workbench({ threadId, request = null, onRequestConsumed }: {
             tabIndex={tab === t.key ? 0 : -1}
             onClick={() => select(t.key)}
             onKeyDown={(e) => onKeyDown(e, i)}
-            className={tabButtonClass(tab === t.key, "secondary")}
+            className={cn(tabButtonClass(tab === t.key, "secondary"), "h-full px-0.5")}
           >
-            {/* Icons only from 2xl: four labelled tabs do not fit a 320/380px rail with them. */}
             <t.icon className={cn(tabIconClass(tab === t.key), "hidden 2xl:block")} strokeWidth={1.8} aria-hidden />
             <span className="leading-none">{t.label}</span>
-            {t.key === "sheet" && sheetCalls.kind === "decision" && <DecisionChip count={sheetCalls} compact />}
+            {t.key === "finding" && sheetCalls.kind === "decision" && <DecisionChip count={sheetCalls} compact />}
+            {t.key === "pivots" && pivotsReady && runnable > 0 && (
+              <span className="ml-1 rounded-[3px] bg-[hsl(var(--brand)/0.14)] px-1 py-px font-mono text-[11px] leading-none text-[hsl(var(--brand))]" aria-label={`${runnable} runnable`}>{runnable}</span>
+            )}
           </button>
         ))}
       </div>
@@ -152,13 +171,12 @@ export function Workbench({ threadId, request = null, onRequestConsumed }: {
           className="min-h-0 flex-1 overflow-y-auto"
         >
           <ErrorBoundary>
-            {t.key === "sheet" && (
+            {t.key === "finding" && (
               selectedArtifactId
-                ? <SheetInspectorHost threadId={threadId} selectedArtifactId={selectedArtifactId} onClose={clear} />
+                ? <FindingHost threadId={threadId} selectedArtifactId={selectedArtifactId} onClose={clear} />
                 : <CaseSheet threadId={threadId} />
             )}
-            {t.key === "live" && <LiveBoard threadId={threadId} />}
-            {t.key === "next" && <WorkbenchNext threadId={threadId} openRequest={openRequest} />}
+            {t.key === "pivots" && <WorkbenchNext threadId={threadId} openRequest={openRequest} pivots={pivots} />}
             {t.key === "connections" && <WorkbenchConnections threadId={threadId} />}
           </ErrorBoundary>
         </div>
@@ -175,7 +193,7 @@ export function Workbench({ threadId, request = null, onRequestConsumed }: {
  * `useCaseSnapshot()` is the one place every surface reads from, so the
  * inspector cannot show counts from a different read than the Evidence tab.
  */
-function SheetInspectorHost({
+function FindingHost({
   threadId,
   selectedArtifactId,
   onClose,
@@ -191,8 +209,6 @@ function SheetInspectorHost({
   const { updateLocal } = useThreadArtifacts(threadId);
   const { clear } = useWorkspaceUIState();
 
-  // If the id no longer resolves (deleted / cross-case stale), clear and
-  // render the case summary. Do NOT render a placeholder artifact.
   useEffect(() => {
     if (snapshot?.hydrated && !artifact) clear();
   }, [snapshot?.hydrated, artifact, clear]);

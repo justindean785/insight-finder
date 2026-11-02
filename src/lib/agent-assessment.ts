@@ -93,7 +93,7 @@ export interface AssessmentDelta {
   to: AssessmentGroup;
 }
 
-/** The cluster board's rungs (LiveBoard `strengthWord`), reused so the words agree everywhere. */
+/** The identity-cluster rungs (Strong ≥ 80 · Likely ≥ 60 · Possible ≥ 40), so the words agree everywhere. */
 export const SUPPORTED_LINKAGE_MIN = 60;
 /** Bars read amber below this (prototype). */
 export const LINKAGE_ATTENTION_BELOW = 70;
