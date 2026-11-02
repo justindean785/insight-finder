@@ -409,6 +409,23 @@ test.describe("Workbench Live board", () => {
   });
 });
 
+test.describe("Graph", () => {
+  test("a case with no links yet draws its entities, says so plainly, and a node offers verdict and pivot", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, THREAD);
+    await page.getByRole("tab", { name: /^Graph/ }).first().click();
+    await expect(page.getByRole("status").filter({ hasText: "No links yet" })).toBeVisible();
+    await expect(page.getByText(/unexpected error/i)).toHaveCount(0);
+    const nodes = page.locator(".react-flow__node");
+    await expect.poll(async () => nodes.count()).toBeGreaterThan(2);
+    await nodes.nth(3).click();
+    const actions = page.locator("[data-node-actions]");
+    await expect(actions.getByRole("button", { name: "Confirm" })).toBeVisible();
+    await expect(actions.getByRole("button", { name: "Dismiss" })).toBeVisible();
+    await expect(actions.getByRole("button", { name: /Pivot on this/ })).toBeVisible();
+  });
+});
+
 test.describe("case sheet → Evidence handoff", () => {
   test("Decide in Evidence opens that row even though the default view hides quarantined rows", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });

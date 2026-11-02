@@ -37,6 +37,8 @@ import { EmptyState } from "@/components/panel/EmptyState";
 import { Activity, AlertTriangle, List, Share2, Sparkles, Waypoints, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { captureError } from "@/lib/telemetry";
+import type { Artifact } from "@/hooks/useThreadArtifacts";
+import { ArtifactPivotAction } from "@/components/pivots/ArtifactPivotAction";
 
 // The graph's OWN taxonomy palette — the one documented exception to "hue
 // belongs to authority" (see the --kind-* block in index.css).
@@ -132,6 +134,8 @@ type EntityNodeData = {
   isSeed: boolean;
   conflict: boolean;
   degree: number;
+  /** The analyst's verdict, for styling only: dismissed/wrong fade, key/confirmed get a mark. */
+  review: ReviewState;
 };
 
 /** A single graph node — group-colored chip; seed is the hub, marked by a
@@ -164,6 +168,8 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
         "group flex items-center gap-1.5 rounded-lg border bg-surface-1/90 px-2.5 py-1.5 backdrop-blur-sm transition-shadow",
         "border-white/10 shadow-[0_8px_24px_-16px_rgba(0,0,0,0.9)]",
         data.conflict && "border-[hsl(var(--danger)/0.55)]",
+        (data.review === "key" || data.review === "confirmed") && "border-[hsl(var(--authority-verified)/0.6)]",
+        (data.review === "dismissed" || data.review === "wrong") && "opacity-40",
         selected && "ring-2 ring-foreground",
       )}
       style={{ boxShadow: selected ? `0 0 0 1px ${color}, 0 10px 30px -16px ${color}` : undefined }}
@@ -192,6 +198,9 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
       {data.confidence > 0 && (
         <span className="font-mono text-micro tabular-nums text-muted-foreground/90">{data.confidence}</span>
       )}
+      {data.review === "key" && <span className="text-micro text-[hsl(var(--authority-verified))]" title="Analyst: key finding">★</span>}
+      {data.review === "confirmed" && <span className="text-micro text-[hsl(var(--authority-verified))]" title="Analyst: confirmed">✓</span>}
+      {(data.review === "dismissed" || data.review === "wrong") && <span className="text-micro text-muted-foreground" title="Analyst: dismissed">✕</span>}
       <Handle type="source" position={Position.Bottom} className="!h-1 !w-1 !border-0 !bg-transparent !opacity-0" isConnectable={false} />
     </div>
   );
@@ -199,7 +208,15 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
 
 const nodeTypes = { entity: EntityNode };
 
-function toRfNodes(graph: EntityGraph, hidden: Set<Group>, showIsolated = true): Node<EntityNodeData>[] {
+type SavedPositions = Record<string, { x: number; y: number }>;
+
+function toRfNodes(
+  graph: EntityGraph,
+  hidden: Set<Group>,
+  showIsolated = true,
+  reviewOf: (artifactId: string) => ReviewState = () => "new",
+  saved: SavedPositions = {},
+): Node<EntityNodeData>[] {
   const linked = linkedNodeIds(graph);
   const visible = graph.nodes.filter((n) => (n.isSeed || !hidden.has(n.group)) && (showIsolated || n.isSeed || n.seedRecord || linked.has(n.id)));
   const parts = splitSharedSuffixes(visible.map((n) => n.label));
@@ -207,7 +224,8 @@ function toRfNodes(graph: EntityGraph, hidden: Set<Group>, showIsolated = true):
     .map((n) => ({
       id: n.id,
       type: "entity",
-      position: { x: n.x, y: n.y },
+      // A position the analyst dragged to wins over the computed layout.
+      position: saved[n.id] ?? { x: n.x, y: n.y },
       data: {
         label: n.label,
         head: parts.get(n.label)?.head ?? n.label,
@@ -219,6 +237,7 @@ function toRfNodes(graph: EntityGraph, hidden: Set<Group>, showIsolated = true):
         isSeed: n.isSeed,
         conflict: n.conflict,
         degree: n.degree,
+        review: n.art ? reviewOf(n.art.id) : "new",
       },
       // Seed stays put; discovered nodes are draggable for manual arrangement.
       draggable: !n.isSeed,
@@ -320,6 +339,16 @@ export function GraphTab({ threadId }: { threadId: string }) {
     [items, seed, reviews],
   );
 
+  // With no real link yet, hiding every unlinked entity left the canvas holding
+  // the seed alone ("the graph shows nothing", JD 2026-11-02). Decide the default
+  // once per case from what it holds; the toggle stays the analyst's after that.
+  const isolatedDefaulted = useRef<string | null>(null);
+  useEffect(() => {
+    if (isolatedDefaulted.current === threadId || graph.nodes.length <= 1) return;
+    isolatedDefaulted.current = threadId;
+    setShowIsolated(graph.stats.realEdgeCount === 0);
+  }, [graph, threadId]);
+
   const presentGroups = useMemo(() => {
     const seen = new Set<Group>();
     for (const n of graph.nodes) if (!n.isSeed) seen.add(n.group);
@@ -382,15 +411,54 @@ export function GraphTab({ threadId }: { threadId: string }) {
   // first measurement, and artifact streams land more) wipes those dimensions;
   // because the DOM element's size is unchanged the observer never re-fires, so
   // every node gets stranded at `visibility:hidden` and the canvas goes blank.
+  // Dragged positions persist per case on this device, so an arrangement the
+  // analyst built survives a reload and every live update.
+  const posKey = `if:graphPos:${threadId}`;
+  const [saved, setSaved] = useState<SavedPositions>({});
+  useEffect(() => {
+    try { setSaved(JSON.parse(localStorage.getItem(posKey) ?? "{}") as SavedPositions); } catch { setSaved({}); }
+  }, [posKey]);
+  const savedRef = useRef(saved);
+  savedRef.current = saved;
+  // React Flow fires drag-stop on a plain click too; only a real move is an arrangement.
+  const dragStart = useRef<{ id: string; x: number; y: number } | null>(null);
+  const onNodeDragStart = useCallback((_: unknown, node: Node) => {
+    dragStart.current = { id: node.id, x: node.position.x, y: node.position.y };
+  }, []);
+  const onNodeDragStop = useCallback((_: unknown, node: Node) => {
+    const start = dragStart.current;
+    dragStart.current = null;
+    if (start && start.id === node.id && Math.hypot(node.position.x - start.x, node.position.y - start.y) < 4) return;
+    setSaved((prev) => {
+      const next = { ...prev, [node.id]: { x: Math.round(node.position.x), y: Math.round(node.position.y) } };
+      try { localStorage.setItem(posKey, JSON.stringify(next)); } catch { /* storage blocked: keep in memory */ }
+      return next;
+    });
+  }, [posKey]);
+  const resetLayout = () => {
+    try { localStorage.removeItem(posKey); } catch { /* ignore */ }
+    setSaved({});
+    setRfNodes(toRfNodes(graph, hidden, showIsolated, (id) => review.get(id), {}));
+    requestAnimationFrame(() => rfRef.current?.fitView({ padding: narrowRef.current ? 0.05 : 0.1, maxZoom: 1.45, duration: 250 }));
+  };
+
   useEffect(() => {
     setRfNodes((prev) => {
       const measured = new Map(prev.map((p) => [p.id, { width: p.width, height: p.height }]));
-      return toRfNodes(graph, hidden, showIsolated).map((n) => {
+      // Keep where nodes currently sit (a drag not yet saved, or a saved one); new nodes take the layout.
+      const current: SavedPositions = { ...savedRef.current };
+      for (const p of prev) if (savedRef.current[p.id]) current[p.id] = p.position;
+      return toRfNodes(graph, hidden, showIsolated, (id) => review.get(id), current).map((n) => {
         const m = measured.get(n.id);
         return m?.width != null && m?.height != null ? { ...n, width: m.width, height: m.height } : n;
       });
     });
-  }, [graph, hidden, showIsolated, setRfNodes]);
+  }, [graph, hidden, showIsolated, setRfNodes, review]);
+  // Apply saved positions once they load from storage.
+  useEffect(() => {
+    if (Object.keys(saved).length === 0) return;
+    setRfNodes((prev) => prev.map((n) => (saved[n.id] && (saved[n.id].x !== n.position.x || saved[n.id].y !== n.position.y) ? { ...n, position: saved[n.id] } : n)));
+  }, [saved, setRfNodes]);
   useEffect(() => { setRfEdges(toRfEdges(graph, hidden, selected, showDiscovery, showIsolated)); }, [graph, hidden, selected, showDiscovery, showIsolated, setRfEdges]);
   // Selection is this component's own state (onNodeClick), so mirror it onto
   // the nodes: EntityNode draws its selected ring from React Flow's `selected`
@@ -485,6 +553,16 @@ export function GraphTab({ threadId }: { threadId: string }) {
               Discovery lines
             </button>
           )}
+          {Object.keys(saved).length > 0 && mode === "graph" && (
+            <button
+              type="button"
+              onClick={resetLayout}
+              title="Forget the positions you dragged and return to the computed layout."
+              className="inline-flex h-8 shrink-0 items-center rounded-md px-2 text-data font-medium text-muted-foreground transition-colors hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11"
+            >
+              Reset layout
+            </button>
+          )}
           <div className="ml-auto flex items-center gap-1">
             <AuthorityLegend />
           </div>
@@ -521,14 +599,18 @@ export function GraphTab({ threadId }: { threadId: string }) {
           })}
         </div>
         {graph.warnings.length > 0 && (
-          <ul className="mt-2 space-y-1">
-            {graph.warnings.map((w) => (
-              <li key={w} className="flex items-start gap-1.5 text-[13px] leading-snug text-[hsl(var(--warning))]">
-                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-                <span className="min-w-0">{w}</span>
-              </li>
-            ))}
-          </ul>
+          // Folded by default: a stack of warning rows above every graph read as an error.
+          <details className="group/notes mt-2">
+            <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 text-[12.5px] text-[hsl(var(--warning))] [&::-webkit-details-marker]:hidden">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              {graph.warnings.length} note{graph.warnings.length === 1 ? "" : "s"} on this graph
+            </summary>
+            <ul className="mt-1.5 space-y-1">
+              {graph.warnings.map((w) => (
+                <li key={w} className="text-[13px] leading-snug text-muted-foreground">{w}</li>
+              ))}
+            </ul>
+          </details>
         )}
       </div>
 
@@ -559,6 +641,8 @@ export function GraphTab({ threadId }: { threadId: string }) {
           edges={rfEdges}
           onInit={onRfInit}
           onNodesChange={onNodesChange}
+          onNodeDragStart={onNodeDragStart}
+          onNodeDragStop={onNodeDragStop}
           nodeTypes={nodeTypes}
           onNodeClick={(_, n) => setSelected(n.id)}
           onPaneClick={() => setSelected(null)}
@@ -588,19 +672,13 @@ export function GraphTab({ threadId }: { threadId: string }) {
         </ReactFlow>
 
         {graph.stats.realEdgeCount === 0 && (
-          <div className="pointer-events-none absolute inset-0 z-[5] grid place-items-center p-4">
-            <div className="max-w-md rounded-xl border border-white/10 bg-[linear-gradient(160deg,hsl(var(--film)/0.1),hsl(var(--film)/0.025)_55%)] px-4 py-3 text-center shadow-[0_20px_60px_-36px_rgba(0,0,0,0.95)] backdrop-blur-xl">
-              <div className="inline-flex items-center gap-1.5 text-micro font-semibold tracking-normal text-[hsl(var(--warning))]">
-                <AlertTriangle className="h-3.5 w-3.5" />
-                No durable links yet
-              </div>
-              <p className="mt-1.5 text-sm text-foreground/90">
-                This case has artifacts, but they do not share strong selectors yet.
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Run additional pivots or corroborate with independent sources to form graph connections.
-              </p>
-            </div>
+          // A case with no shared selector yet is the normal start of a run, not a
+          // fault. It used to sit mid-canvas as a yellow warning box over the seed,
+          // which read as "the graph errored" (JD, 2026-11-02).
+          <div className="pointer-events-none absolute inset-x-0 bottom-3 z-[5] flex justify-center px-4">
+            <p role="status" className="max-w-md rounded-lg border border-white/10 bg-surface-1/90 px-3 py-1.5 text-center text-[12.5px] leading-snug text-muted-foreground backdrop-blur">
+              No links yet: nothing here shares an email, phone, handle or infrastructure. Links draw themselves as the agent finds them.
+            </p>
           </div>
         )}
 
@@ -640,6 +718,18 @@ export function GraphTab({ threadId }: { threadId: string }) {
                   </DetailRow>
                 )}
               </dl>
+            )}
+            {!selectedNode.isSeed && selectedNode.art && (
+              <NodeActions
+                threadId={threadId}
+                artifact={selectedNode.art}
+                artifacts={items}
+                current={review.get(selectedNode.art.id)}
+                onSet={(state) => {
+                  const a = selectedNode.art!;
+                  void review.set(a.id, state, { value: a.value, kind: a.kind, source: a.source ?? undefined });
+                }}
+              />
             )}
             {/* Typed relationships — the auditable WHY behind every line, and an
                 explicit statement when a line is provenance, not a relationship. */}
@@ -803,6 +893,52 @@ function GraphList({
           )}
         </section>
       )}
+    </div>
+  );
+}
+
+
+/**
+ * Verdict and pivot controls for one graph node — the same review writer the
+ * Evidence inspector uses (`useReviewStates().set`) and the same Preview-gated
+ * pivot (`ArtifactPivotAction`). The graph adds no authority of its own.
+ */
+function NodeActions({
+  threadId,
+  artifact,
+  artifacts,
+  current,
+  onSet,
+}: {
+  threadId: string;
+  artifact: Artifact;
+  artifacts: Artifact[];
+  current: ReviewState;
+  onSet: (state: ReviewState | null) => void;
+}) {
+  const btn = (state: ReviewState, label: string) => (
+    <button
+      type="button"
+      aria-pressed={current === state}
+      onClick={() => onSet(current === state ? null : state)}
+      className={cn(
+        "inline-flex h-8 items-center justify-center rounded-md border px-2 text-data font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-10",
+        current === state
+          ? "border-foreground/40 bg-surface-3 text-foreground"
+          : "border-white/10 text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
+      )}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="mt-3 space-y-2" data-node-actions>
+      <div className="grid grid-cols-3 gap-1.5" role="group" aria-label="Your verdict">
+        {btn("confirmed", "Confirm")}
+        {btn("key", "Key")}
+        {btn("dismissed", "Dismiss")}
+      </div>
+      <ArtifactPivotAction threadId={threadId} artifact={artifact} artifacts={artifacts} />
     </div>
   );
 }
