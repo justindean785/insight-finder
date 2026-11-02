@@ -59,7 +59,25 @@ function formatElapsed(nowMs: number, startedAtIso: string | null): string | nul
  * renders "Analyzing" with no elapsed — this is the audit's §5 requirement
  * (never fabricate an interval from page-open or first-tool time).
  */
-export function CaseStatusPill({ snapshot, className }: { snapshot: CaseSnapshot | null; className?: string }) {
+/** Label ink for the `line` variant: the word carries the state, the dot repeats it. */
+const LINE_TONE: Record<CaseRunState, string> = {
+  running: "text-[hsl(var(--info))]",
+  completed: "text-subtle-foreground",
+  interrupted: "text-[hsl(var(--warning))]",
+  stopped: "text-muted-foreground",
+  draft: "text-subtle-foreground",
+};
+
+export function CaseStatusPill({
+  snapshot, className, variant = "pill",
+}: {
+  snapshot: CaseSnapshot | null;
+  className?: string;
+  /** `pill`: bordered chip (phone strip). `line`: the Case-desk assessment line —
+   *  dot + small-caps word, no border (JD's prototype, 2026-11-02). Same text,
+   *  same `data-run-state`, so every reader of the state keeps working. */
+  variant?: "pill" | "line";
+}) {
   // Tick every second only while a run is live, so a mounted pill updates its
   // elapsed label without a snapshot refresh. The tick is a no-op outside the
   // running state, so idle pills never schedule intervals.
@@ -75,7 +93,9 @@ export function CaseStatusPill({ snapshot, className }: { snapshot: CaseSnapshot
     return (
       <span
         className={cn(
-          "inline-flex h-5 items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2 text-data font-medium text-muted-foreground",
+          variant === "line"
+            ? "inline-flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.06em] text-subtle-foreground"
+            : "inline-flex h-5 items-center gap-1.5 rounded-full border border-border bg-surface-2 px-2 text-data font-medium text-muted-foreground",
           className,
         )}
       >
@@ -98,6 +118,23 @@ export function CaseStatusPill({ snapshot, className }: { snapshot: CaseSnapshot
         return elapsed ? `Analyzing · ${elapsed}` : "Analyzing";
       })()
     : snapshot.run.label;
+  if (variant === "line") {
+    return (
+      <span
+        data-run-state={state}
+        className={cn(
+          "inline-flex shrink-0 items-center gap-2.5 text-[11px] font-medium uppercase tracking-[0.06em]",
+          LINE_TONE[state],
+          className,
+        )}
+      >
+        {state === "stopped"
+          ? <Square className="h-2 w-2 fill-current" aria-hidden />
+          : <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", DOT_TONE[state])} />}
+        {label}
+      </span>
+    );
+  }
   return (
     <span
       data-run-state={state}

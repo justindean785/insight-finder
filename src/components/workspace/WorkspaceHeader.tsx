@@ -1,14 +1,15 @@
 import { useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useCaseSnapshot, type CaseSnapshot } from "@/hooks/useCaseSnapshot";
-import { Lock, ShieldAlert, Plus, Copy, Link2, Mail, Phone, Globe, Network, User, Hash, FileSearch, MapPin } from "lucide-react";
+import { ChevronRight, Plus, Copy, Link2, Mail, Phone, Globe, Network, User, Hash, FileSearch, MapPin } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { verifiedHint, verifiedLabel } from "@/lib/authority";
 import { toast } from "sonner";
 import { extractDisplaySeed, type SeedKind } from "@/lib/seed";
 import { humanCaseName } from "@/lib/case-name";
+import { timeAgo } from "@/lib/time";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CaseStatusPill, CaseSyncStatus } from "@/components/workspace/CaseStatus";
 
@@ -72,50 +73,6 @@ function toolCallsLabel(total: number, dense: boolean): string {
 /** Placeholder for a figure that has not been read yet — never a false "0". */
 function FigureSkeleton({ width = "w-14" }: { width?: string }) {
   return <span aria-hidden className={cn("inline-block h-3 rounded-sm bg-white/[0.07] animate-pulse motion-reduce:animate-none", width)} />;
-}
-
-/**
- * Custody, stated with its basis.
- *
- * The old header printed a bare "100%" beside a lock. That number was the share
- * of evidence-log entries whose hash links to the previous one — a statement
- * about the LOG not having been altered. It says nothing about whether sources
- * were preserved: a case with 47 chained entries and zero hard-preserved sources
- * read "100%", which an analyst reasonably takes as full custody. The chip now
- * says what it measured ("47/47 chained") and the tooltip says what it did not.
- *
- * Why "chained", not "linked": "linked" collides with identity linkage (what
- * the Connections tab counts). Hash-chain integrity is a different relationship
- * entirely — one entry's hash referencing the previous entry's hash — and the
- * two counts face each other on the same screen, so the words must be distinct.
- */
-function CustodyChip({ snapshot }: { snapshot: CaseSnapshot }) {
-  const integ = snapshot.integrity;
-  if (!integ || integ.total === 0) return null;
-  const chained = integ.ok ? integ.total : Math.max(0, Number(integ.firstBreak ?? 1) - 1);
-  const text = `${chained}/${integ.total}`;
-  const hint = integ.ok
-    ? `Hash chain valid: all ${integ.total} evidence-log entries hash to the one before, so the log has not been altered. This is not identity linkage — see Connections for that. And it does not mean the underlying sources were preserved — see Tools › Custody for hard vs soft entries.`
-    : `Chain break at entry #${integ.firstBreak}. Entries after the break cannot be shown to be unaltered.`;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          tabIndex={0}
-          aria-label={integ.ok ? `Hash chain valid, ${text} evidence-log entries chained` : `Hash chain broken at entry ${integ.firstBreak}, ${text} evidence-log entries chained`}
-          className={cn(
-            "inline-flex items-center gap-1 whitespace-nowrap rounded-md px-1 outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-help",
-            integ.ok ? "text-muted-foreground" : "text-[hsl(var(--danger))]",
-          )}
-        >
-          {integ.ok ? <Lock className="h-3 w-3" aria-hidden /> : <ShieldAlert className="h-3 w-3" aria-hidden />}
-          <span className="font-mono tabular-nums">{text}</span>
-          <span className="hidden 2xl:inline">chained</span>
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" className="max-w-[300px] text-xs leading-relaxed">{hint}</TooltipContent>
-    </Tooltip>
-  );
 }
 
 /**
@@ -218,15 +175,63 @@ export function CaseFigures({
   );
 }
 
+/** "October 25, 2026" — the assessment line's date. Null when the stamp is unusable. */
+function longDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms).toLocaleDateString([], { month: "long", day: "numeric", year: "numeric" });
+}
+
+/** "14:32" — wall clock of a stamp. */
+function clockOf(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 /**
- * Case bar — the one band of chrome above the workspace tabs.
+ * One labelled stat in the case header's right cluster (Last assessment /
+ * Source records / Spend — JD's prototype). Label over value, a hairline on the
+ * left of every stat but the first. `small` is the prototype's `.case-stat .small`:
+ * a time reads at 12px, a count at 16px.
+ */
+function CaseStat({ label, value, small = false, hint }: { label: string; value: ReactNode; small?: boolean; hint?: string }) {
+  const body = (
+    <div className={cn("border-l border-border pl-5 first:border-0 first:pl-0", hint && "cursor-help")}>
+      <small className="mb-0.5 block text-[11px] leading-none text-subtle-foreground">{label}</small>
+      <b className={cn("block font-medium tabular-nums leading-tight", small ? "text-[12px] text-muted-foreground" : "text-[16px] text-foreground")}>{value}</b>
+    </div>
+  );
+  if (!hint) return body;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div tabIndex={0} className="rounded outline-none focus-visible:ring-2 focus-visible:ring-ring">{body}</div>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-[300px] text-xs leading-relaxed">{hint}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * Case header — the Case-desk layout (JD's prototype, 2026-11-02).
  *
- * It replaces three stacked bands (a decorative classification strip, a
- * three-zone command bar with the seed centred, and a second count line) that
- * together spent ~130px of height and printed the tool count twice. Identity
- * leads on the left where the eye starts; the case line beneath it carries every
- * figure from one snapshot version; sync provenance and the one primary action
- * sit on the right.
+ * Three bands, top to bottom:
+ *  1. a top line: the crumb "Insight Finder › <case>" on the left; sync
+ *     provenance and the one secondary action (New investigation) on the right;
+ *  2. the assessment line — run state as a small-caps word with its dot, then
+ *     the date the case last changed;
+ *  3. the heading: a 32px subject, "<Kind> seed · selector" and the case line
+ *     (every figure from ONE snapshot version) beneath it, and three labelled
+ *     stats on the right — Last assessment / Source records / Spend.
+ *
+ * The text tabs follow directly beneath (WorkspaceTabs); the custody reading
+ * moved to the bottom status strip (WorkspaceStatusStrip). Everything the e2e
+ * suite reads in the "Case summary" region is still here: the run word
+ * ("Complete", "Interrupted", "Stopped", "Analyzing · 4s"), the sync stamp,
+ * Refresh, and the case line's "N tool calls".
  */
 export function WorkspaceHeader({ threadId }: { threadId: string }) {
   const navigate = useNavigate();
@@ -237,8 +242,11 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
   const display = snapshot?.seed.value
     ? extractDisplaySeed(snapshot.seed.value, snapshot.seed.type)
     : { selector: "", kind: "other" as SeedKind, title: snapshot?.hydrated ? "New investigation" : "" };
-  const KindIcon = KIND_ICON[display.kind] ?? FileSearch;
   const caseName = humanCaseName(snapshot?.seed.caseTitle ?? null, snapshot?.seed.value ?? null, display.title);
+  const hydrated = Boolean(snapshot?.hydrated);
+  const changedAt = snapshot?.updatedAt ?? null;
+  const changedDate = longDate(changedAt);
+  const changedClock = clockOf(changedAt);
 
   const createInvestigation = async () => {
     if (!user || creating) return;
@@ -257,6 +265,23 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
     );
   };
 
+  const copyButton = (label: string, className: string) => (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={copySeed}
+          aria-label={`${label} — copy selector`}
+          className={cn("group inline-flex min-w-0 items-center gap-1.5 rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-ring", className)}
+        >
+          <span className="truncate font-mono tracking-[-0.02em] text-muted-foreground transition-colors group-hover:text-foreground">{display.title}</span>
+          <Copy className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="text-xs">Copy selector</TooltipContent>
+    </Tooltip>
+  );
+
   return (
     // A <header> inside <main> is not a landmark, so the case bar names itself
     // as a region: screen-reader users can jump straight to the case summary.
@@ -264,96 +289,20 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
       role="region"
       aria-label="Case summary"
       data-thread-id={threadId}
-      className="case-bar relative border-b border-white/[0.07]"
+      className="case-bar relative"
     >
-      <div className="flex min-h-[4.25rem] items-center gap-3.5 px-4 py-3 sm:px-6 lg:min-h-[5.5rem] lg:py-4 [@media(max-height:700px)]:min-h-14 [@media(max-height:700px)]:py-2">
-        {/* Identity */}
-        <div className="flex min-w-0 flex-1 items-center gap-3.5">
-          <span
-            className="case-mark grid h-10 w-10 shrink-0 place-items-center rounded-[11px] lg:hidden [@media(max-height:700px)]:h-8 [@media(max-height:700px)]:w-8 [@media(max-height:700px)]:rounded-[9px]"
-            title={KIND_LABEL[display.kind]}
-          >
-            <KindIcon className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
-            <span className="sr-only">{KIND_LABEL[display.kind]}</span>
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2.5">
-              {caseName ? (
-                // The analyst's name for the case leads, in the display face; the
-                // selector it started from moves to the line beneath.
-                <h1 className="min-w-0 truncate font-display text-[22px] font-semibold leading-tight tracking-[-0.035em] lg:text-[28px] [@media(max-height:700px)]:text-[18px]" title={caseName}>
-                  {caseName}
-                </h1>
-              ) : display.title ? (
-                // The case's name is the page heading; the copy control sits inside it.
-                <h1 className="flex min-w-0">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      onClick={copySeed}
-                      disabled={!snapshot?.seed.value}
-                      aria-label={snapshot?.seed.value ? `${display.title} — copy selector` : display.title}
-                      className="group flex min-w-0 items-center gap-1.5 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
-                    >
-                      <span className="truncate font-mono text-[16px] font-medium tracking-[-0.015em] text-foreground">
-                        {display.title}
-                      </span>
-                      {snapshot?.seed.value && (
-                        <Copy className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden />
-                      )}
-                    </button>
-                  </TooltipTrigger>
-                  {snapshot?.seed.value && <TooltipContent side="bottom" className="text-xs">Copy selector</TooltipContent>}
-                </Tooltip>
-                </h1>
-              ) : (
-                <FigureSkeleton width="w-40" />
-              )}
-              <CaseStatusPill snapshot={snapshot} />
-            </div>
-            <div className="mt-1 flex min-w-0 items-center gap-2 text-data [@media(max-height:700px)]:mt-0.5">
-              {caseName && snapshot?.seed.value && (
-                <>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        onClick={copySeed}
-                        aria-label={`${KIND_LABEL[display.kind]} ${display.title} — copy selector`}
-                        className="group inline-flex min-w-0 max-w-[11rem] shrink items-center lg:max-w-[16rem] gap-1.5 rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        <span className="shrink-0 text-faint-foreground">{KIND_LABEL[display.kind]}</span>
-                        <span className="truncate font-mono text-subtle-foreground transition-colors group-hover:text-foreground">{display.title}</span>
-                        <Copy className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" className="text-xs">Copy selector</TooltipContent>
-                  </Tooltip>
-                  <Sep />
-                </>
-              )}
-              <div className="flex min-w-0 flex-1">
-                <CaseFigures snapshot={snapshot} oneLine spendClassName="lg:hidden" />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Custody, spend, provenance, and the one primary action */}
-        <div className="flex shrink-0 items-center gap-3">
-          {snapshot?.hydrated && (
-            <div className="hidden items-center gap-3 border-r border-white/[0.07] pr-3 text-data lg:flex">
-              <CustodyChip snapshot={snapshot} />
-              {(snapshot.spend.microUsd ?? 0) > 0 && (
-                <Figure
-                  value={snapshot.spend.text}
-                  label="spend"
-                  hint="Model and tool spend recorded for this case. Saved in checkpoints during a run, so it can trail live activity by a few calls."
-                />
-              )}
-            </div>
-          )}
+      {/* Band 1 — top line: crumb, then sync provenance and New. */}
+      <div className="flex h-11 items-center justify-between gap-4 border-b border-border-subtle px-4 text-[12px] sm:px-6 lg:px-8 [@media(max-height:700px)]:h-9">
+        <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2.5 text-subtle-foreground">
+          <Link to="/" className="shrink-0 rounded font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
+            Insight Finder
+          </Link>
+          <ChevronRight className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
+          {hydrated
+            ? <span className="min-w-0 truncate" aria-current="page">{caseName ?? display.title ?? "Case"}</span>
+            : <FigureSkeleton width="w-24" />}
+        </nav>
+        <div className="flex shrink-0 items-center gap-2">
           <CaseSyncStatus className="hidden md:flex" />
           {/* Secondary on purpose: inside a case the one primary action is
               Continue / Run. The rail carries the same "New investigation". */}
@@ -362,14 +311,95 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
               <button
                 onClick={createInvestigation}
                 disabled={creating}
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-muted-foreground transition-colors duration-fast hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/10 text-muted-foreground transition-colors duration-fast hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
                 aria-label="Start a new investigation"
               >
-                <Plus className="h-4 w-4" aria-hidden />
+                <Plus className="h-3.5 w-3.5" aria-hidden />
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">{creating ? "Creating…" : "New investigation"}</TooltipContent>
           </Tooltip>
+        </div>
+      </div>
+
+      {/* Bands 2 and 3 — the assessment line and the heading. */}
+      <div className="px-4 pt-5 sm:px-6 lg:px-8 lg:pt-6 [@media(max-height:700px)]:pt-2.5">
+        <div className="flex min-w-0 items-center gap-2.5 text-[11px] uppercase tracking-[0.06em] text-subtle-foreground">
+          <CaseStatusPill snapshot={snapshot} variant="line" />
+          {hydrated && changedDate && changedAt && (
+            <>
+              <span aria-hidden className="text-faint-foreground/60">/</span>
+              <time dateTime={changedAt} className="truncate" title="When this case's record last changed">{changedDate}</time>
+            </>
+          )}
+        </div>
+
+        <div className="mb-4 mt-2 flex items-center justify-between gap-6 lg:mb-5 [@media(max-height:700px)]:mb-2.5 [@media(max-height:700px)]:mt-1">
+          <div className="min-w-0 flex-1">
+            {caseName ? (
+              // The analyst's name for the case leads, in the display face; the
+              // selector it started from moves to the line beneath.
+              <h1 className="min-w-0 truncate font-display text-[26px] font-semibold leading-[1.25] tracking-[-0.04em] lg:text-[32px] [@media(max-height:700px)]:text-[20px]" title={caseName}>
+                {caseName}
+              </h1>
+            ) : display.title ? (
+              // No analyst title yet: the selector is the heading, and the copy
+              // control sits inside it.
+              <h1 className="flex min-w-0 text-[20px] leading-[1.25] lg:text-[24px] [@media(max-height:700px)]:text-[17px]">
+                {snapshot?.seed.value
+                  ? copyButton(display.title, "font-medium [&>span]:text-foreground")
+                  : <span className="truncate font-display font-semibold tracking-[-0.03em]">{display.title}</span>}
+              </h1>
+            ) : (
+              <FigureSkeleton width="w-40" />
+            )}
+            {hydrated && snapshot?.seed.value && (
+              <div className="mt-1.5 flex min-w-0 items-center gap-2 text-[12px] [@media(max-height:700px)]:mt-0.5">
+                <span className="shrink-0 text-subtle-foreground">{KIND_LABEL[display.kind]} seed</span>
+                {caseName && snapshot?.seed.value && (
+                  <>
+                    <Sep />
+                    {copyButton(`${KIND_LABEL[display.kind]} ${display.title}`, "max-w-[14rem] shrink lg:max-w-[22rem]")}
+                  </>
+                )}
+              </div>
+            )}
+            {/* The case line on its own row, wrapping rather than dropping
+                figures: the stats cluster on the right narrows this column, and
+                "N tool calls" must stay readable at every desktop width. */}
+            <div className="mt-1 flex min-w-0 [@media(max-height:700px)]:mt-0.5">
+              <CaseFigures snapshot={snapshot} spendClassName="lg:hidden" />
+            </div>
+          </div>
+
+          {/* Labelled stats — the prototype's right cluster. Hidden below lg,
+              where the case line beneath the title already carries spend. */}
+          <div className="hidden shrink-0 items-center gap-5 lg:flex" aria-label="Case stats">
+            {hydrated && snapshot ? (
+              <>
+                <CaseStat
+                  label="Last assessment"
+                  small
+                  value={changedClock ? `${changedClock} · ${timeAgo(changedAt)}` : "—"}
+                  hint="When this case's record last changed — the end of its latest run or edit. The sync stamp above is when this page last read it."
+                />
+                <CaseStat
+                  label="Source records"
+                  value={snapshot.evidence.available ? snapshot.evidence.artifacts : "—"}
+                  hint="Deduplicated artifact rows recorded for this case — the Evidence tab's population. The case line beneath the title counts chain-of-custody entries, which can be more."
+                />
+                <CaseStat
+                  label="Spend"
+                  value={snapshot.spend.text}
+                  hint="Model and tool spend recorded for this case. Saved in checkpoints during a run, so it can trail live activity by a few calls."
+                />
+              </>
+            ) : (
+              <span className="inline-flex items-center gap-5" aria-label="Case stats loading">
+                <FigureSkeleton width="w-20" /> <FigureSkeleton width="w-14" /> <FigureSkeleton width="w-12" />
+              </span>
+            )}
+          </div>
         </div>
       </div>
     </header>

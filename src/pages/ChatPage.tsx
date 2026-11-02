@@ -7,6 +7,7 @@ import { WorkspaceTabs, type WorkspaceTab } from "@/components/workspace/Workspa
 import { CaseSnapshotProvider } from "@/components/workspace/CaseSnapshotProvider";
 import { WorkspaceUIStateProvider } from "@/components/workspace/WorkspaceUIStateProvider";
 import { RecoveryBanner } from "@/components/workspace/RecoveryBanner";
+import { WorkspaceStatusStrip } from "@/components/workspace/WorkspaceStatusStrip";
 import { Workbench, type WorkbenchTab } from "@/components/workspace/Workbench";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { ShellTopBar } from "@/components/shell/AppShell";
@@ -325,6 +326,10 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
       </div>
 
       {content}
+
+      {/* Desktop: the 26px status strip (custody, working rules). Keyed like
+          its siblings so {content} keeps its position when the breakpoint flips. */}
+      {!isMobile && <WorkspaceStatusStrip key="status-strip" />}
 
       {/* Phone: section navigation at the bottom. Rendered AFTER {content}
           and keyed, so {content} keeps its key and the ChatWindow inside it
