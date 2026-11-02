@@ -102,6 +102,7 @@ vi.mock("@/components/panel/ToolHealthPanel", () => ({ ToolHealthPanel: () => nu
 
 const { CaseSnapshotProvider } = await import("@/components/workspace/CaseSnapshotProvider");
 const { WorkspaceHeader } = await import("@/components/workspace/WorkspaceHeader");
+const { WorkspaceStatusStrip } = await import("@/components/workspace/WorkspaceStatusStrip");
 const { WorkspaceTabs } = await import("@/components/workspace/WorkspaceTabs");
 const { ToolsTab } = await import("@/components/workspace/ToolsTab");
 const { useCaseSnapshot } = await import("@/hooks/useCaseSnapshot");
@@ -298,6 +299,7 @@ describe("CaseSnapshotProvider — failed reads fail closed", () => {
         <TooltipProvider>
           <CaseSnapshotProvider threadId={tid}>
             <WorkspaceHeader threadId={tid} />
+            <WorkspaceStatusStrip />
             <Probe />
           </CaseSnapshotProvider>
         </TooltipProvider>
@@ -469,17 +471,20 @@ describe("CaseSnapshotProvider — failed reads fail closed", () => {
     mountFor(tid);
     await flush();
 
-    const header = screen.getByRole("region", { name: "Case summary" });
-    expect(within(header).queryByLabelText(/Hash chain broken/)).toBeNull();
-    expect(within(header).queryByLabelText(/Hash chain valid/)).toBeNull();
-    expect(header.textContent ?? "").not.toMatch(/\d+\/12/);
+    // Custody reads on the bottom status strip (Case desk, R1b); the header
+    // region no longer carries it.
+    const strip = screen.getByLabelText("Case status strip");
+    expect(within(strip).queryByLabelText(/Hash chain broken/)).toBeNull();
+    expect(within(strip).queryByLabelText(/Hash chain valid/)).toBeNull();
+    expect(strip.textContent ?? "").not.toMatch(/\d+\/12/);
+    expect(strip.textContent ?? "").toMatch(/Custody not checked/);
     expect(syncLabel().some((t) => t.startsWith("Sync failed"))).toBe(true);
 
     // When the check does run, its verdict is shown.
     m.rpcError = false;
     await act(async () => { screen.getAllByRole("button", { name: "Refresh case data" })[0].click(); });
     await flush(10);
-    expect(within(header).getByLabelText(/Hash chain valid, 12\/12 evidence-log entries chained/)).toBeTruthy();
+    expect(within(strip).getByLabelText(/Hash chain valid, 12\/12 evidence-log entries chained/)).toBeTruthy();
   });
 
   it("control: with verdicts read, the engine's report-ready stands", async () => {

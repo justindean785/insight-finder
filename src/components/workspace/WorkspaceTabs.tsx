@@ -194,7 +194,7 @@ function TabBar({
 
   return (
     <div className="relative border-b border-white/[0.07] bg-surface-0">
-      <div className="flex overflow-x-auto px-4 sm:px-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="flex overflow-x-auto px-4 sm:px-6 lg:px-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {/* Case desk: text-only tabs, wide spacing, aligned with the case title. */}
         <div role="tablist" aria-label={label} className="flex w-max shrink-0 items-stretch gap-6">
           {tabs.map((t, idx) => {
