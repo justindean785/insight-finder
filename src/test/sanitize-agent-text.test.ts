@@ -5,6 +5,7 @@ import {
   stripReasoningMarkup,
   stripToolCallMarkup,
   sanitizeChatText,
+  stripSystemMarkers,
 } from "@/lib/sanitize-agent-text";
 
 describe("stripReasoningMarkup", () => {
@@ -178,5 +179,31 @@ describe("looksLikeReasoning", () => {
   it("does not flag real recommendation lines", () => {
     expect(looksLikeReasoning("Investigate sam.cole@example.com — same person")).toBe(false);
     expect(looksLikeReasoning("Corroborate address with county records")).toBe(false);
+  });
+});
+
+describe("stripSystemMarkers (model-facing labels echoed into replies)", () => {
+  // Verbatim from supabase/functions/osint-agent/lib/historical-label.ts.
+  const LABEL =
+    "[HISTORICAL MODEL OUTPUT — an earlier assistant turn in this conversation. It is not independent evidence: treat its claims as unverified unless a recorded artifact or an analyst decision backs them.]\n\n";
+
+  it("removes every echoed label and keeps the narrative between them", () => {
+    const text = `${LABEL}Name pivot. Note collision risk.\n\n${LABEL}Major result — the name resolves to a public figure.\n\n${LABEL}Recording this cycle's findings.`;
+    const out = stripSystemMarkers(text);
+    expect(out).not.toMatch(/HISTORICAL MODEL OUTPUT/);
+    expect(out).toBe("Name pivot. Note collision risk.\n\nMajor result — the name resolves to a public figure.\n\nRecording this cycle's findings.");
+  });
+
+  it("drops a truncated label still streaming in, up to its paragraph end", () => {
+    const out = stripSystemMarkers("Done.\n\n[HISTORICAL MODEL OUTPUT — an earlier assistant turn in th");
+    expect(out).toBe("Done.");
+  });
+
+  it("leaves ordinary bracketed prose alone", () => {
+    expect(stripSystemMarkers("Tier [LIKELY] per two sources [1][2].")).toBe("Tier [LIKELY] per two sources [1][2].");
+  });
+
+  it("is part of the chat timeline sanitizer", () => {
+    expect(sanitizeChatText(`${LABEL}Recording findings.`)).toBe("Recording findings.");
   });
 });

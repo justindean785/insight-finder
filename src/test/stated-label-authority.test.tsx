@@ -71,11 +71,13 @@ describe("agent-stated labels in report prose", () => {
     }
   });
 
-  it("states it in the footer too, because a hover title reaches no touch device", () => {
+  it("states it as visible text (not a hover title), because a hover title reaches no touch device", () => {
     const { container } = render(<MessageView m={assistant(allLabels)} />);
-    const footer = container.querySelector(".chat-card__footer")!;
-    expect(footer.textContent).toMatch(/agent/i);
-    expect(footer.textContent).toMatch(/Evidence/);
+    // The notice's <summary> is always rendered; the explanation is one tap away. The footer no
+    // longer repeats it (2026-11-02, JD: two full copies filled a phone screen).
+    const summary = container.querySelector("[data-narrative-notice] summary")!;
+    expect(summary.textContent).toMatch(/AI narrative/);
+    expect(container.querySelector("[data-narrative-notice]")!.textContent).toMatch(/Evidence/);
   });
 
   it("stays quiet when the agent stated nothing", () => {

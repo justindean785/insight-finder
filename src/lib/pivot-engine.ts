@@ -19,6 +19,7 @@
  * Everything here READS artifact confidence/metadata; it never mutates evidence
  * or re-tunes confidence math.
  */
+import { anySearchKeyIn } from "@/lib/selector-variants";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import {
   buildPivots,
@@ -407,7 +408,9 @@ export function computePivots(input: ComputePivotsInput): DisplayPivot[] {
     // tool log holds the bare selector "hawkcapo", so the literal comparison can
     // never match and the lead is re-offered forever. See `entityKey`.
     const ek = entityKey(c.value);
-    if (parentSet.has(k) || queriedSet.has(k) || parentSet.has(ek) || queriedSet.has(ek)) status = "searched";
+    // Variant keys (phone digits, URL without scheme/www) as well, so a target the
+    // tool log spells differently still counts as searched (`selector-variants.ts`).
+    if (parentSet.has(k) || parentSet.has(ek) || anySearchKeyIn(queriedSet, k, ek)) status = "searched";
     else if (c.origin === "report" && (existingValueSet.has(k) || existingValueSet.has(ek))) status = "searched";
 
     // --- analyst decisions shape the CARD, never the evidence -----------

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { normalizeTarget } from "@/lib/next-step-cards";
+import { expandSearchKeys } from "@/lib/selector-variants";
 
 // Per-instance channel id (see useThreadToolActivity for why): several hooks
 // subscribe to the same thread's tool_usage_log, and Supabase rejects a second
@@ -63,11 +64,17 @@ const NO_CALLS: readonly QueriedCall[] = [];
 
 /** The plain set the pivot engine reads, derived from the timestamped calls. */
 export function queriedTargetSet(calls: readonly QueriedCall[]): Set<string> {
-  const set = new Set<string>();
-  for (const c of calls) set.add(c.target);
+  // Every spelling variant too (phone digits, URL without scheme/www), so the
+  // pivot engine's "already searched" check is not defeated by formatting.
+  const set = expandSearchKeys(calls.map((c) => c.target));
   set.delete("");
   return set;
 }
+
+/** PostgREST returns at most ~1000 rows per request; read the log in pages. */
+const PAGE = 1000;
+/** Bound on pages per load: 20k tool calls is far beyond any real case. */
+const MAX_PAGES = 20;
 
 /**
  * Every target a tool has been run against on this thread, read from
@@ -86,13 +93,27 @@ export function useThreadQueriedCalls(threadId: string): readonly QueriedCall[] 
     if (!threadId) return;
     let alive = true;
     const load = async () => {
-      const { data } = await supabase
-        .from("tool_usage_log")
-        .select("input_json,created_at")
-        .eq("thread_id", threadId);
+      // Paged and ordered: an unpaged read silently dropped everything past the
+      // server's row cap, and those targets then read as never searched again.
+      const rows: { input_json: unknown; created_at: string; outcome?: string | null }[] = [];
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const { data, error } = await supabase
+          .from("tool_usage_log")
+          .select("input_json,created_at,outcome")
+          .eq("thread_id", threadId)
+          .order("created_at", { ascending: true })
+          .range(page * PAGE, page * PAGE + PAGE - 1);
+        if (error || !data) break;
+        // `outcome` exists live (migration 20260628) but not in the generated types.
+        rows.push(...(data as unknown as typeof rows));
+        if (data.length < PAGE) break;
+      }
       if (!alive) return;
       const next: QueriedCall[] = [];
-      for (const row of (data ?? []) as { input_json: unknown; created_at: string }[]) {
+      for (const row of rows) {
+        // A skipped call never ran (budget, circuit, refusal), so it searched
+        // nothing. The backend ranker excludes these too (`next-pivot.ts`).
+        if (row.outcome === "skipped") continue;
         const set = new Set<string>();
         collectTargets(row.input_json, set);
         set.delete("");

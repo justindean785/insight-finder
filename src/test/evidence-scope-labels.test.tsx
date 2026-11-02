@@ -58,9 +58,12 @@ describe("an unadjudicated narrative separates this run's findings from case aut
     expect(note?.textContent).toMatch(/Model-adjudicated findings this run: 0/);
     expect(note?.textContent).toMatch(/record_finding/);
     expect(note?.textContent).toMatch(/Case-artifact authority/);
+    // Stated once, above the prose — the footer no longer repeats it (2026-11-02, JD: the
+    // two copies filled a phone screen).
+    expect(note?.tagName).toBe("DETAILS");
+    expect(note?.querySelector("summary")?.textContent).toMatch(/Unscored/);
     const footer = container.querySelector(".chat-card__footer");
-    expect(footer?.textContent).toMatch(/Model-adjudicated findings this run: 0/);
-    expect(footer?.textContent).toMatch(/Case-artifact authority/);
+    expect(footer?.textContent).not.toMatch(/Model-adjudicated/);
   });
 
   it("an adjudicated narrative keeps the plain wording", () => {
