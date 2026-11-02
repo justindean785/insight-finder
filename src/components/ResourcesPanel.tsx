@@ -297,7 +297,7 @@ function ArtifactsList({
     return (
       <div className="p-3 sm:p-5">
         <div className="flex flex-col items-center gap-4 rounded-2xl border border-destructive/25 bg-[linear-gradient(180deg,hsl(var(--danger-muted)/0.55),hsl(var(--surface-1)/0.92))] px-6 py-12 text-center shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
-          <div className="grid h-11 w-11 place-items-center rounded-xl border border-destructive/35 bg-destructive/10 text-destructive">
+          <div className="grid h-11 w-11 place-items-center rounded-xl border border-destructive/35 bg-destructive/10 text-danger">
             <AlertTriangle className="h-[18px] w-[18px]" strokeWidth={1.75} />
           </div>
           <div>
@@ -491,7 +491,7 @@ function ArtifactsList({
                     </span>
                   )}
                   {failedC > 0 && (
-                    <span className="text-micro tabular-nums text-destructive">{failedC} flagged</span>
+                    <span className="text-micro tabular-nums text-danger">{failedC} flagged</span>
                   )}
                   <span className="text-micro tabular-nums text-muted-foreground/70">{all.length}</span>
                 </span>
@@ -795,8 +795,8 @@ export function ArtifactRow({
               {rState === "key" && <Star className="h-3 w-3 shrink-0 text-primary" aria-hidden />}
               {rState === "recheck" && <ShieldQuestion className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-mid))]" aria-hidden />}
               {rState === "dismissed" && <EyeOff className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />}
-              {fp && <XCircle className="h-3 w-3 shrink-0 text-destructive" aria-hidden />}
-              {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-destructive" aria-hidden />}
+              {fp && <XCircle className="h-3 w-3 shrink-0 text-danger" aria-hidden />}
+              {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-danger" aria-hidden />}
               {/* A selector gets the mono, one-line, truncated treatment this
                   column was built for. A SENTENCE does not: the extractor writes
                   whole findings into `value` ("CONTRADICTION: … Carlos Morales
@@ -1224,7 +1224,7 @@ function ArtifactDrawerInner({
           <Field label="Review">
             <div className="mb-2 flex items-center gap-2 flex-wrap text-xs">
               <Chip tone={REVIEW_CLASS[rState]} mono>{REVIEW_SHORT[rState]}</Chip>
-              {falsePositive && <Chip tone="bg-destructive/15 text-destructive border-destructive/40" mono>false positive</Chip>}
+              {falsePositive && <Chip tone="bg-destructive/15 text-danger border-destructive/40" mono>false positive</Chip>}
             </div>
             <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] p-2">
               <ReviewBtn current={rState} target="confirmed" onClick={() => { void reviewSet(artifact.id, "confirmed", rctx); announceReview("confirmed"); }}>

@@ -102,7 +102,7 @@ function CreditChip({ credits }: { credits: UserCredits | null }) {
     <div
       className={cn(
         "flex items-center gap-1.5 text-xs",
-        depleted ? "text-destructive" : low ? "text-warning" : "text-muted-foreground",
+        depleted ? "text-danger" : low ? "text-warning" : "text-muted-foreground",
       )}
       title={depleted ? "Out of beta credits" : "Remaining beta credits"}
     >
@@ -802,7 +802,7 @@ function ThreadRow({
       <button
         type="button"
         onClick={(e) => onDelete(t, e)}
-        className="shrink-0 rounded p-[5px] text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100 coarse:-my-2 coarse:-mr-2 coarse:grid coarse:h-11 coarse:w-11 coarse:place-items-center coarse:opacity-70"
+        className="shrink-0 rounded p-[5px] text-muted-foreground opacity-0 transition-opacity hover:text-danger group-hover:opacity-100 focus-visible:opacity-100 coarse:-my-2 coarse:-mr-2 coarse:grid coarse:h-11 coarse:w-11 coarse:place-items-center coarse:opacity-70"
         aria-label="Delete case"
       >
         <Trash2 className="h-3.5 w-3.5" />

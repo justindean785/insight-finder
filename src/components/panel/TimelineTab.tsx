@@ -24,7 +24,7 @@ const COLOR: Record<TimelineEventType, string> = {
   tool_result: "text-foreground border-border bg-secondary/40",
   artifact: "text-foreground border-border bg-secondary/40",
   cache_replay: "text-muted-foreground border-border bg-secondary/40",
-  failed: "text-destructive border-destructive/40 bg-destructive/10",
+  failed: "text-danger border-destructive/40 bg-destructive/10",
   report: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10",
 };
 

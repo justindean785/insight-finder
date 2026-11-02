@@ -73,7 +73,7 @@ export function EvidenceMatrixTab({
             <span className="text-[hsl(var(--confidence-high))]">Confirm</span> accepts ·{" "}
             <span className="text-primary">Key</span> prioritises ·{" "}
             <span className="text-[hsl(var(--confidence-mid))]">Recheck</span> re-verifies in chat ·{" "}
-            <span className="text-destructive">Dismiss</span> excludes. Decisions steer the agent's
+            <span className="text-danger">Dismiss</span> excludes. Decisions steer the agent's
             next run; none of them changes a confidence score.
           </div>
         </div>
@@ -363,7 +363,7 @@ export function EvidenceMatrixTab({
                             <Star className="w-3 h-3 mr-2" /> Pin as key finding
                           </DropdownMenuItem>
                           <DropdownMenuItem
-                            className="text-destructive focus:text-destructive"
+                            className="text-danger focus:text-danger"
                             onClick={() => review.set(a.id, "wrong", { value: a.value, kind: a.kind, confidence: shownConf.effective ?? undefined, source: a.source })}
                           >
                             <Ban className="w-3 h-3 mr-2" /> Mark false &amp; teach agent

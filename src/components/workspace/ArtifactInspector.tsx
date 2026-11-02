@@ -200,7 +200,7 @@ export function ArtifactInspector({
                 {rState !== "new" && (
                   <Chip tone={REVIEW_CLASS[rState]} className="ml-1" title="Your call, recorded separately from the AI assessment">{REVIEW_LABEL[rState]}</Chip>
                 )}
-                {falsePositive && <Chip tone="bg-destructive/15 text-destructive border-destructive/40">false positive</Chip>}
+                {falsePositive && <Chip tone="bg-destructive/15 text-danger border-destructive/40">false positive</Chip>}
               </small>
             </div>
           </div>

@@ -120,7 +120,9 @@ All colors MUST be HSL.
          --danger       is INK and RIM on the dark ground (evidence alarm,
                         --authority-conflict, --kind-breach, --speaker-failed).
                         It needs to be BRIGHT to clear AA against the page, and
-                        measures 5.48:1 at 61%.
+                        measures 9.0:1 at 76% on the plate. Text in the alarm
+                        hue is `text-danger`; `text-destructive` as ink is
+                        3.9:1 and is banned by src/test/a11y-wcag-aa.test.ts.
 
        This is not two different reds. It is one red used at the intensity each
        surface needs, and it is the only place in the file where a hue is
@@ -1637,7 +1639,6 @@ All colors MUST be HSL.
   #case-report-print-root :is([class^="text-foreground/"], [class*=" text-foreground/"]) { color: hsl(var(--foreground)) !important; }
   #case-report-print-root :is([class^="text-muted-foreground/"], [class*=" text-muted-foreground/"]) { color: hsl(var(--muted-foreground)) !important; }
   #case-report-print-root :is([class^="text-subtle-foreground/"], [class*=" text-subtle-foreground/"]) { color: hsl(var(--subtle-foreground)) !important; }
-  #case-report-print-root :is([class^="text-destructive/"], [class*=" text-destructive/"]) { color: hsl(var(--destructive)) !important; }
   #case-report-print-root :is([class^="text-primary/"], [class*=" text-primary/"]) { color: hsl(var(--primary)) !important; }
   #case-report-print-root :is([class^="text-white/"], [class*=" text-white/"]) { color: hsl(var(--foreground)) !important; }
   /* Same for whole-element dimming (excluded rows are `opacity-55`): on paper
