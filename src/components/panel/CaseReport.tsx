@@ -246,7 +246,7 @@ function SectionHeader({ children, right }: { children: React.ReactNode; right?:
 
 function HunterNote({ children }: { children: React.ReactNode }) {
   return (
-    <aside className="my-3 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2.5 text-foreground/90 leading-relaxed">
+    <aside role="note" className="my-3 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2.5 text-foreground/90 leading-relaxed">
       <div className="text-micro font-semibold tracking-normal text-destructive mb-1">
         Hunter's Note
       </div>

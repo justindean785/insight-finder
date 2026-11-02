@@ -439,7 +439,7 @@ function ArtifactsList({
           artifacts means reading 100 individually-laid-out rows. */}
       {foldableClusters > 1 && (
         <div className="flex items-center justify-end gap-2 px-2.5 pt-1.5">
-          <span className="text-micro text-muted-foreground/55 tabular-nums">
+          <span className="text-micro text-faint-foreground tabular-nums">
             {foldableClusters} large groups
           </span>
           <button
@@ -587,7 +587,7 @@ function ArtifactsList({
                           >
                             {band.prov ? readableSourceLabel(band.prov) : "source not recorded"}
                           </span>
-                          <span className="shrink-0 text-micro tabular-nums text-muted-foreground/55">
+                          <span className="shrink-0 text-micro tabular-nums text-faint-foreground">
                             · {band.rows.length}
                           </span>
                           {bandQuarantined > 0 && (
@@ -597,7 +597,7 @@ function ArtifactsList({
                             </span>
                           )}
                           {band.lo != null && band.hi != null && band.rows.length > 1 && (
-                            <span className="ml-auto shrink-0 text-micro tabular-nums text-muted-foreground/55">
+                            <span className="ml-auto shrink-0 text-micro tabular-nums text-faint-foreground">
                               {band.lo === band.hi ? `${band.hi}%` : `${band.lo}\u2013${band.hi}%`}
                             </span>
                           )}

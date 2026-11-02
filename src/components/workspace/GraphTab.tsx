@@ -189,7 +189,7 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
         {data.tail ? (
           <>
             <span className="shrink-0 font-medium text-foreground">{data.head}</span>
-            <span className="min-w-0 truncate text-muted-foreground/55">{data.tail}</span>
+            <span className="min-w-0 truncate text-faint-foreground">{data.tail}</span>
           </>
         ) : (
           <span className="max-w-[190px] truncate font-medium text-foreground">{data.head}</span>

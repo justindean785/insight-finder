@@ -3255,7 +3255,7 @@ function ChatWindowInner({
               </p>
 
               <div className="mt-5 w-full max-w-md">
-                <div className="mb-2 text-center font-mono text-eyebrow uppercase tracking-[0.2em] text-muted-foreground/55">
+                <div className="mb-2 text-center font-mono text-eyebrow uppercase tracking-[0.2em] text-faint-foreground">
                   Try an example
                 </div>
                 <div className="flex flex-wrap items-center justify-center gap-2">
