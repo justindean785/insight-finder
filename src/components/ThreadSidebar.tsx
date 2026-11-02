@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { detectSeed } from "@/lib/seed";
+import { threadDisplayTitle } from "@/lib/case-name";
 import { isRunningThread } from "@/lib/thread-status";
 import { selectStaleActiveIds } from "@/lib/stale-thread";
 import { SUPPORT_MAILTO } from "@/lib/contact";
@@ -61,6 +62,8 @@ type Thread = {
   // doesn't enumerate (e.g. "failed_context_limit") and they must still render.
   status: string | null;
   seed_type: string | null;
+  // Read only to derive a display title when the stored one is a pasted provider export.
+  seed_value?: string | null;
   // Run markers: an "active" row with neither of these never started (I-1), so
   // it is a draft — not a live run, and not a candidate for the stale sweep.
   run_started_at: string | null;
@@ -160,7 +163,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
     const loadThreadsAndBrain = async () => {
       const { data } = await supabase
         .from("threads")
-        .select("id,title,updated_at,credits_used,cost_micro_usd,status,seed_type,run_started_at,last_heartbeat_at")
+        .select("id,title,updated_at,credits_used,cost_micro_usd,status,seed_type,seed_value,run_started_at,last_heartbeat_at")
         .eq("user_id", user.id)
         .order("updated_at", { ascending: false });
       const threadRows = (data as Thread[] | null) ?? [];
@@ -392,7 +395,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             const Icon = seedIcon(t.seed_type, t.title);
             const active = t.id === threadId;
             return (
-              <RailTip key={t.id} label={`${t.title} · ${formatUsd(t.cost_micro_usd)}`}>
+              <RailTip key={t.id} label={`${threadDisplayTitle(t.title, t.seed_value)} · ${formatUsd(t.cost_micro_usd)}`}>
                 <Link
                   to={`/chat/${t.id}`}
                   className={cn(
@@ -401,7 +404,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
                       ? "glass-interactive text-foreground"
                       : "text-muted-foreground hover:text-foreground hover:bg-white/5",
                   )}
-                  aria-label={t.title}
+                  aria-label={threadDisplayTitle(t.title, t.seed_value)}
                   aria-current={active ? "page" : undefined}
                 >
                   <Icon className="w-4 h-4" strokeWidth={1.5} />
@@ -443,7 +446,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   }
 
   const q = query.trim().toLowerCase();
-  const byQuery = q ? threads.filter((t) => t.title.toLowerCase().includes(q)) : threads;
+  const byQuery = q ? threads.filter((t) => t.title.toLowerCase().includes(q) || threadDisplayTitle(t.title, t.seed_value).toLowerCase().includes(q)) : threads;
   const filtered = typeFilter === "all"
     ? byQuery
     : byQuery.filter((t) => (t.seed_type ?? "other").toLowerCase() === typeFilter);
@@ -746,7 +749,7 @@ function ThreadRow({
     const title = (t.title ?? "").trim().toLowerCase();
     return !title || title === "new investigation" || title === "investigation";
   })();
-  const displayTitle = empty ? "Untitled case" : t.title;
+  const displayTitle = empty ? "Untitled case" : threadDisplayTitle(t.title, t.seed_value);
 
   return (
     <Link
