@@ -386,7 +386,9 @@ export function ReportTab({
       <SectionHeading
         className="mb-3"
         title="Case assessment"
-        subtitle={isDraft ? `Unverified draft · ${gate.readinessPct}% ready · every export is marked ${DRAFT_MARK}` : "Report-safe · readiness and conflicts under control"}
+        // Worded so it never duplicates the status chip's exact text ("Unverified
+        // draft · N% ready" / "Report-safe"): the e2e reads the chip by that text, once.
+        subtitle={isDraft ? `Draft — not yet report-safe at ${gate.readinessPct}% readiness; every export is marked ${DRAFT_MARK}.` : "Readiness and conflicts under control; exports are report-safe."}
       />
       {toolbar}
 
