@@ -40,11 +40,13 @@ const TABS: ReadonlyArray<{ key: WorkbenchTab; label: string; icon: LucideIcon }
   { key: "connections", label: "Connections", icon: Network },
 ];
 
-export function Workbench({ threadId, request = null }: {
+export function Workbench({ threadId, request = null, onRequestConsumed }: {
   threadId: string;
   /** A tab (and optionally a pivot to open) requested while the rail was folded, so
    *  the request is not lost to a Workbench that was not mounted yet. */
   request?: { tab: WorkbenchTab; open?: string; n: number } | null;
+  /** Called once the request is applied, so a later remount does not replay it. */
+  onRequestConsumed?: () => void;
 }) {
   const [tab, setTab] = useState<WorkbenchTab>(request?.tab ?? "live");
   // Panels stay mounted once visited, so a half-read list, an open Preview and a selection survive a tab switch.
@@ -90,6 +92,10 @@ export function Workbench({ threadId, request = null }: {
     if (!request) return;
     select(request.tab);
     if (request.open) setOpenRequest({ key: request.open, n: request.n });
+    // One-shot: the owner clears it, so returning to this tab later (a remount with a
+    // selected Evidence row) does not jump back to Next and hide the inspector.
+    onRequestConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [request]);
 
   // The transcript's compact "Open Next pivots" affordance dispatches this

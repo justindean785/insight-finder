@@ -104,6 +104,13 @@ export function LiveBoard({ threadId }: { threadId: string }) {
   if (!snapshot?.hydrated) {
     return <div className="space-y-3 p-5" aria-busy="true"><div className="h-24 animate-pulse rounded-md bg-surface-2 motion-reduce:animate-none" aria-hidden /></div>;
   }
+  // Connections and pivots both read the analyst's verdicts. Until they load (or if
+  // the read failed) a dismissed row would read as unreviewed: it would join a
+  // group and come back as a pivot. Withhold both, as the Next tab does.
+  const reviewsReady = review.availability === "ok";
+  const reviewsNote = review.availability === "unavailable"
+    ? "Your review decisions couldn't be loaded, so connections and pivots are withheld — they could otherwise include a selector you already rejected."
+    : "Loading your review decisions…";
 
   return (
     <div data-live-board className="divide-y divide-white/[0.06]">
@@ -148,6 +155,9 @@ export function LiveBoard({ threadId }: { threadId: string }) {
             Graph <ArrowRight className="h-3 w-3" aria-hidden />
           </button>
         </header>
+        {!reviewsReady ? (
+          <p role="status" className="text-[13px] leading-snug text-muted-foreground">{reviewsNote}</p>
+        ) : <>
         {report.collision && (
           <p role="note" className="mb-2 flex items-start gap-1.5 rounded-md border border-warning/30 bg-warning/[0.06] px-2.5 py-1.5 text-[12.5px] leading-snug text-warning">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
@@ -195,6 +205,7 @@ export function LiveBoard({ threadId }: { threadId: string }) {
             })}
           </ul>
         )}
+        </>}
       </section>
 
       {/* 3. Next pivots */}
@@ -211,7 +222,9 @@ export function LiveBoard({ threadId }: { threadId: string }) {
             All <ArrowRight className="h-3 w-3" aria-hidden />
           </button>
         </header>
-        {runnable.length === 0 ? (
+        {!reviewsReady ? (
+          <p role="status" className="text-[13px] leading-snug text-muted-foreground">{reviewsNote}</p>
+        ) : runnable.length === 0 ? (
           <p className="text-[13px] text-muted-foreground">No pivot is waiting. New ones appear as the agent records selectors.</p>
         ) : (
           <ul className="space-y-1">

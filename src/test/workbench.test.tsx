@@ -360,3 +360,30 @@ describe("Live board (the Workbench default)", () => {
     expect(screen.getByText(/No two selectors are linked yet/)).toBeTruthy();
   });
 });
+
+describe("Live board withholds review-dependent views when verdicts are not loaded", () => {
+  it("shows no groups or pivots when the review read failed", () => {
+    harness.availability = "unavailable";
+    render(
+      <CaseSnapshotContext.Provider value={snapshotWith([art("email", "a@example.test"), art("username", "handle_one")])}>
+        <Workbench threadId={T} />
+      </CaseSnapshotContext.Provider>,
+    );
+    const board = document.querySelector("[data-live-board]") as HTMLElement;
+    expect(within(board).getAllByText(/couldn't be loaded, so connections and pivots are withheld/)).toHaveLength(2);
+    expect(within(board).queryByRole("button", { name: /Preview pivot/ })).toBeNull();
+  });
+});
+
+describe("a folded-rail request is applied once", () => {
+  it("calls onRequestConsumed after applying it", () => {
+    const consumed = vi.fn();
+    render(
+      <CaseSnapshotContext.Provider value={snapshotWith([art("email", "a@example.test")])}>
+        <Workbench threadId={T} request={{ tab: "next", n: 1 }} onRequestConsumed={consumed} />
+      </CaseSnapshotContext.Provider>,
+    );
+    expect(screen.getByRole("tab", { name: "Next" }).getAttribute("aria-selected")).toBe("true");
+    expect(consumed).toHaveBeenCalledTimes(1);
+  });
+});

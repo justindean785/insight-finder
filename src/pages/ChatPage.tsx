@@ -287,7 +287,7 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
                 <TooltipContent side="left" className="text-xs">Hide case sheet</TooltipContent>
               </Tooltip>
               <ErrorBoundary>
-                <Workbench threadId={threadId} request={workbenchRequest} />
+                <Workbench threadId={threadId} request={workbenchRequest} onRequestConsumed={() => setWorkbenchRequest(null)} />
               </ErrorBoundary>
             </>
           )}
