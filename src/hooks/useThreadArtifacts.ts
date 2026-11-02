@@ -11,6 +11,8 @@ export type Artifact = {
   source: string | null;
   created_at: string;
   metadata: Record<string, unknown> | null;
+  /** The backend union-find's cluster id (`lib/cluster.ts`, migration 20260709). Null until a run clusters the row. */
+  cluster_id?: string | null;
 };
 
 const realtimeArtifactSchema = z.object({
@@ -21,6 +23,7 @@ const realtimeArtifactSchema = z.object({
   source: z.string().nullable(),
   created_at: z.string(),
   metadata: z.record(z.unknown()).nullable(),
+  cluster_id: z.string().nullable(),
 }).partial();
 
 // Canonicalize a value per kind so duplicates across tools collapse cleanly.
@@ -170,7 +173,7 @@ function snapshot(store: Store): StoreSnapshot {
 async function loadStore(threadId: string, store: Store): Promise<boolean> {
   const { data, error } = await supabase
     .from("artifacts")
-    .select("id,kind,value,confidence,source,created_at,metadata")
+    .select("id,kind,value,confidence,source,created_at,metadata,cluster_id")
     .eq("thread_id", threadId)
     .order("created_at", { ascending: true })
     .limit(ARTIFACTS_INITIAL_LIMIT);

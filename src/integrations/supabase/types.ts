@@ -100,34 +100,40 @@ export type Database = {
       }
       artifacts: {
         Row: {
+          cluster_id: string | null
           confidence: number | null
           created_at: string
           id: string
           kind: string
           metadata: Json | null
           source: string | null
+          subject_id: string | null
           thread_id: string
           user_id: string
           value: string
         }
         Insert: {
+          cluster_id?: string | null
           confidence?: number | null
           created_at?: string
           id?: string
           kind: string
           metadata?: Json | null
           source?: string | null
+          subject_id?: string | null
           thread_id: string
           user_id: string
           value: string
         }
         Update: {
+          cluster_id?: string | null
           confidence?: number | null
           created_at?: string
           id?: string
           kind?: string
           metadata?: Json | null
           source?: string | null
+          subject_id?: string | null
           thread_id?: string
           user_id?: string
           value?: string
