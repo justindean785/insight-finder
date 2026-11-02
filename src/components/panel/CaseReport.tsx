@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { sanitizeChatText } from "@/lib/sanitize-agent-text";
 import {
   Bar,
   BarChart,
@@ -1091,7 +1092,9 @@ export function CaseReport({
   const analystConf = useMemo(() => analystConfidence(artifacts, reviews), [artifacts, reviews]);
   const narrative = useMemo(() => {
     const last = (messages ?? []).filter((m) => m.role === "assistant" && m.summary?.trim()).slice(-1)[0];
-    return last?.summary?.trim() ?? "";
+    // Same display sanitizer as the chat timeline: echoed system markers and
+    // leaked reasoning/tool-call markup are never report text.
+    return sanitizeChatText(last?.summary?.trim() ?? "");
   }, [messages]);
   const isBrief = reportType === "brief";
   const identity = useMemo(() => buildIdentityRows(artifacts, reviews), [artifacts, reviews]);

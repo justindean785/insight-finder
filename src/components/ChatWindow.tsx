@@ -39,6 +39,7 @@ import {
 import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
 import { closeLatestPivotRun, derivePivotRunViews, pivotRunKey, pivotSendHooks, usePivotRuns } from "@/lib/pivot-runs";
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
+import { PivotStrip } from "@/components/pivots/PivotStrip";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
 import { countWorkbenchRunnablePivots } from "@/lib/next-step-queue";
 import { registerPivotRunner } from "@/lib/pivot-runner";
@@ -52,6 +53,7 @@ import { buildEntityGraph } from "@/lib/entity-graph";
 import { summarizeConnections } from "@/lib/connection-summary";
 import { pickAutoPivot } from "@/lib/best-pivot";
 import { sanitizeChatText } from "@/lib/sanitize-agent-text";
+import { parsePivotPrompt } from "@/lib/pivot-prompt";
 import { scrollBehavior } from "@/lib/motion";
 import { fetchWithRetry } from "@/lib/fetch-retry";
 import {
@@ -1151,6 +1153,9 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
     // so we render image thumbnails / file chips instead of the raw Supabase
     // signed URL (token and all). See src/lib/attachments.ts.
     const { body, attachments } = parseUserMessage(text);
+    // A pivot dispatched from a card carries a long prompt template; show it as
+    // a chip (action + target) with the full instruction one tap away.
+    const pivotRun = parsePivotPrompt(body);
     const images = attachments.filter(isImageAttachment);
     const files = attachments.filter((a) => !isImageAttachment(a));
     const sizeOf = (meta: string) => meta.split(",").pop()?.trim() || "";
@@ -1164,7 +1169,30 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "IBM Plex Sans", sans-serif',
           }}
         >
-          {body && <div className="whitespace-pre-wrap">{body}</div>}
+          {body && (pivotRun ? (
+            <div data-pivot-run className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <Play className="h-3.5 w-3.5 shrink-0 text-[hsl(var(--intel-blue))]" aria-hidden />
+                <span className="shrink-0 text-[12px] font-medium uppercase tracking-wider text-muted-foreground">Pivot</span>
+                <span className="min-w-0 truncate text-[13px] text-foreground/90">{pivotRun.action}</span>
+              </div>
+              <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-2">
+                <span className="min-w-0 break-all font-mono text-[14px] text-foreground">{pivotRun.target}</span>
+                {pivotRun.type && <span className="text-[12px] text-muted-foreground">{pivotRun.type}</span>}
+              </div>
+              <details className="mt-1.5 group/pivot">
+                <summary className="cursor-pointer list-none text-[12px] text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+                  <span className="inline-flex items-center gap-1">
+                    <ChevronDown className="h-3 w-3 transition-transform group-open/pivot:rotate-180" aria-hidden />
+                    Instruction sent to the agent
+                  </span>
+                </summary>
+                <div className="mt-1.5 whitespace-pre-wrap text-[13px] leading-[1.55] text-muted-foreground">{body}</div>
+              </details>
+            </div>
+          ) : (
+            <div className="whitespace-pre-wrap">{body}</div>
+          ))}
           {images.length > 0 && (
             <div className={`flex flex-wrap gap-2 ${body ? "mt-2.5" : ""}`}>
               {images.map((a, i) => (
@@ -1307,12 +1335,20 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
           {(hasStatedLabel(prose) || unadjudicated) && (
             // Above the prose, not below it: a footer is read after the claims have already landed, and a hover
             // title never reaches a touch reader. Wording only; no figure here is computed by the engine.
-            <div role="note" data-narrative-notice className="border-b border-white/[0.06] px-4 py-2 text-[12.5px] leading-snug text-muted-foreground">
-              <span className="font-medium text-foreground/85">AI narrative — claims need evidence review.</span>{" "}
-              {unadjudicated
-                ? "Model-adjudicated findings this run: 0 \u2014 the model did not call record_finding, so labels and scores in this text are its own writing, not computed results. Case-artifact authority (the header\u2019s verified and quarantined counts, and Evidence) was still computed."
-                : "Labels and scores in this text are written by the model. Computed confidence and analyst review are in Evidence."}
-            </div>
+            // One line, tap to expand (a <details> works on touch, unlike a hover title). The wording is
+            // unchanged; it was printed twice in full, above and below, and filled a phone screen.
+            <details role="note" data-narrative-notice className="group/notice border-b border-white/[0.06] px-4 py-1.5 text-[12.5px] leading-snug text-muted-foreground">
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 [&::-webkit-details-marker]:hidden">
+                <span className="font-medium text-foreground/85">AI narrative — claims need evidence review.</span>
+                {unadjudicated && <span className="text-faint-foreground">Unscored</span>}
+                <ChevronDown className="ml-auto h-3 w-3 shrink-0 transition-transform group-open/notice:rotate-180" aria-hidden />
+              </summary>
+              <p className="mt-1">
+                {unadjudicated
+                  ? "Model-adjudicated findings this run: 0 \u2014 the model did not call record_finding, so labels and scores in this text are its own writing, not computed results. Case-artifact authority (the header\u2019s verified and quarantined counts, and Evidence) was still computed."
+                  : "Labels and scores in this text are written by the model. Computed confidence and analyst review are in Evidence."}
+              </p>
+            </details>
           )}
           <div className="chat-card__body">
             <div className="chat-prose">
@@ -1329,13 +1365,6 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             >
               <CopyIcon className="w-3 h-3" /> Copy
             </button>
-            {(hasStatedLabel(prose) || unadjudicated) && (
-              <span className="ml-auto min-w-0 text-balance text-right text-[11px] leading-snug text-faint-foreground">
-                {unadjudicated
-                  ? "Model-adjudicated findings this run: 0 (record_finding was not called); labels and confidence figures in this text are not computed results. Case-artifact authority in the header and Evidence was still computed."
-                  : "Labels are the agent\u2019s wording. Computed confidence is in Evidence."}
-              </span>
-            )}
           </div>
         </article>
       )}
@@ -1498,6 +1527,7 @@ function ChatWindowInner({
   const { focused: composerFocused, onFocus: onComposerFocus, onBlur: onComposerBlur } = useComposerFocus();
   // Which Next-steps row has its run preview open (see NextSteps).
   const [openStep, setOpenStep] = useState<string | null>(null);
+  const [pivotsExpanded, setPivotsExpanded] = useState(false);
   const composerIds = { textarea: useId(), help: useId() };
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -3013,6 +3043,14 @@ function ChatWindowInner({
     () => new Set(pivotRunViews.filter((v) => v.phase !== "ended").map((v) => v.run.key)),
     [pivotRunViews],
   );
+  // Sent, and the run ended without a recorded call against the target. It stays
+  // offered (unknown is not done) but goes BEHIND every fresh pivot: otherwise the
+  // card the analyst just ran came straight back as "Best next pivot" under its
+  // own "Run ended" line (JD's phone, 2026-11-02).
+  const endedPivotKeys = useMemo(
+    () => new Set(pivotRunViews.filter((v) => v.phase === "ended").map((v) => v.run.key)),
+    [pivotRunViews],
+  );
   const suggestions = useMemo(() => {
     if (isLoading || messages.length === 0) return [] as NextStepItem[];
     // Wait for every input the ranking depends on, so the list is stable when shown.
@@ -3036,7 +3074,6 @@ function ChatWindowInner({
     );
     if (!hasReportShape(latestText)) return [];
     const out: NextStepItem[] = [];
-    const seenLabels = new Set<string>();
     const seenKeys = new Set<string>();
     const artifactsById = new Map(artifacts.map((a) => [a.id, a] as const));
     const reviewOf = (id: string) => review.map[id] ?? "new";
@@ -3053,7 +3090,9 @@ function ChatWindowInner({
     // collected (bounded) and shown behind one disclosure line by NextSteps.
     const repair: NextStepItem[] = [];
     let runnable = 0;
-    for (const p of ranked.filter((candidate) => candidate.status === "new" && !sentPivotKeys.has(pivotRunKey(candidate.type, candidate.value)))) {
+    const open = ranked.filter((candidate) => candidate.status === "new" && !sentPivotKeys.has(pivotRunKey(candidate.type, candidate.value)));
+    const wasSent = (candidate: (typeof open)[number]) => endedPivotKeys.has(pivotRunKey(candidate.type, candidate.value));
+    for (const p of [...open.filter((c) => !wasSent(c)), ...open.filter(wasSent)]) {
       if (runnable >= 3) break;
       const dedupe = cardDedupeKey({ title: p.actionLabel, target: p.value });
       if (seenKeys.has(dedupe)) continue;
@@ -3063,7 +3102,6 @@ function ChatWindowInner({
         if (repair.length < 3) repair.push({ kind: "pivot", key: dedupe, validation, eligibility: null });
         continue;
       }
-      seenLabels.add(p.actionLabel);
       runnable++;
       out.push({
         kind: "pivot",
@@ -3073,20 +3111,21 @@ function ChatWindowInner({
         rationale: p.rationale,
       });
     }
-    // Always include 1-2 generic next steps as fallback.
-    const generic = [
-      { title: "Summarize findings", detail: "Rank the strongest claims and rate overall confidence.", prompt: "Summarize the strongest findings so far and rate overall confidence." },
-      { title: "Check for breaches", detail: "Run credential-exposure checks on the strongest identifiers.", prompt: "Run breach and credential-exposure checks on the strongest identifiers found so far." },
-      { title: "Find more pivots", detail: "Return the next three highest-value leads.", prompt: "Suggest the next 3 highest-value pivots based on what's been discovered." },
-    ] as const;
-    for (const g of generic) {
-      if (out.length >= 4) break;
-      if (seenLabels.has(g.title)) continue;
-      seenLabels.add(g.title);
-      out.push({ kind: "action", key: `action:${g.title}`, title: g.title, detail: g.detail, prompt: g.prompt });
+    // No fixed filler. "Summarize / Check for breaches / Find more pivots" were
+    // appended to every list, so the panel showed the same three steps after
+    // every report (JD, 2026-11-02). One "Find more pivots" is offered only when
+    // nothing runnable is left, so the analyst is never at a dead end.
+    if (runnable === 0) {
+      out.push({
+        kind: "action",
+        key: "action:Find more pivots",
+        title: "Find more pivots",
+        detail: "Ask the agent for the next three highest-value leads.",
+        prompt: "Suggest the next 3 highest-value pivots based on what's been discovered.",
+      });
     }
     return [...out.slice(0, 4), ...repair];
-  }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, pivotAttempts, review.map, review.availability, sentPivotKeys]);
+  }, [isLoading, messages, artifacts, seedValue, seedLoaded, reportPivots, pivotSkip, queriedTargets, pivotAttempts, review.map, review.availability, sentPivotKeys, endedPivotKeys]);
 
   // The Workbench's Next-tab runnable count — the number the transcript's
   // compact handoff line prints. Different from `suggestions.length` because
@@ -3311,19 +3350,34 @@ function ChatWindowInner({
                 </div>
               </aside>
             ) : (
-              <NextSteps
+              // Below the Workbench breakpoint: a compact strip, with the full
+              // NextSteps panel (and its preview-before-run flow) one tap away.
+              <PivotStrip
                 items={suggestions}
-                onRunPivot={runPivotFromRail}
-                onRunAction={(prompt) => void sendText(prompt)}
-                busy={isLoading}
-                runs={pivotRunViews}
-                onViewChanges={(artifactId) => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "artifacts", artifactId } }))}
-                openKey={openStep}
-                onOpenChange={setOpenStep}
-                connections={connections}
-                artifactsById={artifactsByIdMemo}
-                onOpenGraph={() => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "graph" } }))}
-              />
+                expanded={pivotsExpanded || openStep !== null}
+                onExpandedChange={(next) => {
+                  setPivotsExpanded(next);
+                  if (!next) setOpenStep(null);
+                }}
+                onPreview={(key) => {
+                  setPivotsExpanded(true);
+                  setOpenStep(key);
+                }}
+              >
+                <NextSteps
+                  items={suggestions}
+                  onRunPivot={runPivotFromRail}
+                  onRunAction={(prompt) => void sendText(prompt)}
+                  busy={isLoading}
+                  runs={pivotRunViews}
+                  onViewChanges={(artifactId) => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "artifacts", artifactId } }))}
+                  openKey={openStep}
+                  onOpenChange={setOpenStep}
+                  connections={connections}
+                  artifactsById={artifactsByIdMemo}
+                  onOpenGraph={() => window.dispatchEvent(new CustomEvent("swarmbot:navigate", { detail: { tab: "graph" } }))}
+                />
+              </PivotStrip>
             )
           )}
           <div ref={endRef} />

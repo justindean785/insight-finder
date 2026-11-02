@@ -3,6 +3,7 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 import type { QueriedCall } from "@/hooks/useThreadQueriedTargets";
 import { KIND_TO_PIVOT } from "@/lib/intel";
 import { normalizeTarget } from "@/lib/next-step-cards";
+import { searchKeys } from "@/lib/selector-variants";
 
 /**
  * Pivots this tab has started, so a card can say "Running" and then "Completed"
@@ -214,8 +215,11 @@ export function derivePivotRunViews(
     const newRows = artifacts
       .filter((a) => inWindow(a.created_at, from, until))
       .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-    const target = normalizeTarget(run.target);
-    const calledInWindow = queriedCalls.some((c) => c.target === target && inWindow(c.createdAt, from, until));
+    // Any spelling variant counts (phone digits, URL without scheme/www): a run
+    // whose tool logged "4155550142" did search "+1 415-555-0142".
+    const targetKeys = new Set(searchKeys(normalizeTarget(run.target)));
+    const calledInWindow = queriedCalls.some((c) =>
+      inWindow(c.createdAt, from, until) && searchKeys(c.target).some((k) => targetKeys.has(k)));
     const phase = caseRunning && i === ordered.length - 1 && !run.closed
       ? "running"
       : calledInWindow ? "done" : "ended";

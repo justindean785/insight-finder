@@ -244,3 +244,31 @@ describe("an email pivot reads the same whichever producer made it", () => {
     expect(fromReport.actionLabel).toBe("Investigate email");
   });
 });
+
+describe("computePivots — a target the tool log spells differently is still searched (JD, 2026-11-02)", () => {
+  it("a phone logged as bare digits marks the formatted phone pivot searched", async () => {
+    const { queriedTargetSet } = await import("@/hooks/useThreadQueriedTargets");
+    const queriedSet = queriedTargetSet([{ target: normalizeTarget("4155550142"), createdAt: "2026-01-01T00:00:00Z" }]);
+    const artifacts = [art({ kind: "phone", value: "+1 (415) 555-0142" })];
+    const out = computePivots({ artifacts, seedValue: null, reportPivots: [], skipSet: NONE, queriedSet });
+    const phone = out.find((p) => p.value === "+1 (415) 555-0142");
+    expect(phone?.status).toBe("searched");
+  });
+
+  it("a profile URL logged without scheme marks the full URL pivot searched", async () => {
+    const { queriedTargetSet } = await import("@/hooks/useThreadQueriedTargets");
+    const queriedSet = queriedTargetSet([{ target: normalizeTarget("instagram.com/subject_handle"), createdAt: "2026-01-01T00:00:00Z" }]);
+    const artifacts = [art({ kind: "url", value: "https://www.instagram.com/subject_handle/" })];
+    const out = computePivots({ artifacts, seedValue: null, reportPivots: [], skipSet: NONE, queriedSet });
+    const url = out.find((p) => p.value === "https://www.instagram.com/subject_handle/");
+    if (url) expect(url.status).toBe("searched");
+  });
+
+  it("a different phone stays new", async () => {
+    const { queriedTargetSet } = await import("@/hooks/useThreadQueriedTargets");
+    const queriedSet = queriedTargetSet([{ target: normalizeTarget("4155550142"), createdAt: "2026-01-01T00:00:00Z" }]);
+    const artifacts = [art({ kind: "phone", value: "+1 (415) 555-0199" })];
+    const out = computePivots({ artifacts, seedValue: null, reportPivots: [], skipSet: NONE, queriedSet });
+    expect(out.find((p) => p.value === "+1 (415) 555-0199")?.status).toBe("new");
+  });
+});

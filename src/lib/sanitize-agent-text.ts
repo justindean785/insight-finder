@@ -104,13 +104,39 @@ export function stripToolCallMarkup(text: string): string {
     .trim();
 }
 
+// ---- System markers the server adds to the MODEL's context -----------------
+// The orchestrator prefixes earlier assistant turns with a provenance label
+// (`supabase/functions/osint-agent/lib/historical-label.ts`) so the model treats
+// them as unverified. The label is model-facing only, yet GLM copies it into its
+// own replies despite the prompt rule not to (seen in production 2026-11-01 and
+// on JD's phone 2026-11-02). It is instruction text, not a finding, so it never
+// belongs on an analyst surface. The label body contains no `]`, so the match is
+// bounded to the bracketed block; a truncated, still-streaming label (no closing
+// bracket yet) is dropped to the end of its paragraph.
+const SYSTEM_MARKER_BLOCK_RE = /\[\s*HISTORICAL MODEL OUTPUT\b[^\]]*\][ \t]*\n*/gi;
+const SYSTEM_MARKER_OPEN_RE = /\[\s*HISTORICAL MODEL OUTPUT\b[^\]]*?(?=\n[ \t]*\n|$)/gi;
+
+/**
+ * Remove server-added, model-facing system markers that the model echoed into
+ * its text. Display cleanup only: never alters a finding or claim.
+ */
+export function stripSystemMarkers(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(SYSTEM_MARKER_BLOCK_RE, "")
+    .replace(SYSTEM_MARKER_OPEN_RE, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /**
  * Full sanitize for assistant TEXT shown in the chat timeline: strip reasoning
- * blocks AND leaked tool-call markup. Single entry point so the render path and
- * the copy-to-clipboard path stay in sync.
+ * blocks, leaked tool-call markup, and echoed system markers. Single entry point
+ * so the render path, the copy-to-clipboard path and the report narrative stay
+ * in sync.
  */
 export function sanitizeChatText(text: string): string {
-  return stripToolCallMarkup(stripReasoningMarkup(text));
+  return stripSystemMarkers(stripToolCallMarkup(stripReasoningMarkup(text)));
 }
 
 /**
