@@ -32,6 +32,10 @@ CREATE TABLE public.cluster_adjudications (
   UNIQUE (thread_id, cluster_id, input_hash)
 );
 
+-- Supabase's default privileges grant anon/authenticated ALL on new public tables;
+-- a bare GRANT SELECT does not take them away. Revoke first so the grant is the
+-- only privilege (RLS already denies writes; this is the second layer).
+REVOKE ALL ON public.cluster_adjudications FROM anon, authenticated;
 GRANT SELECT ON public.cluster_adjudications TO authenticated;
 GRANT ALL ON public.cluster_adjudications TO service_role;
 
