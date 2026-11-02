@@ -8,7 +8,9 @@ import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { useThreadArtifacts } from "@/hooks/useThreadArtifacts";
 import { useReviewStates } from "@/lib/review";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { ClipboardList, Network, Sparkles, type LucideIcon } from "lucide-react";
+import { Activity, ClipboardList, Network, Sparkles, type LucideIcon } from "lucide-react";
+import { LiveBoard } from "@/components/workspace/LiveBoard";
+import { cn } from "@/lib/utils";
 import { DecisionChip } from "@/components/workspace/WorkspaceTabs";
 import { tabButtonClass, tabIconClass } from "@/components/workspace/tab-recipe";
 import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
@@ -28,17 +30,28 @@ import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
  * A selection also auto-switches the Workbench to the Sheet tab, so a click
  * in Evidence surfaces its detail without a second tab click.
  */
-export type WorkbenchTab = "sheet" | "next" | "connections";
+export type WorkbenchTab = "live" | "sheet" | "next" | "connections";
 const TABS: ReadonlyArray<{ key: WorkbenchTab; label: string; icon: LucideIcon }> = [
+  // Live is the default: what the agent is doing, the connections forming and
+  // the next pivots, on one surface (JD, 2026-11-02 — the rail read as static).
+  { key: "live", label: "Live", icon: Activity },
   { key: "sheet", label: "Sheet", icon: ClipboardList },
   { key: "next", label: "Next", icon: Sparkles },
   { key: "connections", label: "Connections", icon: Network },
 ];
 
-export function Workbench({ threadId }: { threadId: string }) {
-  const [tab, setTab] = useState<WorkbenchTab>("sheet");
+export function Workbench({ threadId, request = null }: {
+  threadId: string;
+  /** A tab (and optionally a pivot to open) requested while the rail was folded, so
+   *  the request is not lost to a Workbench that was not mounted yet. */
+  request?: { tab: WorkbenchTab; open?: string; n: number } | null;
+}) {
+  const [tab, setTab] = useState<WorkbenchTab>(request?.tab ?? "live");
   // Panels stay mounted once visited, so a half-read list, an open Preview and a selection survive a tab switch.
-  const [visited, setVisited] = useState<ReadonlySet<WorkbenchTab>>(() => new Set<WorkbenchTab>(["sheet"]));
+  const [visited, setVisited] = useState<ReadonlySet<WorkbenchTab>>(() => new Set<WorkbenchTab>([request?.tab ?? "live"]));
+  const [openRequest, setOpenRequest] = useState<{ key: string; n: number } | null>(
+    request?.open ? { key: request.open, n: request.n } : null,
+  );
   const refs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const select = (key: WorkbenchTab) => {
@@ -73,16 +86,23 @@ export function Workbench({ threadId }: { threadId: string }) {
     if (selectedArtifactId) select("sheet");
   }, [selectedArtifactId]);
 
+  useEffect(() => {
+    if (!request) return;
+    select(request.tab);
+    if (request.open) setOpenRequest({ key: request.open, n: request.n });
+  }, [request]);
+
   // The transcript's compact "Open Next pivots" affordance dispatches this
   // event so the single actionable queue on the right-hand Workbench gets the
   // focus without duplicating Run buttons in the chat. See ChatWindow.tsx and
   // register item 1 ("single Next-steps queue").
   useEffect(() => {
     const onJump = (e: Event) => {
-      const detail = (e as CustomEvent<{ tab?: WorkbenchTab }>).detail;
+      const detail = (e as CustomEvent<{ tab?: WorkbenchTab; open?: string }>).detail;
       const target = detail?.tab;
-      if (target === "sheet" || target === "next" || target === "connections") {
+      if (target === "live" || target === "sheet" || target === "next" || target === "connections") {
         select(target);
+        if (target === "next" && typeof detail?.open === "string") setOpenRequest({ key: detail.open, n: Date.now() });
         // Hand keyboard focus to the newly-selected tab button so the next
         // ArrowLeft/ArrowRight keystroke lands in the right place.
         queueMicrotask(() => refs.current[target]?.focus());
@@ -109,7 +129,8 @@ export function Workbench({ threadId }: { threadId: string }) {
             onKeyDown={(e) => onKeyDown(e, i)}
             className={tabButtonClass(tab === t.key, "secondary")}
           >
-            <t.icon className={tabIconClass(tab === t.key)} strokeWidth={1.8} aria-hidden />
+            {/* Icons only from 2xl: four labelled tabs do not fit a 320/380px rail with them. */}
+            <t.icon className={cn(tabIconClass(tab === t.key), "hidden 2xl:block")} strokeWidth={1.8} aria-hidden />
             <span className="leading-none">{t.label}</span>
             {t.key === "sheet" && sheetCalls.kind === "decision" && <DecisionChip count={sheetCalls} compact />}
           </button>
@@ -130,7 +151,8 @@ export function Workbench({ threadId }: { threadId: string }) {
                 ? <SheetInspectorHost threadId={threadId} selectedArtifactId={selectedArtifactId} onClose={clear} />
                 : <CaseSheet threadId={threadId} />
             )}
-            {t.key === "next" && <WorkbenchNext threadId={threadId} />}
+            {t.key === "live" && <LiveBoard threadId={threadId} />}
+            {t.key === "next" && <WorkbenchNext threadId={threadId} openRequest={openRequest} />}
             {t.key === "connections" && <WorkbenchConnections threadId={threadId} />}
           </ErrorBoundary>
         </div>

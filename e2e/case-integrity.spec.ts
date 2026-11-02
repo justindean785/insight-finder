@@ -384,10 +384,37 @@ test.describe("read-only case view", () => {
   });
 });
 
+test.describe("Workbench Live board", () => {
+  test("opens on Live, with activity, connections and next pivots", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, THREAD);
+    const tab = page.getByRole("tablist", { name: "Workbench" }).getByRole("tab", { name: "Live" });
+    await expect(tab).toHaveAttribute("aria-selected", "true");
+    const board = page.locator("[data-live-board]");
+    await expect(board.getByRole("region", { name: "Agent activity" })).toBeVisible();
+    await expect(board.getByRole("region", { name: "Connections" })).toBeVisible();
+    await expect(board.getByRole("region", { name: "Next pivots" })).toBeVisible();
+  });
+
+  test("Open Next pivots works while the rail is folded (it used to do nothing)", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, THREAD);
+    await page.getByRole("button", { name: "Hide case sheet" }).click();
+    await expect(page.locator("[data-workbench]")).toHaveCount(0);
+    await page.getByRole("button", { name: "Open Next pivots" }).click();
+    const next = page.getByRole("tablist", { name: "Workbench" }).getByRole("tab", { name: "Next" });
+    await expect(next).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tabpanel", { name: "Next" }).getByRole("region", { name: "Next steps" })).toBeVisible();
+    // Leave the rail open for the next test's stored preference.
+  });
+});
+
 test.describe("case sheet → Evidence handoff", () => {
   test("Decide in Evidence opens that row even though the default view hides quarantined rows", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page, THREAD);
+    // The Workbench opens on Live (2026-11-02); the "Needs your call" queue is on its Sheet tab.
+    await page.getByRole("tablist", { name: "Workbench" }).getByRole("tab", { name: "Sheet" }).click();
     const queue = page.getByRole("region", { name: "Needs your call" });
     await expect(queue).toBeVisible();
     // A quarantined (linkage) card — the kind the Analyst view hides.

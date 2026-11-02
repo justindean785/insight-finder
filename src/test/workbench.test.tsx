@@ -119,9 +119,11 @@ describe("selection hand-off from the Graph", () => {
 });
 
 describe("Workbench tabs", () => {
-  it("opens on the existing case sheet; Next and Connections are not mounted until visited", async () => {
+  it("opens on the Live board; Sheet, Next and Connections are not mounted until visited", async () => {
     renderWorkbench([art("email", "a@example.test")]);
-    expect(screen.getByRole("tab", { name: "Sheet" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Live" }).getAttribute("aria-selected")).toBe("true");
+    expect(document.getElementById("workbench-panel-sheet")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Sheet" }));
     expect(await screen.findByRole("region", { name: "Subject" })).toBeTruthy();
     expect(document.querySelector("[data-workbench-connections]")).toBeNull();
     expect(document.getElementById("workbench-panel-next")).toBeNull();
@@ -131,12 +133,12 @@ describe("Workbench tabs", () => {
     renderWorkbench([art("email", "a@example.test")]);
     fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
     expect(document.querySelector("[data-workbench-connections]")).toBeTruthy();
-    expect((document.getElementById("workbench-panel-sheet") as HTMLElement).hidden).toBe(true);
+    expect((document.getElementById("workbench-panel-live") as HTMLElement).hidden).toBe(true);
     const connections = screen.getByRole("tab", { name: "Connections" });
     fireEvent.keyDown(connections, { key: "ArrowLeft" });
     expect(screen.getByRole("tab", { name: "Next" }).getAttribute("aria-selected")).toBe("true");
     fireEvent.keyDown(screen.getByRole("tab", { name: "Next" }), { key: "Home" });
-    expect(screen.getByRole("tab", { name: "Sheet" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Live" }).getAttribute("aria-selected")).toBe("true");
     expect(document.querySelector("[data-workbench-connections]")).toBeTruthy(); // still mounted, just hidden
     expect(screen.getAllByRole("tabpanel", { hidden: false }).length).toBe(1);
   });
@@ -286,9 +288,10 @@ describe("the workbench tab strip shares the main strip's recipe", () => {
   it("shows an icon on every tab and the brand underline on the selected one", () => {
     renderWorkbench([art("email", "a@example.test")]);
     const tabs = screen.getAllByRole("tab");
-    expect(tabs).toHaveLength(3);
+    expect(tabs).toHaveLength(4);
+    // Icons are in the DOM on every tab; CSS shows them only where the rail has room (2xl).
     for (const t of tabs) expect(t.querySelector("svg")).not.toBeNull();
-    expect(screen.getByRole("tab", { name: /Sheet/ }).className).toContain("shadow-[inset_0_-2px_0_hsl(var(--brand))]");
+    expect(screen.getByRole("tab", { name: "Live" }).className).toContain("shadow-[inset_0_-2px_0_hsl(var(--brand))]");
     expect(screen.getByRole("tab", { name: "Next" }).className).not.toContain("hsl(var(--brand))]");
   });
 
@@ -308,5 +311,52 @@ describe("the workbench tab strip shares the main strip's recipe", () => {
   it("no chip when nothing awaits a call", () => {
     renderWorkbench([art("email", "ok@example.test")]);
     expect(screen.getByRole("tab", { name: /Sheet/ }).querySelector("[title*='awaiting your call']")).toBeNull();
+  });
+});
+
+describe("Live board (the Workbench default)", () => {
+  const renderLive = (items: Artifact[], extra: Record<string, unknown> = {}) => {
+    const api = snapshotWith(items);
+    Object.assign(api.snapshot as object, extra);
+    return render(
+      <CaseSnapshotContext.Provider value={api}>
+        <Workbench threadId={T} />
+      </CaseSnapshotContext.Provider>,
+    );
+  };
+
+  it("lists the newest tool calls first, with the run state", () => {
+    renderLive([art("email", "a@example.test")], {
+      run: { state: "running", label: "Running" },
+      tools: {
+        available: true, total: 2,
+        events: [
+          { id: "e1", toolName: "breach_check", displayName: "Breach check", actionLabel: "Checking breach corpora", status: "succeeded", at: "2026-01-01T00:00:01Z" },
+          { id: "e2", toolName: "github_user", displayName: "GitHub user", actionLabel: "Looking up GitHub profile", status: "failed", at: "2026-01-01T00:00:02Z" },
+        ],
+      },
+    });
+    const board = document.querySelector("[data-live-board]") as HTMLElement;
+    expect(board).toBeTruthy();
+    expect(within(board).getByText("Agent working")).toBeTruthy();
+    const rows = within(board.querySelector("[aria-label='Agent activity']") as HTMLElement).getAllByRole("listitem");
+    expect(rows[0].textContent).toMatch(/GitHub profile/);
+    expect(rows[1].textContent).toMatch(/breach corpora/);
+  });
+
+  it("shows a linked group when two selectors share an email, with the engine's merge reason", () => {
+    renderLive([
+      art("email", "shared@example.test", null, 80),
+      art("username", "linked_handle", { email: "shared@example.test" }, 70),
+    ]);
+    const section = document.querySelector("[aria-label='Connections']") as HTMLElement;
+    expect(section).toBeTruthy();
+    // Either the engine linked them (a group card) or it says plainly nothing is linked — never a crash or a blank.
+    expect(section.textContent).toMatch(/linked group|No two selectors are linked yet/);
+  });
+
+  it("says plainly when nothing is linked yet", () => {
+    renderLive([art("email", "lonely@example.test")]);
+    expect(screen.getByText(/No two selectors are linked yet/)).toBeTruthy();
   });
 });

@@ -1,23 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
-import { queriedTargetSet, useThreadQueriedCalls } from "@/hooks/useThreadQueriedTargets";
-import { useThreadPivotAttempts } from "@/hooks/useThreadPivotAttempts";
-import { useReviewStates } from "@/lib/review";
-import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
-import { computePivots } from "@/lib/pivot-engine";
-import { cardDedupeKey } from "@/lib/next-step-cards";
+import { useWorkbenchPivots } from "@/hooks/useWorkbenchPivots";
+import { NextSteps } from "@/components/pivots/NextSteps";
 import { buildEntityGraph } from "@/lib/entity-graph";
 import { summarizeConnections } from "@/lib/connection-summary";
-import type { RecommendedPivot } from "@/lib/recommended-pivots";
-import { hidePivots, readPivotSkip, restorePivots, PIVOT_SKIP_EVENT } from "@/lib/pivot-skip";
-import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
+import { hidePivots, restorePivots } from "@/lib/pivot-skip";
+import type { RunnablePivot } from "@/lib/pivot-schema";
 import { hasPivotRunner } from "@/lib/pivot-runner";
 import type { ReviewAdjustment } from "@/lib/intel";
-import { WORKBENCH_RUNNABLE_LIMIT } from "@/lib/next-step-queue";
-import { derivePivotRunViews, pivotRunKey, usePivotRuns } from "@/lib/pivot-runs";
-
-const RUNNABLE_LIMIT = WORKBENCH_RUNNABLE_LIMIT;
-const REPAIR_LIMIT = 3;
 
 /**
  * The Workbench's Next tab: the SAME compact list the Investigate transcript ends with (best pivot, the ones after
@@ -26,52 +15,16 @@ const REPAIR_LIMIT = 3;
  * Unlike the transcript's rail it is not gated on the latest message being report-shaped, so it works from the case's
  * own recorded selectors too; it never offers the generic "ask the agent" prompts, which are a chat concern.
  */
-export function WorkbenchNext({ threadId }: { threadId: string }) {
-  const { snapshot } = useCaseSnapshot();
-  const review = useReviewStates(threadId);
-  const queriedCalls = useThreadQueriedCalls(threadId);
-  const queriedTargets = useMemo(() => queriedTargetSet(queriedCalls), [queriedCalls]);
-  const attempts = useThreadPivotAttempts(threadId);
-  const pivotRuns = usePivotRuns(threadId);
-  const artifacts = useMemo(() => snapshot?.items ?? [], [snapshot?.items]);
-  const caseRunning = snapshot?.run?.state === "running";
-  const runViews = useMemo(
-    () => derivePivotRunViews(pivotRuns, { caseRunning, artifacts, queriedCalls }),
-    [pivotRuns, caseRunning, artifacts, queriedCalls],
-  );
-  // A pivot this tab started leaves the queue while it runs or once a tool call
-  // was recorded against it (shown above the queue as Running / Completed), so
-  // the next one becomes the best pivot. An ended run with no such call returns
-  // to the queue: whether it ran is unknown.
-  const sentKeys = useMemo(
-    () => new Set(runViews.filter((v) => v.phase !== "ended").map((v) => v.run.key)),
-    [runViews],
-  );
-  const seed = snapshot?.seed ?? { value: null, type: null };
-  const [reportPivots, setReportPivots] = useState<RecommendedPivot[]>([]);
-  const [skip, setSkip] = useState<Set<string>>(new Set());
+export function WorkbenchNext({ threadId, openRequest = null }: {
+  threadId: string;
+  /** Open this pivot's preview: a request from the Live board. `n` makes a repeat request distinct. */
+  openRequest?: { key: string; n: number } | null;
+}) {
+  const { snapshot, review, artifacts, artifactsById, caseRunning, runViews, seed, skip, items } = useWorkbenchPivots(threadId);
   const [open, setOpen] = useState<string | null>(null);
-
   useEffect(() => {
-    const onReport = (e: Event) => {
-      const d = (e as CustomEvent<{ threadId: string; pivots: RecommendedPivot[] }>).detail;
-      if (d?.threadId === threadId && Array.isArray(d.pivots)) setReportPivots(d.pivots);
-    };
-    window.addEventListener("swarmbot:report-pivots", onReport as EventListener);
-    window.dispatchEvent(new CustomEvent("swarmbot:request-report-pivots", { detail: { threadId } }));
-    return () => window.removeEventListener("swarmbot:report-pivots", onReport as EventListener);
-  }, [threadId]);
-
-  useEffect(() => {
-    const load = () => setSkip(readPivotSkip(threadId));
-    load();
-    const onChanged = (e: Event) => {
-      const d = (e as CustomEvent<{ threadId: string }>).detail;
-      if (!d || d.threadId === threadId) load();
-    };
-    window.addEventListener(PIVOT_SKIP_EVENT, onChanged as EventListener);
-    return () => window.removeEventListener(PIVOT_SKIP_EVENT, onChanged as EventListener);
-  }, [threadId]);
+    if (openRequest) setOpen(openRequest.key);
+  }, [openRequest]);
 
   // The last hide, for a one-step undo. Cleared on the next hide or restore.
   const [lastHide, setLastHide] = useState<{ targets: string[]; label: string } | null>(null);
@@ -79,37 +32,6 @@ export function WorkbenchNext({ threadId }: { threadId: string }) {
     hidePivots(threadId, targets);
     setLastHide({ targets, label });
   };
-
-  const artifactsById = useMemo(() => new Map(artifacts.map((a) => [a.id, a] as const)), [artifacts]);
-
-  const items = useMemo<NextStepItem[]>(() => {
-    const reviewOf = (id: string) => review.map[id] ?? "new";
-    const ranked = computePivots({ artifacts, seedValue: seed.value, reportPivots, skipSet: skip, queriedSet: queriedTargets, reviews: review.map, attempts });
-    const out: NextStepItem[] = [];
-    const repair: NextStepItem[] = [];
-    const seen = new Set<string>();
-    let runnable = 0;
-    for (const p of ranked.filter((c) => c.status === "new" && !sentKeys.has(pivotRunKey(c.type, c.value)))) {
-      if (runnable >= RUNNABLE_LIMIT) break;
-      const key = cardDedupeKey({ title: p.actionLabel, target: p.value });
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const validation = validatePivotSuggestion(pivotSuggestionInput(p));
-      if (validation.status !== "valid") {
-        if (repair.length < REPAIR_LIMIT) repair.push({ kind: "pivot", key, validation, eligibility: null });
-        continue;
-      }
-      runnable++;
-      out.push({
-        kind: "pivot",
-        key,
-        validation,
-        eligibility: pivotEligibility(validation.pivot, { artifactsById, review: reviewOf }),
-        rationale: p.rationale,
-      });
-    }
-    return [...out, ...repair];
-  }, [artifacts, seed.value, reportPivots, skip, queriedTargets, review.map, artifactsById, attempts, sentKeys]);
 
   const reviews = useMemo(() => {
     const m: Record<string, ReviewAdjustment> = {};
