@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense, type ReactNode } from "react";
+import { useEffect, useRef, useState, lazy, Suspense, type ReactNode } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { ChatWindow } from "@/components/ChatWindow";
@@ -7,7 +7,7 @@ import { WorkspaceTabs, type WorkspaceTab } from "@/components/workspace/Workspa
 import { CaseSnapshotProvider } from "@/components/workspace/CaseSnapshotProvider";
 import { WorkspaceUIStateProvider } from "@/components/workspace/WorkspaceUIStateProvider";
 import { RecoveryBanner } from "@/components/workspace/RecoveryBanner";
-import { Workbench } from "@/components/workspace/Workbench";
+import { Workbench, type WorkbenchTab } from "@/components/workspace/Workbench";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { ShellTopBar } from "@/components/shell/AppShell";
 // Non-default tabs are code-split: Chat (default) loads eagerly; the heavier
@@ -163,6 +163,25 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [docked, overlayOpen]);
+  // A "go to Workbench tab" request (the transcript's "Open Next pivots", the Live
+  // board) used to reach nothing while the rail was folded: the Workbench is not
+  // mounted then, so its listener did not exist and the button did nothing. Unfold
+  // the rail and hand the request to the Workbench as a prop, which survives mount.
+  const [workbenchRequest, setWorkbenchRequest] = useState<{ tab: WorkbenchTab; open?: string; n: number } | null>(null);
+  const collapsedRef = useRef(collapsed);
+  collapsedRef.current = collapsed;
+  useEffect(() => {
+    const onJump = (e: Event) => {
+      const d = (e as CustomEvent<{ tab?: WorkbenchTab; open?: string }>).detail;
+      if (!d?.tab || !collapsedRef.current) return;
+      setCollapsed(false);
+      setWorkbenchRequest({ tab: d.tab, open: d.open, n: Date.now() });
+    };
+    window.addEventListener("swarmbot:workbench-tab", onJump as EventListener);
+    return () => window.removeEventListener("swarmbot:workbench-tab", onJump as EventListener);
+    // setCollapsed closes over `docked`; re-bind when it changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docked]);
   const besideSheet = (key: WorkspaceTab) =>
     showSheet && (key === "chat" || key === "report" || key === "evidence") &&
     (collapsed ? "md:right-11" : "md:right-11 lg:right-[320px] xl:right-[380px]");
@@ -268,7 +287,7 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
                 <TooltipContent side="left" className="text-xs">Hide case sheet</TooltipContent>
               </Tooltip>
               <ErrorBoundary>
-                <Workbench threadId={threadId} />
+                <Workbench threadId={threadId} request={workbenchRequest} onRequestConsumed={() => setWorkbenchRequest(null)} />
               </ErrorBoundary>
             </>
           )}

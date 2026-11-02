@@ -2676,9 +2676,9 @@ function ChatWindowInner({
   );
   // Placeholder length only — layout is CSS-responsive and never remounts.
   const isPhone = useIsMobile();
-  // When the Workbench's right-hand Next tab is visible (xl+), the actionable
+  // When the Workbench's right-hand Next tab is visible (lg+), the actionable
   // pivot queue lives there — the transcript shows a compact summary + handoff
-  // button to avoid duplicating Run affordances. Below xl, the Workbench aside
+  // button to avoid duplicating Run affordances. Below lg, the Workbench aside
   // is `display:none`, so the transcript keeps the full NextSteps as fallback.
   const workbenchVisible = useIsWorkbenchViewport();
   const runControlsVisible = canShowRunControls({
