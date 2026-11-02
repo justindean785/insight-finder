@@ -266,11 +266,11 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
       data-thread-id={threadId}
       className="case-bar relative border-b border-white/[0.07]"
     >
-      <div className="flex min-h-[4.25rem] items-center gap-3.5 px-4 py-3 sm:px-6 [@media(max-height:700px)]:min-h-14 [@media(max-height:700px)]:py-2">
+      <div className="flex min-h-[4.25rem] items-center gap-3.5 px-4 py-3 sm:px-6 lg:min-h-[5.5rem] lg:py-4 [@media(max-height:700px)]:min-h-14 [@media(max-height:700px)]:py-2">
         {/* Identity */}
         <div className="flex min-w-0 flex-1 items-center gap-3.5">
           <span
-            className="case-mark grid h-10 w-10 shrink-0 place-items-center rounded-[11px] [@media(max-height:700px)]:h-8 [@media(max-height:700px)]:w-8 [@media(max-height:700px)]:rounded-[9px]"
+            className="case-mark grid h-10 w-10 shrink-0 place-items-center rounded-[11px] lg:hidden [@media(max-height:700px)]:h-8 [@media(max-height:700px)]:w-8 [@media(max-height:700px)]:rounded-[9px]"
             title={KIND_LABEL[display.kind]}
           >
             <KindIcon className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
@@ -281,7 +281,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
               {caseName ? (
                 // The analyst's name for the case leads, in the display face; the
                 // selector it started from moves to the line beneath.
-                <h1 className="min-w-0 truncate font-display text-[19px] font-semibold leading-tight tracking-[-0.02em] [@media(max-height:700px)]:text-[17px]" title={caseName}>
+                <h1 className="min-w-0 truncate font-display text-[22px] font-semibold leading-tight tracking-[-0.035em] lg:text-[28px] [@media(max-height:700px)]:text-[18px]" title={caseName}>
                   {caseName}
                 </h1>
               ) : display.title ? (

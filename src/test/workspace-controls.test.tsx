@@ -241,7 +241,7 @@ describe("WorkspaceTabs (mobile) — labelled, never an unnamed icon", () => {
     }
     expect(screen.queryByRole("tab", { name: /Overview/ })).toBeNull();
     expect(screen.getByRole("tab", { name: /Evidence/ }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("button", { name: "More sections: Overview, Tools, Graph" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "More sections: Overview, Graph, Activity" })).toBeTruthy();
   });
 
   it("pads the bar by the bottom safe-area inset", () => {
@@ -253,17 +253,17 @@ describe("WorkspaceTabs (mobile) — labelled, never an unnamed icon", () => {
   it("opens a menu of radio items with the current section checked", async () => {
     const onChange = vi.fn();
     render(<WorkspaceTabs active="tools" onChange={onChange} variant="inline" />);
-    const trigger = screen.getByRole("button", { name: "More, current section: Tools" });
+    const trigger = screen.getByRole("button", { name: "More, current section: Activity" });
     // Keyboard is the path under test: ArrowDown on the trigger opens the menu.
     trigger.focus();
     await act(async () => { fireEvent.keyDown(trigger, { key: "ArrowDown" }); });
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
     const items = screen.getAllByRole("menuitemradio");
     expect(items.map((i) => i.textContent)).toEqual([
-      expect.stringContaining("Overview"), expect.stringContaining("Tools"), expect.stringContaining("Graph"),
+      expect.stringContaining("Overview"), expect.stringContaining("Graph"), expect.stringContaining("Activity"),
     ]);
-    expect(items[1].getAttribute("aria-checked")).toBe("true");
-    await act(async () => { fireEvent.click(items[2]); });
+    expect(items[2].getAttribute("aria-checked")).toBe("true");
+    await act(async () => { fireEvent.click(items[1]); });
     expect(onChange).toHaveBeenCalledWith("graph");
   });
 });
@@ -274,7 +274,7 @@ describe("WorkspaceTabs (case viewer sections)", () => {
     render(<WorkspaceTabs active="report" onChange={vi.fn()} sections={CASE_VIEW_SECTIONS} label="Case views" />);
     const list = screen.getByRole("tablist", { name: "Case views" });
     expect(Array.from(list.querySelectorAll('[role="tab"]')).map((t) => t.textContent?.trim())).toEqual([
-      "Report", "Evidence", "Tools", "Graph",
+      "Report", "Evidence", "Activity", "Graph",
     ]);
     expect(screen.queryByRole("tab", { name: /Investigate|Overview/ })).toBeNull();
   });
@@ -286,9 +286,9 @@ describe("WorkspaceTabs (case viewer sections)", () => {
     expect(onChange).toHaveBeenLastCalledWith("report");
   });
 
-  it("on a phone puts Evidence and Report in the bar and Tools and Graph behind More", () => {
+  it("on a phone puts Evidence and Report in the bar and Activity and Graph behind More", () => {
     render(<WorkspaceTabs active="report" onChange={vi.fn()} sections={CASE_VIEW_SECTIONS} label="Case views" variant="inline" />);
     expect(screen.getAllByRole("tab").map((t) => t.textContent?.trim())).toEqual(["Report", "Evidence"]);
-    expect(screen.getByRole("button", { name: "More sections: Tools, Graph" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "More sections: Activity, Graph" })).toBeTruthy();
   });
 });

@@ -64,8 +64,8 @@ test.describe("canonical case snapshot", () => {
     await open(page, THREAD);
     const header = page.getByRole("region", { name: "Case summary" });
     const headerTools = await header.getByText(/^(tool )?calls?$/).locator("xpath=preceding-sibling::*[1]").textContent();
-    const badge = (await page.getByRole("tab", { name: /Tools/ }).textContent())?.replace(/\D/g, "");
-    await page.getByRole("tab", { name: /Tools/ }).click();
+    const badge = (await page.getByRole("tab", { name: /Activity/ }).textContent())?.replace(/\D/g, "");
+    await page.getByRole("tab", { name: /Activity/ }).click();
     // MetricCard: the label sits in a row, the figure in the next block.
     const panel = await page.getByText("Tool calls", { exact: true }).locator("xpath=../following-sibling::div[1]").textContent();
     expect(headerTools).toBe("18");
@@ -177,11 +177,11 @@ test.describe("canonical case snapshot", () => {
     await open(page, `${THREAD}?scenario=reconcile`);
     const header = page.getByRole("region", { name: "Case summary" });
     await expect(header.getByText("Interrupted", { exact: true })).toBeVisible();
-    await expect(page.getByRole("tab", { name: /Tools/ })).toContainText("16");
+    await expect(page.getByRole("tab", { name: /Activity/ })).toContainText("16");
 
     // ~2.5s later the run finalizes and a realtime UPDATE lands.
     await expect(header.getByText("Complete", { exact: true })).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByRole("tab", { name: /Tools/ })).toContainText("18");
+    await expect(page.getByRole("tab", { name: /Activity/ })).toContainText("18");
     await expect(header).toContainText("18");
     await expect(page.getByRole("status").filter({ hasText: "Case updated" })).toContainText("Status Interrupted → Complete");
     await expect(page.getByRole("status").filter({ hasText: "Case updated" })).toContainText("Tools 16 → 18");
@@ -213,7 +213,7 @@ test.describe("interrupted-run recovery", () => {
   test("view failed tools opens Tools › Health", async ({ page }) => {
     await open(page, `${THREAD}?scenario=stale`);
     await page.getByRole("button", { name: /View failed tools/ }).click();
-    await expect(page.getByRole("tab", { name: /Tools/ })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tab", { name: /Activity/ })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByRole("button", { name: "Health", pressed: true })).toBeVisible();
   });
 
@@ -333,7 +333,7 @@ test.describe("12 · mobile 390px", () => {
     const nav = page.getByRole("navigation", { name: "Workspace sections" });
     const box = await nav.boundingBox();
     expect(box && box.y + box.height).toBeGreaterThan(844 - 2);
-    const more = page.getByRole("button", { name: "More sections: Overview, Tools, Graph" });
+    const more = page.getByRole("button", { name: "More sections: Overview, Graph, Activity" });
     await expect(more).toHaveAttribute("aria-expanded", "false");
     await more.focus();
     await page.keyboard.press("ArrowDown");
@@ -365,7 +365,7 @@ test.describe("12 · mobile 390px", () => {
 
   test("graph defaults to a readable list", async ({ page }) => {
     await open(page, THREAD);
-    await page.getByRole("button", { name: "More sections: Overview, Tools, Graph" }).click();
+    await page.getByRole("button", { name: "More sections: Overview, Graph, Activity" }).click();
     await page.getByRole("menuitemradio", { name: /Graph/ }).click();
     await expect(page.getByRole("button", { name: "List", pressed: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: /Linked entities/ })).toBeVisible();
@@ -376,7 +376,7 @@ test.describe("read-only case view", () => {
   test("renders Tools from the same case snapshot (no provider crash)", async ({ page }) => {
     await blockExternalOrigins(page);
     await page.goto("/cases/11111111-2222-4333-8444-555555555555");
-    const tools = page.getByRole("tab", { name: /Tools/ });
+    const tools = page.getByRole("tab", { name: /Activity/ });
     await expect(tools).toContainText("18");
     await tools.click();
     await expect(page.getByText("Tool calls", { exact: true })).toBeVisible();

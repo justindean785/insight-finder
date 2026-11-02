@@ -22,7 +22,7 @@ import { test, expect, type Page, type Locator } from "@playwright/test";
  */
 
 const THREAD = "/chat/11111111-2222-4333-8444-555555555555";
-const TAB_LABELS = ["Overview", "Investigate", "Evidence", "Tools", "Graph", "Report"] as const;
+const TAB_LABELS = ["Investigate", "Overview", "Evidence", "Graph", "Activity", "Report"] as const;
 
 /**
  * The harness is self-contained — the Supabase client is stubbed and no fixture
@@ -234,8 +234,8 @@ test.describe("workspace tab strip", () => {
   test("every tab activates by keyboard", async ({ page }) => {
     await openWorkspace(page);
 
-    await tab(page, "Overview").focus();
-    await expect(tab(page, "Overview")).toBeFocused();
+    await tab(page, TAB_LABELS[0]).focus();
+    await expect(tab(page, TAB_LABELS[0])).toBeFocused();
 
     for (let i = 1; i < TAB_LABELS.length; i += 1) {
       await page.keyboard.press("ArrowRight");
@@ -262,9 +262,12 @@ test.describe("workspace tab strip", () => {
     const active = page.locator('[role="tab"][aria-selected="true"]').first();
     const style = await active.evaluate((el) => {
       const cs = getComputedStyle(el);
-      return { background: cs.backgroundColor, boxShadow: cs.boxShadow };
+      return { boxShadow: cs.boxShadow };
     });
-    expect(style.background).not.toBe("rgba(0, 0, 0, 0)");
+    // Case desk (JD's prototype, 2026-11-02): the active tab is marked by its
+    // 2px lavender underline and brighter ink, with no filled ground, so the
+    // underline is what this guards.
     expect(style.boxShadow).not.toBe("none");
+    expect(style.boxShadow).toMatch(/inset/);
   });
 });

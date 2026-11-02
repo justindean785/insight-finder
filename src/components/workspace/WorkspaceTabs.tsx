@@ -33,13 +33,15 @@ export type TabCount = {
 };
 
 const TABS: { key: WorkspaceTab; label: string; icon: LucideIcon }[] = [
-  // Overview leads: it is the only tab that answers "what is the state of this
-  // case", so it is where an analyst returning to a case should land first.
-  { key: "overview", label: "Overview", icon: LayoutDashboard },
+  // Case-desk order (JD's prototype, 2026-11-02): the live investigation leads,
+  // then the summary, the evidence, the graph, what ran, and the deliverable.
+  // "Tools" reads "Activity": outcomes first, raw calls one step away. The key
+  // stays `tools`, so every deep link and navigate event keeps working.
   { key: "chat", label: "Investigate", icon: MessagesSquare },
+  { key: "overview", label: "Overview", icon: LayoutDashboard },
   { key: "evidence", label: "Evidence", icon: Database },
-  { key: "tools", label: "Tools", icon: Activity },
   { key: "graph", label: "Graph", icon: Share2 },
+  { key: "tools", label: "Activity", icon: Activity },
   { key: "report", label: "Report", icon: FileText },
 ];
 
@@ -192,8 +194,9 @@ function TabBar({
 
   return (
     <div className="relative border-b border-white/[0.07] bg-surface-0">
-      <div className="flex overflow-x-auto px-1 sm:px-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <div role="tablist" aria-label={label} className="flex w-max shrink-0 items-stretch gap-1">
+      <div className="flex overflow-x-auto px-4 sm:px-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {/* Case desk: text-only tabs, wide spacing, aligned with the case title. */}
+        <div role="tablist" aria-label={label} className="flex w-max shrink-0 items-stretch gap-6">
           {tabs.map((t, idx) => {
             const Icon = t.icon;
             const isActive = active === t.key;
@@ -211,7 +214,7 @@ function TabBar({
                 onClick={() => onChange(t.key)}
                 className={tabButtonClass(isActive, "primary")}
               >
-                <Icon className={tabIconClass(isActive)} strokeWidth={1.8} aria-hidden />
+                <Icon className={cn(tabIconClass(isActive), "hidden")} strokeWidth={1.8} aria-hidden />
                 <span className="leading-none">{t.label}</span>
                 <TabCountBadge count={counts?.[t.key]} loading={loading} active={isActive} />
               </button>

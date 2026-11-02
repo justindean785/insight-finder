@@ -57,11 +57,11 @@ All colors MUST be HSL.
        register used 0% lightness with a warm surface ramp above it; the cast
        is now cold, which is what makes cream anywhere on screen read as a bug
        rather than as a choice. */
-    --background: 240 14% 1.4%;  /* ground #030304 — near-pure black */
+    --background: 220 12% 4.9%;  /* ground #0B0C0E — Case desk (JD prototype, 2026-11-02) */
     --foreground: 225 10% 92.5%;  /* ink 1 #E9EAED — silver */
 
-    --card: 240 12% 4.9%;  /* plate #0B0B0E */
-    --popover: 240 7% 8.4%;  /* raised #141417 */
+    --card: 230 11% 7.1%;  /* panel #101114 */
+    --popover: 230 12% 10.2%;  /* raised #17181D */
     --card-foreground: 225 10% 92.5%;
     --popover-foreground: 225 10% 92.5%;
 
@@ -73,7 +73,7 @@ All colors MUST be HSL.
     --primary-foreground: 240 14% 1.4%;
     /* The glow IS blue. Halos, the scan sweep, live dots — the light the room
        is lit by. Was cream, which is why nothing ever looked electric. */
-    --primary-glow: 247 91% 68%;
+    --primary-glow: 254 73% 77%;
 
     --secondary: 240 7% 8.4%;
     --secondary-foreground: 225 10% 92.5%;
@@ -137,10 +137,10 @@ All colors MUST be HSL.
        cream reads muddy beside platinum, and a slate-blue "info" is
        indistinguishable from the new signal blue. Each is now separated from
        its neighbours by at least 30° of hue. */
-    --info: 247 91% 68%;  /* state — the indigo signal, small marks only */
-    --success: 152 62% 46%;          /* emerald — corroborated */
-    --warning: 38 92% 58%;           /* amber — needs review */
-    --danger: 358 75% 59%;           /* crimson — contested */
+    --info: 254 73% 77%;  /* state — the indigo signal, small marks only */
+    --success: 151 50% 68%;          /* emerald — corroborated */
+    --warning: 39 67% 68%;           /* amber — needs review */
+    --danger: 357 61% 76%;           /* crimson — contested */
     --evidence: 228 5% 66%;  /* immutable / custody marker — neutral */
 
     /* Muted semantic backgrounds — for soft chips, row tints, alerts */
@@ -200,12 +200,12 @@ All colors MUST be HSL.
                          of the distinction. Preserve the hatch. Never give
                          quarantine a hue.
          failed          dim     — recorded and set aside */
-    --authority-verified: 152 50% 53%;
+    --authority-verified: 151 50% 68%;
     --authority-infrastructure: 206 73% 63%;
     --authority-probable: 146 23% 59%;
-    --authority-review: 38 72% 56%;
+    --authority-review: 39 67% 68%;
     --authority-weak: 0 0% 29%;
-    --authority-conflict: 358 75% 59%;
+    --authority-conflict: 357 61% 76%;
     --authority-quarantine: 220 6% 63%;
     --authority-failed: 216 13% 33%;
 
@@ -215,21 +215,21 @@ All colors MUST be HSL.
        reads recessed if it is not lighter than what surrounds it. The recess
        comes from the inner shadow and the film above it.
        Strictly monotonic in lightness: 4 → 6 → 8.5 → 12.5 → 17.5. */
-    --surface-0: 240 14% 1.4%;
-    --surface-1: 240 12% 4.9%;  /* #0B0B0E plate */
-    --surface-2: 240 9% 6.9%;  /* #101013 hover / selected row */
-    --surface-3: 240 7% 8.4%;  /* #141417 raised */
-    --surface-4: 240 7% 11.4%;  /* #1B1B1F */
+    --surface-0: 220 12% 4.9%;
+    --surface-1: 230 11% 7.1%;  /* #101114 panel */
+    --surface-2: 230 13% 9%;  /* #14151A hover / selected row */
+    --surface-3: 230 12% 10.2%;  /* #17181D raised */
+    --surface-4: 231 10% 13.1%;  /* #1E1F25 */
 
     /* Border ramp, strictly monotonic: 11 → 18 → 29. */
-    --border: 231 9% 15.9%;  /* hairline #25262C */
+    --border: 233 10% 16.1%;  /* hairline #25262D */
     --border-subtle: 230 10% 12.2%;  /* hairline-subtle #1C1D22 */
     --border-strong: 232 7% 21.6%;  /* hairline-strong #33343B */
     --input: 240 9% 6.9%;
     /* Focus is the signal blue at full strength. A focus ring is the single
        most "is this a real product" detail on a dark UI, and it was a warm
        grey that disappeared into every border it landed next to. */
-    --ring: 247 91% 68%;
+    --ring: 254 73% 77%;
 
     /* ── Film ──────────────────────────────────────────────────────────────
        THE single most load-bearing token in this file.
@@ -262,8 +262,8 @@ All colors MUST be HSL.
 
        Spend it as a rim, an edge, a bloom or an active state. Never as a
        large fill (rule 3). */
-    --brand: 247 91% 68%;  /* Indigo Signal #7565F8 */
-    --brand-deep: 248 80% 52%;
+    --brand: 254 73% 77%;  /* Case-desk lavender #AD98EF (JD prototype) */
+    --brand-deep: 254 52% 62%;
 
     /* Intel tokens — ~79 var() uses across the app.
        These were BOTH literally `39 26% 88%` — two differently-named tokens
@@ -271,7 +271,7 @@ All colors MUST be HSL.
        rendered as sand. They are now genuinely distinct and named honestly:
        blue is the evidence axis (what a source asserts), violet the inference
        axis (what the system concluded). */
-    --intel-blue: 247 91% 68%;  /* evidence axis — Indigo Signal #7565F8 */
+    --intel-blue: 254 73% 77%;  /* evidence axis — lavender #AD98EF */
     --intel-violet: 282 89% 72%;  /* inference axis — Inference Violet #C879F6 */
 
     /* ── Entity-kind palette (Graph tab) ───────────────────────────────────
@@ -302,7 +302,7 @@ All colors MUST be HSL.
        on the app's primary tab. The analyst is ink; the agent speaks in the
        product's own signal; a tool is machine cyan. */
     --speaker-analyst: 225 10% 92.5%;
-    --speaker-agent: 247 91% 68%;
+    --speaker-agent: 254 73% 77%;
     --speaker-tool: 228 5% 57.8%;  /* neutral — surfaces carry no hue */
     --speaker-system: 228 5% 57.8%;
     --speaker-failed: 352 78% 48%;  /* destructive — the one speaker allowed to raise its voice */
@@ -325,12 +325,12 @@ All colors MUST be HSL.
        therefore holds the same triple as --background, deliberately. */
     --sidebar-background: 240 14% 1.4%;
     --sidebar-foreground: 225 7% 76.5%;
-    --sidebar-primary: 247 91% 68%;
+    --sidebar-primary: 254 73% 77%;
     --sidebar-primary-foreground: 240 14% 1.4%;
     --sidebar-accent: 240 7% 8.4%;
     --sidebar-accent-foreground: 225 10% 92.5%;
     --sidebar-border: 230 10% 12.2%;
-    --sidebar-ring: 247 91% 68%;
+    --sidebar-ring: 254 73% 77%;
 
     /* ── Plate: the pane material (DESIGN.md §4 Two materials) ─────────────
        ONE material, referenced by every shared surface class below (.panel,

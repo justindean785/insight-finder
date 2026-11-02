@@ -122,7 +122,7 @@ describe("Tools tab badge — screen readers hear what the number counts", () =>
 
   it("the tab's accessible name carries 'tool calls'", () => {
     render(<WorkspaceTabs active="overview" onChange={() => {}} counts={buildWorkspaceTabCounts(18, 0)} />);
-    const tab = screen.getByRole("tab", { name: /Tools/ });
+    const tab = screen.getByRole("tab", { name: /Activity/ });
     expect(tab).toHaveAccessibleName(/18\s*tool calls/);
   });
 });
