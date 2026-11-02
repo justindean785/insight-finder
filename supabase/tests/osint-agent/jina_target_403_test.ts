@@ -150,7 +150,7 @@ Deno.test("jina: a raw 401 is still a dead credential and still suppresses the p
     assert(!("origin_error" in a), "a 401 is about the key, not the page");
     const b = await call({ url: OTHER });
     assertEquals(b.skipped, true, JSON.stringify(b));
-    assert(String(b.error).includes("401/403 unauthorized"), String(b.error));
+    assert(String(b.error).includes("401 unauthorized"), String(b.error));
     assertEquals(f.seen, [BLOCKED], "the second read never reached r.jina.ai");
   } finally { f.restore(); }
 });
