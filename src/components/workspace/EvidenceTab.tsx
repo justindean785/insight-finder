@@ -99,7 +99,7 @@ export function EvidenceTab({
     </span>,
   ];
   if (tally.verified) parts.push(<span className="text-[hsl(var(--confidence-high))]">{tally.verified} verified</span>);
-  if (tally.excluded) parts.push(<span className="text-destructive">{tally.excluded} excluded</span>);
+  if (tally.excluded) parts.push(<span className="text-danger">{tally.excluded} excluded</span>);
   if (tally.recheck) parts.push(<span className="text-[hsl(var(--confidence-mid))]">{tally.recheck} to recheck</span>);
 
   const subtitle = (

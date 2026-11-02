@@ -125,7 +125,7 @@ export function CommandPalette() {
         <CommandEmpty>No matches.</CommandEmpty>
 
         {loadError && (
-          <div className="px-3 py-2 text-data text-destructive">
+          <div className="px-3 py-2 text-data text-danger">
             Couldn't load recent cases. Close and reopen to retry.
           </div>
         )}

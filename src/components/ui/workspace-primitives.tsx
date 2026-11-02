@@ -253,7 +253,7 @@ export function FilterChips<T extends string>({
       {options.map((o) => {
         const isActive = o.key === active;
         const toneCls =
-          o.tone === "danger" ? "text-destructive" :
+          o.tone === "danger" ? "text-danger" :
           o.tone === "ok" ? "text-[hsl(var(--confidence-high))]" :
           o.tone === "warn" ? "text-[hsl(var(--confidence-mid))]" : "";
         return (
@@ -296,7 +296,7 @@ export type ToolRunStatus = "succeeded" | "empty" | "failed" | "skipped" | "gate
 const TOOL_STATUS_META: Record<ToolRunStatus, { label: string; icon: LucideIcon; classes: string; spin?: boolean }> = {
   succeeded: { label: "Succeeded", icon: CheckCircle2, classes: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/30 bg-[hsl(var(--confidence-high))]/10" },
   empty:     { label: "No record", icon: SearchX,      classes: "text-muted-foreground border-border-subtle bg-surface-2/60" },
-  failed:    { label: "Failed",    icon: XCircle,      classes: "text-destructive border-destructive/30 bg-destructive/10" },
+  failed:    { label: "Failed",    icon: XCircle,      classes: "text-danger border-destructive/30 bg-destructive/10" },
   skipped:   { label: "Skipped",   icon: MinusCircle,  classes: "text-muted-foreground border-border-subtle bg-surface-2/60" },
   gated:     { label: "Gated",     icon: Ban,          classes: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/30 bg-[hsl(var(--confidence-mid))]/10" },
   degraded:  { label: "Degraded",  icon: AlertTriangle, classes: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/30 bg-[hsl(var(--confidence-mid))]/10" },
@@ -336,7 +336,7 @@ const EVIDENCE_TONE_CLASS: Record<EvidenceStatusTone, string> = {
   probable: "text-primary border-primary/30 bg-primary/10",
   warn: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/30 bg-[hsl(var(--confidence-mid))]/10",
   muted: "text-muted-foreground border-border-subtle bg-surface-2/60",
-  danger: "text-destructive border-destructive/30 bg-destructive/10",
+  danger: "text-danger border-destructive/30 bg-destructive/10",
 };
 
 const EVIDENCE_STATUS_ICON: Record<EvidenceDisplayStatus, LucideIcon> = {

@@ -90,7 +90,7 @@ export const REVIEW_CLASS: Record<ReviewState, string> = {
   dismissed:
     "text-muted-foreground border-border bg-secondary/40 line-through opacity-60",
   wrong:
-    "text-destructive border-destructive/40 bg-destructive/10 line-through",
+    "text-danger border-destructive/40 bg-destructive/10 line-through",
 };
 
 const LEGACY_KEY = (threadId: string) => `proximity:review:${threadId}`;

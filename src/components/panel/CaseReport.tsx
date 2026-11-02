@@ -178,7 +178,7 @@ function ArtifactRow({ a, review }: { a: Artifact; review?: ReviewAdjustment }) 
       </td>
       <td className="px-3 py-2 text-data text-muted-foreground">
         {String((m.reason_for_confidence as string) ?? "")}
-        {m.reason_not_confirmed ? <div className="text-destructive/80">{String(m.reason_not_confirmed)}</div> : null}
+        {m.reason_not_confirmed ? <div className="text-danger">{String(m.reason_not_confirmed)}</div> : null}
       </td>
     </tr>
   );
@@ -247,7 +247,7 @@ function SectionHeader({ children, right }: { children: React.ReactNode; right?:
 function HunterNote({ children }: { children: React.ReactNode }) {
   return (
     <aside role="note" className="my-3 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2.5 text-foreground/90 leading-relaxed">
-      <div className="text-micro font-semibold tracking-normal text-destructive mb-1">
+      <div className="text-micro font-semibold tracking-normal text-danger mb-1">
         Hunter's Note
       </div>
       <div className="text-data">{children}</div>
@@ -261,9 +261,9 @@ const CONF_PILL: Record<ConfLabel, string> = {
   CORRELATED: "text-[hsl(var(--confidence-high))]/90 border-[hsl(var(--confidence-high))]/30",
   INFERRED: "text-primary border-primary/40",
   VERIFY: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/40",
-  CONFLICT: "text-destructive border-destructive/40",
+  CONFLICT: "text-danger border-destructive/40",
   LOW: "text-muted-foreground border-border",
-  FAILED: "text-destructive border-destructive/40 line-through",
+  FAILED: "text-danger border-destructive/40 line-through",
 };
 
 // Map our internal labels to the reference vocabulary
@@ -488,7 +488,7 @@ const RISK_COLOR: Record<RiskLevel, string> = {
   LOW: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/60",
   MEDIUM: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/60",
   HIGH: "text-[hsl(var(--warning))] border-[hsl(var(--warning))]/70",
-  CRITICAL: "text-destructive border-destructive/70",
+  CRITICAL: "text-danger border-destructive/70",
 };
 
 type ReportMetric = {
@@ -1022,7 +1022,7 @@ function MaskedValue({ label, value }: RevealField) {
   const [shown, setShown] = useState(!MASK_BREACH_VALUES);
   if (!MASK_BREACH_VALUES) {
     return (
-      <span className="inline-flex max-w-full items-center gap-1.5 rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px font-mono text-eyebrow text-destructive">
+      <span className="inline-flex max-w-full items-center gap-1.5 rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px font-mono text-eyebrow text-danger">
         <span className="text-micro uppercase tracking-wider text-muted-foreground">{label}</span>
         <span className="break-all [overflow-wrap:anywhere]">{value}</span>
       </span>
@@ -1033,7 +1033,7 @@ function MaskedValue({ label, value }: RevealField) {
       type="button"
       onClick={() => setShown((s) => !s)}
       title={shown ? "Click to hide" : "Click to reveal this breach value"}
-      className="group inline-flex max-w-full items-center gap-1.5 rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px font-mono text-eyebrow text-destructive transition-colors hover:bg-destructive/20"
+      className="group inline-flex max-w-full items-center gap-1.5 rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px font-mono text-eyebrow text-danger transition-colors hover:bg-destructive/20"
     >
       <span className="text-micro uppercase tracking-wider text-muted-foreground">{label}</span>
       <span className="break-all [overflow-wrap:anywhere]">
@@ -1523,7 +1523,7 @@ export function CaseReport({
                           className={cn(
                             "ml-2 align-middle rounded border px-1.5 py-px text-micro font-mono uppercase tracking-wider",
                             b.severity === "CRITICAL"
-                              ? "border-destructive/50 bg-destructive/15 text-destructive"
+                              ? "border-destructive/50 bg-destructive/15 text-danger"
                               : "border-[hsl(var(--warning))]/60 bg-[hsl(var(--warning))]/10 text-[hsl(var(--warning))]",
                           )}
                           title="Full-profile / high-impact breach exposure"
@@ -1565,7 +1565,7 @@ export function CaseReport({
           </div>
           <p className="mt-1 text-data text-muted-foreground">
             {MASK_BREACH_VALUES ? (
-              <>Breach values are masked by default — click <span className="font-mono text-destructive">Reveal</span> to unmask a captured value. Records flagged minor-related stay redacted and cannot be revealed.</>
+              <>Breach values are masked by default — click <span className="font-mono text-danger">Reveal</span> to unmask a captured value. Records flagged minor-related stay redacted and cannot be revealed.</>
             ) : (
               <>Captured breach values are shown in full. Records flagged minor-related stay redacted and are never shown. A dash means no concrete value was captured for that record — only the exposed field classes.</>
             )}
@@ -1825,7 +1825,7 @@ function ReportKpi({
     tone === "ok" ? "text-[hsl(var(--confidence-high))]" :
     tone === "info" ? "text-[hsl(var(--info))]" :
     tone === "warn" ? "text-[hsl(var(--confidence-mid))]" :
-    tone === "danger" ? "text-destructive" :
+    tone === "danger" ? "text-danger" :
     "text-foreground";
   return (
     <div className="report-kpi relative overflow-hidden rounded-xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.72] p-3">

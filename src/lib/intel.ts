@@ -734,9 +734,9 @@ export const CONF_LABEL_CLASS: Record<ConfLabel, string> = {
   CORRELATED: "text-[hsl(var(--confidence-high))]/90 border-[hsl(var(--confidence-high))]/30 bg-[hsl(var(--confidence-high))]/5",
   INFERRED: "text-primary border-primary/40 bg-primary/10",
   VERIFY: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/40 bg-[hsl(var(--confidence-mid))]/10",
-  CONFLICT: "text-destructive border-destructive/40 bg-destructive/10",
+  CONFLICT: "text-danger border-destructive/40 bg-destructive/10",
   LOW: "text-muted-foreground border-border bg-secondary/60",
-  FAILED: "text-destructive border-destructive/40 bg-destructive/10 line-through",
+  FAILED: "text-danger border-destructive/40 bg-destructive/10 line-through",
 };
 
 // ---- Pivot inference ---------------------------------------------------

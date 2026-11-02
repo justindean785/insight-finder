@@ -90,10 +90,6 @@ const KNOWN_BASELINE: Array<{
   { rule: "color-contrast", targetContains: ".ml-auto.tabular-nums.font-mono" },
   { rule: "color-contrast", targetContains: ".text-xs > .ml-auto" },
   { rule: "color-contrast", targetContains: ".text-xs > span" },
-  // Evidence filter-row counts ("N rejected") using `text-destructive` at
-  // small font on surface-0 — pre-existing filter-bar styling.
-  { rule: "color-contrast", htmlContains: "text-destructive" },
-  { rule: "color-contrast", htmlContains: "rejected</span>" },
   // Muted-foreground small text at 4.47:1 on dark bg (0.03 margin). Widespread
   // across sidebar / filter chrome; pre-existing.
   { rule: "color-contrast", targetContains: "muted-foreground" },

@@ -373,14 +373,14 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
             <span
               className={cn(
                 "truncate text-[13px] font-medium leading-snug",
-                failed ? "text-destructive" : "text-foreground/92",
+                failed ? "text-danger" : "text-foreground/92",
               )}
               title={displayName}
             >
               {actionOnly}
             </span>
             {failed ? (
-              <XCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+              <XCircle className="h-3.5 w-3.5 shrink-0 text-danger" />
             ) : tone === "skip" ? (
               <CircleSlash className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
             ) : done ? (
@@ -918,10 +918,10 @@ function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => voi
     <div className="alert-panel-danger p-5 animate-fade-up">
       <div className="flex items-start gap-3">
         <span className="shrink-0 mt-0.5 inline-flex items-center justify-center w-9 h-9 rounded-xl bg-destructive/15 border border-destructive/30">
-          <AlertTriangle className="w-4 h-4 text-destructive" aria-hidden />
+          <AlertTriangle className="w-4 h-4 text-danger" aria-hidden />
         </span>
         <div className="min-w-0 flex-1 space-y-1">
-          <div className="text-micro font-mono font-semibold tracking-normal text-destructive/80">
+          <div className="text-micro font-mono font-semibold tracking-normal text-danger">
             System alert
           </div>
           <div className="text-sm font-semibold text-foreground">
@@ -941,7 +941,7 @@ function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => voi
         <Button
           size="sm"
           onClick={onRetry}
-          className="gap-2 bg-destructive/15 hover:bg-destructive/25 text-destructive border border-destructive/40 shadow-[0_0_24px_-10px_hsl(var(--danger)/0.6)]"
+          className="gap-2 bg-destructive/15 hover:bg-destructive/25 text-danger border border-destructive/40 shadow-[0_0_24px_-10px_hsl(var(--danger)/0.6)]"
         >
           <RotateCcw className="w-3.5 h-3.5" />
           {isContextOverflow ? "Retry with Gemini fallback" : "Retry investigation"}
@@ -1483,7 +1483,7 @@ export function ChatWindow({ threadId }: { threadId: string }) {
       <div className="flex-1 grid place-items-center min-w-0 px-6">
         <div className="text-center space-y-3 max-w-sm">
           <div className="inline-flex w-12 h-12 rounded-2xl bg-destructive/10 border border-destructive/30 items-center justify-center mx-auto">
-            <AlertTriangle className="w-5 h-5 text-destructive" />
+            <AlertTriangle className="w-5 h-5 text-danger" />
           </div>
           <h2 className="text-lg font-semibold">Chat not found</h2>
           <p className="text-sm text-muted-foreground">

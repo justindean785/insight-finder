@@ -613,7 +613,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
                 {failures.map((e) => (
                   <li key={e.id} className="border-b border-border-subtle px-3 py-2 last:border-b-0">
                     <div className="flex items-center gap-2">
-                      <XCircle className={cn("h-3 w-3 shrink-0", e.status === "failed" ? "text-destructive" : "text-[hsl(var(--confidence-mid))]")} aria-hidden />
+                      <XCircle className={cn("h-3 w-3 shrink-0", e.status === "failed" ? "text-danger" : "text-[hsl(var(--confidence-mid))]")} aria-hidden />
                       <span className="min-w-0 flex-1 truncate font-mono text-eyebrow uppercase tracking-wider text-foreground/85">{e.toolName}</span>
                       {e.durationMs != null && (
                         <span className="shrink-0 font-mono text-eyebrow tabular-nums text-muted-foreground/70">
