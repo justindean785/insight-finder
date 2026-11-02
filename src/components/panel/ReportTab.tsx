@@ -10,6 +10,7 @@ import { useReviewStates } from "@/lib/review";
 import { useThreadMessages } from "@/hooks/useThreadMessages";
 import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
 import { buildConfidenceProfile, REPORT_READY_MIN_READINESS } from "@/lib/confidence-dimensions";
+import { SectionHeading } from "@/components/workspace/SectionHeading";
 import {
   evaluateExportGate,
   exportFilename,
@@ -382,7 +383,11 @@ export function ReportTab({
 
   return (
     <div className="text-xs">
-      <h2 className="sr-only">Report</h2>
+      <SectionHeading
+        className="mb-3"
+        title="Case assessment"
+        subtitle={isDraft ? `Unverified draft · ${gate.readinessPct}% ready · every export is marked ${DRAFT_MARK}` : "Report-safe · readiness and conflicts under control"}
+      />
       {toolbar}
 
       <div className="space-y-3 pt-3">

@@ -8,6 +8,8 @@ import { useReviewStates } from "@/lib/review";
 import { isProseValue } from "@/lib/evidence-bands";
 import { authorityFor, LEDGER_SORT_RANK, AUTHORITY_LEGEND, AUTHORITY_DISTRIBUTION, type AuthorityState, type CaveatKind } from "@/lib/authority";
 import { AuthorityChip, AuthoritySpine, AuthorityCaveat, RuleLabel } from "@/components/ui/authority";
+import { SectionHeading } from "@/components/workspace/SectionHeading";
+import { useAgentAssessment } from "@/hooks/useAgentAssessment";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { timeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -20,7 +22,7 @@ import { detectNameConflict } from "@/lib/name-conflict";
 import { NameConflictNotice } from "@/components/workspace/NameConflictNotice";
 import { summarizeLatestRun, type LatestRunSummary } from "@/lib/latest-run";
 import {
-  Unlink, AlertTriangle, XCircle, ShieldCheck, Timer,
+  Unlink, AlertTriangle, XCircle, ShieldCheck, Timer, CheckCircle2,
   DatabaseZap, Activity, ArrowRight, type LucideIcon,
 } from "lucide-react";
 
@@ -190,6 +192,10 @@ const NO_TALLY: Record<AuthorityState, number> = {
 };
 
 export function OverviewTab({ threadId }: { threadId: string }) {
+  // Case desk R6: the "at a glance" line counts the R2 assessment's groups —
+  // the same reading the Finding panel, the ledger chips and the transcript
+  // cards show, so the four surfaces cannot disagree on what is supported.
+  const assessment = useAgentAssessment(threadId);
   // Every figure on this tab comes from the case snapshot — the same published
   // version the case bar and the tab badges print. The Overview used to open its
   // own tool-activity read on every visit, which is why it said 48 while the
@@ -299,7 +305,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
   if (!snapshot?.hydrated) {
     return (
       <div className="h-full min-h-0 overflow-y-auto" aria-busy="true">
-        <h2 className="sr-only">Overview — syncing case</h2>
+        <SectionHeading title="The case, at a glance" subtitle="Syncing the case…" />
         <div className="mx-auto max-w-6xl space-y-4 p-3 sm:p-4">
           <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5" aria-hidden>
             {Array.from({ length: 5 }, (_, i) => (
@@ -316,9 +322,28 @@ export function OverviewTab({ threadId }: { threadId: string }) {
     <div className="h-full min-h-0 overflow-y-auto">
       {/* The case bar and tab strip already carry these counts; the heading
           stays for screen-reader navigation only. */}
-      <h2 className="sr-only">Overview — {total} artifact{total === 1 ? "" : "s"}, {activity.persistedTotal} tool call{activity.persistedTotal === 1 ? "" : "s"}</h2>
-
       <div className="mx-auto max-w-6xl space-y-4 p-3 sm:p-4">
+        <SectionHeading
+          title="The case, at a glance"
+          subtitle="What the collected evidence supports — and what it doesn't."
+          right={<span className="text-[11px] tabular-nums text-faint-foreground">{total} artifact{total === 1 ? "" : "s"} · {activity.persistedTotal} tool call{activity.persistedTotal === 1 ? "" : "s"}</span>}
+        />
+        {assessment.report && (
+          <p className="flex flex-wrap items-center gap-x-2 rounded-[7px] border border-[hsl(var(--brand)/0.25)] bg-[linear-gradient(110deg,hsl(var(--brand)/0.08),hsl(var(--surface-1)))] px-3.5 py-2.5 text-[12px] text-muted-foreground" data-assessment-summary>
+            <CheckCircle2 className="h-4 w-4 shrink-0 text-[hsl(var(--brand))]" aria-hidden />
+            <span><b className="font-medium text-foreground">{assessment.report.counts.supported}</b> supported finding{assessment.report.counts.supported === 1 ? "" : "s"}</span>
+            <span aria-hidden className="text-faint-foreground">·</span>
+            <span><b className="font-medium text-foreground">{assessment.report.counts.unresolved}</b> unresolved lead{assessment.report.counts.unresolved === 1 ? "" : "s"}</span>
+            <span aria-hidden className="text-faint-foreground">·</span>
+            <span><b className="font-medium text-foreground">{assessment.report.counts.conflict}</b> contradiction{assessment.report.counts.conflict === 1 ? "" : "s"}</span>
+            {assessment.report.counts.quarantined > 0 && (
+              <>
+                <span aria-hidden className="text-faint-foreground">·</span>
+                <span><b className="font-medium text-foreground">{assessment.report.counts.quarantined}</b> quarantined</span>
+              </>
+            )}
+          </p>
+        )}
 
         {/* rowState, not state: until the row is re-read, startedAt is the previous run's. */}
         {latestRun && <LatestRunStrip summary={latestRun} live={snapshot.run.rowState === "running"} />}
@@ -627,6 +652,10 @@ export function OverviewTab({ threadId }: { threadId: string }) {
             )}
           </section>
         </div>
+        <p className="text-[12px] leading-relaxed text-faint-foreground" data-assessment-boundaries>
+          <span className="font-medium text-muted-foreground">Assessment boundaries.</span> Scores are the case engines' figures — recorded, capped confidence and
+          identity-cluster linkage — not calibrated probabilities. Analyst review is recorded separately from the machine assessment and overrides it on every surface.
+        </p>
       </div>
     </div>
   );

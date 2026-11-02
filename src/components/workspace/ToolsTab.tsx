@@ -3,6 +3,7 @@ import type { ToolEvent } from "@/hooks/useThreadToolActivity";
 import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { AuditTab } from "@/components/panel/AuditTab";
 import { CustodyTab } from "@/components/panel/CustodyTab";
+import { SectionHeading } from "@/components/workspace/SectionHeading";
 import { ToolHealthPanel } from "@/components/panel/ToolHealthPanel";
 import { EmptyState } from "@/components/panel/EmptyState";
 import {
@@ -61,14 +62,19 @@ export function ToolsTab({
     <div className="h-full flex flex-col min-h-0">
       {/* The tab strip already names this section: the local control is the
           only thing this row needs to carry. */}
-      <h2 className="sr-only">Tools</h2>
-      <div className="shrink-0 border-b border-white/[0.07] bg-surface-0 px-3 py-2 sm:px-4">
-        <div className="mx-auto flex max-w-6xl items-center gap-3">
-          <SubTabs<View>
-            label="Tools view"
-            options={VIEWS.map((v) => ({ key: v.key, label: v.label, icon: v.icon }))}
-            active={view}
-            onChange={setView}
+      <div className="shrink-0 border-b border-white/[0.07] bg-surface-0 px-3 py-2.5 sm:px-4">
+        <div className="mx-auto max-w-6xl">
+          <SectionHeading
+            title="Investigation activity"
+            subtitle="Outcomes first. Raw calls stay one step away."
+            right={
+              <SubTabs<View>
+                label="Tools view"
+                options={VIEWS.map((v) => ({ key: v.key, label: v.label, icon: v.icon }))}
+                active={view}
+                onChange={setView}
+              />
+            }
           />
         </div>
       </div>
