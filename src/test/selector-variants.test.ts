@@ -48,3 +48,18 @@ describe("searchKeys — prefix stripping is for URLs only (#945 review)", () =>
     expect(anySearchKeyIn(expandSearchKeys([n("facebook.com/jordan.vale")]), n("m.facebook.com/jordan.vale"))).toBe(true);
   });
 });
+
+describe("searchKeys — URLs outside a TLD shortlist still match (#948 review)", () => {
+  it("www. hosts match their bare form whatever the TLD", () => {
+    expect(anySearchKeyIn(expandSearchKeys([n("example.nl")]), n("www.example.nl"))).toBe(true);
+    expect(anySearchKeyIn(expandSearchKeys([n("example.museum/x")]), n("www.example.museum/x"))).toBe(true);
+  });
+
+  it("m. hosts with a country-code TLD match", () => {
+    expect(anySearchKeyIn(expandSearchKeys([n("example.nl")]), n("m.example.nl"))).toBe(true);
+  });
+
+  it("a name like 'M. Jordan Smith' still does not match 'Jordan Smith'", () => {
+    expect(anySearchKeyIn(expandSearchKeys([n("M. Jordan Smith")]), n("Jordan Smith"))).toBe(false);
+  });
+});

@@ -30,18 +30,23 @@ function phoneKey(normalized: string): string | null {
 // so a domain shows up as a token like "com" after its host token.
 const TLD_TOKENS = new Set([
   "com", "net", "org", "io", "co", "me", "app", "dev", "ai", "gg", "tv", "us", "uk", "ca",
-  "de", "fr", "ru", "info", "biz", "xyz", "edu", "gov", "site", "online", "link", "page",
+  "de", "fr", "ru", "info", "biz", "xyz", "edu", "gov", "site", "online", "link", "page", "social",
 ]);
 
 /**
- * Is this normalized target a URL? Yes when it opens with an http(s) scheme, or when
- * what follows the www / m / mobile prefix contains a host token then a TLD token
- * ("www instagram com user"). A bare handle or name never qualifies.
+ * Is this normalized target a URL? (Dots are spaces after normalizeTarget.)
+ * - an http(s) scheme: always;
+ * - a "www" prefix: whenever a host follows ("www" never starts a handle or name
+ *   in practice), whatever its TLD (.nl, .social, …);
+ * - an "m" / "mobile" prefix: only when a domain-like token follows the host (a
+ *   known TLD, or any two-letter country code). That keeps "mobile_user" ->
+ *   "user" and "M. Jordan Smith" -> "Jordan Smith" from colliding.
  */
 function looksLikeUrl(normalized: string, stripped: string): boolean {
   if (/^https?\s/.test(normalized)) return true;
   const tokens = stripped.split(" ");
-  return tokens.some((t, i) => i > 0 && TLD_TOKENS.has(t));
+  if (/^www\s/.test(normalized)) return tokens.length >= 2;
+  return tokens.some((t, i) => i > 0 && (TLD_TOKENS.has(t) || /^[a-z]{2}$/.test(t)));
 }
 
 /** Every key a normalized target may have been logged under. Always includes the input. */
