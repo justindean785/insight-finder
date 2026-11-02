@@ -31,3 +31,20 @@ describe("searchKeys — the already-searched comparison", () => {
     expect(searchKeys("")).toEqual([]);
   });
 });
+
+describe("searchKeys — prefix stripping is for URLs only (#945 review)", () => {
+  it("a username starting with 'mobile' does not match the bare remainder", () => {
+    const logged = expandSearchKeys([n("mobile_user")]);
+    expect(anySearchKeyIn(logged, n("user"))).toBe(false);
+  });
+
+  it("a name starting with an initial 'M.' does not match the surname alone", () => {
+    const logged = expandSearchKeys([n("M. Jordan")]);
+    expect(anySearchKeyIn(logged, n("Jordan"))).toBe(false);
+  });
+
+  it("'www' / 'https' / 'm.' URLs still match their bare host form", () => {
+    expect(anySearchKeyIn(expandSearchKeys([n("instagram.com/subject_handle")]), n("https://www.instagram.com/subject_handle/"))).toBe(true);
+    expect(anySearchKeyIn(expandSearchKeys([n("facebook.com/jordan.vale")]), n("m.facebook.com/jordan.vale"))).toBe(true);
+  });
+});

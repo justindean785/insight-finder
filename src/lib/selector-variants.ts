@@ -26,13 +26,34 @@ function phoneKey(normalized: string): string | null {
   return `#${digits.slice(-10)}`;
 }
 
+// Common TLDs and second-level labels. After normalizeTarget a URL's dots are spaces,
+// so a domain shows up as a token like "com" after its host token.
+const TLD_TOKENS = new Set([
+  "com", "net", "org", "io", "co", "me", "app", "dev", "ai", "gg", "tv", "us", "uk", "ca",
+  "de", "fr", "ru", "info", "biz", "xyz", "edu", "gov", "site", "online", "link", "page",
+]);
+
+/**
+ * Is this normalized target a URL? Yes when it opens with an http(s) scheme, or when
+ * what follows the www / m / mobile prefix contains a host token then a TLD token
+ * ("www instagram com user"). A bare handle or name never qualifies.
+ */
+function looksLikeUrl(normalized: string, stripped: string): boolean {
+  if (/^https?\s/.test(normalized)) return true;
+  const tokens = stripped.split(" ");
+  return tokens.some((t, i) => i > 0 && TLD_TOKENS.has(t));
+}
+
 /** Every key a normalized target may have been logged under. Always includes the input. */
 export function searchKeys(normalized: string): string[] {
   const out = new Set<string>();
   if (!normalized) return [];
   out.add(normalized);
+  // Strip a scheme / "www" / mobile-host prefix ONLY from a target that is a URL:
+  // stripping it from any normalized value made the username "mobile_user"
+  // ("mobile user") match "user", and "M. Jordan" match "Jordan" (#945 review).
   const stripped = normalized.replace(URL_PREFIX_RE, "").trim();
-  if (stripped && stripped !== normalized) out.add(stripped);
+  if (stripped && stripped !== normalized && looksLikeUrl(normalized, stripped)) out.add(stripped);
   const phone = phoneKey(normalized);
   if (phone) out.add(phone);
   return [...out];
