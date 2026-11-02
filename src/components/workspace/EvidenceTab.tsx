@@ -161,7 +161,7 @@ export function EvidenceTab({
             onChange={(k) => setView(k)}
             options={VIEWS.map((v) => ({ key: v.key, label: v.label, icon: v.icon }))}
           />
-          <div ref={setSlot} className="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2" />
+          <div ref={setSlot} className="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2 sm:min-w-[25rem] sm:flex-nowrap" />
         </div>
       </div>
       {view === "board" && run && tools && (
