@@ -26,13 +26,39 @@ function phoneKey(normalized: string): string | null {
   return `#${digits.slice(-10)}`;
 }
 
+// Common TLDs and second-level labels. After normalizeTarget a URL's dots are spaces,
+// so a domain shows up as a token like "com" after its host token.
+const TLD_TOKENS = new Set([
+  "com", "net", "org", "io", "co", "me", "app", "dev", "ai", "gg", "tv", "us", "uk", "ca",
+  "de", "fr", "ru", "info", "biz", "xyz", "edu", "gov", "site", "online", "link", "page", "social",
+]);
+
+/**
+ * Is this normalized target a URL? (Dots are spaces after normalizeTarget.)
+ * - an http(s) scheme: always;
+ * - a "www" prefix: whenever a host follows ("www" never starts a handle or name
+ *   in practice), whatever its TLD (.nl, .social, …);
+ * - an "m" / "mobile" prefix: only when a domain-like token follows the host (a
+ *   known TLD, or any two-letter country code). That keeps "mobile_user" ->
+ *   "user" and "M. Jordan Smith" -> "Jordan Smith" from colliding.
+ */
+function looksLikeUrl(normalized: string, stripped: string): boolean {
+  if (/^https?\s/.test(normalized)) return true;
+  const tokens = stripped.split(" ");
+  if (/^www\s/.test(normalized)) return tokens.length >= 2;
+  return tokens.some((t, i) => i > 0 && (TLD_TOKENS.has(t) || /^[a-z]{2}$/.test(t)));
+}
+
 /** Every key a normalized target may have been logged under. Always includes the input. */
 export function searchKeys(normalized: string): string[] {
   const out = new Set<string>();
   if (!normalized) return [];
   out.add(normalized);
+  // Strip a scheme / "www" / mobile-host prefix ONLY from a target that is a URL:
+  // stripping it from any normalized value made the username "mobile_user"
+  // ("mobile user") match "user", and "M. Jordan" match "Jordan" (#945 review).
   const stripped = normalized.replace(URL_PREFIX_RE, "").trim();
-  if (stripped && stripped !== normalized) out.add(stripped);
+  if (stripped && stripped !== normalized && looksLikeUrl(normalized, stripped)) out.add(stripped);
   const phone = phoneKey(normalized);
   if (phone) out.add(phone);
   return [...out];
