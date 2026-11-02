@@ -160,7 +160,7 @@ const headerTools = () => {
   const header = screen.getByRole("region", { name: "Case summary" });
   return within(header).getByText(/^(tool )?calls?$/).previousElementSibling?.textContent;
 };
-const badgeTools = () => screen.getByRole("tab", { name: /Tools/ }).textContent?.replace(/\D/g, "");
+const badgeTools = () => screen.getByRole("tab", { name: /Activity/ }).textContent?.replace(/\D/g, "");
 const panelTools = () => within(screen.getByText("Tool calls").closest("div")!.parentElement!).getByText(/^\d+$/).textContent;
 
 beforeEach(() => {

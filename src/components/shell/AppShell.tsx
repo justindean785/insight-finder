@@ -40,8 +40,10 @@ export function AppShell() {
   const isWide = useMediaQuery(WIDE);
   const location = useLocation();
 
+  // Case desk (JD's prototype, 2026-11-02): the rail is a slim icon rail unless
+  // the analyst has expanded it, and that choice is remembered.
   const [widePref, setWidePref] = useState(() => {
-    try { return localStorage.getItem(COLLAPSE_KEY) === "1"; } catch { return false; }
+    try { return localStorage.getItem(COLLAPSE_KEY) !== "0"; } catch { return true; }
   });
   const [tabletOpen, setTabletOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
