@@ -204,21 +204,40 @@ async function loadStore(threadId: string, store: Store): Promise<boolean> {
  * missing fields we need (defensive — Supabase can drop columns in
  * row-level filters).
  */
+/** Drop keys a partial realtime payload left `undefined`, so a merge never blanks a known field. */
+function stripUndefined<T extends Record<string, unknown>>(row: T): Partial<T> {
+  const out: Partial<T> = {};
+  for (const [k, v] of Object.entries(row)) if (v !== undefined) (out as Record<string, unknown>)[k] = v;
+  return out;
+}
+
 function applyDelta(
   store: Store,
   eventType: "INSERT" | "UPDATE" | "DELETE",
   newRow: Partial<Artifact> | null,
   oldRow: Partial<Artifact> | null,
 ): boolean {
+  // A realtime row can arrive without fields (the schema is `.partial()`, and a
+  // large row's columns can be left out). Storing it as-is put an artifact with
+  // no `value`/`kind` in the case, and the next render threw (`a.value.trim()`),
+  // which replaced the Graph with the error card. Merge an update into the row we
+  // already hold; refuse (→ throttled reload) anything still missing its identity.
+  const complete = (a: Partial<Artifact>): a is Artifact =>
+    typeof a.id === "string" && typeof a.kind === "string" && typeof a.value === "string";
   if (eventType === "INSERT" && newRow && newRow.id) {
     const exists = store.items.some((a) => a.id === newRow.id);
-    if (!exists) {
-      store.items = dedupeArtifacts([...store.items, newRow as Artifact]);
-    }
+    if (exists) return true;
+    if (!complete(newRow)) return false;
+    store.items = dedupeArtifacts([...store.items, newRow]);
     return true;
   }
   if (eventType === "UPDATE" && newRow && newRow.id) {
-    const next = store.items.map((a) => (a.id === newRow.id ? (newRow as Artifact) : a));
+    const prev = store.items.find((a) => a.id === newRow.id);
+    const merged: Partial<Artifact> = prev ? { ...prev, ...stripUndefined(newRow) } : newRow;
+    if (!complete(merged)) return false;
+    const next = prev
+      ? store.items.map((a) => (a.id === merged.id ? merged : a))
+      : [...store.items, merged];
     store.items = dedupeArtifacts(next);
     return true;
   }
@@ -404,4 +423,16 @@ export function useThreadArtifacts(threadId: string) {
     retry,
     reload,
   };
+}
+
+/** Exported for tests: the realtime merge step, with no Supabase or React attached. */
+export function __applyDeltaForTest(
+  items: Artifact[],
+  eventType: "INSERT" | "UPDATE" | "DELETE",
+  newRow: Partial<Artifact> | null,
+  oldRow: Partial<Artifact> | null = null,
+): { merged: boolean; items: Artifact[] } {
+  const store = { items } as Store;
+  const merged = applyDelta(store, eventType, newRow, oldRow);
+  return { merged, items: store.items };
 }
