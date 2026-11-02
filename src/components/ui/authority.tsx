@@ -34,11 +34,15 @@ const CHIP: Record<AuthorityState, string> = {
   infrastructure: "text-[hsl(var(--authority-infrastructure))] border-[hsl(var(--authority-infrastructure))]/35 bg-[hsl(var(--authority-infrastructure))]/10",
   probable: "text-[hsl(var(--authority-probable))] border-[hsl(var(--authority-probable))]/35 bg-[hsl(var(--authority-probable))]/10",
   review: "text-[hsl(var(--authority-review))] border-[hsl(var(--authority-review))]/35 bg-[hsl(var(--authority-review))]/10",
-  weak: "text-[hsl(var(--authority-weak))] border-[hsl(var(--authority-weak))]/30 bg-[hsl(var(--authority-weak))]/8",
+  // weak and failed are DIM by design — the spine/hatch and the border carry that.
+  // Their label TEXT does not: --authority-weak measured 2.2:1 and --authority-failed
+  // 2.5:1 on the plate, and the chip is an informative label (WCAG 1.4.3), so the
+  // text is ink 4 (#84868E, AA on every surface) and only the border and fill stay dim.
+  weak: "text-faint-foreground border-[hsl(var(--authority-weak))]/30 bg-[hsl(var(--authority-weak))]/8",
   // Neutral + hatched, never a confidence hue — see the token comment in index.css.
   quarantined: "text-[hsl(var(--authority-quarantine))] border-[hsl(var(--authority-quarantine))]/45 bg-[hsl(var(--authority-quarantine))]/10",
   conflict: "text-[hsl(var(--authority-conflict))] border-[hsl(var(--authority-conflict))]/40 bg-[hsl(var(--authority-conflict))]/10",
-  failed: "text-[hsl(var(--authority-failed))] border-[hsl(var(--authority-failed))]/40 bg-transparent",
+  failed: "text-faint-foreground border-[hsl(var(--authority-failed))]/40 bg-transparent",
 };
 
 /**

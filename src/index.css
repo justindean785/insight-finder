@@ -3032,3 +3032,15 @@ All colors MUST be HSL.
     text-shadow: none;
   }
 }
+
+
+/* Graph nodes are keyboard-focusable (Tab, then Enter/Space to open). React Flow's
+   own stylesheet removes the node outline and our node only draws a ring when it is
+   SELECTED, so a keyboard user tabbing through the canvas saw nothing (WCAG 2.4.7).
+   The focus target is the .react-flow__node wrapper; the ring goes on its child so
+   it follows the rounded chip. Outline, not box-shadow: the selected state already
+   owns the box-shadow inline. */
+.react-flow__node:focus-visible > * {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
