@@ -230,6 +230,39 @@ Deno.test("DEADLINE: no new call is issued once the sweep's deadline has passed"
   assertEquals(r.deadlineHit, true);
 });
 
+Deno.test("⛔ QUEUE PROGRESS: threads with no pending work do not use up the thread limit", async () => {
+  // Counting a no-work thread toward the limit meant every sweep re-read the same
+  // newest five threads, so a sixth eligible thread was never reached until newer
+  // ones left the 24h window and it could age out unadjudicated.
+  const threads = Array.from({ length: 7 }, (_, i) => ({ id: `3333333${i}-3333-4333-8333-333333333333`, user_id: U1 }));
+  const clean = [row("u1", "username", "selftesthandle", "username_sweep"), row("u2", "social_profile", "https://example.test/selftesthandle", "username_sweep")];
+  const { db } = fakeDb({ threads, artifacts: clean });
+  const f = fakeFetch(VERDICT);
+  const r = await adjudicateContradictedClusters(db, opts(f.fn, { threadLimit: 5 }));
+  assertEquals(r.threadsScanned, 7, "all seven were examined, not just the first five");
+  assertEquals(r.threadsWithWork, 0);
+  assertEquals(f.bodies.length, 0);
+});
+
+Deno.test("the thread limit still bounds threads that DO have work", async () => {
+  const threads = Array.from({ length: 4 }, (_, i) => ({ id: `4444444${i}-4444-4444-8444-444444444444`, user_id: U1 }));
+  const { db } = fakeDb({ threads });
+  const f = fakeFetch(VERDICT);
+  const r = await adjudicateContradictedClusters(db, opts(f.fn, { threadLimit: 2, maxCalls: 10 }));
+  assertEquals(r.threadsWithWork, 2);
+  assertEquals(f.bodies.length, 2);
+});
+
+Deno.test("an already-answered thread is not 'work' either", async () => {
+  const [c] = selectAdjudicationCandidates(contradicted()).candidates;
+  const hash = await adjudicationInputHash(c);
+  const threads = Array.from({ length: 3 }, (_, i) => ({ id: `5555555${i}-5555-4555-8555-555555555555`, user_id: U1 }));
+  const { db } = fakeDb({ threads, existing: [{ cluster_id: c.clusterId, input_hash: hash }] });
+  const r = await adjudicateContradictedClusters(db, opts(fakeFetch(VERDICT).fn, { threadLimit: 1 }));
+  assertEquals(r.threadsScanned, 3);
+  assertEquals(r.threadsWithWork, 0);
+});
+
 Deno.test("a duplicate insert (another sweep won the race) is success, not an error", async () => {
   const { db } = fakeDb({ insertError: { code: "23505", message: "duplicate key value" } });
   const r = await adjudicateContradictedClusters(db, opts(fakeFetch(VERDICT).fn));

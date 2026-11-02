@@ -140,10 +140,43 @@ export async function adjudicationInputHash(
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+const REDACTED = "[redacted]";
+const MAX_SCRUB_DEPTH = 5;
+const MAX_SCRUB_ARRAY = 25;
+/** Keys that NAME the field a `{field, value}` record is about. */
+const FIELD_NAME_KEYS = ["field", "label", "name", "type", "key"] as const;
+
+/**
+ * Remove credential material from metadata at EVERY depth, not just the top level.
+ *
+ * `rapidapi_email_breach_search` records `concrete_values` as
+ * `[{field: "password", value: "…", sensitive: true}]` and tells the model to keep
+ * every one in the artifact's metadata, so a top-level key filter ships plaintext
+ * passwords to the provider. Three rules, applied recursively:
+ *   - a key that looks like a secret is dropped;
+ *   - a `{field|label|name|type|key, value}` record whose NAME looks like a secret,
+ *     or that is flagged `sensitive: true`, keeps its label and loses its value;
+ *   - depth and array length are capped, so a pathological blob cannot blow up the prompt.
+ */
+function scrub(v: unknown, depth: number): unknown {
+  if (depth > MAX_SCRUB_DEPTH) return undefined;
+  if (Array.isArray(v)) return v.slice(0, MAX_SCRUB_ARRAY).map((x) => scrub(x, depth + 1));
+  if (!v || typeof v !== "object") return v;
+  const o = v as Record<string, unknown>;
+  const namedSecret = FIELD_NAME_KEYS.some((k) => typeof o[k] === "string" && SECRET_KEY.test(o[k] as string));
+  const flagged = o.sensitive === true;
+  const out: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(o)) {
+    if (SECRET_KEY.test(k)) continue;
+    if ((namedSecret || flagged) && k === "value") { out[k] = REDACTED; continue; }
+    const s = scrub(val, depth + 1);
+    if (s !== undefined) out[k] = s;
+  }
+  return out;
+}
+
 function safeMetadata(meta: Record<string, unknown>): string {
-  const kept: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(meta)) if (!SECRET_KEY.test(k)) kept[k] = v;
-  return JSON.stringify(kept).slice(0, METADATA_CHARS);
+  return JSON.stringify(scrub(meta, 0) ?? {}).slice(0, METADATA_CHARS);
 }
 
 function promptRecord(m: AdjudicationMember) {

@@ -143,6 +143,28 @@ Deno.test("secret-looking metadata keys never leave the function", () => {
   assert(user.includes("Jordan Vale"), "ordinary fields survive");
 });
 
+Deno.test("⛔ credentials nested inside metadata never leave the function", () => {
+  // rapidapi_email_breach_search records `concrete_values` as
+  // [{field, value, sensitive}] and tells the model to store EVERY one in the
+  // artifact's metadata, so top-level key filtering alone ships plaintext
+  // passwords to the provider.
+  const rows = contradictedCase();
+  Object.assign(rows[1].metadata as Record<string, unknown>, {
+    concrete_values: [
+      { breach: "ExampleCorp", field: "password", value: "hunter2", sensitive: true },
+      { breach: "ExampleCorp", label: "Password Hash", value: "5f4dcc3b", sensitive: false },
+      { breach: "ExampleCorp", field: "birthday", value: "1990-01-02", sensitive: true },
+      { breach: "ExampleCorp", field: "city", value: "Oakland", sensitive: false },
+    ],
+    breach_detail: { nested: { password: "s3cret-nested", note: "ok" } },
+  });
+  const [c] = selectAdjudicationCandidates(rows).candidates;
+  const { user } = buildAdjudicationPrompt(c);
+  for (const s of ["hunter2", "5f4dcc3b", "1990-01-02", "s3cret-nested"]) assert(!user.includes(s), `leaked ${s}`);
+  assert(user.includes("Oakland"), "a non-sensitive nested field survives");
+  assert(user.includes("ExampleCorp"), "the breach name survives");
+});
+
 // ---- parser --------------------------------------------------------------------
 
 const GOOD = { verdict: "different_subjects", probability: 18, rationale: "Different cities and surnames." };

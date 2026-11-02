@@ -74,7 +74,16 @@ const HARD_MAX_CALLS = 10;
 const DEFAULT_DEADLINE_MS = 25_000;
 const CALL_TIMEOUT_MS = 15_000;
 const MAX_OUTPUT_TOKENS = 400;
+/** Threads WITH pending work handled per sweep. A thread with none does not count. */
 const THREADS_PER_SWEEP = 5;
+/**
+ * Threads READ per sweep, work or not. Bounds the reads (reviews + up to 1000
+ * artifacts each) while letting the sweep walk past threads that have nothing to
+ * adjudicate instead of re-reading the same newest five every minute. Ceiling: if
+ * more than this many threads finish inside the 24h window and the newest ones
+ * all have nothing to do, the oldest can still age out unexamined.
+ */
+const EXAMINE_PER_SWEEP = 25;
 /** Same rule as synthesis: a truncated read would change which clusters exist. */
 const MAX_ARTIFACTS_PER_THREAD = 1000;
 const ARTIFACT_COLUMNS = "id,kind,value,source,confidence,metadata,created_at";
@@ -123,14 +132,20 @@ export interface AdjudicationSweepOptions {
   dryRun?: boolean;
   maxCalls?: number;
   deadlineMs?: number;
+  /** Threads with pending work to handle this sweep (default 5). */
   threadLimit?: number;
+  /** Threads to read this sweep, work or not (default 25). */
+  examineLimit?: number;
   /** Injected for tests. */
   fetchFn?: typeof fetch;
   now?: () => number;
 }
 
 export interface AdjudicationSweepResult {
+  /** Threads read this sweep, whether or not they had anything to adjudicate. */
   threadsScanned: number;
+  /** Threads that had at least one cluster still needing an answer. */
+  threadsWithWork: number;
   /** Contradicted clusters that still need an answer (or would, in a dry run). */
   queued: number;
   alreadyAdjudicated: number;
@@ -151,7 +166,7 @@ export interface AdjudicationSweepResult {
 
 function emptyResult(dryRun: boolean): AdjudicationSweepResult {
   return {
-    threadsScanned: 0, queued: 0, alreadyAdjudicated: 0, calls: 0, written: 0, duplicates: 0,
+    threadsScanned: 0, threadsWithWork: 0, queued: 0, alreadyAdjudicated: 0, calls: 0, written: 0, duplicates: 0,
     unparseable: 0, undersize: 0, oversize: 0, deadlineHit: false, inputTokens: 0, outputTokens: 0,
     dryRun, errors: 0,
   };
@@ -206,6 +221,7 @@ export async function adjudicateContradictedClusters(
   const fetchFn = opts.fetchFn ?? fetch;
   const model = opts.model ?? DEFAULT_ADJUDICATION_MODEL;
   const threadLimit = opts.threadLimit ?? THREADS_PER_SWEEP;
+  const examineLimit = opts.examineLimit ?? EXAMINE_PER_SWEEP;
   const startedAt = now();
   const out = emptyResult(dryRun);
 
@@ -213,11 +229,14 @@ export async function adjudicateContradictedClusters(
   const { data: threads, error: threadErr } = await db
     .from("threads").select("id,user_id,updated_at")
     .eq("status", "finished").gte("updated_at", cutoff)
-    .order("updated_at", { ascending: false }).limit(threadLimit * 4);
+    .order("updated_at", { ascending: false }).limit(examineLimit);
   if (threadErr || !Array.isArray(threads)) return { ...out, errors: 1 };
 
   for (const t of threads) {
-    if (out.threadsScanned >= threadLimit) break;
+    // Only threads with PENDING work count toward the limit. Counting a thread that
+    // had none made every sweep re-read the same newest few, so an older eligible
+    // thread was never reached before it aged out of the forward window.
+    if (out.threadsWithWork >= threadLimit || out.threadsScanned >= examineLimit) break;
     if (out.deadlineHit || out.calls >= maxCalls) break;
     const threadId = (t as { id?: unknown })?.id;
     const userId = (t as { user_id?: unknown })?.user_id;
@@ -243,10 +262,10 @@ export async function adjudicateContradictedClusters(
 
       const admissible = dropRejectedArtifacts(rows as Array<Record<string, unknown>>, reviews);
       const sel = selectAdjudicationCandidates(admissible);
+      out.threadsScanned++;
       out.undersize += sel.undersize;
       out.oversize += sel.oversize;
-      if (sel.candidates.length === 0) { out.threadsScanned++; continue; }
-      out.threadsScanned++;
+      if (sel.candidates.length === 0) continue;
 
       // Idempotence is read BEFORE the call. Unreadable → skip: a blind call is a repeat bill.
       const { data: prior, error: pErr } = await db
@@ -256,6 +275,7 @@ export async function adjudicateContradictedClusters(
         prior.map((p) => `${(p as { cluster_id?: string }).cluster_id}|${(p as { input_hash?: string }).input_hash}`),
       );
 
+      const queuedBefore = out.queued;
       for (const c of sel.candidates) {
         const hash = await adjudicationInputHash(c);
         if (answered.has(`${c.clusterId}|${hash}`)) { out.alreadyAdjudicated++; continue; }
@@ -311,6 +331,8 @@ export async function adjudicateContradictedClusters(
         if (insErr.code === "23505") { out.duplicates++; continue; }
         out.errors++;
       }
+      // A thread is "work" only if some cluster in it still needed an answer.
+      if (out.queued > queuedBefore) out.threadsWithWork++;
     } catch {
       out.errors++;
     }
@@ -324,7 +346,7 @@ export function describeAdjudication(r: AdjudicationSweepResult): string {
     ? `DRY RUN — no model call, nothing written; ${r.queued} cluster(s) queued`
     : `${r.written} written, ${r.calls} call(s), ${r.queued} queued`;
   const bits = [
-    `over ${r.threadsScanned} thread(s)`,
+    `${r.threadsWithWork} of ${r.threadsScanned} thread(s) had work`,
     `${r.alreadyAdjudicated} already answered`,
     r.duplicates ? `${r.duplicates} duplicate` : "",
     r.unparseable ? `${r.unparseable} unparseable` : "",
