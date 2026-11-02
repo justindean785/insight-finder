@@ -40,6 +40,8 @@ import { cardDedupeKey, normalizeTarget } from "@/lib/next-step-cards";
 import { closeLatestPivotRun, derivePivotRunViews, pivotRunKey, pivotSendHooks, usePivotRuns } from "@/lib/pivot-runs";
 import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type RunnablePivot } from "@/lib/pivot-schema";
 import { PivotStrip } from "@/components/pivots/PivotStrip";
+import { SessionStrip } from "@/components/chat/SessionStrip";
+import { AgentAssessmentCards } from "@/components/chat/AgentAssessmentCards";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
 import { countWorkbenchRunnablePivots } from "@/lib/next-step-queue";
 import { registerPivotRunner } from "@/lib/pivot-runner";
@@ -1106,32 +1108,34 @@ export function LiveActivityCard({ message, elapsedLabel }: { message: UIMessage
 
   const groups = groupToolParts(parts).filter((entry) => "part" in entry || !isNoiseToolGroup(entry));
   const cycles = groups.filter((entry): entry is ToolRunGroup => !("part" in entry));
+  const settled = toolParts.filter((p) => p.state === "output-available" || p.state === "output-error").length;
 
   return (
     <details className="chat-card w-full min-w-0 group/live" data-speaker="agent">
       <summary className="chat-card__header cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <span className="relative flex h-2 w-2 shrink-0" aria-hidden>
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/60 opacity-75" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
-        </span>
+        <span
+          aria-hidden
+          className="inline-block h-[13px] w-[13px] shrink-0 animate-spin rounded-full border-[1.5px] border-[hsl(var(--brand)/0.3)] border-t-[hsl(var(--brand))] motion-reduce:animate-none"
+        />
         <span
           role="status"
           aria-live="polite"
           aria-label="Investigation in progress"
-          className="min-w-0 truncate font-medium text-foreground/85"
+          className="min-w-0 truncate font-medium normal-case tracking-normal text-foreground/85"
         >
           {role} · <span className="font-normal text-muted-foreground">{action}</span>
         </span>
-        <span className="ml-auto flex shrink-0 items-center gap-2.5 text-data text-muted-foreground/70">
+        <span className="ml-auto flex shrink-0 items-center gap-2.5 text-data normal-case tracking-normal text-muted-foreground/70">
           <span className="font-mono tabular-nums">{elapsedLabel}</span>
           {toolParts.length > 0 && (
-            <span className="tabular-nums">
-              {toolParts.length} {toolParts.length === 1 ? "tool" : "tools"}
+            <span className="tabular-nums" title="tool calls settled / started this run">
+              {settled} / {toolParts.length} {toolParts.length === 1 ? "tool" : "tools"}
             </span>
           )}
           <ChevronDown className="h-3 w-3 transition-transform group-open/live:rotate-180" aria-hidden />
         </span>
       </summary>
+
       {groups.length > 0 && (
         <div className="chat-card__body flex w-full flex-col gap-2">
           <RunFlowRail groups={cycles} />
@@ -1327,10 +1331,13 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
       )}
       {prose && !superseded && (
         <article className="chat-card w-full min-w-0" data-speaker="agent" aria-label="Agent response">
-          <div className="chat-card__header">
-            <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--intel-blue))]" aria-hidden />
-            <span>Agent</span>
-            {timeLabel && <span className="chat-card__header-time">{timeLabel}</span>}
+          {/* Case desk R5: the prototype's agent heading — a 25px "IF" mark,
+              the agent's name, the time, and a tag that says what this text is. */}
+          <div className="chat-card__header" style={{ textTransform: "none", letterSpacing: 0 }}>
+            <span aria-hidden className="grid h-[22px] w-[22px] shrink-0 place-items-center rounded-[6px] border border-[hsl(var(--brand)/0.4)] bg-[hsl(var(--brand)/0.14)] font-display text-[10px] font-bold tracking-[-0.06em] text-[hsl(var(--brand))]">IF</span>
+            <span className="text-[12px] font-medium text-foreground/90">Insight agent</span>
+            {timeLabel && <span className="text-[11px] font-normal text-faint-foreground">{timeLabel}</span>}
+            <span className="rounded-[3px] border border-[hsl(var(--brand)/0.3)] px-1 py-px text-[9px] font-medium uppercase tracking-[0.05em] text-[hsl(var(--brand)/0.85)]" title="Written by the model. Computed confidence and the analyst's review are in Evidence.">AI analysis</span>
           </div>
           {(hasStatedLabel(prose) || unadjudicated) && (
             // Above the prose, not below it: a footer is read after the claims have already landed, and a hover
@@ -3143,6 +3150,20 @@ function ChatWindowInner({
   autoPivotRef.current = autoPick?.pivot ?? null;
   autoPivotKeyRef.current = autoPick?.key ?? null;
 
+  const liveParts = (liveAssistantMessage?.parts ?? []) as MessagePartShape[];
+  const liveToolCount = liveParts.filter((p) => typeof p.type === "string" && p.type.startsWith("tool-")).length;
+  // The plan chips (prototype "✓ Collect ✓ Correlate ◌ Verify linkage"): the
+  // run's stages in order, from the tool groups the stream has recorded.
+  // Earlier stages read done, the latest reads current. Nothing is promised
+  // ahead of the stream: a stage appears only once a call has run in it.
+  const liveStages: string[] = [];
+  for (const entry of groupToolParts(liveParts)) {
+    if ("part" in entry) continue;
+    const h = humanizeStage(entry.stage);
+    if (!liveStages.includes(h)) liveStages.push(h);
+  }
+  const snap = caseSnapshot?.snapshot?.hydrated ? caseSnapshot.snapshot : null;
+
   return (
     <div className="chat-stage relative h-full min-w-0 overflow-hidden bg-background">
       {/* Soft stage wash — fills the main pane so content doesn't float in void */}
@@ -3154,6 +3175,23 @@ function ChatWindowInner({
             "radial-gradient(ellipse 80% 50% at 50% -10%, hsl(var(--film) / 0.045), transparent 55%), radial-gradient(ellipse 70% 40% at 50% 110%, hsl(0 0% 0% / 0.5), transparent 50%)",
         }}
       />
+      {/* Case desk R5: the session strip. Hidden while the case is still empty
+          (the hero below says what to do), present from the first message on. */}
+      {messages.length > 0 && (
+        <SessionStrip
+          className="relative z-10"
+          running={isLoading}
+          stopping={primary.kind === "stop" && primary.stopping}
+          canStop={primary.kind === "stop"}
+          title={snap?.run.label ?? "Investigate"}
+          elapsedLabel={runElapsedLabel}
+          toolCount={liveToolCount}
+          stages={liveStages}
+          totalCalls={snap?.tools.available ? snap.tools.total : null}
+          lastAt={snap?.tools.lastAt ?? null}
+          onStop={() => { void stopInvestigation(); }}
+        />
+      )}
       <div
         ref={scrollRef}
         onScroll={(event) => {
@@ -3293,6 +3331,10 @@ function ChatWindowInner({
           {isLoading && (
             <LiveActivityCard message={liveAssistantMessage} elapsedLabel={runElapsedLabel} />
           )}
+          {/* Case desk R5: what the engine links to the subject, and the first
+              contradiction, from the same assessment the Finding panel and the
+              ledger show. Only between runs, never under a streaming message. */}
+          {!isLoading && messages.length > 0 && <AgentAssessmentCards threadId={threadId} />}
           <ServerFollowPanel
             active={followingServer}
             mode={followMode({ streamEndedCleanly })}
@@ -3430,6 +3472,40 @@ function ChatWindowInner({
                   </div>
                 );
               })}
+            </div>
+          )}
+          {/* Case desk R5: suggestion chips. The top runnable pivots open their
+              Preview on the Workbench (never a run from here); "What changed?"
+              asks the agent for this run's delta. Shown between runs on a case
+              that has started, so a blank case keeps its one request box. */}
+          {isFollowUp && !isLoading && (
+            <div className="mb-2.5 flex flex-wrap gap-1.5" data-composer-suggestions>
+              {suggestions
+                .filter((it): it is Extract<typeof it, { kind: "pivot" }> & { validation: { status: "valid" } } => it.kind === "pivot" && it.validation.status === "valid")
+                .slice(0, 2)
+                .map((it) => {
+                  const p = it.validation.pivot;
+                  return (
+                    <button
+                      key={it.key}
+                      type="button"
+                      onClick={() => window.dispatchEvent(new CustomEvent("swarmbot:workbench-tab", { detail: { tab: "pivots", open: it.key } }))}
+                      aria-label={`Preview pivot: ${p.action} ${p.target}`}
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-[5px] border border-border bg-[hsl(var(--surface-1))] px-2 py-1 text-[11px] text-muted-foreground hover:border-[hsl(var(--brand)/0.5)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <Play className="h-3 w-3 shrink-0" aria-hidden />
+                      <span className="truncate">{p.action}</span>
+                      <span className="truncate font-mono text-faint-foreground">{p.target}</span>
+                    </button>
+                  );
+                })}
+              <button
+                type="button"
+                onClick={() => void sendText("What changed in the latest run? List only the new findings and any contradiction, as compact lines; do not restate earlier findings.")}
+                className="inline-flex items-center gap-1.5 rounded-[5px] border border-border bg-[hsl(var(--surface-1))] px-2 py-1 text-[11px] text-muted-foreground hover:border-[hsl(var(--brand)/0.5)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                What changed?
+              </button>
             </div>
           )}
           <div
