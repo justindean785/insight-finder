@@ -9,7 +9,12 @@ import { EvidenceMatrixTab } from "@/components/panel/EvidenceMatrixTab";
 import { ClustersTab } from "@/components/panel/ClustersTab";
 import { TimelineTab } from "@/components/panel/TimelineTab";
 import { PivotsTab } from "@/components/panel/PivotsTab";
-import { LayoutGrid, Table2, Network, Clock, GitBranch, type LucideIcon } from "lucide-react";
+import { LayoutGrid, Table2, Network, Clock, GitBranch, RefreshCw, ArrowRight, type LucideIcon } from "lucide-react";
+import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
+import { useAgentAssessment } from "@/hooks/useAgentAssessment";
+import { humanizeStage } from "@/lib/tool-display";
+import { timeAgo } from "@/lib/time";
+import type { EvidenceSortMode } from "@/lib/evidence-sort";
 
 type View = "board" | "table" | "clusters" | "timeline" | "pivots";
 
@@ -51,6 +56,12 @@ export function EvidenceTab({
 }) {
   const { items, updateLocal, hasMore, cap } = useThreadArtifacts(threadId);
   const review = useReviewStates(threadId);
+  // Case desk R4: the run-update banner and the "N findings across M source
+  // records" line read the case snapshot and the R2 assessment. Both are
+  // optional, so a standalone render (tests, the read-only case view) still works.
+  const snapshot = useOptionalCaseSnapshot()?.snapshot ?? null;
+  const assessment = useAgentAssessment(threadId);
+  const [sortRequest, setSortRequest] = useState<{ mode: EvidenceSortMode; n: number } | null>(null);
   const [view, setView] = useState<View>(
     viewRequest && isView(viewRequest.view) ? viewRequest.view : "board",
   );
@@ -115,13 +126,33 @@ export function EvidenceTab({
   // row (131px before the first finding at a 600px panel).
   const [slot, setSlot] = useState<HTMLElement | null>(null);
 
+  // The run-update banner (prototype): what the latest run left behind, in
+  // figures the page can stand behind. "New since the previous assessment"
+  // appears only once a baseline exists (useAgentAssessment); before that the
+  // banner names the run and the last tool stage, never a change it cannot measure.
+  const run = snapshot?.hydrated ? snapshot.run : null;
+  const tools = snapshot?.hydrated ? snapshot.tools : null;
+  const newSince = assessment.hasBaseline ? Object.values(assessment.deltas).filter((d) => d.from === null).length : null;
+  const nowConflict = assessment.hasBaseline ? Object.values(assessment.deltas).filter((d) => d.to === "conflict" && d.from !== null && d.from !== "conflict").length : null;
+  const ledgerCount = snapshot?.hydrated ? snapshot.evidence.ledger : null;
+
   return (
     <div className="h-full flex flex-col min-h-0">
-      {/* The tab strip already names this section; the heading is kept for
-          screen-reader navigation only. */}
-      <h2 className="sr-only">Evidence</h2>
+      {/* Section heading (prototype): the name, then "N findings across M source records". */}
       <div className="shrink-0 border-b border-white/[0.07] bg-surface-0 px-3 py-2 sm:px-4">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-3 gap-y-2">
+          <div className="min-w-0">
+            <h2 className="font-display text-[21px] font-medium leading-tight tracking-[-0.03em]">Evidence</h2>
+            <p className="mt-0.5 text-data text-muted-foreground">
+              {snapshot?.hydrated && ledgerCount !== null ? (
+                <span title="Findings are deduplicated artifact rows; source records are chain-of-custody entries across every run.">
+                  {items.length} finding{items.length === 1 ? "" : "s"} across {ledgerCount} source record{ledgerCount === 1 ? "" : "s"}
+                  <span className="mx-1.5 text-muted-foreground/40" aria-hidden>·</span>
+                </span>
+              ) : null}
+              {subtitle}
+            </p>
+          </div>
           <MenuSelect<View>
             label="View"
             showLabel={false}
@@ -130,10 +161,32 @@ export function EvidenceTab({
             onChange={(k) => setView(k)}
             options={VIEWS.map((v) => ({ key: v.key, label: v.label, icon: v.icon }))}
           />
-          <span className="min-w-0 text-data text-muted-foreground">{subtitle}</span>
-          <div ref={setSlot} className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2" />
+          <div ref={setSlot} className="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2" />
         </div>
       </div>
+      {view === "board" && run && tools && (
+        <div className="shrink-0 px-3 pt-3 sm:px-4" data-run-update>
+          <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-3 rounded-[7px] border border-[hsl(var(--brand)/0.25)] bg-[linear-gradient(110deg,hsl(var(--brand)/0.08),hsl(var(--surface-1)))] px-3.5 py-2.5 text-[12px]">
+            <RefreshCw className={`h-4 w-4 shrink-0 text-[hsl(var(--brand))] ${run.state === "running" ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden />
+            <div className="min-w-0 flex-1 text-muted-foreground">
+              <b className="font-medium text-foreground">{run.state === "running" ? "Run in progress" : "Latest run"}</b>
+              <span className="px-1.5 text-faint-foreground" aria-hidden>/</span>
+              {tools.available ? `${tools.total} tool call${tools.total === 1 ? "" : "s"}` : "tool calls unread"}
+              {tools.lastStage && <><span className="px-1.5 text-faint-foreground" aria-hidden>·</span>last stage {humanizeStage(tools.lastStage)}</>}
+              {tools.lastAt && <><span className="px-1.5 text-faint-foreground" aria-hidden>·</span>{timeAgo(tools.lastAt)}</>}
+              {newSince !== null && <><span className="px-1.5 text-faint-foreground" aria-hidden>·</span>{newSince} new record{newSince === 1 ? "" : "s"} since the previous assessment</>}
+              {nowConflict !== null && nowConflict > 0 && <><span className="px-1.5 text-faint-foreground" aria-hidden>·</span>{nowConflict} now in conflict</>}
+            </div>
+            <button
+              type="button"
+              onClick={() => setSortRequest({ mode: "newest", n: Date.now() })}
+              className="inline-flex shrink-0 items-center gap-1.5 text-[12px] text-[hsl(var(--brand))] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              View changes <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+            </button>
+          </div>
+        </div>
+      )}
 
       <ToolbarSlotContext.Provider value={slot}>
       <div className="flex-1 min-h-0 overflow-y-auto">
@@ -145,6 +198,7 @@ export function EvidenceTab({
               threadId={threadId}
               focusRequest={viewRequest?.artifactId ? { id: viewRequest.artifactId, n: viewRequest.n } : null}
               filterRequest={viewRequest?.authorityState ? { state: viewRequest.authorityState, n: viewRequest.n } : null}
+              sortRequest={sortRequest}
             />
           </div>
         )}

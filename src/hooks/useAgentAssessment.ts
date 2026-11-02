@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useCaseSnapshot } from "@/hooks/useCaseSnapshot";
+import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { useReviewStates } from "@/lib/review";
 import type { ReviewAdjustment } from "@/lib/intel";
 import {
@@ -58,7 +58,9 @@ function writeBaseline(threadId: string, byId: Record<string, AgentAssessment>):
 }
 
 export function useAgentAssessment(threadId: string): AgentAssessmentApi {
-  const { snapshot } = useCaseSnapshot();
+  // Optional: surfaces that also render standalone (tests, the read-only case
+  // view) have no provider and then simply get no assessment.
+  const snapshot = useOptionalCaseSnapshot()?.snapshot ?? null;
   const review = useReviewStates(threadId);
   const items = useMemo(() => snapshot?.items ?? [], [snapshot?.items]);
   const seedValue = snapshot?.seed.value ?? null;
