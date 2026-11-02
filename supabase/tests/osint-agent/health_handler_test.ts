@@ -224,7 +224,7 @@ Deno.test("handleHealthProbe: plain ?health=1 reports checks.maintenance as skip
   const body = await res.json();
   assertEquals(body.checks.maintenance, { ok: true, detail: MAINTENANCE_SKIPPED_DETAIL });
   // None of the maintenance-only checks may appear on a liveness probe.
-  for (const k of ["recovery", "rejected_cluster_sweep", "credentials", "synthesis", "cache_sweep"]) {
+  for (const k of ["recovery", "rejected_cluster_sweep", "credentials", "synthesis", "cluster_adjudication", "cache_sweep"]) {
     assertEquals(body.checks[k], undefined, `${k} must not run on a plain probe`);
   }
 });
