@@ -15,6 +15,7 @@ import { DecisionChip } from "@/components/workspace/WorkspaceTabs";
 import { tabButtonClass, tabIconClass } from "@/components/workspace/tab-recipe";
 import { useCaseSheetModel } from "@/hooks/useCaseSheetModel";
 import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
+import { normalizeWorkbenchTab, type WorkbenchTab } from "@/lib/workbench-tab";
 
 /**
  * The right-hand column of the case desk — JD's prototype's ONE inspector
@@ -35,22 +36,12 @@ import { buildWorkspaceTabCounts } from "@/lib/workspace-tab-counts";
  * pivots" sends `next`), so no caller had to change on the same day.
  * Nothing here is a new authority or a new path to a run.
  */
-export type WorkbenchTab = "finding" | "pivots" | "connections";
+export type { WorkbenchTab };
 const TABS: ReadonlyArray<{ key: WorkbenchTab; label: string; icon: LucideIcon }> = [
   { key: "finding", label: "Finding", icon: ClipboardList },
   { key: "pivots", label: "Next pivots", icon: Sparkles },
   { key: "connections", label: "Connections", icon: Network },
 ];
-
-/** Accepts the pre-R3 tab names from older callers and events. */
-export function normalizeWorkbenchTab(raw: unknown): WorkbenchTab | null {
-  switch (raw) {
-    case "finding": case "sheet": case "live": return "finding";
-    case "pivots": case "next": return "pivots";
-    case "connections": return "connections";
-    default: return null;
-  }
-}
 
 export function Workbench({ threadId, request = null, onRequestConsumed }: {
   threadId: string;
