@@ -369,11 +369,11 @@ export function OverviewTab({ threadId }: { threadId: string }) {
               Working assessment
             </RuleLabel>
             {strongest.length === 0 ? (
-              <p className="p-3 text-data text-muted-foreground">No corroborated findings yet. The decision queue below is a good place to start.</p>
+              <p className="p-5 text-data text-muted-foreground">No corroborated findings yet. The decision queue below is a good place to start.</p>
             ) : (
               <ul>
                 {strongest.slice(0, 4).map(({ a, v }) => (
-                  <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
+                  <li key={a.id} className="relative grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-border-subtle py-1.5 pl-5 pr-5 last:border-b-0">
                     <AuthoritySpine state={v.state} />
                     <ArtifactValue value={a.value} className="min-w-0" />
                     <AuthorityChip view={v} />
@@ -382,7 +382,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
               </ul>
             )}
             {strongest.length > 4 && (
-              <p className="border-t border-border-subtle px-3 py-1.5 text-micro text-muted-foreground">
+              <p className="border-t border-border-subtle px-5 py-1.5 text-micro text-muted-foreground">
                 +{strongest.length - 4} more supported findings below.
               </p>
             )}
@@ -393,13 +393,13 @@ export function OverviewTab({ threadId }: { threadId: string }) {
               What could change the case
             </RuleLabel>
             {unresolved.length === 0 ? (
-              <p className="p-3 text-data text-muted-foreground">
+              <p className="p-5 text-data text-muted-foreground">
                 No open contradictions. New disputes will appear here as the investigation records them.
               </p>
             ) : (
               <ul>
                 {unresolved.slice(0, 2).map(({ a, v }) => (
-                  <li key={a.id} className="relative border-b border-border-subtle px-3 py-1.5 pl-4 last:border-b-0">
+                  <li key={a.id} className="relative border-b border-border-subtle py-1.5 pl-5 pr-5 last:border-b-0">
                     <AuthoritySpine state={v.state} />
                     <div className="flex items-start gap-2">
                       <ArtifactValue value={a.value} className="min-w-0 flex-1" />
@@ -409,7 +409,7 @@ export function OverviewTab({ threadId }: { threadId: string }) {
                   </li>
                 ))}
                 {unresolved.length > 2 && (
-                  <li className="px-3 py-1.5 text-micro text-muted-foreground">
+                  <li className="px-5 py-1.5 text-micro text-muted-foreground">
                     +{unresolved.length - 2} more awaiting your call below.
                   </li>
                 )}

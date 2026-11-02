@@ -797,6 +797,12 @@ All colors MUST be HSL.
      way they are written. The forensic character of this product is carried by
      the ledger, the authority ladder and the hatch — it was never carried by
      tracking out the word "Overview". */
+  /* Case desk prototype: the two Overview lead cards pad their bodies 20px, so the
+     label above them follows. Scoped: .rule-label is shared with the ledger. */
+  [data-overview-lead] .rule-label {
+    padding-inline: 1.25rem;
+  }
+
   .rule-label {
     display: flex;
     align-items: center;
