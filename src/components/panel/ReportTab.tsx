@@ -10,6 +10,7 @@ import { useReviewStates } from "@/lib/review";
 import { useThreadMessages } from "@/hooks/useThreadMessages";
 import { useThreadToolActivity } from "@/hooks/useThreadToolActivity";
 import { buildConfidenceProfile, REPORT_READY_MIN_READINESS } from "@/lib/confidence-dimensions";
+import { SectionHeading } from "@/components/workspace/SectionHeading";
 import {
   evaluateExportGate,
   exportFilename,
@@ -382,7 +383,13 @@ export function ReportTab({
 
   return (
     <div className="text-xs">
-      <h2 className="sr-only">Report</h2>
+      <SectionHeading
+        className="mb-3"
+        title="Case assessment"
+        // Worded so it never duplicates the status chip's exact text ("Unverified
+        // draft · N% ready" / "Report-safe"): the e2e reads the chip by that text, once.
+        subtitle={isDraft ? `Draft — not yet report-safe at ${gate.readinessPct}% readiness; every export is marked ${DRAFT_MARK}.` : "Readiness and conflicts under control; exports are report-safe."}
+      />
       {toolbar}
 
       <div className="space-y-3 pt-3">
