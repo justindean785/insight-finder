@@ -17,6 +17,7 @@ import { BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToolObservations } from "@/hooks/useToolObservations";
 import { ToolObservationsPanel } from "@/components/brain/ToolObservationsPanel";
+import { OutcomeLessonsPanel } from "@/components/brain/OutcomeLessonsPanel";
 import { MEMORY_SAMPLE_CAP, describeMemorySample, type MemoryTotal } from "@/lib/memory-population";
 import { describeCreditAccount, type CreditAccount } from "@/lib/credit-account";
 import { formatUsd, latestRun } from "@/lib/run-economics";
@@ -304,7 +305,7 @@ export default function BrainGlobalPage() {
   }, [memories, search, filter, deleted]);
 
   const patterns = useMemo(() => {
-    const list = memories.filter((m) => !deleted.has(m.id) && m.kind === "pattern");
+    const list = memories.filter((m) => !deleted.has(m.id) && (m.kind === "pattern" || m.kind === "lesson"));
     const filtered = patternFilter === "ALL"
       ? list
       : list.filter((m) => `${m.subject_kind ?? ""} ${m.subject} ${m.content}`.toUpperCase().includes(patternFilter));
@@ -450,22 +451,25 @@ export default function BrainGlobalPage() {
           />
         )}
         {subTab === "patterns" && (
-          <PatternsTab
-            loading={memLoading}
-            patterns={patterns}
-            filter={patternFilter}
-            setFilter={setPatternFilter}
-            sort={patternSort}
-            setSort={setPatternSort}
-            sinceVisit={sinceVisit}
-            threadTitles={threadTitles}
-            suppressed={suppressed}
-            promoted={promoted}
-            onPromote={togglePromote}
-            onSuppress={toggleSuppress}
-            onDelete={markDeleted}
-            onOpenCase={(id) => navigate(`/cases/${id}`)}
-          />
+          <div className="space-y-5">
+            <OutcomeLessonsPanel userId={user.id} />
+            <PatternsTab
+              loading={memLoading}
+              patterns={patterns}
+              filter={patternFilter}
+              setFilter={setPatternFilter}
+              sort={patternSort}
+              setSort={setPatternSort}
+              sinceVisit={sinceVisit}
+              threadTitles={threadTitles}
+              suppressed={suppressed}
+              promoted={promoted}
+              onPromote={togglePromote}
+              onSuppress={toggleSuppress}
+              onDelete={markDeleted}
+              onOpenCase={(id) => navigate(`/cases/${id}`)}
+            />
+          </div>
         )}
         {subTab === "overview" && <InsightsOverview embedded />}
         {subTab === "analysis" && <AnalysisTab />}
@@ -785,7 +789,7 @@ function PatternsTab({
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         <div className="text-eyebrow font-mono uppercase tracking-wider text-muted-foreground">
-          PATTERNS · <span className="text-foreground tabular-nums">{patterns.length}</span>
+          STORED PATTERNS + LESSONS · <span className="text-foreground tabular-nums">{patterns.length}</span>
         </div>
         <div className="ml-auto inline-flex items-center gap-0.5 rounded-lg bg-surface-1/60 border border-border-subtle p-0.5">
           {PATTERN_SORTS.map((s) => (
@@ -823,13 +827,13 @@ function PatternsTab({
       </div>
 
       {loading ? (
-        <div className="text-center text-xs text-muted-foreground py-12">Loading patterns…</div>
+        <div className="text-center text-xs text-muted-foreground py-12">Loading patterns and lessons…</div>
       ) : patterns.length === 0 ? (
         <div className="rounded-xl border border-border-subtle bg-surface-2/40 p-10 text-center">
           <TrendingUp className="w-8 h-8 text-muted-foreground mx-auto mb-3" strokeWidth={1.5} />
-          <div className="text-sm text-foreground">No patterns yet.</div>
+          <div className="text-sm text-foreground">No stored patterns or lessons yet.</div>
           <div className="text-xs text-muted-foreground mt-1">
-            Saved cross-case patterns will appear here when available.
+            Saved cross-case patterns and tool lessons will appear here when available. Live-call adaptations remain above regardless.
           </div>
         </div>
       ) : (
@@ -874,7 +878,8 @@ function PatternCard({
   onDelete: () => void;
   onOpenCase: () => void;
 }) {
-  const typeLabel = (m.subject_kind ?? "PATTERN").toUpperCase();
+  const typeLabel = m.kind === "lesson" ? "LESSON" : (m.subject_kind ?? "PATTERN").toUpperCase();
+  const TypeIcon = m.kind === "lesson" ? Lightbulb : TrendingUp;
   return (
     <div
       className={cn(
@@ -888,7 +893,7 @@ function PatternCard({
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 min-w-0">
-          <TrendingUp className="w-3 h-3 shrink-0 text-primary" strokeWidth={1.75} />
+          <TypeIcon className="w-3 h-3 shrink-0 text-primary" strokeWidth={1.75} />
           <span className="px-1.5 py-px rounded border border-border-subtle font-mono text-micro uppercase tracking-wider text-muted-foreground">
             {typeLabel}
           </span>

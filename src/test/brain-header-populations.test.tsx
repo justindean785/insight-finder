@@ -102,7 +102,8 @@ const mem = (i: number, over: Partial<Row> = {}): Row => ({
 const rows = (n: number, over: Partial<Row> = {}) => Array.from({ length: n }, (_, i) => mem(i, over));
 
 // `?tab=patterns` keeps the Overview (its own RPC + three counts) and the 500-card
-// Memories list out of the header tests; `kind: "lesson"` rows leave Patterns empty.
+// Memories list out of the header tests. Stored lesson rows also exercise the
+// Patterns population, which now includes both patterns and lessons.
 function renderBrain(path = "/brain?tab=patterns") {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -153,7 +154,21 @@ describe("Intelligence header — one honest population per number", () => {
     expect(caption()).toBe("0 memories (all stored)");
     expect(chip(/^Hits/)).toBe("0");
     expect(chip(/^Memory confidence/)).toBe("—");
-    expect(document.body.textContent).not.toMatch(/0%/);
+    expect(document.querySelector("header")!.textContent).not.toMatch(/0%/);
+  });
+
+  it("Patterns includes stored lessons beside patterns and labels the lesson kind", async () => {
+    m.rows = [
+      mem(1, { kind: "lesson", content: "Retry this source later and corroborate independently." }),
+      mem(2, { kind: "pattern", content: "Two cases reused the same selector pattern." }),
+    ];
+    m.count = 2;
+    renderBrain();
+    await settled();
+    expect(await screen.findByText("Retry this source later and corroborate independently.")).toBeTruthy();
+    expect(screen.getByText("Two cases reused the same selector pattern.")).toBeTruthy();
+    expect(screen.getByText("LESSON")).toBeTruthy();
+    expect(screen.getByText("STORED PATTERNS + LESSONS ·").parentElement?.textContent).toContain("2");
   });
 
   it("under-cap: 12 rows, count 12 → 12 memories (all stored)", async () => {
