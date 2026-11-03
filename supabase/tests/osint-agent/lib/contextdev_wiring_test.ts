@@ -106,3 +106,20 @@ Deno.test("wiring: the people_search schema has no cursor and no mode; the searc
   const sBody = src.slice(sAt, src.indexOf("execute:", sAt));
   assertStringIncludes(sBody, ".max(10)");
 });
+
+// ── Task 4: system prompt routing bullets + /health proof key ───────────────
+
+Deno.test("wiring: system prompt carries one routing bullet per tool, prefer-free-first, one-page cap and the overlap guard", () => {
+  const src = fn("system-prompt.ts");
+  for (const t of TOOLS) assertStringIncludes(src, t);
+  assertStringIncludes(src, "PREFER FREE FIRST");
+  assertStringIncludes(src, "ONE page per call");
+  assertStringIncludes(src, "never merge authority");
+  assertStringIncludes(src, "deduped: N");
+});
+
+Deno.test("wiring: health-handler counts the provider and exposes checks.contextdev from the pure self-test", () => {
+  const src = fn("health-handler.ts");
+  assertStringIncludes(src, "contextdev: has(env.CONTEXT_DEV_API_KEY)");
+  assertStringIncludes(src, "r.checks.contextdev = contextdevSelfTest(");
+});

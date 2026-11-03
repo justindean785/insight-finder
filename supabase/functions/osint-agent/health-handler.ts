@@ -8,7 +8,7 @@ import {
   corsHeaders, MINIMAX_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
   OATHNET_API_KEY, SYNAPSINT_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY, INTELBASE_API_KEY, INTELBASE_ENABLED, REVEAL_BREACH_DATA,
-  HIBP_API_KEY, OPSIS_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
+  HIBP_API_KEY, OPSIS_API_KEY, CONTEXT_DEV_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, SERUS_API_KEY,
   GITHUB_API_TOKEN, PERPLEXITY_API_KEY, IPQUALITYSCORE_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
   URLSCANNER_API_KEY, GEMINI_FALLBACK_MODEL_ID,
@@ -29,6 +29,7 @@ import { anthropicModelRejectsForcedToolChoice, anthropicOrchestratorHealth } fr
 import { anthropicFallbackDisabled, orchestratorFallbackHealth } from "./lib/orchestrator-fallback.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn, opsisStartClassificationSelfTest } from "./lib/opsis.ts";
+import { contextdevKillSwitchOn, contextdevSelfTest } from "./lib/contextdev.ts";
 import { buildFinalizePersistDirective, opsisFinalizeCollectSelfTest } from "./orchestrator-finalize.ts";
 import { findingPromptSelfTest } from "./lib/finding-prompt.ts";
 import { staticSystemPrompt } from "./lib/base-prompt.ts";
@@ -320,6 +321,7 @@ export function deriveReadiness(env: {
   FOFA_API_KEY?: string | null;
   GEOSEER_API_KEY?: string | null;
   OPSIS_API_KEY?: string | null;
+  CONTEXT_DEV_API_KEY?: string | null;
 }): { ok: boolean; checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> } {
   const has = (v: string | null | undefined) => !!(v && v.length > 0);
   const orchestratorOk = has(env.MINIMAX_API_KEY);
@@ -359,6 +361,9 @@ export function deriveReadiness(env: {
     // new capability. Any tool added with a new key belongs here.
     geoseer: has(env.GEOSEER_API_KEY),
     opsis: has(env.OPSIS_API_KEY),
+    // Context.dev (lib/contextdev.ts) — same reason as GeoSeer: moving this denominator is
+    // the cheap, unauthenticated way to see that the build carrying the tools shipped.
+    contextdev: has(env.CONTEXT_DEV_API_KEY),
   };
   const enabledOptional = Object.values(tools).filter(Boolean).length;
   const checks: Record<string, { ok: boolean; detail?: string; reason?: string; role?: "active" | "fallback" }> = {
@@ -399,6 +404,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     FOFA_API_KEY: Deno.env.get("FOFA_API_KEY"),
     GEOSEER_API_KEY: Deno.env.get("GEOSEER_API_KEY"),
     OPSIS_API_KEY,
+    CONTEXT_DEV_API_KEY,
   });
   const u = new URL(req.url);
   const wantProbe = u.searchParams.get("probe") === "1";
@@ -598,6 +604,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // network call. Its PRESENCE is the behavioural proof that the build carrying
   // the opsis_* tools is live; the detail says whether they can run.
   r.checks.opsis = opsisHealthDetail(!!OPSIS_API_KEY, opsisKillSwitchOn(), !opsisCreditHintDisabled());
+  // Is Context.dev configured, switched off, or absent, and do its URL canon/dedup and
+  // Retry-After parser still behave (lib/contextdev.ts)? Pure probe, no network. PRESENCE
+  // proves the build carrying contextdev_* is live; ok:false means the probe regressed.
+  // Kill switch: CONTEXT_DEV_DISABLED.
+  r.checks.contextdev = contextdevSelfTest(!!CONTEXT_DEV_API_KEY, contextdevKillSwitchOn());
   // Is a paid opsis_search refused (free) while runs await reading or when the run cannot
   // read it before the report? Pure probe of lib/opsis-search-guard.ts; PRESENCE proves the
   // build. The wrapper wiring is pinned by opsis_search_guard_test.ts in CI, not by this probe.

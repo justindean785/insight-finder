@@ -287,6 +287,30 @@ export function contextdevHealthDetail(hasKey: boolean, disabled: boolean): { ok
   return { ok: true, detail: "configured; contextdev_web_search / contextdev_scrape / contextdev_people_search live" };
 }
 
+/**
+ * `/health` `checks.contextdev`: the presence detail above plus a pure probe of the two
+ * things this module decides on its own — URL canonicalisation/dedup and the Retry-After
+ * parser. No network, no secrets. Its PRESENCE proves the build carrying the contextdev_*
+ * tools is live; `ok:false` means canon/dedup or the retry wait regressed.
+ */
+export function contextdevSelfTest(hasKey: boolean, disabled: boolean): { ok: boolean; detail: string } {
+  const base = contextdevHealthDetail(hasKey, disabled);
+  const seen = new Set<string>();
+  const d = dedupByUrl(
+    [{ url: "https://A.example/p?utm_source=x&id=1#f" }, { url: "https://a.example/p?id=1" }, { url: "javascript:void(0)" }],
+    seen,
+  );
+  const canonOk = d.kept.length === 1 && d.deduped === 1 && d.dropped_invalid === 1 &&
+    seen.has("https://a.example/p?id=1") && canonicalUrl("ftp://a.example/") === null;
+  const h = (v: string) => new Headers({ "Retry-After": v });
+  const retryOk = retryAfterMs(h("2")) === 2_000 &&
+    retryAfterMs(h("3600")) === CONTEXT_DEV_RETRY_AFTER_CAP_MS &&
+    retryAfterMs(h("garbage")) === CONTEXT_DEV_RETRY_AFTER_DEFAULT_MS &&
+    retryAfterMs(new Headers()) === CONTEXT_DEV_RETRY_AFTER_DEFAULT_MS;
+  const ok = canonOk && retryOk;
+  return { ok, detail: `${base.detail}; ${ok ? "selftest ok" : `selftest FAILED (canon ${canonOk}, retry_after ${retryOk})`}` };
+}
+
 // ── Trimming caps (prompt budget: the model reads every byte returned) ──────
 
 /** Search never asks for more than 10: 1 credit per 10 results, so this is one base credit. */

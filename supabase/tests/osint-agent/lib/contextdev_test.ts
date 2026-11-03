@@ -497,3 +497,20 @@ Deno.test("each tool: an unexpected 200 body shape is a legible failure, not a t
   const c = await contextdevScrape({ url: "https://a.example/" }, h.deps);
   assertEquals(c.error_code, "UNEXPECTED_SHAPE");
 });
+
+// ── /health self-test (pure; PRESENCE proves the deployed bundle) ───────────
+
+Deno.test("selfTest: configured → ok:true with the health detail and 'selftest ok'", async () => {
+  const { contextdevSelfTest } = await import("../../../functions/osint-agent/lib/contextdev.ts");
+  const r = contextdevSelfTest(true, false);
+  assertEquals(r.ok, true);
+  assertStringIncludes(r.detail, "configured");
+  assertStringIncludes(r.detail, "selftest ok");
+});
+
+Deno.test("selfTest: disabled / unset still report ok:true with the reason, and still run the probe", async () => {
+  const { contextdevSelfTest } = await import("../../../functions/osint-agent/lib/contextdev.ts");
+  assertStringIncludes(contextdevSelfTest(true, true).detail, "disabled via CONTEXT_DEV_DISABLED");
+  assertStringIncludes(contextdevSelfTest(false, false).detail, "CONTEXT_DEV_API_KEY unset");
+  assertEquals(contextdevSelfTest(false, false).ok, true);
+});
