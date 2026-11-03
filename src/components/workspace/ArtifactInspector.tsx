@@ -341,7 +341,7 @@ export function ArtifactInspector({
           <section aria-labelledby="your-review-heading" className="mt-6 rounded-lg border border-border bg-surface-1/70 p-3.5">
             <h3 id="your-review-heading" className="text-[13px] font-semibold text-foreground">Your review</h3>
             <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">Record your call without changing the AI assessment.</p>
-            <div className="mt-3 flex gap-2" role="group" aria-label="Your review">
+            <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="Your review">
               <ReviewBtn
                 current={rState}
                 target="confirmed"
