@@ -45,7 +45,7 @@ export function PivotStrip({
         <button
           type="button"
           onClick={() => onExpandedChange(true)}
-          className="inline-flex h-8 items-center rounded-md px-2 text-[13px] text-muted-foreground hover:bg-white/[0.04] hover:text-foreground"
+          className="inline-flex h-11 items-center rounded-md px-3 text-[13px] text-muted-foreground hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-8 sm:px-2"
         >
           Details
         </button>
@@ -62,7 +62,7 @@ export function PivotStrip({
           type="button"
           aria-expanded={expanded}
           onClick={() => onExpandedChange(!expanded)}
-          className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-[13px] text-muted-foreground hover:bg-white/[0.04] hover:text-foreground"
+          className="inline-flex h-11 items-center gap-1 rounded-md px-3 text-[13px] text-muted-foreground hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-8 sm:px-2"
         >
           {expanded ? "Hide details" : "All steps"}
           <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-180")} aria-hidden />
@@ -76,8 +76,8 @@ export function PivotStrip({
               <li key={it.key} className="flex min-w-0 items-center gap-2 px-3 py-2">
                 <div className="min-w-0 flex-1">
                   {/* Full width for the selector: it wraps, never truncates (DESIGN.md). */}
-                  <div className="min-w-0 font-mono text-[13.5px] leading-snug text-foreground [overflow-wrap:anywhere]">{p.target}</div>
-                  <div className="truncate text-[12.5px] text-muted-foreground">
+                  <div className="min-w-0 font-mono text-[14px] leading-snug text-foreground [overflow-wrap:anywhere] sm:text-[13.5px]">{p.target}</div>
+                  <div className="truncate text-[13px] text-muted-foreground sm:text-[12.5px]">
                     <span className="text-faint-foreground">{p.targetType}</span>
                     <span className="mx-1.5 text-faint-foreground">·</span>
                     {p.action}
@@ -87,7 +87,7 @@ export function PivotStrip({
                   type="button"
                   onClick={() => onPreview(it.key)}
                   aria-label={`Preview pivot: ${p.action} ${p.target}`}
-                  className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface-3 px-3 text-[13px] font-medium text-foreground hover:bg-surface-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface-3 px-3 text-[13px] font-medium text-foreground hover:bg-surface-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-9"
                 >
                   <Play className="h-3.5 w-3.5" aria-hidden />
                   Preview

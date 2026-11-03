@@ -251,7 +251,7 @@ function ChatWorkspace({ threadId, userId }: { threadId: string; userId: string 
                     aria-label="Show case sheet"
                     aria-expanded={false}
                     aria-controls="case-sheet"
-                    className="grid h-8 w-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground"
+                    className="grid h-8 w-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
                   >
                     <PanelRightOpen className="h-4 w-4" aria-hidden />
                   </button>

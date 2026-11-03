@@ -2079,7 +2079,12 @@ All colors MUST be HSL.
   opacity: 0.85;
 }
 .chat-card__body {
-  padding: 12px 14px 14px;
+  padding: 16px 18px 18px;
+}
+@media (max-width: 640px) {
+  .chat-card__body {
+    padding: 14px 15px 16px;
+  }
 }
 /* Same 14px side inset as .chat-card__body, so the footer sits on the body's text
    edges: the ghost Copy button pulls its own padding back (-ml-2) to put its icon
@@ -2312,7 +2317,7 @@ All colors MUST be HSL.
   letter-spacing: 0.04em;
   color: hsl(var(--muted-foreground));
 }
-.chat-prose p { line-height: 1.65; }
+.chat-prose p { line-height: 1.7; }
 .chat-prose strong { font-weight: 600; color: hsl(var(--foreground)); }
 .chat-prose ul,
 .chat-prose ol {

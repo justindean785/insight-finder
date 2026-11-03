@@ -98,20 +98,21 @@ export function AgentAssessmentCards({ threadId, className }: { threadId: string
         <div
           role="note"
           aria-label="Contradiction"
-          className="rounded-r-[5px] border-l-2 border-[hsl(var(--warning))] bg-[hsl(var(--warning)/0.08)] px-3.5 py-2.5 text-[12px] leading-relaxed text-[hsl(var(--warning))]"
+          className="rounded-lg border border-[hsl(var(--warning)/0.25)] bg-[hsl(var(--warning)/0.08)] px-3.5 py-3 text-[13px] leading-relaxed text-[hsl(var(--warning))]"
         >
-          <strong className="font-medium">Contradiction</strong>
-          <span className="text-[hsl(var(--warning)/0.8)]"> · </span>
-          <button
-            type="button"
-            onClick={() => select(conflict.artifactId)}
-            className="font-mono text-[hsl(var(--warning))] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {byId.get(conflict.artifactId)!.value}
-          </button>
-          <br />
-          <span className="text-muted-foreground">{conflict.opposing[0] ?? conflict.verdict}</span>
-          <AlertTriangle className="sr-only" aria-hidden />
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+            <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
+            <strong className="font-semibold">Contradiction</strong>
+            <span className="text-[hsl(var(--warning)/0.8)]">·</span>
+            <button
+              type="button"
+              onClick={() => select(conflict.artifactId)}
+              className="-ml-1 inline-flex min-h-11 items-center rounded px-1 font-mono [overflow-wrap:anywhere] underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8"
+            >
+              {byId.get(conflict.artifactId)!.value}
+            </button>
+          </div>
+          <p className="mt-1 pl-[22px] text-muted-foreground">{conflict.opposing[0] ?? conflict.verdict}</p>
         </div>
       )}
     </div>
