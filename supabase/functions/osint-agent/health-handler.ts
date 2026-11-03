@@ -86,6 +86,7 @@ import { correlateSeedDefaultSelfTest } from "./lib/thread-seed.ts";
 import { detectSeedServer } from "./validation.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
 import { mediaLeadsSelfTest } from "./lib/media-leads.ts";
+import { outcomeLessonsSelfTest } from "./lib/outcome-lessons.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -712,6 +713,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // tools excluded)? Pure; `switch` reports MEMORY_BRIEF_DISABLED. PRESENCE proves the deployed bundle; the index.ts wiring
   // (intermediate system only, never the base) is pinned in CI by memory_brief_wiring_test.ts.
   r.checks.memory_brief = memoryBriefSelfTest();
+  // Do repeated recent cross-case tool failures become bounded, context-only planning lessons? Pure; PRESENCE proves
+  // this build is live. The existing MEMORY_BRIEF switches disable delivery; the read and threshold rules are pinned in CI.
+  r.checks.outcome_lessons = outcomeLessonsSelfTest();
 
   // Does the prompt the model reads distinguish an ARTIFACT (record_artifacts, an observation) from a FINDING
   // (record_finding, an adjudicated claim the server scores and the only rows the Evidence Record renders) on all three
