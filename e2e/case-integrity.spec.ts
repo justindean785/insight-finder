@@ -425,6 +425,33 @@ test.describe("Workbench — one inspector (Case desk R3)", () => {
     await expect(inspector.getByText("Your review is separate from the AI assessment.", { exact: false })).toBeVisible();
   });
 
+  test("the review actions stay inside the 320px Workbench at lg width, even with the longest labels", async ({ page }) => {
+    // 1024-1279px docks the Workbench at a fixed 320px, which leaves the action row ~249px. The three
+    // labelled buttons plus "Confirmed ✓" / "Marked false" do not fit on one line there, so the row must wrap.
+    await page.setViewportSize({ width: 1100, height: 900 });
+    await open(page, THREAD);
+    await page.getByRole("tab", { name: /Evidence/ }).first().click();
+    const firstRow = page.locator('[class*="ledger-row"]').first();
+    await firstRow.waitFor({ state: "visible" });
+    await firstRow.click();
+    const review = page.locator("[data-inspector]").first().getByRole("group", { name: "Your review" });
+    await expect(review).toBeVisible();
+    const overflow = () => review.evaluate((el) => el.scrollWidth - el.clientWidth);
+    expect(await overflow(), "default labels").toBeLessThanOrEqual(0);
+    await review.getByRole("button", { name: /^Confirm/ }).click();
+    await expect(review.getByRole("button", { name: "Confirmed ✓" })).toBeVisible();
+    expect(await overflow(), "Confirmed ✓ label").toBeLessThanOrEqual(0);
+    await review.getByRole("button", { name: /^False match/ }).click();
+    await expect(review.getByRole("button", { name: "Marked false" })).toBeVisible();
+    expect(await overflow(), "Marked false label").toBeLessThanOrEqual(0);
+    // Every control must also sit inside the group's box, not just not-extend its scroll area.
+    const box = (await review.boundingBox())!;
+    for (const b of await review.getByRole("button").all()) {
+      const r = (await b.boundingBox())!;
+      expect(r.x + r.width, await b.innerText()).toBeLessThanOrEqual(box.x + box.width + 0.5);
+    }
+  });
+
   test("Open Next pivots works while the rail is folded (it used to do nothing)", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page, THREAD);

@@ -1337,7 +1337,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             <span aria-hidden className="grid h-[22px] w-[22px] shrink-0 place-items-center rounded-[6px] border border-[hsl(var(--brand)/0.4)] bg-[hsl(var(--brand)/0.14)] font-display text-[10px] font-bold tracking-[-0.06em] text-[hsl(var(--brand))]">IF</span>
             <span className="text-[12px] font-medium text-foreground/90">Insight agent</span>
             {timeLabel && <span className="text-[11px] font-normal text-faint-foreground">{timeLabel}</span>}
-            <span className="rounded-[3px] border border-[hsl(var(--brand)/0.3)] px-1 py-px text-[9px] font-medium uppercase tracking-[0.05em] text-[hsl(var(--brand)/0.85)]" title="Written by the model. Computed confidence and the analyst's review are in Evidence.">AI analysis</span>
+            <span className="rounded-[3px] border border-[hsl(var(--brand)/0.3)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.05em] text-[hsl(var(--brand))]" title="Written by the model. Computed confidence and the analyst's review are in Evidence.">AI analysis</span>
           </div>
           {(hasStatedLabel(prose) || unadjudicated) && (
             // Above the prose, not below it: a footer is read after the claims have already landed, and a hover
@@ -1366,7 +1366,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             <button
               type="button"
               onClick={() => copyToClipboard(prose, "Message copied")}
-              className="-ml-2 inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-white/[0.04] hover:text-foreground transition-colors"
+              className="-ml-2 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted-foreground transition-colors hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11"
               aria-label="Copy message"
               title="Copy message"
             >
@@ -3474,35 +3474,16 @@ function ChatWindowInner({
               })}
             </div>
           )}
-          {/* Case desk R5: suggestion chips. The top runnable pivots open their
-              Preview on the Workbench (never a run from here); "What changed?"
-              asks the agent for this run's delta. Shown between runs on a case
-              that has started, so a blank case keeps its one request box. */}
+          {/* Case desk R5: the composer keeps one unique follow-up prompt.
+              Runnable pivots already have a Preview action in the transcript or
+              Workbench immediately above; repeating them here created two rows
+              of identical, undersized buttons on a phone. */}
           {isFollowUp && !isLoading && (
-            <div className="mb-2.5 flex flex-wrap gap-1.5" data-composer-suggestions>
-              {suggestions
-                .filter((it): it is Extract<typeof it, { kind: "pivot" }> & { validation: { status: "valid" } } => it.kind === "pivot" && it.validation.status === "valid")
-                .slice(0, 2)
-                .map((it) => {
-                  const p = it.validation.pivot;
-                  return (
-                    <button
-                      key={it.key}
-                      type="button"
-                      onClick={() => window.dispatchEvent(new CustomEvent("swarmbot:workbench-tab", { detail: { tab: "pivots", open: it.key } }))}
-                      aria-label={`Preview pivot: ${p.action} ${p.target}`}
-                      className="inline-flex max-w-full items-center gap-1.5 rounded-[5px] border border-border bg-[hsl(var(--surface-1))] px-2 py-1 text-[11px] text-muted-foreground hover:border-[hsl(var(--brand)/0.5)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <Play className="h-3 w-3 shrink-0" aria-hidden />
-                      <span className="truncate">{p.action}</span>
-                      <span className="truncate font-mono text-faint-foreground">{p.target}</span>
-                    </button>
-                  );
-                })}
+            <div className="mb-2.5 flex flex-wrap gap-2" data-composer-suggestions>
               <button
                 type="button"
                 onClick={() => void sendText("What changed in the latest run? List only the new findings and any contradiction, as compact lines; do not restate earlier findings.")}
-                className="inline-flex items-center gap-1.5 rounded-[5px] border border-border bg-[hsl(var(--surface-1))] px-2 py-1 text-[11px] text-muted-foreground hover:border-[hsl(var(--brand)/0.5)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="inline-flex h-11 items-center gap-1.5 rounded-md border border-border bg-[hsl(var(--surface-1))] px-3 text-[13px] font-medium text-muted-foreground hover:border-[hsl(var(--brand)/0.5)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-9"
               >
                 What changed?
               </button>
@@ -3577,7 +3558,7 @@ function ChatWindowInner({
                 autoCapitalize="off"
                 autoCorrect="off"
                 spellCheck={false}
-                className="min-h-[44px] max-h-52 min-w-0 flex-1 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 px-1 py-2.5 text-[16px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70 sm:px-3 sm:py-2 sm:text-body"
+                className="min-h-[44px] max-h-52 min-w-0 flex-1 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 px-1 py-2.5 text-[16px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground sm:px-3 sm:py-2 sm:text-body"
               />
               <div className={cn("flex shrink-0 items-center gap-1 sm:gap-1.5 sm:px-2", compactComposer ? "sm:pb-0" : "sm:pb-2")}>
                 <Button
