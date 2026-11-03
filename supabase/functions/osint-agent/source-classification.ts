@@ -183,6 +183,11 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   dork_harvest: "ai_summary",
   jina_reader_scrape: "independent_public",
   exa_get_contents: "independent_public",
+  // Context.dev (lib/contextdev.ts): search is discovery, scrape is a page observation,
+  // people search is broker-grade (cap 60, NEVER_HIGH) — leads, never identity proof.
+  contextdev_web_search: "ai_summary",
+  contextdev_scrape: "independent_public",
+  contextdev_people_search: "data_broker",
   // RapidAPI multi-breach aggregator — breach class.
   rapidapi_all_breaches: "breach",
   // infra — split into sub-classes so cross-tool corroboration counts (#56)
@@ -603,6 +608,7 @@ const PAGE_FETCH_TOOLS: ReadonlySet<string> = new Set([
   "exa_get_contents",
   "minimax_extract",
   "socialfetch_web_read",
+  "contextdev_scrape",
 ]);
 
 /** Label classes an authoritative host may replace: no stronger than a page

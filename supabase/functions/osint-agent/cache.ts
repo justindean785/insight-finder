@@ -179,6 +179,13 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // with a run_id, rather than the wrapper discarding a paid run.
   opsis_search: 30_000,
   opsis_results: 30_000,
+  // Context.dev (lib/contextdev.ts): each sits 5s above the module's own per-attempt
+  // fetch budget (20s / 30s / 25s) so the module fails cleanly first and the wrapper
+  // never discards a paid answer that was one retry away. The provider-side deadlines
+  // (timeoutOpts) sit under the module budgets in turn.
+  contextdev_web_search: 25_000,
+  contextdev_scrape: 35_000,
+  contextdev_people_search: 30_000,
   // minimax_correlate is the correlation engine — it sends the whole artifact batch
   // (up to 200 entries / 16k chars) to the smart-tier model for a 1500-token JSON
   // clustering+rescoring response. The 2026-07-08 pipeline audit caught it timing out
@@ -2154,6 +2161,7 @@ export const AUTO_EVIDENCE_TOOLS = new Set<string>([
   "hunter_combined",
   "username_sweep",
   "jina_reader_scrape",
+  "contextdev_scrape",
 ]);
 
 // ---- Evidence seed extraction --------------------------------------------------

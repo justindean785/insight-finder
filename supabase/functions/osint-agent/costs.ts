@@ -122,6 +122,16 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   opsis_results: 0,
   opsis_balance: 0,
   opsis_status: 0,
+  // ---- Context.dev (docs.context.dev/account/credits + pricing page, 2026-11-03) ----
+  // $0.002 per credit: Developer plan is $20 / 10,000 credits (Pro overage is the same
+  // $2.00 per 1,000). Search: 1 credit per 10 results — the tool caps numResults at 10,
+  // so one base credit; `highlights` adds 1 credit per 10, not reflected here (default
+  // off). Scrape: 1 credit, markdown only, no priced modifiers. People search: 10 credits
+  // per non-empty page in fast mode; an empty page is free upstream but billed here (the
+  // table is flat per call — an over-estimate, never under).
+  contextdev_web_search: 2_000,
+  contextdev_scrape: 2_000,
+  contextdev_people_search: 20_000,
 
   // ---- CordCat (Discord OSINT) ----
   // Free plan: 60 req/hour. Treat each successful call as ~$0.002.
