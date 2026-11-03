@@ -286,3 +286,249 @@ export function contextdevHealthDetail(hasKey: boolean, disabled: boolean): { ok
   if (!hasKey) return { ok: true, detail: `not configured (${CONTEXT_DEV_API_KEY_ENV} unset); contextdev tools removed from the schema` };
   return { ok: true, detail: "configured; contextdev_web_search / contextdev_scrape / contextdev_people_search live" };
 }
+
+// ── Trimming caps (prompt budget: the model reads every byte returned) ──────
+
+/** Search never asks for more than 10: 1 credit per 10 results, so this is one base credit. */
+export const CONTEXT_DEV_SEARCH_MAX_RESULTS = 10;
+export const CONTEXT_DEV_SNIPPET_MAX_CHARS = 600;
+export const CONTEXT_DEV_HIGHLIGHTS_MAX = 4;
+export const CONTEXT_DEV_HIGHLIGHT_MAX_CHARS = 280;
+/** Page markdown handed to the model. The full page never leaves this module. */
+export const CONTEXT_DEV_MARKDOWN_MAX_CHARS = 2_000;
+/** The API returns up to 10 per page; this is a defensive cap, not a request parameter. */
+export const CONTEXT_DEV_PEOPLE_MAX_RESULTS = 10;
+/** Provider-side deadlines, each under the module's own fetch cap so the API answers first. */
+const SEARCH_PROVIDER_DEADLINE_MS = 15_000;
+const SCRAPE_PROVIDER_DEADLINE_MS = 25_000;
+/** `query` maxLength in `fast` mode (people/search). */
+const PEOPLE_QUERY_MAX_CHARS = 500;
+
+export interface SearchInput {
+  query: string;
+  numResults?: number;
+  includeDomains?: string[];
+  excludeDomains?: string[];
+  freshness?: "last_24_hours" | "last_week" | "last_month" | "last_year";
+  highlights?: boolean;
+}
+export interface ScrapeInput {
+  url: string;
+  /** true → `maxAgeMs: 0` (fetch fresh). Default leaves the provider's 3-day cache window. */
+  fresh?: boolean;
+}
+export interface PeopleInput {
+  query: string;
+  countries?: string[];
+}
+
+const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v : undefined);
+const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+const asObj = (v: unknown): Out | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Out) : null);
+
+function unexpectedShape(detail: string): Out {
+  return { ok: false, status: 200, error: CONTEXT_DEV_ERRORS.http, error_code: "UNEXPECTED_SHAPE", provider_message: detail };
+}
+
+function withMeta(out: Out, http: Extract<ContextDevHttp, { ok: true }>): Out {
+  if (http.credits_consumed !== undefined) out.credits_consumed = http.credits_consumed;
+  if (http.request_id !== undefined) out.request_id = http.request_id;
+  return out;
+}
+
+/** A provider error, re-shaped for the tool result (drops the internal retry counter). */
+function httpFailure(http: Extract<ContextDevHttp, { ok: false }>): Out {
+  const out: Out = { ok: false, status: http.status, error: http.error, provider: CONTEXT_DEV_PROVIDER };
+  if (http.error_code) out.error_code = http.error_code;
+  if (http.provider_message) out.provider_message = http.provider_message;
+  return out;
+}
+
+// ── Web search ──────────────────────────────────────────────────────────────
+
+/** `POST /web/search` → trimmed, deduped rows. `seen` is the run-wide canonical-URL set. */
+export function shapeSearchResponse(raw: unknown, seen: Set<string>): Out {
+  const d = asObj(raw);
+  if (!d || !Array.isArray(d.results)) return unexpectedShape("web/search: no results array");
+  const rows: Array<{ url: string } & Out> = [];
+  for (const r of d.results as unknown[]) {
+    const o = asObj(r);
+    const url = str(o?.url);
+    if (!o || !url) continue;
+    const row: { url: string } & Out = { url };
+    const title = str(o.title);
+    if (title) row.title = title;
+    const snippet = str(o.description);
+    if (snippet) row.snippet = snippet.slice(0, CONTEXT_DEV_SNIPPET_MAX_CHARS);
+    const relevance = str(o.relevance);
+    if (relevance) row.relevance = relevance;
+    const hl = asObj(o.highlights);
+    if (hl?.code === "SUCCESS" && Array.isArray(hl.highlights)) {
+      const passages = (hl.highlights as unknown[])
+        .filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+        .slice(0, CONTEXT_DEV_HIGHLIGHTS_MAX)
+        .map((p) => p.slice(0, CONTEXT_DEV_HIGHLIGHT_MAX_CHARS));
+      if (passages.length) row.highlights = passages;
+    }
+    rows.push(row);
+  }
+  const { kept, deduped, dropped_invalid } = dedupByUrl(rows, seen);
+  const results = kept.slice(0, CONTEXT_DEV_SEARCH_MAX_RESULTS);
+  const out: Out = { ok: true, provider: CONTEXT_DEV_PROVIDER, results, count: results.length, deduped, dropped_invalid };
+  if (d.partial === true) out.partial = true;
+  return out;
+}
+
+export async function contextdevWebSearch(input: SearchInput, deps: ContextDevDeps, seen: Set<string>): Promise<Out> {
+  const gate = contextdevGate(deps);
+  if (gate) return gate;
+  const query = String(input.query ?? "").trim();
+  const body: Out = {
+    query,
+    numResults: Math.max(1, Math.min(CONTEXT_DEV_SEARCH_MAX_RESULTS, Math.trunc(input.numResults ?? CONTEXT_DEV_SEARCH_MAX_RESULTS))),
+    timeoutOpts: { milliseconds: SEARCH_PROVIDER_DEADLINE_MS, behavior: "return-partial" },
+  };
+  if (input.includeDomains?.length) body.includeDomains = input.includeDomains;
+  if (input.excludeDomains?.length) body.excludeDomains = input.excludeDomains;
+  if (input.freshness) body.freshness = input.freshness;
+  if (input.highlights === true) body.highlightsOptions = { enabled: true, query };
+  const http = await contextdevRequest("/web/search", body, deps, CONTEXT_DEV_SEARCH_TIMEOUT_MS);
+  if (!http.ok) return httpFailure(http);
+  const shaped = shapeSearchResponse(http.json, seen);
+  if (shaped.ok !== true) return shaped;
+  shaped.query = query;
+  return withMeta(shaped, http);
+}
+
+// ── Scrape ──────────────────────────────────────────────────────────────────
+
+/** `POST /web/scrape` (markdown only) → capped page text + provenance metadata. */
+export function shapeScrapeResponse(raw: unknown): Out {
+  const d = asObj(raw);
+  const md = asObj(d?.markdown);
+  if (!d || !md || typeof md.requested !== "boolean") return unexpectedShape("web/scrape: no markdown output block");
+  if (md.success !== true || typeof md.data !== "string") {
+    const out: Out = { ok: false, status: 200, error: CONTEXT_DEV_ERRORS.output_failed, provider: CONTEXT_DEV_PROVIDER };
+    const code = str(md.error_code);
+    if (code) out.error_code = code;
+    const msg = str(md.message);
+    if (msg) out.provider_message = msg.slice(0, PROVIDER_MESSAGE_MAX_CHARS);
+    return out;
+  }
+  const meta = asObj(d.metadata);
+  const cache = asObj(d.cache_metadata);
+  const text = md.data;
+  const out: Out = {
+    ok: true,
+    provider: CONTEXT_DEV_PROVIDER,
+    markdown: text.slice(0, CONTEXT_DEV_MARKDOWN_MAX_CHARS),
+    chars: text.length,
+    truncated: text.length > CONTEXT_DEV_MARKDOWN_MAX_CHARS,
+  };
+  const title = str(meta?.title);
+  if (title) out.title = title;
+  const finalUrl = str(meta?.finalUrl);
+  if (finalUrl) out.final_url = finalUrl;
+  const cacheStatus = str(cache?.status);
+  if (cacheStatus) out.cache_status = cacheStatus;
+  return out;
+}
+
+export async function contextdevScrape(input: ScrapeInput, deps: ContextDevDeps): Promise<Out> {
+  const gate = contextdevGate(deps);
+  if (gate) return gate;
+  const url = String(input.url ?? "").trim();
+  const body: Out = {
+    url,
+    formats: { markdown: true },
+    sharedParams: { mainContentOnly: true },
+    timeoutOpts: { milliseconds: SCRAPE_PROVIDER_DEADLINE_MS, behavior: "fail" },
+  };
+  if (input.fresh === true) body.maxAgeMs = 0;
+  const http = await contextdevRequest("/web/scrape", body, deps, CONTEXT_DEV_SCRAPE_TIMEOUT_MS);
+  if (!http.ok) return httpFailure(http);
+  const shaped = shapeScrapeResponse(http.json);
+  shaped.url = url;
+  const canon = canonicalUrl(url);
+  if (canon) shaped.url_canonical = canon;
+  if (shaped.ok !== true) return shaped;
+  return withMeta(shaped, http);
+}
+
+// ── People search ───────────────────────────────────────────────────────────
+
+/** `POST /people/search` → lead-grade rows. Deduped on the first profile URL via `seen`. */
+export function shapePeopleResponse(raw: unknown, seen: Set<string>): Out {
+  const d = asObj(raw);
+  if (!d || !Array.isArray(d.results)) return unexpectedShape("people/search: no results array");
+  const rows: Array<{ url: string } & Out> = [];
+  const noProfile: Out[] = [];
+  for (const r of d.results as unknown[]) {
+    const o = asObj(r);
+    if (!o) continue;
+    const row: Out = {};
+    const name = str(o.name);
+    if (name) row.name = name;
+    const headline = str(o.description);
+    if (headline) row.headline = headline;
+    const profiles = Array.isArray(o.profiles) ? (o.profiles as unknown[]).filter((p): p is string => typeof p === "string" && p.trim().length > 0) : [];
+    row.profiles = profiles;
+    const loc = asObj(o.location);
+    if (loc) {
+      const location: Out = {};
+      const city = str(loc.city);
+      if (city) location.city = city;
+      const region = str(loc.region);
+      if (region) location.region = region;
+      const country = str(loc.country);
+      if (country) location.country = country;
+      if (Object.keys(location).length) row.location = location;
+    }
+    const role = asObj(o.role);
+    if (role) {
+      const shapedRole: Out = {};
+      const title = str(role.title);
+      if (title) shapedRole.title = title;
+      const company = asObj(role.company);
+      const companyName = str(company?.name);
+      if (companyName) {
+        const c: Out = { name: companyName };
+        const domain = str(company?.domain);
+        if (domain) c.domain = domain;
+        shapedRole.company = c;
+      }
+      if (Object.keys(shapedRole).length) row.role = shapedRole;
+    }
+    const yoe = num(o.years_of_experience);
+    if (yoe !== undefined) row.years_of_experience = yoe;
+    if (profiles.length) rows.push({ url: profiles[0], ...row });
+    else noProfile.push(row);
+  }
+  const { kept, deduped, dropped_invalid } = dedupByUrl(rows, seen);
+  const results = [...kept.map(({ url: _url, ...rest }) => rest), ...noProfile].slice(0, CONTEXT_DEV_PEOPLE_MAX_RESULTS);
+  return {
+    ok: true,
+    provider: CONTEXT_DEV_PROVIDER,
+    authority: "lead",
+    results,
+    count: results.length,
+    deduped,
+    dropped_invalid,
+    empty: results.length === 0,
+    has_more: typeof d.next_cursor === "string" && d.next_cursor.length > 0,
+  };
+}
+
+export async function contextdevPeopleSearch(input: PeopleInput, deps: ContextDevDeps, seen: Set<string>): Promise<Out> {
+  const gate = contextdevGate(deps);
+  if (gate) return gate;
+  const query = String(input.query ?? "").trim().slice(0, PEOPLE_QUERY_MAX_CHARS);
+  const body: Out = { query, mode: "fast" };
+  if (input.countries?.length) body.filters = { countries: input.countries };
+  const http = await contextdevRequest("/people/search", body, deps, CONTEXT_DEV_PEOPLE_TIMEOUT_MS);
+  if (!http.ok) return httpFailure(http);
+  const shaped = shapePeopleResponse(http.json, seen);
+  if (shaped.ok !== true) return shaped;
+  shaped.query = query;
+  return withMeta(shaped, http);
+}

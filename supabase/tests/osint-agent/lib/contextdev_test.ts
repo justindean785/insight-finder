@@ -15,6 +15,13 @@ import {
   contextdevHealthDetail,
   contextdevRequest,
   dedupByUrl,
+  CONTEXT_DEV_HIGHLIGHTS_MAX,
+  CONTEXT_DEV_HIGHLIGHT_MAX_CHARS,
+  CONTEXT_DEV_MARKDOWN_MAX_CHARS,
+  CONTEXT_DEV_SNIPPET_MAX_CHARS,
+  contextdevPeopleSearch,
+  contextdevScrape,
+  contextdevWebSearch,
   type ContextDevDeps,
 } from "../../../functions/osint-agent/lib/contextdev.ts";
 
@@ -232,4 +239,261 @@ Deno.test("healthDetail: disabled / unset / configured", () => {
   assertStringIncludes(contextdevHealthDetail(false, false).detail, "CONTEXT_DEV_API_KEY unset");
   assertStringIncludes(contextdevHealthDetail(true, false).detail, "configured");
   assertEquals(contextdevHealthDetail(true, false).ok, true);
+});
+
+// ── Web search ──────────────────────────────────────────────────────────────
+
+const META = { key_metadata: { credits_consumed: 2, credits_remaining: 5 }, request_id: "req-1" };
+
+function searchRaw(n: number, dupOf: number[] = []) {
+  const results = [];
+  for (let i = 0; i < n; i++) {
+    const src = dupOf[i - (n - dupOf.length)] ?? null;
+    results.push({
+      url: src === null ? `https://site${i}.example/p?utm_source=x&id=${i}` : `https://SITE${src}.example/p?id=${src}`,
+      title: `Title ${i}`,
+      description: "d".repeat(900),
+      relevance: "high",
+      markdown: { markdown: null, code: "NOT_REQUESTED" },
+      highlights: { highlights: ["h".repeat(400), "a", "b", "c", "d", "e"], code: "SUCCESS" },
+    });
+  }
+  return { results, ...META };
+}
+
+Deno.test("search: trims to 10, snippet ≤600, highlights ≤4×280, reports deduped on canonical URL, keeps original url", async () => {
+  const h = harness({ replies: [json(200, searchRaw(12, [0, 1]))] });
+  const seen = new Set<string>();
+  const out = await contextdevWebSearch({ query: "jordan vale", highlights: true }, h.deps, seen);
+  assertEquals(out.ok, true);
+  assertEquals(out.provider, "context.dev");
+  const results = out.results as Array<Record<string, unknown>>;
+  assertEquals(results.length, 10);
+  assertEquals(out.count, 10);
+  assertEquals(out.deduped, 2);
+  assertEquals(out.dropped_invalid, 0);
+  assertEquals(results[0].url, "https://site0.example/p?utm_source=x&id=0");
+  assertEquals(results[0].title, "Title 0");
+  assertEquals(results[0].relevance, "high");
+  assertEquals((results[0].snippet as string).length, CONTEXT_DEV_SNIPPET_MAX_CHARS);
+  const hl = results[0].highlights as string[];
+  assertEquals(hl.length, CONTEXT_DEV_HIGHLIGHTS_MAX);
+  assertEquals(hl[0].length, CONTEXT_DEV_HIGHLIGHT_MAX_CHARS);
+  assertEquals("markdown" in results[0], false);
+  assertEquals("description" in results[0], false);
+  assertEquals(out.credits_consumed, 2);
+  assertEquals(out.request_id, "req-1");
+  assertEquals(seen.size, 10, "the run-wide seen set now holds the 10 canonical URLs");
+});
+
+Deno.test("search: empty description → snippet omitted; highlights not SUCCESS → omitted; empty results → ok count 0", async () => {
+  const raw = {
+    results: [{ url: "https://a.example/", title: "A", description: "", relevance: "low", markdown: { markdown: null, code: "NOT_REQUESTED" }, highlights: { highlights: null, code: "NOT_REQUESTED" } }],
+    ...META,
+  };
+  const h = harness({ replies: [json(200, raw), json(200, { results: [], ...META })] });
+  const out = await contextdevWebSearch({ query: "q" }, h.deps, new Set());
+  const r = (out.results as Array<Record<string, unknown>>)[0];
+  assertEquals("snippet" in r, false);
+  assertEquals("highlights" in r, false);
+  const empty = await contextdevWebSearch({ query: "q2" }, h.deps, new Set());
+  assertEquals(empty.ok, true);
+  assertEquals(empty.count, 0);
+  assertEquals(empty.results, []);
+});
+
+Deno.test("search: body caps numResults at 10, asks for return-partial under the fetch cap, highlights only when asked", async () => {
+  const h = harness({ replies: [json(200, { results: [], ...META })] });
+  await contextdevWebSearch({ query: "q", numResults: 50, includeDomains: ["a.com"], freshness: "last_week" }, h.deps, new Set());
+  const body = h.calls[0].body as Record<string, unknown>;
+  assertEquals(body.numResults, 10);
+  assertEquals(body.timeoutOpts, { milliseconds: 15_000, behavior: "return-partial" });
+  assertEquals(body.includeDomains, ["a.com"]);
+  assertEquals(body.freshness, "last_week");
+  assertEquals("highlightsOptions" in body, false);
+  assertEquals("markdownOptions" in body, false);
+  await contextdevWebSearch({ query: "q", highlights: true }, h.deps, new Set());
+  assertEquals((h.calls[1].body as Record<string, unknown>).highlightsOptions, { enabled: true, query: "q" });
+});
+
+Deno.test("search: partial:true is passed through", async () => {
+  const h = harness({ replies: [json(200, { partial: true, results: [], ...META })] });
+  const out = await contextdevWebSearch({ query: "q" }, h.deps, new Set());
+  assertEquals(out.partial, true);
+});
+
+// ── Scrape ──────────────────────────────────────────────────────────────────
+
+Deno.test("scrape: 200 success → markdown capped, truncated:true, chars = original length, title/final_url/cache from metadata", async () => {
+  const raw = {
+    url: "https://example.com/",
+    markdown: { requested: true, success: true, data: "x".repeat(5_000) },
+    metadata: { sourceUrl: "https://example.com", finalUrl: "https://example.com/", title: "Example Domain" },
+    cache_metadata: { status: "hit", age_ms: 10 },
+    key_metadata: { credits_consumed: 1, credits_remaining: 4 },
+    request_id: "req-2",
+  };
+  const h = harness({ replies: [json(200, raw)] });
+  const out = await contextdevScrape({ url: "https://Example.com?utm_source=x" }, h.deps);
+  assertEquals(out.ok, true);
+  assertEquals(out.provider, "context.dev");
+  assertEquals(out.url, "https://Example.com?utm_source=x");
+  assertEquals(out.url_canonical, "https://example.com/");
+  assertEquals((out.markdown as string).length, CONTEXT_DEV_MARKDOWN_MAX_CHARS);
+  assertEquals(out.truncated, true);
+  assertEquals(out.chars, 5_000);
+  assertEquals(out.title, "Example Domain");
+  assertEquals(out.final_url, "https://example.com/");
+  assertEquals(out.cache_status, "hit");
+  assertEquals(out.credits_consumed, 1);
+  assertEquals(out.request_id, "req-2");
+  assertEquals("html" in out, false);
+});
+
+Deno.test("scrape: 200 with markdown.success:false → ok:false, error output_failed, error_code carried", async () => {
+  const raw = { url: "https://x.example/", markdown: { requested: true, success: false, data: null, error_code: "WEBSITE_BLOCKED", message: "blocked by origin" } };
+  const h = harness({ replies: [json(200, raw)] });
+  const out = await contextdevScrape({ url: "https://x.example/" }, h.deps);
+  assertEquals(out.ok, false);
+  assertEquals(out.status, 200);
+  assertEquals(out.error, CONTEXT_DEV_ERRORS.output_failed);
+  assertEquals(out.error_code, "WEBSITE_BLOCKED");
+  assertEquals(out.provider_message, "blocked by origin");
+  assertEquals("skipped" in out, false);
+});
+
+Deno.test("scrape: body requests markdown only with mainContentOnly; fresh:true → maxAgeMs 0, default omits it", async () => {
+  const ok = { markdown: { requested: true, success: true, data: "# hi" }, metadata: { title: "hi" } };
+  const h = harness({ replies: [json(200, ok)] });
+  await contextdevScrape({ url: "https://a.example/" }, h.deps);
+  const body = h.calls[0].body as Record<string, unknown>;
+  assertEquals(body.url, "https://a.example/");
+  assertEquals(body.formats, { markdown: true });
+  assertEquals(body.sharedParams, { mainContentOnly: true });
+  assertEquals(body.timeoutOpts, { milliseconds: 25_000, behavior: "fail" });
+  assertEquals("maxAgeMs" in body, false);
+  await contextdevScrape({ url: "https://a.example/", fresh: true }, h.deps);
+  assertEquals((h.calls[1].body as Record<string, unknown>).maxAgeMs, 0);
+});
+
+Deno.test("scrape: a short page is not marked truncated", async () => {
+  const h = harness({ replies: [json(200, { markdown: { requested: true, success: true, data: "# hi" }, metadata: {} })] });
+  const out = await contextdevScrape({ url: "https://a.example/" }, h.deps);
+  assertEquals(out.markdown, "# hi");
+  assertEquals(out.truncated, false);
+  assertEquals(out.chars, 4);
+});
+
+// ── People search ───────────────────────────────────────────────────────────
+
+function peopleRaw(n: number, dupOf: number[] = [], next_cursor: string | null = "cur-2") {
+  const results = [];
+  for (let i = 0; i < n; i++) {
+    const src = dupOf[i - (n - dupOf.length)] ?? i;
+    results.push({
+      name: `Person ${i}`,
+      description: `CTO at Company ${i}`,
+      profiles: [`https://www.linkedin.com/in/person-${src}/`, `https://github.com/person-${src}`],
+      location: { country: "US", region: "CA", city: "San Francisco" },
+      role: { title: "CTO", seniority: "executive", company: { name: `Company ${i}`, domain: `c${i}.example` } },
+      years_of_experience: 7,
+      skills: ["a", "b"],
+      schools: [{ name: "MIT" }],
+    });
+  }
+  return { results, next_cursor, ...META };
+}
+
+Deno.test("people: trims to 10, maps name/headline/profiles/location/role, authority lead, has_more from next_cursor, deduped on first profile", async () => {
+  const h = harness({ replies: [json(200, peopleRaw(12, [0, 1]))] });
+  const seen = new Set<string>();
+  const out = await contextdevPeopleSearch({ query: "CTOs at solar companies in California" }, h.deps, seen);
+  assertEquals(out.ok, true);
+  assertEquals(out.provider, "context.dev");
+  assertEquals(out.authority, "lead");
+  const results = out.results as Array<Record<string, unknown>>;
+  assertEquals(results.length, 10);
+  assertEquals(out.count, 10);
+  assertEquals(out.deduped, 2);
+  assertEquals(out.empty, false);
+  assertEquals(out.has_more, true);
+  assertEquals("next_cursor" in out, false);
+  assertEquals(results[0].name, "Person 0");
+  assertEquals(results[0].headline, "CTO at Company 0");
+  assertEquals(results[0].profiles, ["https://www.linkedin.com/in/person-0/", "https://github.com/person-0"]);
+  assertEquals(results[0].location, { city: "San Francisco", region: "CA", country: "US" });
+  assertEquals(results[0].role, { title: "CTO", company: { name: "Company 0", domain: "c0.example" } });
+  assertEquals(results[0].years_of_experience, 7);
+  assertEquals("skills" in results[0], false);
+  assertEquals(out.credits_consumed, 2);
+});
+
+Deno.test("people: empty results → ok:true, empty:true, count 0, has_more false", async () => {
+  const h = harness({ replies: [json(200, peopleRaw(0, [], null))] });
+  const out = await contextdevPeopleSearch({ query: "nobody" }, h.deps, new Set());
+  assertEquals(out.ok, true);
+  assertEquals(out.empty, true);
+  assertEquals(out.count, 0);
+  assertEquals(out.has_more, false);
+});
+
+Deno.test("people: body is mode fast, never contains cursor, query ≤ 500 chars, countries → filters", async () => {
+  const h = harness({ replies: [json(200, peopleRaw(0, [], null))] });
+  await contextdevPeopleSearch({ query: "q".repeat(600), countries: ["US", "GB"] }, h.deps, new Set());
+  const body = h.calls[0].body as Record<string, unknown>;
+  assertEquals(body.mode, "fast");
+  assertEquals("cursor" in body, false);
+  assertEquals((body.query as string).length, 500);
+  assertEquals(body.filters, { countries: ["US", "GB"] });
+  await contextdevPeopleSearch({ query: "q" }, h.deps, new Set());
+  assertEquals("filters" in (h.calls[1].body as Record<string, unknown>), false);
+});
+
+// ── Cross-tool failure shapes ───────────────────────────────────────────────
+
+Deno.test("each tool: missing key → gate skip with no fetch; kill switch likewise", async () => {
+  for (const apiKey of [undefined, ""]) {
+    const h = harness({ apiKey, replies: [json(200, {})] });
+    const s = new Set<string>();
+    for (const out of [
+      await contextdevWebSearch({ query: "q" }, h.deps, s),
+      await contextdevScrape({ url: "https://a.example/" }, h.deps),
+      await contextdevPeopleSearch({ query: "q" }, h.deps, s),
+    ]) {
+      assertEquals(out.skipped, true);
+      assertEquals(out.error, CONTEXT_DEV_ERRORS.not_configured);
+    }
+    assertEquals(h.calls.length, 0);
+  }
+  const off = harness({ disabled: true, replies: [json(200, {})] });
+  const out = await contextdevScrape({ url: "https://a.example/" }, off.deps);
+  assertEquals(out.error, CONTEXT_DEV_ERRORS.disabled);
+  assertEquals(off.calls.length, 0);
+});
+
+Deno.test("each tool: provider 402 → ok:false status 402 USAGE_EXCEEDED, no retry", async () => {
+  const reply = json(402, { error_code: "USAGE_EXCEEDED", message: "Insufficient credits" });
+  for (const run of [
+    (d: ContextDevDeps) => contextdevWebSearch({ query: "q" }, d, new Set()),
+    (d: ContextDevDeps) => contextdevScrape({ url: "https://a.example/" }, d),
+    (d: ContextDevDeps) => contextdevPeopleSearch({ query: "q" }, d, new Set()),
+  ]) {
+    const h = harness({ replies: [reply] });
+    const out = await run(h.deps);
+    assertEquals(out.ok, false);
+    assertEquals(out.status, 402);
+    assertEquals(out.error_code, "USAGE_EXCEEDED");
+    assertEquals(h.calls.length, 1);
+  }
+});
+
+Deno.test("each tool: an unexpected 200 body shape is a legible failure, not a throw", async () => {
+  const h = harness({ replies: [json(200, { nothing: "here" })] });
+  const s = await contextdevWebSearch({ query: "q" }, h.deps, new Set());
+  assertEquals(s.ok, false);
+  assertEquals(s.error_code, "UNEXPECTED_SHAPE");
+  const p = await contextdevPeopleSearch({ query: "q" }, h.deps, new Set());
+  assertEquals(p.error_code, "UNEXPECTED_SHAPE");
+  const c = await contextdevScrape({ url: "https://a.example/" }, h.deps);
+  assertEquals(c.error_code, "UNEXPECTED_SHAPE");
 });
