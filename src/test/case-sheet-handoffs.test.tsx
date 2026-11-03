@@ -57,7 +57,7 @@ describe("case sheet handoffs", () => {
     expect(reviewN, "fixture must yield review rows, or this test proves nothing").toBeGreaterThan(0);
     expect(m.queueTotal).toBe(0);
     render(<CaseSheetView model={m} hydrated />);
-    const queue = screen.getByRole("region", { name: "Needs your call" });
+    const queue = screen.getByRole("region", { name: "Optional exception review" });
     const link = within(queue).getByRole("button", { name: /a second source, not a decision/ });
     const seen = navigations(() => fireEvent.click(link));
     expect(seen).toEqual([{ tab: "artifacts", authorityState: "review" }]);

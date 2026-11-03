@@ -175,6 +175,55 @@ describe("CO_RECORD linkage — graph", () => {
     expect(co.every((e) => e.reason.startsWith("CO_RECORD: "))).toBe(true);
   });
 
+  it("keeps declared breach-record associations in the graph without making them identity edges", () => {
+    const g = buildEntityGraph(arts, "Jane Sample sacramento california", "person");
+    const breachLinks = g.edges.filter((e) => e.source === "br1" || e.target === "br1");
+    expect(breachLinks.length).toBeGreaterThan(0);
+    expect(breachLinks.every((e) => e.type === "co-record")).toBe(true);
+    expect(breachLinks.map((e) => e.source === "br1" ? e.target : e.source).sort()).toEqual(["em1", "ph1", "u5"]);
+  });
+
+  it("anchors exact name-record evidence under the subject name without merging identity or changing confidence", () => {
+    const named = [...arts, mk({ id: "name1", kind: "name", value: "Jane Sample", confidence: 65, source: "people_search" })];
+    const baseClusters = buildIdentityClusters(arts, "Jane Sample sacramento california");
+    const namedClusters = buildIdentityClusters(named, "Jane Sample sacramento california");
+    const signature = (report: typeof baseClusters) => report.clusters
+      .map((c) => ({ members: c.artifacts.map((a) => a.id).sort(), confidence: c.confidence, mergeReasons: c.mergeReasons }))
+      .filter((c) => !c.members.includes("name1"))
+      .sort((a, b) => a.members.join(",").localeCompare(b.members.join(",")));
+    expect(signature(namedClusters)).toEqual(signature(baseClusters));
+    const nameCluster = namedClusters.clusters.find((c) => c.artifacts.some((a) => a.id === "name1"));
+    expect(nameCluster?.artifacts.map((a) => a.id)).toEqual(["name1"]);
+    expect(nameCluster?.mergeReasons).toEqual([]);
+
+    const base = buildEntityGraph(arts, "Jane Sample sacramento california", "person");
+    const g = buildEntityGraph(named, "Jane Sample sacramento california", "person");
+    const nameEdges = g.edges.filter((e) => e.source === "name1" || e.target === "name1");
+    expect(nameEdges).toHaveLength(1);
+    expect(nameEdges[0]).toMatchObject({ type: "co-record", source: "name1", target: "ph1" });
+    expect(nameEdges[0].reason).toContain("NAME_RECORD: name_in_breach");
+    expect(nameEdges[0].reason).toContain("not identity confirmation");
+    expect(g.nodes.find((n) => n.id === "name1")?.clusterId).toBe(nameCluster?.id);
+    for (const node of base.nodes) {
+      expect(g.nodes.find((n) => n.id === node.id)?.confidence).toBe(node.confidence);
+    }
+  });
+
+  it("requires an exact meaningful full name and respects association exclusions", () => {
+    const named = [
+      mk({ id: "name1", kind: "name", value: "Jane Sample" }),
+      mk({ id: "single", kind: "name", value: "Jane" }),
+      mk({ id: "other", kind: "name", value: "Jane Samples" }),
+      mk({ id: "source", kind: "username", value: "someone", metadata: { name_in_breach: "Jane Sample" } }),
+      mk({ id: "rejected", kind: "phone", value: "+15550101111", metadata: { name_in_breach: "Jane Sample" } }),
+      mk({ id: "partial", kind: "email", value: "jane@example.org", metadata: { name_in_breach: "Jane" } }),
+    ];
+    const g = buildEntityGraph(named, null, null, { rejected: "dismissed" });
+    const nameEdges = g.edges.filter((e) => e.type === "co-record" && e.reason.startsWith("NAME_RECORD"));
+    expect(nameEdges.map((e) => [e.source, e.target])).toEqual([["name1", "source"]]);
+    expect(g.edges.some((e) => e.source === "single" || e.target === "single" || e.source === "other" || e.target === "other")).toBe(false);
+  });
+
   it("never draws a co-record edge to a quarantined, IP, or rejected node", () => {
     const g = buildEntityGraph(arts, null, null, { u2: "dismissed" });
     const co = g.edges.filter((e) => e.type === "co-record");

@@ -158,18 +158,21 @@ export function CaseSheetView({
         )}
       </section>
 
-      {/* ── Needs your call ───────────────────────────────────────────── */}
-      <section aria-label="Needs your call" className="flex flex-col gap-2 px-3.5 py-4">
-        <div className="flex items-baseline px-1.5">
-          <h3 className="text-[13px] font-semibold text-foreground">Needs your call</h3>
-          {!reviewsUnavailable && (
-            <span className="ml-2 rounded-full bg-surface-3 px-1.5 font-mono text-[11.5px] leading-[18px] tabular-nums text-foreground">
-              {queueTotal}
-            </span>
-          )}
-          {!reviewsUnavailable && queueTotal > queue.length && (
-            <span className="ml-auto text-[12px] text-faint-foreground">showing {queue.length}</span>
-          )}
+      {/* ── Optional exception review ────────────────────────────────── */}
+      <section aria-label="Optional exception review" className="flex flex-col gap-3 px-3.5 py-4">
+        <div className="px-1.5">
+          <div className="flex items-baseline">
+            <h3 className="text-[14px] font-semibold text-foreground">Optional exception review</h3>
+            {!reviewsUnavailable && (
+              <span className="ml-2 rounded-full bg-surface-3 px-1.5 font-mono text-[12px] leading-[20px] tabular-nums text-foreground">
+                {queueTotal}
+              </span>
+            )}
+            {!reviewsUnavailable && queueTotal > queue.length && (
+              <span className="ml-auto text-[12px] text-subtle-foreground">showing {queue.length}</span>
+            )}
+          </div>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-muted-foreground">Correlation runs automatically. Review only disputed evidence or unconfirmed links; Confirm, Dismiss, and Key are optional analyst overrides.</p>
         </div>
         {reviewsUnavailable ? (
           <p className="px-1.5 text-[13px] leading-snug text-muted-foreground">{REVIEWS_UNAVAILABLE}</p>
@@ -200,7 +203,7 @@ export function CaseSheetView({
                 <li
                   key={artifact.id}
                   data-ask={ask}
-                  className="flex flex-col gap-2 rounded-lg border border-border-subtle bg-surface-2 p-3"
+                  className="flex flex-col gap-2.5 rounded-lg border border-border-subtle bg-surface-2 p-3.5"
                 >
                   <div className="flex items-start gap-2">
                     <span
@@ -208,8 +211,8 @@ export function CaseSheetView({
                       className={cn(
                         "min-w-0 flex-1 text-foreground",
                         prose
-                          ? "text-[12.5px] leading-[1.45] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden"
-                          : "truncate font-mono text-[12.5px]",
+                          ? "text-[13px] leading-[1.5] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden"
+                          : "truncate font-mono text-[13px]",
                       )}
                     >
                       {artifact.value}
@@ -217,16 +220,14 @@ export function CaseSheetView({
                     <AuthorityChip view={view} className="shrink-0" />
                   </div>
                   <AuthorityCaveat view={view} />
-                  <div className="flex items-center gap-2">
-                    <span className="min-w-0 text-[12px] text-faint-foreground">{ASK_LABEL[ask]}</span>
-                    <button
-                      type="button"
-                      onClick={() => jumpToEvidence(artifact.id)}
-                      className="ml-auto inline-flex h-[26px] shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-secondary px-2.5 text-[12px] font-medium text-foreground transition-colors duration-fast hover:bg-surface-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      Decide in Evidence <ArrowRight className="h-3 w-3" aria-hidden />
-                    </button>
-                  </div>
+                  <p className="text-[12.5px] leading-relaxed text-muted-foreground">{ASK_LABEL[ask]}</p>
+                  <button
+                    type="button"
+                    onClick={() => jumpToEvidence(artifact.id)}
+                    className="inline-flex h-9 w-full items-center justify-between gap-2 whitespace-nowrap rounded-md border border-border bg-secondary px-3 text-[12.5px] font-medium text-foreground transition-colors duration-fast hover:bg-surface-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11"
+                  >
+                    Decide in Evidence <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+                  </button>
                 </li>
               );
             })}
