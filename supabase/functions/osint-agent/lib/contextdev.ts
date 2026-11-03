@@ -123,6 +123,23 @@ export function contextdevDepsFromEnv(signal?: AbortSignal): ContextDevDeps {
   };
 }
 
+/**
+ * Tools whose governance selector is their natural-language `query`. The wrapper's generic
+ * selector detection (cache.ts detectSelectorType/Value) reads email/username/url/… and not
+ * `query`, so without this the premium once-per-query gate, dead-target memory and the
+ * per-selector circuit keys all saw an EMPTY selector for contextdev_people_search (Codex
+ * P2 on #973). Scoped to these tools on purpose: widening the generic detectors to `query`
+ * would change the circuit keys of every search tool, which is a separate decision.
+ */
+export const CONTEXT_DEV_QUERY_SELECTOR_TOOLS: ReadonlySet<string> = new Set(["contextdev_web_search", "contextdev_people_search"]);
+
+/** The normalized query selector for a Context.dev search tool, or null for any other tool / blank query. */
+export function contextdevQuerySelector(tool: string, input: Record<string, unknown> | null | undefined): string | null {
+  if (!CONTEXT_DEV_QUERY_SELECTOR_TOOLS.has(tool)) return null;
+  const q = typeof input?.query === "string" ? input.query.trim().replace(/\s+/g, " ").toLowerCase() : "";
+  return q || null;
+}
+
 /** The skip every contextdev_* tool returns before contacting the provider, or null to proceed. */
 export function contextdevGate(deps: Pick<ContextDevDeps, "apiKey" | "disabled">): Out | null {
   if (deps.disabled) {
@@ -210,10 +227,11 @@ function retryAfterMs(h: Headers): number {
   return Math.min(secs * 1000, CONTEXT_DEV_RETRY_AFTER_CAP_MS);
 }
 
-async function readJson(r: Response): Promise<Out | null> {
+/** Lenient parse of a body already read: a non-object or malformed body is `null`, never a throw. */
+function parseJson(text: string): Out | null {
   try {
-    const j = await r.json();
-    return j && typeof j === "object" ? (j as Out) : null;
+    const j = JSON.parse(text);
+    return j && typeof j === "object" && !Array.isArray(j) ? (j as Out) : null;
   } catch {
     return null;
   }
@@ -263,9 +281,27 @@ export async function contextdevRequest(
     deps.signal?.addEventListener("abort", onAbort, { once: true });
     if (deps.signal?.aborted) ctrl.abort();
     const tid = setTimeout(() => ctrl.abort(), attemptBudget);
-    let r: Response;
+    // fetch() resolves on HEADERS. The timer and the wrapper-signal chain stay armed until the
+    // body is consumed (or cancelled) below, so a provider that answers promptly and then
+    // stalls mid-body is still bounded by the budget and still stops when the wrapper aborts.
+    let status: number;
+    let headers: Headers;
+    let text: string | null = null;
+    let retryWait: number | null = null;
     try {
-      r = await deps.fetch(url, { ...init, signal: ctrl.signal });
+      const r = await deps.fetch(url, { ...init, signal: ctrl.signal });
+      status = r.status;
+      headers = r.headers;
+      const retriable429 = status === 429 && retries < MAX_RETRIES_429;
+      const retriable5xx = (status === 408 || status >= 500) && retries < MAX_RETRIES_5XX;
+      if (retriable429 || retriable5xx) {
+        const wait = status === 429 ? retryAfterMs(headers) : RETRY_BACKOFF_BASE_MS * Math.pow(2, retries);
+        if (!deps.signal?.aborted && !cannotAfford(wait)) {
+          retryWait = wait;
+          await r.body?.cancel().catch(() => {});
+        }
+      }
+      if (retryWait === null) text = await r.text();
     } catch {
       clearTimeout(tid);
       deps.signal?.removeEventListener("abort", onAbort);
@@ -283,28 +319,21 @@ export async function contextdevRequest(
       deps.signal?.removeEventListener("abort", onAbort);
     }
 
-    const status = r.status;
+    if (retryWait !== null) {
+      retries++;
+      await deps.sleep(retryWait, deps.signal);
+      continue;
+    }
+    const body = parseJson(text ?? "");
     if (status >= 200 && status < 300) {
-      const json = (await readJson(r)) ?? {};
+      const json = body ?? {};
       const km = json.key_metadata as Out | undefined;
       const out: ContextDevHttp = { ok: true, status, json };
       if (typeof km?.credits_consumed === "number") out.credits_consumed = km.credits_consumed;
       if (typeof json.request_id === "string") out.request_id = json.request_id;
       return out;
     }
-
-    const retriable429 = status === 429 && retries < MAX_RETRIES_429;
-    const retriable5xx = (status === 408 || status >= 500) && retries < MAX_RETRIES_5XX;
-    if (retriable429 || retriable5xx) {
-      const wait = status === 429 ? retryAfterMs(r.headers) : RETRY_BACKOFF_BASE_MS * Math.pow(2, retries);
-      if (!deps.signal?.aborted && !cannotAfford(wait)) {
-        await r.body?.cancel().catch(() => {});
-        retries++;
-        await deps.sleep(wait, deps.signal);
-        continue;
-      }
-    }
-    return errorFromBody(status, await readJson(r), retries);
+    return errorFromBody(status, body, retries);
   }
 }
 

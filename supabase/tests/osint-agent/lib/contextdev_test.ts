@@ -26,7 +26,7 @@ import {
 } from "../../../functions/osint-agent/lib/contextdev.ts";
 
 type Call = { method: string; url: string; headers: Record<string, string>; body: unknown };
-type Reply = Response | (() => Response) | Error;
+type Reply = Response | ((init: RequestInit) => Response) | Error;
 
 function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
@@ -38,11 +38,11 @@ export function harness(opts: { replies?: Reply[]; apiKey?: string | undefined; 
   const calls: Call[] = [];
   let clock = 1_000_000;
   const replies = [...(opts.replies ?? [])];
-  const take = (): Response => {
+  const take = (init: RequestInit): Response => {
     const r = replies.length > 1 ? replies.shift()! : replies[0];
     if (!r) throw new Error("unscripted request");
     if (r instanceof Error) throw r;
-    return typeof r === "function" ? r() : r.clone();
+    return typeof r === "function" ? r(init) : r.clone();
   };
   const deps: ContextDevDeps = {
     apiKey: "apiKey" in opts ? opts.apiKey : "test_key",
@@ -55,7 +55,7 @@ export function harness(opts: { replies?: Reply[]; apiKey?: string | undefined; 
         body: init.body ? JSON.parse(String(init.body)) : undefined,
       });
       clock += 300;
-      return Promise.resolve(take());
+      return Promise.resolve(take(init));
     },
     now: () => clock,
     sleep: (ms) => {
@@ -570,4 +570,43 @@ Deno.test("people: result order is preserved (most relevant first), a row withou
   const names = (out.results as Array<{ name: string }>).map((r) => r.name);
   assertEquals(names, ["Person 0", "Person 1", "Person 2"]);
   assertEquals((out.results as Array<{ profiles: string[] }>)[1].profiles, []);
+});
+
+// ── Cancellation stays armed through the body read (Codex P2 on #973) ───────
+
+Deno.test("request: a wrapper abort DURING the body read ends the call as a failure — the signal chain outlives the headers", async () => {
+  const wrapper = new AbortController();
+  let bodyAbortSeen = false;
+  const h = harness({
+    signal: wrapper.signal,
+    replies: [(init) => {
+      const sig = init.signal as AbortSignal;
+      const body = new ReadableStream<Uint8Array>({
+        pull(c) {
+          return new Promise<void>((resolve) => {
+            // If the module has already dropped its abort listener, nothing aborts `sig`
+            // and this fallback hands back a valid body → the call would read as ok.
+            const fallback = setTimeout(() => {
+              c.enqueue(new TextEncoder().encode("{}"));
+              c.close();
+              resolve();
+            }, 100);
+            sig.addEventListener("abort", () => {
+              clearTimeout(fallback);
+              bodyAbortSeen = true;
+              c.error(new DOMException("Aborted", "AbortError"));
+              resolve();
+            }, { once: true });
+            wrapper.abort();
+          });
+        },
+      });
+      return new Response(body, { status: 200, headers: { "Content-Type": "application/json" } });
+    }],
+  });
+  const out = await contextdevRequest("/web/scrape", {}, h.deps, 20_000);
+  assertEquals(bodyAbortSeen, true, "the module's signal must stay chained to the wrapper's through the body read");
+  assert(!out.ok);
+  assertEquals(out.error, CONTEXT_DEV_ERRORS.network);
+  assertEquals(h.calls.length, 1);
 });

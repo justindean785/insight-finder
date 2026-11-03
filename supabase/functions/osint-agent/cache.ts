@@ -19,6 +19,7 @@ import {
   OPSIS_GUARD_SKIP_PREFIX, OPSIS_RESULTS_HINT_CODES, decideOpsisSearch, findPendingForSelector, noteOpsisResultsOutcome, noteOpsisSearchOutcome,
   opsisResultsHint, opsisResultsHintDisabled, opsisSearchGuardDisabled, uncollectedOpsisRuns,
 } from "./lib/opsis-search-guard.ts";
+import { contextdevQuerySelector } from "./lib/contextdev.ts";
 // Union of both sides. #519 replaced this file's quarantine read with the paged
 // `loadRefusedArtifacts`, which absorbs what `buildRefusedKeys` did here, so that
 // symbol is deliberately NOT re-imported — it is unused in this module after the
@@ -1160,9 +1161,16 @@ export function wrapToolsWithCache(
         const t0 = Date.now();
         // ---- Circuit breaker + dedup gate ----
         const inp = (input ?? {}) as Record<string, unknown>;
-        const selectorType = detectSelectorType(inp);
-        const selectorValue = detectSelectorValue(inp);
-        const sel = circuit.normalizeSelector(selectorType, selectorValue);
+        const detectedType = detectSelectorType(inp);
+        const detectedSel = circuit.normalizeSelector(detectedType, detectSelectorValue(inp));
+        // Context.dev search tools carry their selector under `query`, which the generic
+        // detectors above do not read. Without this the premium once-per-query gate,
+        // dead-target memory and the per-selector circuit keys all saw an EMPTY selector
+        // for contextdev_people_search (Codex P2 on #973). Tool-scoped by design — see
+        // CONTEXT_DEV_QUERY_SELECTOR_TOOLS in lib/contextdev.ts.
+        const querySel = detectedSel ? null : contextdevQuerySelector(name, inp);
+        const selectorType = querySel ? "query" : detectedType;
+        const sel = querySel ?? detectedSel;
         const purpose = String(inp.purpose ?? "default");
         const force = inp.force === true;
         // ---- subject_unlinked boundary: PROMOTION, not dispatch ----
