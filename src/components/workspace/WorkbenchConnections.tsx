@@ -10,6 +10,7 @@ import { ArtifactPivotActionWith } from "@/components/pivots/ArtifactPivotAction
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
 import { connectionsView, linksOf } from "@/lib/workbench-connections";
 import { readSelectedEntity, SELECT_ENTITY_EVENT } from "@/lib/workbench-selection";
+import { pickSubjectName } from "@/lib/report-hygiene";
 import { cn } from "@/lib/utils";
 
 const ISOLATED_LIMIT = 12;
@@ -48,7 +49,7 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
   const review = useReviewStates(threadId);
   // Read ONCE and shared by every pivot action below (each used to open its own full-log read and subscription).
   const queriedTargets = useThreadQueriedTargets(threadId);
-  const items = snapshot?.items ?? [];
+  const items = useMemo(() => snapshot?.items ?? [], [snapshot?.items]);
   const seed = snapshot?.seed ?? { value: null, type: null };
   const [selected, setSelected] = useState<string | null>(() => readSelectedEntity(threadId));
   const [isolatedFilter, setIsolatedFilter] = useState<string>("");
@@ -73,7 +74,12 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
   }, [items, review]);
   const graph = useMemo(() => buildEntityGraph(items, seed.value, seed.type, reviews), [items, seed.value, seed.type, reviews]);
   const view = useMemo(() => connectionsView(graph), [graph]);
-  const node = selected ? graph.nodes.find((n) => n.id === selected) ?? null : null;
+  const subject = useMemo(() => pickSubjectName(items, reviews), [items, reviews]);
+  // Automatic subject-first navigation: an analyst can still select any node,
+  // but nobody has to hunt through an "unlinked" list to find the person map.
+  const node = (selected ? graph.nodes.find((n) => n.id === selected) : null)
+    ?? graph.nodes.find((n) => n.id === subject?.id)
+    ?? null;
   const links = useMemo(() => (node ? linksOf(graph, node.id) : []), [graph, node]);
   const filteredIsolated = useMemo(() => {
     const q = isolatedFilter.trim().toLowerCase();
@@ -118,7 +124,7 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
         <div className="my-5 flex gap-5">
           <div>
             <b className="block text-[23px] font-normal tabular-nums leading-none">{view.realLinks}</b>
-            <small className="mt-1 block text-[11px] text-subtle-foreground"> established connection{view.realLinks === 1 ? "" : "s"}</small>
+            <small className="mt-1 block text-[11px] text-subtle-foreground"> evidence link{view.realLinks === 1 ? "" : "s"}</small>
           </div>
           <div>
             <b className="block text-[23px] font-normal tabular-nums leading-none">{view.isolatedLeads}</b>
@@ -129,12 +135,12 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
             <small className="mt-1 block text-[11px] text-subtle-foreground"> cluster{view.clusters === 1 ? "" : "s"}</small>
           </div>
         </div>
-        {/* Clustering groups candidates by shared signal (same seed, overlap of
-            selectors). It does NOT establish identity linkage — that is the
-            "established connections" count above. Written out so the two
-            numbers face each other without being read as the same thing. */}
+        {/* The graph distinguishes shared selectors, same-record associations
+            and shared infrastructure. All three explain how evidence relates;
+            only the first can support identity, and even then it is not an
+            analyst confirmation. Say that next to the counts, not in a tooltip. */}
         <p className="text-[11px] leading-relaxed text-faint-foreground">
-          Clustering groups candidates by shared signal; it does not establish identity. Only the “established connections” count above has been linked.
+          Evidence links include shared selectors and same-record associations. They explain how records relate, not that they belong to one person.
         </p>
         {view.seedRecords > 0 && (
           <p className="mt-1 text-[11px] text-subtle-foreground">{view.seedRecords} record{view.seedRecords === 1 ? "" : "s"} only repeat the seed; not counted as links.</p>
@@ -151,7 +157,7 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
             <NodeIcon className="mt-0.5 h-4 w-4 shrink-0 text-[hsl(var(--brand))]" aria-hidden />
             <div className="min-w-0 flex-1">
               <p className="break-words font-mono [overflow-wrap:anywhere]" title={node.art?.value ?? node.label}>{node.art?.value ?? node.label}</p>
-              <p className="mt-0.5 text-[11px] text-subtle-foreground">{node.id === SEED_ID ? "Case seed" : node.seedRecord ? `${node.kind} · the seed's own record` : node.kind}</p>
+              <p className="mt-0.5 text-[11px] text-subtle-foreground">{node.id === subject?.id ? "Subject name · automatic evidence map" : node.id === SEED_ID ? "Case seed" : node.seedRecord ? `${node.kind} · the seed's own record` : node.kind}</p>
             </div>
             {node.art && <AuthorityChip view={authorityFor(node.art, review.map[node.art.id] ?? "new")} />}
           </div>
@@ -162,8 +168,12 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
           )}
           {/* The tree: connector → leaf */}
           {links.length === 0 ? (
-            <p className="mt-4 text-[12px] text-muted-foreground">
-              {node.seedRecord ? "This record only repeats the seed, so it has no relationship of its own." : "No relationship to another entity has been established."}
+            <p className="mt-4 text-[12px] leading-relaxed text-muted-foreground">
+              {node.seedRecord
+                ? "This record only repeats the seed, so it has no relationship of its own."
+                : ["name", "person"].includes(node.kind.toLowerCase())
+                  ? "No selector-level relationship. A name alone does not establish identity; inspect its source record or corroborate it with another selector."
+                  : "No relationship derived yet. Inspect the source record or run a corroborating pivot."}
             </p>
           ) : (
             <ul className="mt-1" aria-label={`${links.length} connection${links.length === 1 ? "" : "s"}`}>
@@ -210,8 +220,8 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
 
       <div className="mx-5 my-5 h-px bg-border" aria-hidden />
 
-      <section aria-label="Established connections" className="px-3.5 pb-3">
-        <h3 className="px-1.5 pb-1 text-[12px] font-medium text-foreground">Established connections <span className="font-mono text-[11px] font-normal tabular-nums text-muted-foreground">{view.linked.length}</span></h3>
+      <section aria-label="Related evidence" className="px-3.5 pb-3">
+        <h3 className="px-1.5 pb-1 text-[12px] font-medium text-foreground">Related evidence <span className="font-mono text-[11px] font-normal tabular-nums text-muted-foreground">{view.linked.length}</span></h3>
         {view.linked.length === 0 ? (
           <p className="flex items-start gap-2 px-1.5 py-2 text-[12px] text-muted-foreground">
             <Share2 className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
@@ -244,7 +254,7 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
         <section aria-label="Unlinked candidates" className="border-t border-border-subtle px-3.5 py-3">
           <h3 className="px-1.5 pb-1 text-[12px] font-medium text-foreground">
             Unlinked candidates <span className="font-mono text-[11px] font-normal tabular-nums text-muted-foreground">{view.isolated.length}</span>
-            <span className="ml-2 text-[11px] font-normal text-subtle-foreground">found together, not linked to the subject</span>
+            <span className="ml-2 text-[11px] font-normal text-subtle-foreground">no shared selector or source-record association yet</span>
           </h3>
           {view.isolated.length > 6 && (
             <div className="mb-1.5 px-1.5">

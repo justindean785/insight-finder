@@ -532,6 +532,16 @@ if (!SNAPSHOT && mainThread) {
       .map((a, i) => ({ id: `rr${i}`, artifact_id: a.id, thread_id: THREAD_ID, user_id: USER_ID, state: "confirmed", created_at: iso(2), note: null }));
     FIXTURES.artifact_reviews = confirmed;
   }
+  if (SCENARIO === "connections") {
+    // Synthetic subject map: exact source-record associations must appear without
+    // Confirm/Dismiss, while name-only evidence remains a qualified co-record link.
+    FIXTURES.artifacts = [
+      { id: "subject-name", thread_id: THREAD_ID, kind: "name", value: "James Harker", confidence: 80, source: "synthetic_fixture", created_at: iso(4), metadata: { sources: ["synthetic_fixture"], source_class: "independent_public" } },
+      { id: "subject-phone", thread_id: THREAD_ID, kind: "phone", value: "+1 (555) 010-4477", confidence: 55, source: "synthetic_fixture", created_at: iso(3), metadata: { sources: ["synthetic_fixture"], source_class: "breach", name_in_breach: "James Harker", email_associated: "james@example.test" } },
+      { id: "subject-email", thread_id: THREAD_ID, kind: "email", value: "james@example.test", confidence: 70, source: "synthetic_fixture", created_at: iso(2), metadata: { sources: ["synthetic_fixture"], source_class: "provider" } },
+      { id: "subject-username", thread_id: THREAD_ID, kind: "username", value: "james_harker", confidence: 60, source: "synthetic_fixture", created_at: iso(1), metadata: { sources: ["synthetic_fixture"], source_class: "provider", email_associated: "james@example.test" } },
+    ];
+  }
 }
 
 // Memory-population scenarios for /brain. Independent of the thread scenarios

@@ -391,7 +391,19 @@ test.describe("Workbench — one inspector (Case desk R3)", () => {
     const tabs = page.getByRole("tablist", { name: "Workbench" }).getByRole("tab");
     await expect(tabs).toHaveText([/^Finding/, /^Next pivots/, /^Connections/]);
     await expect(tabs.nth(0)).toHaveAttribute("aria-selected", "true");
-    await expect(page.getByRole("region", { name: "Needs your call" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Optional exception review" })).toBeVisible();
+  });
+
+  test("Connections opens the subject map automatically without an analyst verdict", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, `${THREAD}?scenario=connections`);
+    await page.getByRole("tablist", { name: "Workbench" }).getByRole("tab", { name: "Connections" }).click();
+    const selected = page.getByRole("region", { name: "Selected entity" });
+    await expect(selected).toContainText("James Harker");
+    await expect(selected).toContainText("Subject name · automatic evidence map");
+    await expect(selected.getByRole("button", { name: /\+1 \(555\) 010-4477/ })).toBeVisible();
+    await expect(selected).toContainText("NAME_RECORD: name_in_breach");
+    await expect(selected).toContainText("not identity confirmation");
   });
 
   test("selecting an Evidence row opens it in Finding with the two assessment bars and the analyst's own call", async ({ page }) => {
@@ -447,8 +459,8 @@ test.describe("case sheet → Evidence handoff", () => {
   test("Decide in Evidence opens that row even though the default view hides quarantined rows", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page, THREAD);
-    // The Workbench opens on Finding (Case desk R3); with nothing selected it shows the case sheet and its "Needs your call" queue.
-    const queue = page.getByRole("region", { name: "Needs your call" });
+    // The Workbench opens on Finding (Case desk R3); with nothing selected it shows the case sheet and its "Optional exception review" queue.
+    const queue = page.getByRole("region", { name: "Optional exception review" });
     await expect(queue).toBeVisible();
     // A quarantined (linkage) card — the kind the Analyst view hides.
     const card = queue.getByRole("listitem").filter({ hasText: "Linkage · does this record belong to the subject?" }).first();

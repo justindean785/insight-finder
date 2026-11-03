@@ -224,8 +224,25 @@ describe("Connections tab", () => {
     const leads = screen.getByRole("region", { name: "Unlinked candidates" });
     fireEvent.click(within(leads).getByRole("button", { name: /lone_handle/ }));
     const selected = screen.getByRole("region", { name: "Selected entity" });
-    expect(within(selected).getByText(/No relationship to another entity has been established/)).toBeTruthy();
+    expect(within(selected).getByText(/No relationship derived yet/)).toBeTruthy();
     expect(within(selected).getByRole("button", { name: "Pivot on this" })).toBeTruthy();
+  });
+
+  it("opens the derived subject name automatically and shows exact source-record associations without a review action", () => {
+    const items = [
+      art("name", "Jane Sample", null, 80),
+      art("phone", "+1 (555) 010-4477", { name_in_breach: "Jane Sample", email_associated: "jane@example.test" }),
+      art("email", "jane@example.test"),
+      art("username", "jane_sample", { email_associated: "jane@example.test" }),
+    ];
+    renderWorkbench(items);
+    fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
+    const selected = screen.getByRole("region", { name: "Selected entity" });
+    expect(selected.textContent).toContain("Jane Sample");
+    expect(selected.textContent).toContain("Subject name · automatic evidence map");
+    expect(within(selected).getByRole("button", { name: /\+1 \(555\) 010-4477/ })).toBeTruthy();
+    expect(selected.textContent).toContain("NAME_RECORD: name_in_breach");
+    expect(selected.textContent).toContain("not identity confirmation");
   });
 
   it("a zero-hit lookup is disclosed as a clean check, not listed or counted as an unlinked candidate", () => {

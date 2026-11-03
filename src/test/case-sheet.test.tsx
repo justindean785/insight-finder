@@ -121,7 +121,7 @@ describe("case sheet — view", () => {
     const q = art("username", "handle_y", { subject_unlinked: true, subject_unlinked_reason: "username match only" });
     const c = art("address", "2 Example St", { conflict: true });
     render(<CaseSheetView model={model([q, c])} hydrated />);
-    const queue = screen.getByRole("region", { name: "Needs your call" });
+    const queue = screen.getByRole("region", { name: "Optional exception review" });
     expect(within(queue).getByText(ASK_LABEL.linkage)).toBeTruthy();
     expect(within(queue).getByText(ASK_LABEL.review)).toBeTruthy();
     const buttons = within(queue).getAllByRole("button").map((b) => b.textContent?.trim());
@@ -136,7 +136,7 @@ describe("case sheet — view", () => {
     window.addEventListener("swarmbot:navigate", onNav);
     try {
       render(<CaseSheetView model={model([q])} hydrated />);
-      const queue = screen.getByRole("region", { name: "Needs your call" });
+      const queue = screen.getByRole("region", { name: "Optional exception review" });
       fireEvent.click(within(queue).getByRole("button", { name: /Decide in Evidence/ }));
     } finally {
       window.removeEventListener("swarmbot:navigate", onNav);
