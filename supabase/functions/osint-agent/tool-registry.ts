@@ -705,6 +705,9 @@ export function buildTools(ctx: ToolContext) {
   // run is reported in `deduped`, not surfaced twice. The artifact WRITE path keeps its own
   // dedup (lib/artifact-hygiene.ts artifactDedupKey); this only trims what the model reads.
   const contextdevSeenUrls = new Set<string>();
+  // PEOPLE-ONLY dedup set: a profile URL seen in a 1-credit search snippet must not erase a
+  // 10-credit structured person row (lib/contextdev.ts shapePeopleResponse).
+  const contextdevSeenProfiles = new Set<string>();
   const noteQuarantinedFindings = (
     findings: ReadonlyArray<{ kind: string; value: string; context?: Record<string, unknown> }>,
   ): void => {
@@ -3348,7 +3351,7 @@ export function buildTools(ctx: ToolContext) {
         countries: z.array(z.string().regex(/^[A-Z]{2}$/)).max(5).optional().describe("ISO-2 country codes the people live in, e.g. [\"US\"]."),
       })),
       execute: async (input, opts) =>
-        await contextdevPeopleSearch(input, contextdevDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal), contextdevSeenUrls),
+        await contextdevPeopleSearch(input, contextdevDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal), contextdevSeenProfiles),
     }),
     crtsh_subdomains: tool({
       description: "Enumerate subdomains for a domain via crt.sh certificate transparency logs.",

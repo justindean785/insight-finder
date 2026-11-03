@@ -179,8 +179,8 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // with a run_id, rather than the wrapper discarding a paid run.
   opsis_search: 30_000,
   opsis_results: 30_000,
-  // Context.dev (lib/contextdev.ts): each sits 5s above the module's own per-attempt
-  // fetch budget (20s / 30s / 25s) so the module fails cleanly first and the wrapper
+  // Context.dev (lib/contextdev.ts): each sits 5s above the module's own WHOLE-CALL
+  // budget (20s / 30s / 25s, all attempts and waits) so the module fails cleanly first and the wrapper
   // never discards a paid answer that was one retry away. The provider-side deadlines
   // (timeoutOpts) sit under the module budgets in turn.
   contextdev_web_search: 25_000,

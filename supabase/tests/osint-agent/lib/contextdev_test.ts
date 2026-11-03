@@ -313,7 +313,11 @@ Deno.test("search: body caps numResults at 10, asks for return-partial under the
   assertEquals("highlightsOptions" in body, false);
   assertEquals("markdownOptions" in body, false);
   await contextdevWebSearch({ query: "q", highlights: true }, h.deps, new Set());
-  assertEquals((h.calls[1].body as Record<string, unknown>).highlightsOptions, { enabled: true, query: "q" });
+  // The schema allows ONLY `enabled` and `maxCharacters` (additionalProperties: false); a
+  // `query` key is a 400 INPUT_VALIDATION_ERROR, which the circuit then pins to the selector.
+  const hl = (h.calls[1].body as Record<string, unknown>).highlightsOptions as Record<string, unknown>;
+  assertEquals(hl, { enabled: true, maxCharacters: CONTEXT_DEV_HIGHLIGHTS_MAX * CONTEXT_DEV_HIGHLIGHT_MAX_CHARS });
+  assertEquals("query" in hl, false);
 });
 
 Deno.test("search: partial:true is passed through", async () => {
@@ -513,4 +517,57 @@ Deno.test("selfTest: disabled / unset still report ok:true with the reason, and 
   assertStringIncludes(contextdevSelfTest(true, true).detail, "disabled via CONTEXT_DEV_DISABLED");
   assertStringIncludes(contextdevSelfTest(false, false).detail, "CONTEXT_DEV_API_KEY unset");
   assertEquals(contextdevSelfTest(false, false).ok, true);
+});
+
+// ── Budget-aware retries (review fix) ───────────────────────────────────────
+
+Deno.test("request: an attempt that spent the whole budget is a timeout and is NOT retried (the provider may still complete; a retry would buy it twice)", async () => {
+  let clockRef: { add: (ms: number) => void } | null = null;
+  const h = harness({
+    replies: [() => {
+      clockRef!.add(20_000);
+      throw new DOMException("Aborted", "AbortError");
+    }],
+  });
+  clockRef = { add: (ms) => { (h.deps as { sleep: (ms: number) => Promise<void> }).sleep(ms); } };
+  const out = await contextdevRequest("/web/scrape", {}, h.deps, 20_000);
+  assert(!out.ok);
+  assertEquals(out.status, null);
+  assertEquals(out.error, CONTEXT_DEV_ERRORS.network);
+  assertEquals(out.timed_out, true);
+  assertEquals(out.retries, 0);
+  assertEquals(h.calls.length, 1);
+});
+
+Deno.test("request: a 5xx retry is skipped when the remaining budget cannot fit another attempt", async () => {
+  const h = harness({ replies: [json(503, { message: "down" })] });
+  // 1_000 ms budget: the first attempt costs 300 ms, the backoff 500 ms → 200 ms left, under the floor.
+  const out = await contextdevRequest("/web/search", {}, h.deps, 1_000);
+  assert(!out.ok);
+  assertEquals(out.status, 503);
+  assertEquals(out.retries, 0);
+  assertEquals(h.calls.length, 1);
+  assert(h.elapsed() < 1_000, `module must stay inside its budget, elapsed ${h.elapsed()}`);
+});
+
+Deno.test("request: a 429 whose Retry-After does not fit the remaining budget is returned, not waited for", async () => {
+  const h = harness({ replies: [json(429, { error_code: "RATE_LIMITED" }, { "Retry-After": "8" })] });
+  const out = await contextdevRequest("/web/search", {}, h.deps, 5_000);
+  assert(!out.ok);
+  assertEquals(out.status, 429);
+  assertEquals(out.retries, 0);
+  assertEquals(h.calls.length, 1);
+  assert(h.elapsed() < 1_000, `no wait should have happened, elapsed ${h.elapsed()}`);
+});
+
+// ── People: order and people-only dedup (review fix) ────────────────────────
+
+Deno.test("people: result order is preserved (most relevant first), a row without profiles stays in place", async () => {
+  const raw = peopleRaw(3, [], null);
+  (raw.results[1] as { profiles: string[] }).profiles = [];
+  const h = harness({ replies: [json(200, raw)] });
+  const out = await contextdevPeopleSearch({ query: "q" }, h.deps, new Set());
+  const names = (out.results as Array<{ name: string }>).map((r) => r.name);
+  assertEquals(names, ["Person 0", "Person 1", "Person 2"]);
+  assertEquals((out.results as Array<{ profiles: string[] }>)[1].profiles, []);
 });

@@ -103,7 +103,10 @@ export const ESCALATION_ELIGIBLE_TOOLS = new Set<string>([
   "google_dorks", "minimax_web_search", "perplexity_search", "exa_search",
   "osint_navigator_search", "osint_navigator_advise",
   "gemini_vision", "jina_reader_scrape", "http_fingerprint", "firecrawl_scrape",
-  "contextdev_web_search", "contextdev_scrape", "contextdev_people_search",
+  // contextdev_people_search is deliberately ABSENT: a people page is a list of unrelated
+  // strangers, not evidence about the subject, and a people query is never name-shaped,
+  // so the quarantine stamp would not apply. Escalation must never lift its denylisting.
+  "contextdev_web_search", "contextdev_scrape",
 ]);
 
 /** Ceiling on candidates held in memory awaiting the escalation gate. 2x the

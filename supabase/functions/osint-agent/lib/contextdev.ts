@@ -19,9 +19,17 @@
  * - 429 → wait `Retry-After` seconds (capped at CONTEXT_DEV_RETRY_AFTER_CAP_MS, default
  *   CONTEXT_DEV_RETRY_AFTER_DEFAULT_MS when absent/unparseable), ONE retry.
  * - 408 and 5xx → 500ms·2^attempt backoff, TWO retries.
- * - network error / per-attempt timeout → ONE retry, unless the wrapper signal aborted.
+ * - network error → ONE retry, unless the wrapper signal aborted.
+ * - the module's OWN timeout → NO retry: the provider may still complete and charge the
+ *   first attempt, so a second attempt is the same page bought twice.
  * - every other 4xx (400 validation, 401, 402 USAGE_EXCEEDED, 403, 404, 422) → no retry.
  *   Context.dev states these are not charged and that an unchanged retry cannot succeed.
+ *
+ * `timeoutMs` is the budget for the WHOLE call, not per attempt: every attempt is capped by
+ * what is left of it, and a retry (and its wait) is skipped when fewer than
+ * CONTEXT_DEV_MIN_ATTEMPT_MS would remain. The wrapper caps in cache.ts sit above this
+ * budget, so the module always fails cleanly first and the wrapper never discards a paid
+ * answer that was one retry away.
  *
  * ## Failure shapes follow this codebase, not the docs
  *
@@ -54,6 +62,8 @@ export const CONTEXT_DEV_RETRY_AFTER_CAP_MS = 10_000;
 /** Wait used when a 429 carries no parseable `Retry-After`. */
 export const CONTEXT_DEV_RETRY_AFTER_DEFAULT_MS = 1_000;
 const RETRY_BACKOFF_BASE_MS = 500;
+/** A retry is attempted only when at least this much of the call budget would remain after its wait. */
+export const CONTEXT_DEV_MIN_ATTEMPT_MS = 2_000;
 const MAX_RETRIES_429 = 1;
 const MAX_RETRIES_5XX = 2;
 const MAX_RETRIES_NETWORK = 1;
@@ -181,7 +191,16 @@ export function dedupByUrl<T extends { url: string }>(
 
 export type ContextDevHttp =
   | { ok: true; status: number; json: Out; credits_consumed?: number; request_id?: string }
-  | { ok: false; status: number | null; error: string; error_code?: string; provider_message?: string; retries: number };
+  | {
+    ok: false;
+    status: number | null;
+    error: string;
+    error_code?: string;
+    provider_message?: string;
+    retries: number;
+    /** The module's own budget ended the attempt; nothing was retried (see header). */
+    timed_out?: boolean;
+  };
 
 /** Seconds from `Retry-After`, capped; the default when absent or not a number. */
 function retryAfterMs(h: Headers): number {
@@ -210,8 +229,9 @@ function errorFromBody(status: number, body: Out | null, retries: number): Conte
 }
 
 /**
- * One bounded POST to Context.dev. Never throws. `timeoutMs` bounds EACH attempt and is
- * chained to the wrapper's signal, so a wrapper abort ends the attempt and stops retries.
+ * One bounded POST to Context.dev. Never throws. `timeoutMs` bounds the WHOLE call (all
+ * attempts and waits) and every attempt is also chained to the wrapper's signal, so a
+ * wrapper abort ends the attempt and stops retries.
  */
 export async function contextdevRequest(
   path: ContextDevPath,
@@ -231,19 +251,27 @@ export async function contextdevRequest(
   };
   let retries = 0;
   let networkRetries = 0;
+  const start = deps.now();
+  const remaining = () => timeoutMs - (deps.now() - start);
+  /** True when a wait of `waitMs` would leave too little budget for another attempt. */
+  const cannotAfford = (waitMs: number) => remaining() - waitMs < CONTEXT_DEV_MIN_ATTEMPT_MS;
   for (;;) {
+    const attemptBudget = Math.max(1, remaining());
+    const attemptStart = deps.now();
     const ctrl = new AbortController();
     const onAbort = () => ctrl.abort();
     deps.signal?.addEventListener("abort", onAbort, { once: true });
     if (deps.signal?.aborted) ctrl.abort();
-    const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+    const tid = setTimeout(() => ctrl.abort(), attemptBudget);
     let r: Response;
     try {
       r = await deps.fetch(url, { ...init, signal: ctrl.signal });
     } catch {
       clearTimeout(tid);
       deps.signal?.removeEventListener("abort", onAbort);
-      if (networkRetries < MAX_RETRIES_NETWORK && !deps.signal?.aborted) {
+      const ownTimeout = deps.now() - attemptStart >= attemptBudget;
+      if (ownTimeout) return { ok: false, status: null, error: CONTEXT_DEV_ERRORS.network, retries, timed_out: true };
+      if (networkRetries < MAX_RETRIES_NETWORK && !deps.signal?.aborted && !cannotAfford(RETRY_BACKOFF_BASE_MS)) {
         networkRetries++;
         retries++;
         await deps.sleep(RETRY_BACKOFF_BASE_MS, deps.signal);
@@ -267,12 +295,14 @@ export async function contextdevRequest(
 
     const retriable429 = status === 429 && retries < MAX_RETRIES_429;
     const retriable5xx = (status === 408 || status >= 500) && retries < MAX_RETRIES_5XX;
-    if ((retriable429 || retriable5xx) && !deps.signal?.aborted) {
+    if (retriable429 || retriable5xx) {
       const wait = status === 429 ? retryAfterMs(r.headers) : RETRY_BACKOFF_BASE_MS * Math.pow(2, retries);
-      await r.body?.cancel().catch(() => {});
-      retries++;
-      await deps.sleep(wait, deps.signal);
-      continue;
+      if (!deps.signal?.aborted && !cannotAfford(wait)) {
+        await r.body?.cancel().catch(() => {});
+        retries++;
+        await deps.sleep(wait, deps.signal);
+        continue;
+      }
     }
     return errorFromBody(status, await readJson(r), retries);
   }
@@ -415,7 +445,11 @@ export async function contextdevWebSearch(input: SearchInput, deps: ContextDevDe
   if (input.includeDomains?.length) body.includeDomains = input.includeDomains;
   if (input.excludeDomains?.length) body.excludeDomains = input.excludeDomains;
   if (input.freshness) body.freshness = input.freshness;
-  if (input.highlights === true) body.highlightsOptions = { enabled: true, query };
+  // Schema: `enabled` + `maxCharacters` ONLY (additionalProperties: false). A `query` key here
+  // is a 400 the circuit would then pin to the selector for the rest of the run.
+  if (input.highlights === true) {
+    body.highlightsOptions = { enabled: true, maxCharacters: CONTEXT_DEV_HIGHLIGHTS_MAX * CONTEXT_DEV_HIGHLIGHT_MAX_CHARS };
+  }
   const http = await contextdevRequest("/web/search", body, deps, CONTEXT_DEV_SEARCH_TIMEOUT_MS);
   if (!http.ok) return httpFailure(http);
   const shaped = shapeSearchResponse(http.json, seen);
@@ -481,12 +515,18 @@ export async function contextdevScrape(input: ScrapeInput, deps: ContextDevDeps)
 
 // ── People search ───────────────────────────────────────────────────────────
 
-/** `POST /people/search` → lead-grade rows. Deduped on the first profile URL via `seen`. */
+/**
+ * `POST /people/search` → lead-grade rows, in the provider's order (most relevant first).
+ * Deduped on the first profile URL via `seen`, which must be a PEOPLE-ONLY set: a LinkedIn
+ * URL that appeared in a 1-credit search snippet list is not the same evidence as a
+ * 10-credit structured person row, so the web-search set never hides a person.
+ */
 export function shapePeopleResponse(raw: unknown, seen: Set<string>): Out {
   const d = asObj(raw);
   if (!d || !Array.isArray(d.results)) return unexpectedShape("people/search: no results array");
-  const rows: Array<{ url: string } & Out> = [];
-  const noProfile: Out[] = [];
+  const results: Out[] = [];
+  let deduped = 0;
+  let dropped_invalid = 0;
   for (const r of d.results as unknown[]) {
     const o = asObj(r);
     if (!o) continue;
@@ -525,11 +565,16 @@ export function shapePeopleResponse(raw: unknown, seen: Set<string>): Out {
     }
     const yoe = num(o.years_of_experience);
     if (yoe !== undefined) row.years_of_experience = yoe;
-    if (profiles.length) rows.push({ url: profiles[0], ...row });
-    else noProfile.push(row);
+    if (profiles.length) {
+      const key = canonicalUrl(profiles[0]);
+      if (!key) dropped_invalid++;
+      else if (seen.has(key)) {
+        deduped++;
+        continue;
+      } else seen.add(key);
+    }
+    if (results.length < CONTEXT_DEV_PEOPLE_MAX_RESULTS) results.push(row);
   }
-  const { kept, deduped, dropped_invalid } = dedupByUrl(rows, seen);
-  const results = [...kept.map(({ url: _url, ...rest }) => rest), ...noProfile].slice(0, CONTEXT_DEV_PEOPLE_MAX_RESULTS);
   return {
     ok: true,
     provider: CONTEXT_DEV_PROVIDER,

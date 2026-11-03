@@ -10,7 +10,7 @@ import { capabilityEnvKeys, PROVIDER_REQUIREMENTS } from "../../../functions/osi
 import { GENERAL_MULTI_ORIGIN_TOOLS, isPremiumTool, providerForTool } from "../../../functions/osint-agent/circuit.ts";
 import { classifySource } from "../../../functions/osint-agent/source-classification.ts";
 import { AUTO_EVIDENCE_TOOLS, toolTimeoutMs } from "../../../functions/osint-agent/cache.ts";
-import { AUTO_PERSIST_TOOL_DENYLIST, ESCALATION_ELIGIBLE_TOOLS } from "../../../functions/osint-agent/auto-persist-findings.ts";
+import { AUTO_PERSIST_TOOL_DENYLIST, ESCALATION_ELIGIBLE_TOOLS, extractFindings } from "../../../functions/osint-agent/auto-persist-findings.ts";
 import { TOOL_CATALOG } from "../../../functions/osint-agent/catalog.ts";
 import {
   CONTEXT_DEV_PEOPLE_TIMEOUT_MS,
@@ -66,11 +66,23 @@ Deno.test("wiring: scrape is listed in AUTO_EVIDENCE_TOOLS for parity with jina_
   assert(AUTO_EVIDENCE_TOOLS.has("jina_reader_scrape"));
 });
 
-Deno.test("wiring: all three are auto-persist denylisted AND escalation-eligible (same class as exa_search / jina_reader_scrape)", () => {
-  for (const t of TOOLS) {
-    assert(AUTO_PERSIST_TOOL_DENYLIST.has(t), `${t} must not auto-persist blindly`);
-    assert(ESCALATION_ELIGIBLE_TOOLS.has(t), `${t} must keep the zero-evidence durability path`);
-  }
+Deno.test("wiring: all three are auto-persist denylisted; search and scrape are escalation-eligible, people search is NOT", () => {
+  for (const t of TOOLS) assert(AUTO_PERSIST_TOOL_DENYLIST.has(t), `${t} must not auto-persist blindly`);
+  assert(ESCALATION_ELIGIBLE_TOOLS.has("contextdev_web_search"));
+  assert(ESCALATION_ELIGIBLE_TOOLS.has("contextdev_scrape"));
+  // A people page is a list of unrelated strangers, not evidence about the subject. The
+  // escalation gate lifts the denylist; it must never lift it for this tool.
+  assertEquals(ESCALATION_ELIGIBLE_TOOLS.has("contextdev_people_search"), false);
+});
+
+Deno.test("wiring: even in the escalated state, a people-search result yields no auto-persisted finding", () => {
+  const people = {
+    ok: true, provider: "context.dev", authority: "lead", count: 1, deduped: 0, dropped_invalid: 0, empty: false, has_more: false,
+    results: [{ name: "Stranger One", headline: "CTO at Acme", profiles: ["https://www.linkedin.com/in/stranger-one/", "https://github.com/stranger1"],
+      location: { city: "SF", region: "CA", country: "US" }, role: { title: "CTO", company: { name: "Acme" } } }],
+  };
+  assertEquals(extractFindings("contextdev_people_search", people, { query: "CTOs at solar companies" }, "Jordan Vale", { escalated: true }), []);
+  assertEquals(extractFindings("contextdev_people_search", people, { query: "CTOs at solar companies" }, "Jordan Vale"), []);
 });
 
 Deno.test("wiring: catalog advertises all three, names the cheaper tool first, and the input shapes match the schemas", () => {
@@ -93,6 +105,11 @@ Deno.test("wiring: tool-registry has the inline defs, the key gate, the planner 
   for (const t of TOOLS) assert(new RegExp(`^\\s{2,}${t}: tool\\(\\{`, "m").test(src), `${t} inline def missing`);
   assertStringIncludes(src, 'from "./lib/contextdev.ts"');
   assertStringIncludes(src, "const contextdevSeenUrls = new Set<string>()");
+  // People dedup is keyed on a PEOPLE-ONLY set: a profile URL that appeared in a 1-credit
+  // search snippet must not erase a 10-credit structured person row.
+  assertStringIncludes(src, "const contextdevSeenProfiles = new Set<string>()");
+  const peopleAt = src.indexOf("contextdev_people_search: tool({");
+  assertStringIncludes(src.slice(peopleAt, src.indexOf("}),", src.indexOf("execute:", peopleAt))), "contextdevSeenProfiles)");
   // key-absent / kill-switch gate removes the tools from the schema and the planner menu
   assertStringIncludes(src, "!CONTEXT_DEV_API_KEY || contextdevKillSwitchOn()");
   assertStringIncludes(src, 'name.startsWith("contextdev_")');
