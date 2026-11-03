@@ -56,8 +56,14 @@ Deno.test("wiring: timeouts — each wrapper cap sits above the module's own fet
   assert(toolTimeoutMs("contextdev_people_search") > CONTEXT_DEV_PEOPLE_TIMEOUT_MS);
 });
 
-Deno.test("wiring: scrape results are mirrored into the chain-of-custody log like jina_reader_scrape", () => {
+// Parity with jina_reader_scrape. NOTE (measured 2026-11-03): autoAppendToolEvidence keys
+// on extractEvidenceSeed(input), whose key list has no `url`, so for BOTH url-only readers
+// the custody mirror is currently inert. The one-line `url` fix touches chain-of-custody
+// (integrity-critical, sign-off required) and ships as its own PR; this entry makes
+// contextdev_scrape start logging the moment that fix lands.
+Deno.test("wiring: scrape is listed in AUTO_EVIDENCE_TOOLS for parity with jina_reader_scrape", () => {
   assert(AUTO_EVIDENCE_TOOLS.has("contextdev_scrape"));
+  assert(AUTO_EVIDENCE_TOOLS.has("jina_reader_scrape"));
 });
 
 Deno.test("wiring: all three are auto-persist denylisted AND escalation-eligible (same class as exa_search / jina_reader_scrape)", () => {
