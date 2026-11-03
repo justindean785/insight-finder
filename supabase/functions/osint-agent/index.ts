@@ -102,7 +102,7 @@ import {
   buildMemoryBrief, freshnessCutoffIso, loadToolLessons, memoryBriefDisabled, memoryBriefEvent, memoryBriefLegacyRowsEnabled,
   registeredToolSubjects, toolLessonQuery,
 } from "./lib/memory-brief.ts";
-import { deriveOutcomeLessonRows, outcomeLessonCutoffIso, toolOutcomeQuery } from "./lib/outcome-lessons.ts";
+import { boundedOutcomeRead, deriveOutcomeLessonRows, outcomeLessonCutoffIso } from "./lib/outcome-lessons.ts";
 import { buildTools, TOOL_NAME_ALIASES } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
 import { isMessageSchemaError, classifyStreamProviderError, describeStreamError } from "./stream-error-classify.ts";
@@ -1015,8 +1015,9 @@ Deno.serve(async (req) => {
     // overlapped with the intake and review loads for the same reason as the resume brief above. Unlike the resume
     // brief it also applies to a first turn. The eligibility predicates live in `toolLessonQuery` and are re-checked
     // row by row in `buildMemoryBrief`; `loadToolLessons` never rejects and its deadline aborts the query.
-    // Recent live outcomes join the same read as fresh synthetic lesson rows. A failed outcome read drops only
-    // those derived rows; durable stored lessons still reach the planner. No outcome body or case id is logged.
+    // Recent live outcomes join the same read as fresh synthetic lesson rows. A failed OR slow outcome read drops
+    // only those derived rows: `boundedOutcomeRead` carries its own, shorter deadline so it settles before the
+    // shared one resolves the whole race empty. No outcome body or case id is logged.
     const toolLessonReads = memoryBriefDisabled() || !memoryBriefLegacyRowsEnabled() ? null : loadToolLessons((signal) =>
       Promise.all([
         toolLessonQuery(supabase, {
@@ -1025,7 +1026,7 @@ Deno.serve(async (req) => {
           cutoffIso: freshnessCutoffIso(),
           signal,
         }),
-        toolOutcomeQuery(supabase, { userId, cutoffIso: outcomeLessonCutoffIso(), signal }),
+        boundedOutcomeRead(supabase, { userId, cutoffIso: outcomeLessonCutoffIso(), signal }),
       ]).then(([stored, outcomes]) => ({
         data: [...(stored.data ?? []), ...deriveOutcomeLessonRows(outcomes.data ?? [])],
         error: stored.error,

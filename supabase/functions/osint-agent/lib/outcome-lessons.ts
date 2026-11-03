@@ -76,7 +76,9 @@ export type DerivedOutcomeLessonRow = {
 /** Deterministic, context-only rows. No raw errors, selectors or case ids enter the prompt. */
 export function deriveOutcomeLessonRows(rows: readonly OutcomeUsageRow[], nowMs: number = Date.now()): DerivedOutcomeLessonRow[] {
   const cutoff = nowMs - OUTCOME_LESSON_WINDOW_DAYS * DAY_MS;
-  type Acc = { attempts: number; failed: number; threads: Set<string>; classes: Record<FailureClass, number> };
+  // `failedThreads`, not every thread the tool ran in: the cross-case rule exists so one case's fault cannot
+  // steer unrelated investigations, and a success elsewhere must not stand in for a second failing case.
+  type Acc = { attempts: number; failed: number; failedThreads: Set<string>; classes: Record<FailureClass, number> };
   const by = new Map<string, Acc>();
   for (const row of rows) {
     if (row.cached !== false || (row.outcome !== "ok" && row.outcome !== "failed")) continue;
@@ -86,13 +88,13 @@ export function deriveOutcomeLessonRows(rows: readonly OutcomeUsageRow[], nowMs:
     const acc = by.get(tool) ?? {
       attempts: 0,
       failed: 0,
-      threads: new Set<string>(),
+      failedThreads: new Set<string>(),
       classes: { credential_plan: 0, transport: 0, rate_limited: 0, input_rejected: 0, other: 0 },
     };
     acc.attempts++;
-    if (row.thread_id) acc.threads.add(row.thread_id);
     if (row.outcome === "failed") {
       acc.failed++;
+      if (row.thread_id) acc.failedThreads.add(row.thread_id);
       acc.classes[classify(row)]++;
     }
     by.set(tool, acc);
@@ -103,7 +105,7 @@ export function deriveOutcomeLessonRows(rows: readonly OutcomeUsageRow[], nowMs:
     .filter(([, acc]) =>
       acc.attempts >= OUTCOME_LESSON_MIN_ATTEMPTS &&
       acc.failed / acc.attempts >= OUTCOME_LESSON_MIN_FAILURE_SHARE &&
-      acc.threads.size >= OUTCOME_LESSON_MIN_THREADS)
+      acc.failedThreads.size >= OUTCOME_LESSON_MIN_THREADS)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([tool, acc]) => {
       const ranked = CLASS_ORDER.map((kind) => [kind, acc.classes[kind]] as const)
@@ -119,7 +121,7 @@ export function deriveOutcomeLessonRows(rows: readonly OutcomeUsageRow[], nowMs:
         kind: "lesson",
         scope: "global",
         subject: `tool:${tool}`,
-        content: `Observed ${acc.failed} of ${acc.attempts} live attempts fail in ${OUTCOME_LESSON_WINDOW_DAYS} days across ${acc.threads.size} cases; ${reason}. Next run: ${adaptation}.`,
+        content: `Observed ${acc.failed} of ${acc.attempts} live attempts fail in ${OUTCOME_LESSON_WINDOW_DAYS} days across ${acc.failedThreads.size} cases; ${reason}. Next run: ${adaptation}.`,
         confidence: null,
         hit_count: 0,
         created_at: createdAt,
@@ -176,4 +178,36 @@ export function toolOutcomeQuery(
     .order("created_at", { ascending: false })
     .limit(OUTCOME_LESSON_FETCH_LIMIT)
     .abortSignal(args.signal);
+}
+
+/**
+ * The outcome read's OWN deadline, deliberately shorter than memory-brief's shared READ_DEADLINE_MS (2500).
+ * `loadToolLessons` races the whole read against that shared timer and resolves EMPTY on expiry, so an outcome
+ * read that is still pending then takes the already-loaded stored lessons down with it. Settling first, as
+ * "no derived rows", keeps the failure isolated to the rows that are new here.
+ */
+export const OUTCOME_READ_DEADLINE_MS = 1500;
+
+/** `toolOutcomeQuery` behind its own aborting deadline. Never rejects: any failure is `{ data: null, error }`. */
+export function boundedOutcomeRead(
+  db: unknown,
+  args: { userId: string; cutoffIso: string; signal: AbortSignal },
+  deadlineMs: number = OUTCOME_READ_DEADLINE_MS,
+): Promise<OutcomeLessonRead> {
+  const ctrl = new AbortController();
+  const relay = () => ctrl.abort();
+  if (args.signal.aborted) ctrl.abort();
+  else args.signal.addEventListener("abort", relay, { once: true });
+  const failed = (message: string): OutcomeLessonRead => ({ data: null, error: { message } });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<OutcomeLessonRead>((resolve) => {
+    timer = setTimeout(() => { ctrl.abort(); resolve(failed("outcome_read_deadline")); }, deadlineMs);
+  });
+  const read = Promise.resolve()
+    .then(() => toolOutcomeQuery(db, { ...args, signal: ctrl.signal }))
+    .catch(() => failed("outcome_read_failed"));
+  return Promise.race([read, deadline]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+    args.signal.removeEventListener("abort", relay);
+  });
 }
