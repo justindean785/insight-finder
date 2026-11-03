@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { useMatch, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
+import { threadDisplayTitle } from "@/lib/case-name";
 import {
   CommandDialog,
   CommandInput,
@@ -184,7 +185,7 @@ export function CommandPalette() {
               <PaletteItem
                 key={th.id}
                 icon={Database}
-                label={th.title || th.seed_value || "Untitled case"}
+                label={threadDisplayTitle(th.title, th.seed_value) || th.seed_value || "Untitled case"}
                 hint={th.seed_value ?? ""}
                 onSelect={() => { setOpen(false); navigate(`/chat/${th.id}`); }}
               />

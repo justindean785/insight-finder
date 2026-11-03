@@ -196,6 +196,12 @@ export function extractDisplaySeed(
 // slice(0, 80) behavior so nothing regresses. MUST mirror formatThreadTitle
 // in supabase/functions/osint-agent/validation.ts (no shared module exists
 // between src/ and supabase/functions/).
+//
+// A pasted multi-line provider export is NOT classified here (detectSeed reads
+// one clean token), so its stored title is still the raw first 80 chars — on the
+// edge too, and a test pins the two equal. The UI derives the shown title from
+// the seed at display time instead: see exportSubjectTitle / threadDisplayTitle
+// in src/lib/case-name.ts. Fix the stored title on the edge and here together.
 export const THREAD_TITLE_MAX = 80;
 
 const SEED_KIND_LABELS: Record<string, string> = {
