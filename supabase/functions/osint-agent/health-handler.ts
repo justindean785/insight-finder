@@ -22,7 +22,9 @@ import {
   lovableGateway, geminiDirectGateway, ALLOW_LOVABLE_FALLBACK,
   promptBudgetHardCeilingEnabled,
   recordArtifactsInputCompactEnabled,
+  findingsTableExpansionEnabled,
 } from "./env.ts";
+import { runFindingsTableSelfTest } from "./lib/findings-table.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { anthropicFallbackEligible, selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { anthropicModelRejectsForcedToolChoice, anthropicOrchestratorHealth } from "./anthropic-orchestrator.ts";
@@ -716,6 +718,21 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Do repeated recent cross-case tool failures become bounded, context-only planning lessons? Pure; PRESENCE proves
   // this build is live. The existing MEMORY_BRIEF switches disable delivery; the read and threshold rules are pinned in CI.
   r.checks.outcome_lessons = outcomeLessonsSelfTest();
+  // Is the closing Findings table authored by the ENGINE? The orchestrator writes `{{FINDINGS_TABLE}}` and persistFinalMessages
+  // renders it from this run's persisted rows (capped confidence, ladder tier, withheld quarantine). Pure self-test over a frozen
+  // synthetic fixture compared to its pinned table; `switch` reports FINDINGS_TABLE_EXPANSION_DISABLED. PRESENCE proves the
+  // deployed bundle; the call site in index.ts (copy-on-write, never `assistant.parts`) is pinned in CI by findings_table_wiring_test.ts.
+  // Whether the model actually writes the marker is a log measurement: `findings_table_expanded.marker_found`.
+  {
+    const enabled = findingsTableExpansionEnabled();
+    const st = runFindingsTableSelfTest();
+    r.checks.findings_table = {
+      ok: st.ok,
+      enabled,
+      switch: "FINDINGS_TABLE_EXPANSION_DISABLED",
+      detail: enabled ? st.detail : `LEGACY via FINDINGS_TABLE_EXPANSION_DISABLED: ${st.detail}; the stored message is passed through unexpanded`,
+    };
+  }
 
   // Does the prompt the model reads distinguish an ARTIFACT (record_artifacts, an observation) from a FINDING
   // (record_finding, an adjudicated claim the server scores and the only rows the Evidence Record renders) on all three

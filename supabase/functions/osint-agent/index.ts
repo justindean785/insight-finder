@@ -25,6 +25,7 @@ import {
   degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
   promptBudgetHardCeilingEnabled,
   recordArtifactsInputCompactEnabled,
+  findingsTableExpansionEnabled,
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
@@ -79,8 +80,9 @@ import {
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
-  hasNoFindingsDecision, resolveTerminalState,
+  hasNoFindingsDecision, resolveTerminalState, hasReportShape, stripReasoning,
 } from "./orchestrator-finalize.ts";
+import { expandFindingsTableInParts } from "./lib/findings-table.ts";
 import { contextCharsFromMessages, createInvocationTelemetry, withPrepareTiming, type SalvageOutcome } from "./telemetry.ts";
 import { measurePromptTerms, measureToolDescriptions, promptSizeEvent } from "./prompt-size.ts";
 import {
@@ -2373,8 +2375,42 @@ Deno.serve(async (req) => {
           } catch (e) {
             console.warn("[evidence-record] render failed (non-fatal):", String(e));
           }
+          // Engine-authored Findings table: the orchestrator writes the literal `{{FINDINGS_TABLE}}`
+          // line and the server renders the table from the SAME rows the Evidence Record just used
+          // (`reviewedArts`: analyst-rejected rows already dropped; unreadable verdicts fail closed
+          // inside the renderer). The expansion works on a COPY — `assistant.parts` is never
+          // assigned, so `resolveTerminalState` below still judges what the model actually wrote —
+          // and it only runs when the message already has report shape without the marker, so a
+          // stub cannot be made to look complete in the STORED row. Salvage reports carry no marker
+          // (their prompt is unchanged), so they pass through untouched. Never throws; any failure
+          // leaves the parts as they were and logs the error name. Kill switch:
+          // FINDINGS_TABLE_EXPANSION_DISABLED=true, read at call time.
+          let partsToPersist = assistant.parts as unknown[];
+          if (findingsTableExpansionEnabled()) {
+            try {
+              const expansion = expandFindingsTableInParts(
+                partsToPersist,
+                {
+                  rows: reviewedArts,
+                  totalArtifactCount: salvageArts.length,
+                  retrieval: artifactRetrieval,
+                  reviews: reviewsUsable ? "applied" : "unavailable",
+                  rejectedFindingCount,
+                },
+                { shapeOk: (t) => hasReportShape(stripReasoning(t)) },
+              );
+              partsToPersist = expansion.parts;
+              const { name, ...fields } = expansion.event;
+              console.log(JSON.stringify({ event: name, thread_id: threadId, ...fields }));
+            } catch (e) {
+              console.warn(JSON.stringify({
+                event: "findings_table_expansion_failed", thread_id: threadId,
+                error: e instanceof Error ? e.name : "NonError",
+              }));
+            }
+          }
           const safeParts = composePersistedParts(
-            assistant.parts as unknown[],
+            partsToPersist,
             evidenceRecord,
             MAX_PERSISTED_ASSISTANT_PARTS_BYTES,
           );
