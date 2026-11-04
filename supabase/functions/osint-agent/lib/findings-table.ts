@@ -97,9 +97,15 @@ const usableCount = (x: unknown): number =>
 
 const metaTrue = (v: unknown): boolean => v === true || v === "true";
 
-/** Process-bookkeeping rows: the agent's own scaffolding, not evidence about the subject
- *  (lib/cluster.ts BOOKKEEPING_KINDS — duplicated because cluster.ts has heavy imports). */
+/** Process-bookkeeping rows: the agent's own scaffolding, not evidence about the subject.
+ *  Union of lib/cluster.ts BOOKKEEPING_KINDS and recovery.ts NON_EVIDENCE_KINDS —
+ *  duplicated (both modules have heavy imports) and PINNED by findings_table_test.ts. */
 const BOOKKEEPING_KINDS = new Set(["triage_decision", "cluster_decision", "coverage_audit", "tool_audit"]);
+/** Kinds that ARE the exclusion record (recovery.ts EXCLUDED_KINDS). */
+const EXCLUDED_ROW_KINDS = new Set(["excluded_collision", "excluded_collision_summary"]);
+/** metadata.status values meaning "ruled out" (recovery.ts EXCLUDED_STATUSES; the report layer's
+ *  isCollisionArtifact reads status "excluded" as the pipeline's definitive not-the-subject signal). */
+const EXCLUDED_ROW_STATUSES = new Set(["excluded", "excluded_collision", "rejected"]);
 
 /** Why a row gets no line in the table, or null when it is listed.
  *  Quarantine is DISCLOSURE, not deletion: these rows are counted in the footer and keep
@@ -107,8 +113,15 @@ const BOOKKEEPING_KINDS = new Set(["triage_decision", "cluster_decision", "cover
 function withheldReason(row: Record<string, unknown>): "bookkeeping" | "excluded" | "quarantined" | null {
   const kind = typeof row.kind === "string" ? row.kind.trim().toLowerCase() : "";
   const meta = isRecord(row.metadata) ? row.metadata : {};
+  const status = typeof meta.status === "string" ? meta.status.trim().toLowerCase() : "";
   if (BOOKKEEPING_KINDS.has(kind)) return "bookkeeping";
-  if (kind === "excluded_collision" || metaTrue(meta.excluded_collision)) return "excluded";
+  // Every persisted spelling of "this is a ruled-out namesake": the kinds, the statuses, and the
+  // three boolean flags src/lib/report-hygiene.ts isCollisionArtifact honours. dropRejectedArtifacts
+  // only removes ANALYST rejections, so it does not protect this path.
+  if (
+    EXCLUDED_ROW_KINDS.has(kind) || EXCLUDED_ROW_STATUSES.has(status) ||
+    metaTrue(meta.excluded_collision) || metaTrue(meta.collision) || metaTrue(meta.possible_collision)
+  ) return "excluded";
   // The escape hatch is DURABLE linkage the analyst confirmed, never name equality.
   if (metaTrue(meta.subject_unlinked) && !metaTrue(meta.linkage_confirmed)) return "quarantined";
   return null;

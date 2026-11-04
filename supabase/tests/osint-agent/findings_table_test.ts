@@ -23,6 +23,7 @@ import {
   runFindingsTableSelfTest,
 } from "../../functions/osint-agent/lib/findings-table.ts";
 import { hasReportShape, stripReasoning } from "../../functions/osint-agent/orchestrator-finalize.ts";
+import { EXCLUDED_KINDS, EXCLUDED_STATUSES, NON_EVIDENCE_KINDS } from "../../functions/osint-agent/recovery.ts";
 
 type Row = Record<string, unknown>;
 
@@ -126,6 +127,35 @@ Deno.test("quarantined rows are withheld and counted, never listed with a figure
   assert(!out.includes("collision_value_zz"));
   assert(!out.includes("Stage 2 OPEN"));
   assertStringIncludes(out, "3 withheld");
+});
+
+Deno.test("every persisted exclusion representation is withheld, however it is spelled (Codex P2 on #974)", () => {
+  const cases: Row[] = [
+    { id: "x1", kind: "social_profile", value: "ruled_out_by_status", confidence: 90, source: "s", metadata: { status: "excluded" } },
+    { id: "x2", kind: "social_profile", value: "ruled_out_by_status_case", confidence: 90, source: "s", metadata: { status: "Excluded" } },
+    { id: "x3", kind: "social_profile", value: "ruled_out_status_collision", confidence: 90, source: "s", metadata: { status: "excluded_collision" } },
+    { id: "x4", kind: "social_profile", value: "ruled_out_status_rejected", confidence: 90, source: "s", metadata: { status: "rejected" } },
+    { id: "x5", kind: "excluded_collision_summary", value: "ruled_out_summary_kind", confidence: 90, source: "s", metadata: {} },
+    { id: "x6", kind: "social_profile", value: "ruled_out_collision_flag", confidence: 90, source: "s", metadata: { collision: true } },
+    { id: "x7", kind: "social_profile", value: "ruled_out_possible_collision", confidence: 90, source: "s", metadata: { possible_collision: true } },
+  ];
+  const out = renderFindingsTable(input([artifact("a1", "kept_row", 60), ...cases]));
+  assertStringIncludes(out, "kept_row");
+  for (const c of cases) assert(!out.includes(String(c.value)), `${c.value} must not be listed`);
+  assert(!/Confirmed/.test(out), "a status-excluded row at 90 must never print as Confirmed");
+  assertStringIncludes(out, "7 withheld");
+});
+
+Deno.test("pin: the withholding set covers every kind/status recovery.ts and the report layer treat as excluded or non-evidence", () => {
+  const rows: Row[] = [];
+  for (const k of [...EXCLUDED_KINDS, ...NON_EVIDENCE_KINDS]) {
+    rows.push({ id: `k-${k}`, kind: k, value: `pin_kind_${k}`, confidence: 80, source: "s", metadata: {} });
+  }
+  for (const st of EXCLUDED_STATUSES) {
+    rows.push({ id: `s-${st}`, kind: "username", value: `pin_status_${st}`, confidence: 80, source: "s", metadata: { status: st } });
+  }
+  const out = renderFindingsTable(input(rows));
+  for (const r of rows) assert(!out.includes(String(r.value)), `${r.value} listed — the sets drifted from recovery.ts`);
 });
 
 Deno.test("footer states the row basis honestly", () => {
