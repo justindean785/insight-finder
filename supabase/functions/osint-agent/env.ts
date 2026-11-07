@@ -122,6 +122,14 @@ export function promptBudgetHardCeilingEnabled(): boolean {
 export function recordArtifactsInputCompactEnabled(): boolean {
   return (Deno.env.get("RECORD_ARTIFACTS_INPUT_COMPACT_DISABLED") ?? "").trim().toLowerCase() !== "true";
 }
+/**
+ * Kill switch for the engine-authored closing Findings table (lib/findings-table.ts). Read at
+ * CALL TIME. `FINDINGS_TABLE_EXPANSION_DISABLED=true` restores raw passthrough of the stored
+ * message — the literal `{{FINDINGS_TABLE}}` line then stays visible — with no deploy.
+ */
+export function findingsTableExpansionEnabled(): boolean {
+  return (Deno.env.get("FINDINGS_TABLE_EXPANSION_DISABLED") ?? "").trim().toLowerCase() !== "true";
+}
 export const lovableGateway = LOVABLE_API_KEY
   ? createOpenAICompatible({
       name: "lovable-ai-gateway",
