@@ -27,7 +27,7 @@ import {
 } from "@/lib/intel";
 import { evidenceStatus, classLabel } from "@/lib/evidence-status";
 import { independentSourceClasses } from "@/lib/intel";
-import { ANALYST_ACTIONABLE_STATES, authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
+import { ANALYST_ACTIONABLE_STATES, authorityFor, LEDGER_SORT_RANK, underlyingRepeatsBasis } from "@/lib/authority";
 import { statusFilterForAuthority } from "@/lib/evidence-status-filter";
 import { compareEvidence, EVIDENCE_SORT_LABEL, matchesQuery, type EvidenceSortMode } from "@/lib/evidence-sort";
 import { useAgentAssessment } from "@/hooks/useAgentAssessment";
@@ -861,10 +861,10 @@ export function ArtifactRow({
             <AuthorityChip view={authority} />
             <span
               className="ledger-meta mt-0.5 flex items-center gap-1 truncate"
-              title={authority.state === "quarantined" ? `${authority.underlyingLabel} · ${authority.basis}` : authority.basis}
+              title={authority.state === "quarantined" && !underlyingRepeatsBasis(authority) ? `${authority.underlyingLabel} · ${authority.basis}` : authority.basis}
             >
-              <UnderlyingStrength view={authority} />
-              {authority.state === "quarantined" && <span aria-hidden>·</span>}
+              {!underlyingRepeatsBasis(authority) && <UnderlyingStrength view={authority} />}
+              {authority.state === "quarantined" && !underlyingRepeatsBasis(authority) && <span aria-hidden>·</span>}
               <span className="truncate">{authority.basis}</span>
             </span>
           </span>
