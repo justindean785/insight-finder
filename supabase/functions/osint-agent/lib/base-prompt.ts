@@ -18,11 +18,19 @@ import {
 import { FINDING_LABELS } from "../catalog.ts";
 import { buildWorkflowAddendum } from "../workflow_prompt.ts";
 import { memoryAuthorityWordingDisabled } from "./memory-provenance.ts";
+import { responseLanguageBlock } from "./response-language.ts";
 import { findingPromptV2Disabled } from "./finding-prompt.ts";
 
 // Two independent wording switches, both read at CALL TIME so a flip needs no deploy:
 //   MEMORY_AUTHORITY_WORDING_DISABLED (#831, lib/memory-provenance.ts) and FINDING_PROMPT_V2_DISABLED (lib/finding-prompt.ts).
 export function staticSystemPrompt(): string {
+  // The output-language rule (lib/response-language.ts, switch RESPONSE_LANGUAGE_RULE_DISABLED) rides the
+  // static prompt so finalize and the report see it; orchestrator-finalize.ts repeats it on every
+  // intermediate step. It is appended to WHICHEVER wording variant the two switches above select.
+  return selectStaticPrompt() + responseLanguageBlock();
+}
+
+function selectStaticPrompt(): string {
   const legacyMemory = memoryAuthorityWordingDisabled();
   const legacyFinding = findingPromptV2Disabled();
   if (legacyMemory && legacyFinding) return SYSTEM_PROMPT_FULL_LEGACY_MEMORY_AND_FINDING;
