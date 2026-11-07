@@ -42,3 +42,24 @@ export function parseUserMessage(text: string): ParsedUserMessage {
 export function isImageAttachment(a: ParsedAttachment): boolean {
   return IMAGE_EXT.test(a.name) || /image\//i.test(a.meta);
 }
+
+/**
+ * The filenames of a message that is NOTHING but an "Attached files:" block —
+ * null when the analyst typed text first, or when no file is named.
+ *
+ * Lenient on purpose: the edge stores a thread's `title` as the first 80 chars
+ * and `seed_value` as the first 200, both of which cut a signed storage URL off
+ * before its closing `)`, so `LINE_RE` above never matches the stored values.
+ * Only the `[name](` prefix is required.
+ */
+export function attachmentOnlyNames(text: string | null | undefined): string[] | null {
+  const raw = (text ?? "").trim();
+  if (!raw.startsWith(MARKER)) return null;
+  const names = [...raw.slice(MARKER.length).matchAll(/^\s*-\s*\[([^\]\n]+)\]\(/gm)].map((m) => m[1].trim()).filter(Boolean);
+  return names.length > 0 ? names : null;
+}
+
+/** "scan.pdf" / "scan.pdf +2" — a short label for an attachment-only case. */
+export function attachmentLabel(names: readonly string[]): string {
+  return names.length > 1 ? `${names[0]} +${names.length - 1}` : names[0];
+}

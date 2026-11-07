@@ -26,6 +26,19 @@ const artifacts = [
   { id: "a6", thread_id: THREAD_ID, kind: "location", value: "Oakland, California, US", confidence: 41, source: "indicia_person", created_at: iso(16), metadata: { confidence_cap_applied: 65, sources: ["indicia_person"], corroborations: 1, source_class: "data_broker" } },
   { id: "a7", thread_id: THREAD_ID, kind: "social_profile", value: "linkedin.com/in/james-harker-logistics", confidence: 79, source: "socialfetch", created_at: iso(11), metadata: { sources: ["socialfetch", "exa_search"], corroborations: 2, source_class: "provider" } },
   { id: "a8", thread_id: THREAD_ID, kind: "ip", value: "203.0.113.47", confidence: 34, source: "oathnet", created_at: iso(6), metadata: { sources: ["oathnet"], corroborations: 1, source_class: "breach_corpus" } },
+  // ── Linked to the subject beyond the seed ────────────────────────────────
+  // Every other row joins the seed's identity cluster only by being the seed,
+  // so the ledger's Linkage column read "Unresolved" everywhere but row a1. This
+  // row names the seed email in `metadata.email` — a concrete selector, which is
+  // how buildIdentityClusters unions rows (never on names) — so the harness shows
+  // a real linkage figure on a non-seed row. Synthetic: 555-01xx is reserved.
+  { id: "link-1", thread_id: THREAD_ID, kind: "phone", value: "+1 415 555 0163", confidence: 72, source: "hunter_verify", created_at: iso(20), metadata: { sources: ["hunter_verify", "exa_search"], corroborations: 2, source_class: "provider", email: "j.harker@northgate-logistics.com" } },
+  // ── Quarantined shared infrastructure ────────────────────────────────────
+  // Both authority axes at once: shared/CDN hosting (strength) and unproven
+  // linkage (authority). Its ledger basis opens with its own underlying label,
+  // which is the row that printed "Shared infrastructure · Shared
+  // infrastructure · not ownership proof" before underlyingRepeatsBasis().
+  { id: "qinfra-1", thread_id: THREAD_ID, kind: "ip", value: "198.51.100.23", confidence: 30, source: "shodan_internetdb", created_at: iso(17), metadata: { sources: ["shodan_internetdb"], corroborations: 1, source_class: "infra", shared_infra: true, subject_unlinked: true, subject_unlinked_reason: "reverse-IP neighbour on a shared CDN edge — hosting proximity, not linkage to the subject" } },
   // ── Quarantined: the same-name collision axis ────────────────────────────
   // A name-only sweep on "James Harker" returned a DIFFERENT James Harker's
   // selectors. The backend flags them `subject_unlinked` (#433) and they are

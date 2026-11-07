@@ -189,6 +189,18 @@ const FROM_STATUS: Record<EvidenceDisplayStatus, AuthorityState> = {
 };
 
 /**
+ * True when a quarantined row's evidence-basis string already opens with its
+ * underlying-strength label, so printing both reads the label twice
+ * ("Shared infrastructure · Shared infrastructure · not ownership proof").
+ * Presentation only: the label is still the row's `underlyingLabel`, and every
+ * surface that does not print the basis beside it keeps showing it.
+ */
+export function underlyingRepeatsBasis(view: Pick<AuthorityView, "state" | "underlyingLabel" | "basis">): boolean {
+  if (view.state !== "quarantined") return false;
+  return view.basis.toLowerCase().startsWith(view.underlyingLabel.toLowerCase());
+}
+
+/**
  * Triage order, strongest WARNING first. Quarantine sits below the two states
  * that assert something is actively wrong: a row that both collides on a name
  * and contradicts the seed should read as a conflict, because that is the more
