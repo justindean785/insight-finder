@@ -40,6 +40,10 @@ import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
 import { recoverStaleActiveThreads } from "./recovery.ts";
 import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./finding-synthesis-sweep.ts";
 import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
+import {
+  adjudicateContradictedClusters, clusterAdjudicationEnabled, clusterAdjudicationDryRun,
+  clusterAdjudicationMaxCalls, clusterAdjudicationModel, describeAdjudication,
+} from "./cluster-adjudication-sweep.ts";
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 import {
   CREDENTIAL_HEALTH_SAMPLE_ROWS, CREDENTIAL_HEALTH_WINDOW_MS, MAINTENANCE_SKIPPED_DETAIL, maintenanceRequested,
@@ -824,7 +828,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   }
   try {
     if (wantMaintenance && SUPABASE_URL && SERVICE_KEY) {
-      r.checks.maintenance = { ok: true, detail: "ran: recovery, rejected-cluster sweep, credential health, synthesis, cache sweep" };
+      r.checks.maintenance = { ok: true, detail: "ran: recovery, rejected-cluster sweep, credential health, synthesis, cluster adjudication, cache sweep" };
       const admin = createClient(SUPABASE_URL, SERVICE_KEY);
       const recovered = await recoverStaleActiveThreads(admin, { limit: 20, reason: "stale heartbeat recovered by health sweep" });
       r.checks.recovery = recovered.errors
@@ -920,6 +924,33 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
         const detail = `${scopes.join("+")}: ${mode}; ${proposed} proposed over ${threads} thread(s) ` +
           `(0:${dist.zero} 1:${dist.one} 2+:${dist.twoPlus})`;
         r.checks.synthesis = errs ? { ok: false, detail: `${detail}; ${errs} error(s)` } : { ok: true, detail };
+      }
+
+      // Claude cluster adjudication: ADVISORY verdicts on contradicted clusters,
+      // written only to cluster_adjudications. Placed after synthesis for the same
+      // reason (a separate request from any run; a fault is a reported check, never
+      // a failed probe) and ships DARK. Unlike the sweeps above it spends money, so
+      // enabled-without-a-key is reported and makes no call, and a DRY RUN reports
+      // the queue without calling the model (see cluster-adjudication-sweep.ts).
+      if (!clusterAdjudicationEnabled()) {
+        r.checks.cluster_adjudication = { ok: true, detail: "disabled" };
+      } else if (!ANTHROPIC_API_KEY) {
+        r.checks.cluster_adjudication = { ok: false, detail: "enabled but ANTHROPIC_API_KEY is not set; no call attempted" };
+      } else {
+        try {
+          const a = await adjudicateContradictedClusters(admin, {
+            apiKey: ANTHROPIC_API_KEY,
+            model: clusterAdjudicationModel(),
+            dryRun: clusterAdjudicationDryRun(),
+            maxCalls: clusterAdjudicationMaxCalls(),
+          });
+          const detail = describeAdjudication(a);
+          r.checks.cluster_adjudication = a.errors
+            ? { ok: false, detail: `${detail}; ${a.errors} error(s)` }
+            : { ok: true, detail };
+        } catch (e) {
+          r.checks.cluster_adjudication = { ok: false, detail: String(e).slice(0, 160) };
+        }
       }
 
       // Expired tool-call cache. Same placement and same reasoning as the two
