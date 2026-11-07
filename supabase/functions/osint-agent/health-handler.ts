@@ -31,7 +31,7 @@ import { anthropicModelRejectsForcedToolChoice, anthropicOrchestratorHealth } fr
 import { anthropicFallbackDisabled, orchestratorFallbackHealth } from "./lib/orchestrator-fallback.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn, opsisStartClassificationSelfTest } from "./lib/opsis.ts";
-import { buildFinalizePersistDirective, opsisFinalizeCollectSelfTest } from "./orchestrator-finalize.ts";
+import { buildFinalizePersistDirective, findingsTableDirectivesSelfTest, opsisFinalizeCollectSelfTest } from "./orchestrator-finalize.ts";
 import { findingPromptSelfTest } from "./lib/finding-prompt.ts";
 import { staticSystemPrompt } from "./lib/base-prompt.ts";
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
@@ -723,12 +723,17 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // synthetic fixture compared to its pinned table; `switch` reports FINDINGS_TABLE_EXPANSION_DISABLED. PRESENCE proves the
   // deployed bundle; the call site in index.ts (copy-on-write, never `assistant.parts`) is pinned in CI by findings_table_wiring_test.ts.
   // Whether the model actually writes the marker is a log measurement: `findings_table_expanded.marker_found`.
+  // `directives` proves the two instructions a report is actually written under — the forced-finalize directive and the
+  // salvage prompt — both ask for `## Findings` + the marker (`finalize+salvage`), or both revert with the switch (`legacy`).
+  // The system prompt alone did not suffice: those two override it (SESSION_HANDOFF_2026-11-07, adoption 0 of 1).
   {
     const enabled = findingsTableExpansionEnabled();
     const st = runFindingsTableSelfTest();
+    const dir = findingsTableDirectivesSelfTest();
     r.checks.findings_table = {
-      ok: st.ok,
+      ok: st.ok && dir.ok,
       enabled,
+      directives: dir.directives,
       switch: "FINDINGS_TABLE_EXPANSION_DISABLED",
       detail: enabled ? st.detail : `LEGACY via FINDINGS_TABLE_EXPANSION_DISABLED: ${st.detail}; the stored message is passed through unexpanded`,
     };
