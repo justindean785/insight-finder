@@ -1,5 +1,6 @@
 import { readProviderExport } from "@/lib/provider-export";
 import { extractDisplaySeed, type SeedKind } from "@/lib/seed";
+import { attachmentLabel, attachmentOnlyNames } from "@/lib/attachments";
 
 /**
  * The case's own name, when it says more than the selector does. A blank,
@@ -16,6 +17,9 @@ export function humanCaseName(title: string | null, seedValue: string | null, se
   const t = (title ?? "").trim();
   if (!t || /^(new investigation|investigation|untitled)$/i.test(t)) return null;
   if (isPastedExport(t)) return exportSubjectTitle(seedValue) ?? exportSubjectTitle(t);
+  // An upload's raw "Attached files:" markdown is not a name; the header's seed
+  // heading (the filename, from extractDisplaySeed) already says it.
+  if (attachmentOnlyNames(t)) return null;
   const norm = (s: string | null) => (s ?? "").trim().toLowerCase();
   if (norm(t) === norm(seedValue) || norm(t) === norm(seedDisplay)) return null;
   return t;
@@ -66,6 +70,8 @@ export function exportSubjectTitle(text: string | null | undefined): string | nu
  */
 export function threadDisplayTitle(title: string | null | undefined, seedValue?: string | null): string {
   const t = title ?? "";
+  const files = attachmentOnlyNames(t);
+  if (files) return `Attachment: ${attachmentLabel(files)}`;
   if (!isPastedExport(t)) return t;
   const derived = exportSubjectTitle(seedValue) ?? exportSubjectTitle(t);
   if (derived) return derived;
