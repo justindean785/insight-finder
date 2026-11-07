@@ -2381,8 +2381,10 @@ Deno.serve(async (req) => {
           // inside the renderer). The expansion works on a COPY — `assistant.parts` is never
           // assigned, so `resolveTerminalState` below still judges what the model actually wrote —
           // and it only runs when the message already has report shape without the marker, so a
-          // stub cannot be made to look complete in the STORED row. Salvage reports carry no marker
-          // (their prompt is unchanged), so they pass through untouched. Never throws; any failure
+          // stub cannot be made to look complete in the STORED row. The salvage part is appended
+          // above, so it is expanded like any other text part when the salvage prompt's marker was
+          // followed (buildSalvageSynthesisPrompt asks for it; a salvage text without the marker
+          // passes through untouched). Never throws; any failure
           // leaves the parts as they were and logs the error name. Kill switch:
           // FINDINGS_TABLE_EXPANSION_DISABLED=true, read at call time.
           let partsToPersist = assistant.parts as unknown[];
