@@ -19,6 +19,7 @@ import {
   OPSIS_GUARD_SKIP_PREFIX, OPSIS_RESULTS_HINT_CODES, decideOpsisSearch, findPendingForSelector, noteOpsisResultsOutcome, noteOpsisSearchOutcome,
   opsisResultsHint, opsisResultsHintDisabled, opsisSearchGuardDisabled, uncollectedOpsisRuns,
 } from "./lib/opsis-search-guard.ts";
+import { contextdevQuerySelector } from "./lib/contextdev.ts";
 // Union of both sides. #519 replaced this file's quarantine read with the paged
 // `loadRefusedArtifacts`, which absorbs what `buildRefusedKeys` did here, so that
 // symbol is deliberately NOT re-imported — it is unused in this module after the
@@ -179,6 +180,13 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // with a run_id, rather than the wrapper discarding a paid run.
   opsis_search: 30_000,
   opsis_results: 30_000,
+  // Context.dev (lib/contextdev.ts): each sits 5s above the module's own WHOLE-CALL
+  // budget (20s / 30s / 25s, all attempts and waits) so the module fails cleanly first and the wrapper
+  // never discards a paid answer that was one retry away. The provider-side deadlines
+  // (timeoutOpts) sit under the module budgets in turn.
+  contextdev_web_search: 25_000,
+  contextdev_scrape: 35_000,
+  contextdev_people_search: 30_000,
   // minimax_correlate is the correlation engine — it sends the whole artifact batch
   // (up to 200 entries / 16k chars) to the smart-tier model for a 1500-token JSON
   // clustering+rescoring response. The 2026-07-08 pipeline audit caught it timing out
@@ -1153,9 +1161,16 @@ export function wrapToolsWithCache(
         const t0 = Date.now();
         // ---- Circuit breaker + dedup gate ----
         const inp = (input ?? {}) as Record<string, unknown>;
-        const selectorType = detectSelectorType(inp);
-        const selectorValue = detectSelectorValue(inp);
-        const sel = circuit.normalizeSelector(selectorType, selectorValue);
+        const detectedType = detectSelectorType(inp);
+        const detectedSel = circuit.normalizeSelector(detectedType, detectSelectorValue(inp));
+        // Context.dev search tools carry their selector under `query`, which the generic
+        // detectors above do not read. Without this the premium once-per-query gate,
+        // dead-target memory and the per-selector circuit keys all saw an EMPTY selector
+        // for contextdev_people_search (Codex P2 on #973). Tool-scoped by design — see
+        // CONTEXT_DEV_QUERY_SELECTOR_TOOLS in lib/contextdev.ts.
+        const querySel = detectedSel ? null : contextdevQuerySelector(name, inp);
+        const selectorType = querySel ? "query" : detectedType;
+        const sel = querySel ?? detectedSel;
         const purpose = String(inp.purpose ?? "default");
         const force = inp.force === true;
         // ---- subject_unlinked boundary: PROMOTION, not dispatch ----
@@ -2154,6 +2169,7 @@ export const AUTO_EVIDENCE_TOOLS = new Set<string>([
   "hunter_combined",
   "username_sweep",
   "jina_reader_scrape",
+  "contextdev_scrape",
 ]);
 
 // ---- Evidence seed extraction --------------------------------------------------

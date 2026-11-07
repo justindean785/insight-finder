@@ -80,7 +80,7 @@ import {
   MINIMAX_API_KEY, LOVABLE_API_KEY,
   OATHNET_API_KEY, OSINTNOVA_API_KEY, SOCIALFETCH_API_KEY,
   CORDCAT_API_KEY, HUNTER_API_KEY,
-  HIBP_API_KEY, OPSIS_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,
+  HIBP_API_KEY, OPSIS_API_KEY, CONTEXT_DEV_API_KEY, GITHUB_API_TOKEN, EXA_API_KEY, JINA_API_KEY,
   GEMINI_API_KEY, OSINT_NAVIGATOR_API_KEY, PERPLEXITY_API_KEY, SERUS_API_KEY, IPQUALITYSCORE_API_KEY,
   RAPIDAPI_KEY, INDICIA_API_KEY, PEOPLEDATALABS_API_KEY,
   OPENCORPORATES_API_KEY, RANSOMWARELIVE_API_KEY,
@@ -91,6 +91,7 @@ import {
 } from "./env.ts";
 import { buildLeakcheckUrl, buildOathnetUrl } from "./breach-request.ts";
 import { opsisAccount, opsisDepsFromEnv, opsisKillSwitchOn, opsisResults, opsisSearch } from "./lib/opsis.ts";
+import { contextdevDepsFromEnv, contextdevKillSwitchOn, contextdevPeopleSearch, contextdevScrape, contextdevWebSearch } from "./lib/contextdev.ts";
 import {
   oathnetBreachSearchUrl, oathnetStealerSearchUrl, oathnetVictimsSearchUrl,
   oathnetVictimManifestUrl, oathnetVictimFileUrl, oathnetVictimArchiveUrl,
@@ -699,6 +700,14 @@ export function buildTools(ctx: ToolContext) {
   // it, a record_artifacts call in the very next step races that insert, reads no
   // quarantined name, and writes the same-name rows at full authority.
   const pendingQuarantineRows: ThreadRow[] = [];
+  // Context.dev in-run URL dedup (lib/contextdev.ts dedupByUrl). buildTools runs once per
+  // request, so this set is per run: a URL any contextdev_* search already returned this
+  // run is reported in `deduped`, not surfaced twice. The artifact WRITE path keeps its own
+  // dedup (lib/artifact-hygiene.ts artifactDedupKey); this only trims what the model reads.
+  const contextdevSeenUrls = new Set<string>();
+  // PEOPLE-ONLY dedup set: a profile URL seen in a 1-credit search snippet must not erase a
+  // 10-credit structured person row (lib/contextdev.ts shapePeopleResponse).
+  const contextdevSeenProfiles = new Set<string>();
   const noteQuarantinedFindings = (
     findings: ReadonlyArray<{ kind: string; value: string; context?: Record<string, unknown> }>,
   ): void => {
@@ -788,6 +797,11 @@ export function buildTools(ctx: ToolContext) {
         if (!OPSIS_API_KEY || opsisKillSwitchOn()) {
           for (const n of ["opsis_search", "opsis_results", "opsis_balance", "opsis_status"]) {
             disabled.push({ name: n, reason: "Opsis is not configured or is switched off — use username_sweep for account enumeration." });
+          }
+        }
+        if (!CONTEXT_DEV_API_KEY || contextdevKillSwitchOn()) {
+          for (const n of ["contextdev_web_search", "contextdev_scrape", "contextdev_people_search"]) {
+            disabled.push({ name: n, reason: "Context.dev is not configured or is switched off — use exa_search / jina_reader_scrape / indicia_person." });
           }
         }
         // Config-disabled providers (`disabled: true` in capabilities.ts's
@@ -1196,6 +1210,9 @@ export function buildTools(ctx: ToolContext) {
             "hibp_pwned_passwords_kanon","gleif_lei_search","opencorporates_search",
             // Search + scrape (preferred order)
             "jina_reader_scrape","exa_search","exa_get_contents","exa_find_similar",
+            // Context.dev (paid, prefer-free-first; lib/contextdev.ts). Gated off the menu below
+            // when CONTEXT_DEV_API_KEY is unset or CONTEXT_DEV_DISABLED=true.
+            "contextdev_web_search","contextdev_scrape","contextdev_people_search",
             "minimax_web_search","google_dorks","dork_harvest","gemini_deep_dork",
             // Archive + chain-of-custody + misc
             "wayback_snapshots","archive_url","crypto_wallet",
@@ -1253,6 +1270,8 @@ export function buildTools(ctx: ToolContext) {
             // People Data Labs Person Enrichment — keep off the planner menu
             // until PEOPLEDATALABS_API_KEY is set (same gate as Indicia).
             if (name === "pdl_person_enrich" && !PEOPLEDATALABS_API_KEY) return false;
+            // Context.dev — one key for all three; off the menu when unkeyed or switched off.
+            if (name.startsWith("contextdev_") && (!CONTEXT_DEV_API_KEY || contextdevKillSwitchOn())) return false;
             // Gemini vision/document reader — only works with GEMINI_API_KEY; keep
             // it off the planner menu when unkeyed (same gate as gemini_deep_dork).
             if (name === "gemini_vision" && !GEMINI_API_KEY) return false;
@@ -3295,6 +3314,44 @@ export function buildTools(ctx: ToolContext) {
       inputSchema: memoSchema("opsis_status", () => z.object({})),
       execute: async (_input, opts) =>
         await opsisAccount("status", opsisDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
+    }),
+    // Context.dev web-data API (lib/contextdev.ts): paid web search, page scrape and
+    // natural-language people search. All three are PREFER-FREE-FIRST: the descriptions
+    // are routing instructions the orchestrator follows, not marketing. Removed from the
+    // schema when CONTEXT_DEV_API_KEY is unset or CONTEXT_DEV_DISABLED=true (gate above).
+    contextdev_web_search: tool({
+      description:
+        "Context.dev web search: up to 10 {url,title,snippet,relevance} rows; accepts Google-style operators (site:, inurl:, intitle:, quoted phrases, OR) and a freshness window. PAID (1 credit ≈ $0.002; highlights:true adds 1). PREFER FREE FIRST: call ONLY after exa_search / minimax_web_search returned empty or failed, or when operators or freshness are the point. Never re-fetch a URL another provider already returned unless a second independent source is deliberately wanted. Results carry deduped:N for URLs already seen this run; results are discovery, not corroboration.",
+      inputSchema: memoSchema("contextdev_web_search", () => z.object({
+        query: z.string().min(2).max(500),
+        numResults: z.number().int().min(1).max(10).default(10),
+        includeDomains: z.array(z.string().min(3)).max(20).optional(),
+        excludeDomains: z.array(z.string().min(3)).max(20).optional(),
+        freshness: z.enum(["last_24_hours", "last_week", "last_month", "last_year"]).optional(),
+        highlights: z.boolean().default(false).describe("Also return up to 4 query-relevant passages per result (+1 credit)."),
+      })),
+      execute: async (input, opts) =>
+        await contextdevWebSearch(input, contextdevDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal), contextdevSeenUrls),
+    }),
+    contextdev_scrape: tool({
+      description:
+        "Context.dev page scrape: markdown of ONE URL capped at 2,000 chars (truncated:true when cut) plus title, final_url, cache_status; handles PDFs and Office docs. PAID (1 credit ≈ $0.002); the provider caches ~3 days unless fresh:true. PREFER FREE FIRST: call ONLY when jina_reader_scrape (free) failed, was origin-blocked or returned junk for that exact URL — never as the first reader. A page observation (independent_public), recorded with source context.dev.",
+      inputSchema: memoSchema("contextdev_scrape", () => z.object({
+        url: z.string().url(),
+        fresh: z.boolean().default(false).describe("true fetches fresh (maxAgeMs 0) instead of the provider's 3-day cache."),
+      })),
+      execute: async (input, opts) =>
+        await contextdevScrape(input, contextdevDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal)),
+    }),
+    contextdev_people_search: tool({
+      description:
+        "Context.dev people search: up to 10 professional profiles {name, headline, profiles[], location, role, years_of_experience} matching a natural-language description (role, employer, location, background). PAID: 10 credits (≈ $0.02) per non-empty page; empty pages are free. ONE page per call, no pagination, and NEVER the same query twice in a run (the circuit refuses the repeat). Distinct capability — descriptions no selector tool answers; for a KNOWN name use indicia_person / pdl_person_enrich first. Output is broker-grade LEADS (authority:lead, cap 60): never identity proof, [VERIFY] until a profile is fetched.",
+      inputSchema: memoSchema("contextdev_people_search", () => z.object({
+        query: z.string().min(3).max(500),
+        countries: z.array(z.string().regex(/^[A-Z]{2}$/)).max(5).optional().describe("ISO-2 country codes the people live in, e.g. [\"US\"]."),
+      })),
+      execute: async (input, opts) =>
+        await contextdevPeopleSearch(input, contextdevDepsFromEnv((opts as { abortSignal?: AbortSignal } | undefined)?.abortSignal), contextdevSeenProfiles),
     }),
     crtsh_subdomains: tool({
       description: "Enumerate subdomains for a domain via crt.sh certificate transparency logs.",

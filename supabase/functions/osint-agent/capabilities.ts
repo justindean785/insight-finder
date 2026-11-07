@@ -67,6 +67,10 @@ export const PROVIDER_REQUIREMENTS: Record<string, ProviderRequirement> = {
   opsis_results: { requiresKey: "OPSIS_API_KEY" },
   opsis_balance: { requiresKey: "OPSIS_API_KEY" },
   opsis_status: { requiresKey: "OPSIS_API_KEY" },
+  // Context.dev — all three share one key (lib/contextdev.ts).
+  contextdev_web_search: { requiresKey: "CONTEXT_DEV_API_KEY" },
+  contextdev_scrape: { requiresKey: "CONTEXT_DEV_API_KEY" },
+  contextdev_people_search: { requiresKey: "CONTEXT_DEV_API_KEY" },
   cordcat_discord_lookup: { requiresKey: "CORDCAT_API_KEY" },
   bosint_email_lookup: { requiresKey: "OSINTNOVA_API_KEY" },
   leakcheck_lookup: { requiresKey: "LEAKCHECK_API_KEY" },

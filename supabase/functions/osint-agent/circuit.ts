@@ -90,6 +90,7 @@ const PROVIDER_TOOLS: Record<string, string[]> = {
   ],
   hunter: ["hunter_domain_search", "hunter_email_finder", "hunter_email_verifier", "hunter_combined"],
   exa: ["exa_search", "exa_find_similar", "exa_get_contents"],
+  contextdev: ["contextdev_web_search", "contextdev_scrape", "contextdev_people_search"],
   // minimax_web_search hits Perplexity (a DIFFERENT upstream than the MiniMax
   // reasoning model — see #293), so a SEARCH timeout/429/5xx must not drag down
   // the reasoning tools. Keep the search worker on its own "minimax" key.
@@ -140,6 +141,8 @@ export function providerForTool(tool: string): string {
 export const GENERAL_MULTI_ORIGIN_TOOLS = new Set<string>([
   "jina_reader_scrape",
   "socialfetch_web_read",
+  // contextdev_scrape reads arbitrary URLs too: one blocked origin is a per-URL problem.
+  "contextdev_scrape",
 ]);
 
 /** Uninterrupted TIMEOUT outcomes (no success or other-failure in between) a
@@ -384,6 +387,10 @@ export const PREMIUM_TOOLS = new Set<string>([
   // never by searching again (lib/opsis.ts). The tool description asks for this;
   // this is what enforces it.
   "opsis_search",
+  // Context.dev people search is 10 credits per non-empty page; the same query asked
+  // twice in a run is the same page bought twice. The tool description forbids it;
+  // this is what enforces it (one call per normalized query per investigation).
+  "contextdev_people_search",
 ]);
 
 export function isPremiumTool(tool: string): boolean {

@@ -65,6 +65,10 @@ export const AUTO_PERSIST_TOOL_DENYLIST = new Set<string>([
   "osint_navigator_search", "osint_navigator_advise",
   // Vision / read tools — the surfaced URL is the INPUT, not a finding.
   "gemini_vision", "jina_reader_scrape", "http_fingerprint", "firecrawl_scrape",
+  // Context.dev search / scrape / people search — same class as exa_search and jina:
+  // the model records the good hits via record_artifacts. People results are broker
+  // leads; scanning them blindly would file strangers' names against the subject.
+  "contextdev_web_search", "contextdev_scrape", "contextdev_people_search",
   // Attribution / integrity guards — no user-facing findings.
   "attribution_check", "date_sanity_check",
 ]);
@@ -99,6 +103,10 @@ export const ESCALATION_ELIGIBLE_TOOLS = new Set<string>([
   "google_dorks", "minimax_web_search", "perplexity_search", "exa_search",
   "osint_navigator_search", "osint_navigator_advise",
   "gemini_vision", "jina_reader_scrape", "http_fingerprint", "firecrawl_scrape",
+  // contextdev_people_search is deliberately ABSENT: a people page is a list of unrelated
+  // strangers, not evidence about the subject, and a people query is never name-shaped,
+  // so the quarantine stamp would not apply. Escalation must never lift its denylisting.
+  "contextdev_web_search", "contextdev_scrape",
 ]);
 
 /** Ceiling on candidates held in memory awaiting the escalation gate. 2x the
