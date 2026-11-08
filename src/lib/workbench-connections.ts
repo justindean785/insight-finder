@@ -2,7 +2,9 @@ import type { EntityGraph, GraphEdge, GraphNode } from "@/lib/entity-graph";
 import { isIsolatedLead, linkedNodeIds, SEED_ID } from "@/lib/entity-graph";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { isNegativeResultArtifact, LOOKUP_RESULT_KINDS } from "@/lib/intel";
-import { isNullResultValue } from "@/lib/report-hygiene";
+import { isClusterIneligible, isNullResultValue } from "@/lib/report-hygiene";
+import { isBreachKind } from "@/lib/breach-kinds";
+import { caseLacksSubject } from "@/lib/set-subject";
 
 /** Metadata keys a lookup tool writes its result summary into ("breach_check_result": "0 hits"). */
 const RESULT_KEY_RE = /_result$/;
@@ -96,4 +98,38 @@ export function connectionsView(graph: EntityGraph): ConnectionsView {
     realLinks: graph.stats.realEdgeCount,
     clusters: graph.stats.clusterCount,
   };
+}
+
+/**
+ * Why a case reads "0 evidence links" — measured, not guessed.
+ *
+ * Measured on a live upload-started case (2026-11-08): 70 rows, 0 links, 70
+ * "unlinked candidates", while the analyst could see the same mailboxes and
+ * handle repeated across uploads and scans. Every one of those repetitions sat
+ * behind a gate this panel never named:
+ *  - breach records may group selectors but never forge an identity edge
+ *    (`entity-graph.ts`, the `isConflict` skip; integrity rule, unchanged here);
+ *  - quarantined rows lend no linkage (`isClusterIneligible`);
+ *  - an upload-only case has no subject for anything to link to (`caseLacksSubject`).
+ * This only COUNTS rows behind those gates so the panel can say so. It changes no
+ * edge, cluster, authority or confidence.
+ */
+export interface UnlinkedReasons {
+  total: number;
+  /** Breach/leak rows outside quarantine: they can co-record, never prove identity. */
+  breachOnly: number;
+  /** Rows under active quarantine or a collision flag. */
+  quarantined: number;
+  /** The case was started from an upload and has no subject selector. */
+  noSubject: boolean;
+}
+
+export function unlinkedReasons(items: Artifact[], seedValue: string | null): UnlinkedReasons {
+  let breachOnly = 0;
+  let quarantined = 0;
+  for (const a of items) {
+    if (isClusterIneligible(a)) quarantined += 1;
+    else if (isBreachKind(a.kind)) breachOnly += 1;
+  }
+  return { total: items.length, breachOnly, quarantined, noSubject: caseLacksSubject(seedValue) };
 }
