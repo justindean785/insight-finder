@@ -43,6 +43,7 @@
 // it is a Lead until independently corroborated. This file returns raw results +
 // outcome only; it does not and must not set confidence itself.
 
+import { resolveWebDbServices, WEB_DB_DEFAULT_SERVICES, WEB_DB_SERVICES } from "../lib/indicia-web-dbs.ts";
 import { tool } from "npm:ai@6";
 import { z } from "npm:zod@3";
 import { fetchT } from "../fetch_retry.ts";
@@ -66,17 +67,9 @@ const INDICIA_BASE = "https://api.indicia.app";
 // siblings, burning ~60s of run wall-clock to return nothing.
 const INDICIA_HTTP_TIMEOUT_MS = 30_000;
 
-/**
- * The closed set of web-DB corpora the `/web-dbs` endpoint accepts. The endpoint
- * requires a non-empty `services` list and rejects any name outside this set, so
- * both the default and the filter read from here — one list, not three.
- */
-export const WEB_DB_SERVICES = [
-  "cloudsint",
-  "leakcheck",
-  "snusbase",
-  "intelligencex.identityportal",
-] as const;
+// The closed web-DB corpus set and the snusbase-free DEFAULT live in a pure module so
+// /health can self-test them; re-exported here so existing importers are unchanged.
+export { WEB_DB_DEFAULT_SERVICES, WEB_DB_SERVICES } from "../lib/indicia-web-dbs.ts";
 
 /** The closed set of selector types the `/hudsonrock` endpoint accepts. */
 export const HUDSONROCK_TYPES = ["domain", "email", "ip", "password", "username"] as const;
@@ -408,19 +401,13 @@ export const indicia_web_dbs = tool({
   inputSchema: z.object({
     query: z.string().min(3).describe("Selector (email, username, phone, …)."),
     services: z.array(z.string()).optional().describe(
-      `Optional subset of web-DB services: ${WEB_DB_SERVICES.join(" | ")}. Defaults to all.`,
+      `Optional subset of web-DB services: ${WEB_DB_SERVICES.join(" | ")}. Defaults to ${WEB_DB_DEFAULT_SERVICES.join(" | ")}. ` +
+        "`snusbase` is NOT in the default: the provider requires a `snusbaseType` this tool cannot send, so naming it currently fails with HTTP 400.",
     ),
   }),
   execute: async ({ query, services }, opts) => {
-    // `services` is REQUIRED by the endpoint and validated against a closed set —
-    // omitting it, or naming a service outside the set, is an unconditional 400.
-    // Resolved HERE rather than only in the zod schema: execute() is called
-    // directly by tests and by any path that skips schema parsing, and an explicit
-    // `services: []` would satisfy a .default() while still 400ing.
-    const requested = (services ?? [])
-      .map((s) => String(s).trim().toLowerCase())
-      .filter((s) => (WEB_DB_SERVICES as readonly string[]).includes(s));
-    const resolved = requested.length > 0 ? requested : [...WEB_DB_SERVICES];
+    // Resolution (and why the default omits snusbase) lives in lib/indicia-web-dbs.ts.
+    const resolved = resolveWebDbServices(services);
     return indiciaRequest(
       "/v1/search/intelligence/web-dbs",
       "web-dbs",

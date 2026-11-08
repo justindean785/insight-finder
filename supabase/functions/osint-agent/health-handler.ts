@@ -80,6 +80,7 @@ import { analystAuthorityBoundarySelfTest } from "./lib/analyst-authority-keys.t
 import { archiveOriginRuleSelfTest, breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 import { memoryInputNormalizationSelfTest } from "./lib/memory-input-normalization.ts";
 import { indiciaPersonOptInSelfTest } from "./costs.ts";
+import { webDbsDefaultSelfTest } from "./lib/indicia-web-dbs.ts";
 import { exactBooleanRepairSelfTest } from "./lib/exact-boolean-repair.ts";
 import { malformedJsonRepairSelfTest } from "./lib/malformed-json-repair.ts";
 import { inputCoercionSelfTest, inputKindInferenceSelfTest } from "./lib/tool-input-coercion.ts";
@@ -703,6 +704,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Is indicia_person's missing-first-name search an explicit boolean opt-in (default off, never repaired from a string),
   // ledgered through the per-call cost seam (multiplier 1)? Pure; `switch` reports INDICIA_MISSING_FIRST_NAME_DISABLED. PRESENCE proves the bundle.
   r.checks.indicia_person_opt_in = indiciaPersonOptInSelfTest();
+
+  // Does indicia_web_dbs's DEFAULT corpus list omit snusbase? The provider rejects snusbase
+  // without a `snusbaseType` this tool never sends (5 of 8 calls failed in 30 days). Pure.
+  // PRESENCE proves the deployed bundle; "LEGACY" = INDICIA_WEB_DBS_SNUSBASE_DEFAULT=true.
+  r.checks.indicia_web_dbs_default = webDbsDefaultSelfTest();
   // Is a call whose JSON text did not parse repaired only by dropping one enclosing code fence and trailing commas, never
   // by closing a truncation? Pure; `switch` reports MALFORMED_JSON_REPAIR_DISABLED. PRESENCE proves the deployed bundle.
   r.checks.malformed_json_repair = malformedJsonRepairSelfTest();

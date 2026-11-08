@@ -2,8 +2,9 @@ import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.t
 import {
   indicia_email, indicia_phone, indicia_person,
   indicia_address, indicia_web_dbs, indicia_hudsonrock,
-  extractIndiciaRecords, inferHudsonRockType, WEB_DB_SERVICES,
+  extractIndiciaRecords, inferHudsonRockType,
 } from "../../functions/osint-agent/tools/indicia.ts";
+import { WEB_DB_DEFAULT_SERVICES } from "../../functions/osint-agent/lib/indicia-web-dbs.ts";
 import { buildTools, type ToolContext } from "../../functions/osint-agent/tool-registry.ts";
 import { classifyToolOutcome } from "../../functions/osint-agent/tool-outcome.ts";
 import { classifySource } from "../../functions/osint-agent/source-classification.ts";
@@ -295,7 +296,7 @@ Deno.test("indicia_address: zip is REQUIRED by the schema (an omitted zip is a h
   assertEquals(schema.shape.city.isOptional(), true, "city stays optional");
 });
 
-Deno.test("indicia_web_dbs: an omitted services list defaults to the full closed set", async () => {
+Deno.test("indicia_web_dbs: an omitted services list defaults to the snusbase-free default set", async () => {
   let sentBody: Record<string, unknown> | null = null;
   await withStubbedFetch((_url, init) => {
     sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
@@ -303,10 +304,10 @@ Deno.test("indicia_web_dbs: an omitted services list defaults to the full closed
   }, async () => {
     await exec(indicia_web_dbs, { query: "jane@example.com" });
   });
-  assertEquals((sentBody as unknown as Record<string, unknown>).services, [...WEB_DB_SERVICES]);
+  assertEquals((sentBody as unknown as Record<string, unknown>).services, [...WEB_DB_DEFAULT_SERVICES]);
 });
 
-Deno.test("indicia_web_dbs: an explicit empty array still resolves to the full set", async () => {
+Deno.test("indicia_web_dbs: an explicit empty array still resolves to the default set", async () => {
   // `services: []` satisfies a zod .default() while still 400ing at the provider,
   // which is why the resolution lives in execute() and not only in the schema.
   let sentBody: Record<string, unknown> | null = null;
@@ -316,7 +317,7 @@ Deno.test("indicia_web_dbs: an explicit empty array still resolves to the full s
   }, async () => {
     await exec(indicia_web_dbs, { query: "jane@example.com", services: [] });
   });
-  assertEquals((sentBody as unknown as Record<string, unknown>).services, [...WEB_DB_SERVICES]);
+  assertEquals((sentBody as unknown as Record<string, unknown>).services, [...WEB_DB_DEFAULT_SERVICES]);
 });
 
 Deno.test("indicia_web_dbs: a service outside the closed set is dropped, not forwarded", async () => {
