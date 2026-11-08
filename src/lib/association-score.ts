@@ -1,8 +1,9 @@
 /**
  * Association likelihood — a graded "how likely are these the same operator"
- * measurement (0–100) computed from the case's own structure. Stage 1 of JD's
- * sign-off (2026-11-08): frontend-only, display-only, READS everything and
- * WRITES nothing. It never feeds readiness, the review queue, or the report.
+ * measurement (0–100) computed from the case's own structure. Stage 1 of the
+ * signed-off rollout (2026-11-08): frontend-only, display-only, READS
+ * everything and WRITES nothing. It never feeds readiness, the review queue,
+ * or the report.
  *
  * Why this exists: the engine could only say "confirmed or not", so a strong
  * co-occurrence pattern rendered as nothing (0 evidence links on a case whose
@@ -16,16 +17,20 @@
  *     Bands are Strong / Likely / Possible / Weak — the same rungs the cluster
  *     board and `linkageWord` already use (80 / 60 / 40).
  *  2. Analyst verdicts are AUTHORITY, not evidence. A rejected row is removed
- *     from scoring entirely; a confirmed row gets NO score change (JD's
- *     2026-11-02 decision, same as confidence.ts). This deliberately deviates
- *     from the draft proposal's "confirmed raises the score" line.
+ *     from scoring entirely; a confirmed row gets NO score change (the
+ *     operator's 2026-11-02 decision, same as confidence.ts). This deliberately
+ *     deviates from the draft proposal's "confirmed raises the score" line.
  *  3. A selector is withheld only when it has NO clean witness. Quarantine is
- *     per-row; when ANY non-quarantined artifact observes the same selector
- *     (e.g. an analyst-uploaded corpus-a row naming a mailbox an earlier
- *     name-only harvest had quarantined), the selector scores from its clean
- *     witnesses. Inherited quarantine cannot silently zero a live link —
- *     and a fully quarantined selector still gets no figure, because linkage
- *     is exactly what quarantine says is unproven.
+ *     per-row: quarantined rows still REGISTER their selectors (the gate must
+ *     know them) but contribute NO evidence — no co-occurrence weight, no
+ *     declaration bonus, no attributes. When any non-quarantined artifact
+ *     observes the same selector (e.g. an analyst-uploaded breach row naming
+ *     a mailbox an earlier name-only harvest had quarantined), the selector
+ *     scores from its clean witnesses alone. Inherited quarantine cannot
+ *     silently zero a live link — and a fully quarantined selector still gets
+ *     no figure, because linkage is exactly what quarantine says is unproven.
+ *     Display-only: nothing here releases quarantine authority anywhere else
+ *     (linkage_confirmed, labels, clustering are all untouched).
  *  4. Mirrors are not corroboration. Independence is counted in SOURCE
  *     CLASSES (intel.independentSourceClasses), so five resold copies of one
  *     leak count as one observation.
@@ -39,10 +44,12 @@
  *     reason in `opposing`. Nothing is silently dropped.
  *
  * Pure and deterministic: same artifacts + same reviews in, same report out.
- * Verified 2026-11-08 against the motivating upload case (70 artifacts):
- * the email↔handle pair named by one composite breach row scored 62 (likely), the two-mailbox
- * pair scored weak with its reasons exposed, and all 299 namesake pairs
- * withheld — matching the analyst's read of the case.
+ * Verified 2026-11-08 against a live 70-artifact case export: the pair carried
+ * by one analyst-uploaded breach row scored Possible (45 — one observation,
+ * one weight), the pair carried by a structured provider declaration scored
+ * Likely (65), the pair an LLM prose finding had asserted at "52%" scored
+ * Weak with its reasons exposed, and every namesake pair (~299) withheld —
+ * matching the analyst's read of the case.
  */
 
 import type { Artifact } from "@/hooks/useThreadArtifacts";
@@ -63,7 +70,7 @@ import { isRejectedArtifact } from "@/lib/analyst-decisions";
 export type SelectorKind = "email" | "phone" | "handle" | "ip" | "address" | "wallet" | "name";
 
 export interface CaseSelector {
-  /** Stable identity, e.g. "email:pat.sample@example.test". */
+  /** Stable identity, e.g. "email:alpha@example.com". */
   key: string;
   kind: SelectorKind;
   /** Display value (first-seen raw form). */
@@ -129,10 +136,18 @@ export interface AssociationReport {
 }
 
 // ---------------------------------------------------------------------------
-// Weights — tuned so ONE observation never reaches "Strong" on its own and
+// Weights — tuned so ONE observation never reaches "Likely" on its own and
 // mirrors can never stack. Combined with noisy-OR: p = 1 − Π(1 − wᵢ).
-// Verified against a live case: one breach row naming email+handle lands at
-// 45+30 ≈ 62 (Likely) — visible but never "Strong" without a second class.
+//
+// ONE ROW = ONE OBSERVATION. Selectors regex'd out of a composite VALUE (a
+// breach row's "email / handle / ip" text) earn the shared-record weight and
+// nothing else — the same sighting cannot also collect the declaration bonus.
+// The CO_RECORD bonus is reserved for STRUCTURED declarations: linking
+// metadata fields and concrete_values, where the record itself asserts the
+// association rather than merely containing both strings.
+//
+// Verified against the live case export: one breach row naming email+handle
+// lands at 45 (Possible); a structured email declaration lands at 65 (Likely).
 // ---------------------------------------------------------------------------
 
 /** Base weight for two selectors observed together in ONE source class. */
@@ -156,7 +171,8 @@ const PAIR_WEIGHT: Record<string, number> = {
 
 /** Any pair touching infrastructure only ever earns this much per class. */
 const INFRA_WEIGHT = 0.15;
-/** A declared linking field (email_associated, concrete_values, value text) naming the other selector. */
+/** A STRUCTURED declared linking field (email_associated, concrete_values, …)
+ *  naming the other selector. Never earned by value-text scans. */
 const CO_RECORD_WEIGHT = 0.3;
 /** Infrastructure-only support can never pass the shared-host rung. */
 const INFRA_CAP = 35;
@@ -302,57 +318,77 @@ function ownSelector(a: Artifact): { kind: SelectorKind; key: string } | null {
   return key ? { kind, key } : null;
 }
 
-function declaredSelectors(a: Artifact, knownHandles: string[]): Array<{ kind: SelectorKind; key: string }> {
+/**
+ * Selectors a row carries beyond its own value, in two evidence grades:
+ *
+ *  - `declared: true` — a STRUCTURED declaration: a linking metadata field or
+ *    the provider's concrete_values dict. The record itself asserts the
+ *    association, so these earn the CO_RECORD bonus on top of co-occurrence.
+ *  - `declared: false` — CONTAINMENT only: a `queried_selector` provenance
+ *    stamp (the row exists because a lookup ran on that selector — it says
+ *    nothing about what the record contains) or a string regex'd out of a
+ *    composite value. These earn co-occurrence weight only. One sighting of
+ *    two strings in one text is ONE observation; counting it as a declaration
+ *    as well was the double-count that inflated single-record pairs (measured
+ *    2026-11-08: six "likely" pairs at 62–69% that were each one text row).
+ */
+function declaredSelectors(
+  a: Artifact,
+  knownHandles: string[],
+): Array<{ kind: SelectorKind; key: string; declared: boolean }> {
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
-  const out = new Map<string, SelectorKind>();
-  const add = (kind: SelectorKind, raw: unknown) => {
+  const out = new Map<string, { kind: SelectorKind; declared: boolean }>();
+  const add = (kind: SelectorKind, raw: unknown, declared: boolean) => {
     if (typeof raw !== "string") return;
     const key = selectorKey(kind, raw);
-    if (key) out.set(key, kind);
+    if (!key) return;
+    // A structured declaration outranks a containment sighting for the same key.
+    const prev = out.get(key);
+    if (!prev || (declared && !prev.declared)) out.set(key, { kind, declared });
   };
 
   // 1) Structured declared fields
   for (const f of DECLARED_FIELDS) {
     const raw = meta[f.key];
     const values = Array.isArray(raw) ? raw.slice(0, 3) : [raw]; // a dump naming many is not a link
-    for (const v of values) add(f.kind, v);
+    for (const v of values) add(f.kind, v, true);
   }
 
-  // 2) concrete_values.usernames (oathnet-style dict)
+  // 2) concrete_values.usernames (oathnet-style dict) — provider-structured
   const cv = meta.concrete_values;
   if (cv && typeof cv === "object" && !Array.isArray(cv)) {
     const us = (cv as Record<string, unknown>).usernames;
-    if (Array.isArray(us)) for (const u of us.slice(0, 5)) add("handle", u);
-    const dob = (cv as Record<string, unknown>).dob;
-    void dob; // handled in attribute extraction
+    if (Array.isArray(us)) for (const u of us.slice(0, 5)) add("handle", u, true);
   }
 
-  // 3) queried_selector — kind-aware. A name query is NEVER a handle.
+  // 3) queried_selector — kind-aware, PROVENANCE only. A name query is NEVER a
+  //    handle, and "this row came from a lookup on X" is never a declaration
+  //    that the record links X to anything.
   const qs = meta.queried_selector;
   if (typeof qs === "string" && qs.trim()) {
     const qts = Array.isArray(meta.query_types) ? meta.query_types.map(String) : [];
-    if (qs.includes("@")) add("email", qs);
-    else if (qts.includes("username") || qts.includes("handle")) add("handle", qs);
-    else if (qts.includes("ip")) add("ip", qs);
-    else if (qts.includes("phone")) add("phone", qs);
+    if (qs.includes("@")) add("email", qs, false);
+    else if (qts.includes("username") || qts.includes("handle")) add("handle", qs, false);
+    else if (qts.includes("ip")) add("ip", qs, false);
+    else if (qts.includes("phone")) add("phone", qs, false);
     // person/name queries register nothing — names are attributes, not selectors
   }
 
-  // 4) Composite-value scan (composite-row "email / handle / ip" rows). Document
-  //    rows are skipped: a PDF filename like "export<seed>@gmail.com_….pdf"
-  //    manufactures phantom selectors (the attachment-seed bug, #1).
+  // 4) Composite-value scan ("email / handle / ip" breach rows). CONTAINMENT
+  //    only. Document rows are skipped: a PDF filename like
+  //    "export<seed>@example.com_….pdf" manufactures phantom selectors.
   const kind = String(a.kind ?? "").toLowerCase();
   const isDocument = typeof meta.content_type === "string" || /\.pdf\b/i.test(String(a.value ?? ""));
   if (SCAN_KINDS.has(kind) && !isDocument) {
     const text = String(a.value ?? "");
-    for (const m of text.matchAll(EMAIL_RE)) add("email", m[0]);
-    for (const m of text.matchAll(IP_RE)) add("ip", m[0]);
+    for (const m of text.matchAll(EMAIL_RE)) add("email", m[0], false);
+    for (const m of text.matchAll(IP_RE)) add("ip", m[0], false);
     for (const h of knownHandles) {
-      if (new RegExp(`\\b${h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text)) add("handle", h);
+      if (new RegExp(`\\b${h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text)) add("handle", h, false);
     }
   }
 
-  return [...out.entries()].map(([key, k]) => ({ kind: k, key }));
+  return [...out.entries()].map(([key, v]) => ({ kind: v.kind, key, declared: v.declared }));
 }
 
 // ---------------------------------------------------------------------------
@@ -377,8 +413,8 @@ function statesOf(a: Artifact): Set<string> {
       if (typeof s === "string" && US_STATES.has(s.toLowerCase())) out.add(s.toLowerCase());
     }
   }
-  // Address tails only ("…, Anytown, ID 83000") — never free text, so an "IN" or
-  // "OR" inside prose cannot fabricate geography.
+  // Address tails only ("…, Example City, ID 83687") — never free text, so an
+  // "IN" or "OR" inside prose cannot fabricate geography.
   const value = String(a.value ?? "");
   if (String(a.kind).toLowerCase() === "address") {
     for (const m of value.matchAll(STATE_TAIL_RE)) {
@@ -472,9 +508,17 @@ export function scoreAssociations(
     withheldWitness: boolean;
   }
   const selectors = new Map<string, SelAccum>();
-  const artifactSels = new Map<string, { own: string[]; declared: string[] }>();
+  /** Evidence bags per artifact. `declared` = structured declarations only;
+   *  `linked` = containment (provenance stamps, value-text sightings). */
+  const artifactSels = new Map<string, { own: string[]; declared: string[]; linked: string[] }>();
 
-  const register = (a: Artifact, kind: SelectorKind, key: string, raw: string, isOwn: boolean) => {
+  const register = (
+    a: Artifact,
+    kind: SelectorKind,
+    key: string,
+    raw: string,
+    bag: "own" | "declared" | "linked",
+  ) => {
     const quar = quarOf.get(a.id) ?? false;
     let s = selectors.get(key);
     if (!s) {
@@ -484,35 +528,40 @@ export function scoreAssociations(
     if (!s.artifactIds.includes(a.id)) s.artifactIds.push(a.id);
     if (quar) s.withheldWitness = true;
     else s.cleanWitness = true;
-    const bags = artifactSels.get(a.id) ?? { own: [], declared: [] };
-    (isOwn ? bags.own : bags.declared).push(key);
+    const bags = artifactSels.get(a.id) ?? { own: [], declared: [], linked: [] };
+    if (!bags[bag].includes(key)) bags[bag].push(key);
     artifactSels.set(a.id, bags);
   };
 
   for (const a of eligible) {
     const own = ownOf.get(a.id);
-    if (own) register(a, own.kind, own.key, String(a.value ?? ""), true);
+    if (own) register(a, own.kind, own.key, String(a.value ?? ""), "own");
     for (const d of declaredSelectors(a, knownHandles)) {
-      if (d.key !== own?.key) register(a, d.kind, d.key, d.key.split(":").slice(1).join(":"), false);
+      if (d.key !== own?.key) {
+        register(a, d.kind, d.key, d.key.split(":").slice(1).join(":"), d.declared ? "declared" : "linked");
+      }
     }
   }
 
   // ---- Handle rarity map (common-handle dampener) --------------------------
+  // Clean rows only: quarantined sightings are unproven and cannot make a
+  // handle look common (rule 3 — they contribute nothing, not even suspicion).
   const handleEmails = new Map<string, Set<string>>();
   for (const [key, s] of selectors) {
     if (s.kind !== "handle") continue;
     const emails = new Set<string>();
     for (const id of s.artifactIds) {
+      if (quarOf.get(id)) continue;
       const bags = artifactSels.get(id);
       if (!bags) continue;
-      for (const k of [...bags.own, ...bags.declared]) {
+      for (const k of [...bags.own, ...bags.declared, ...bags.linked]) {
         if (k.startsWith("email:")) emails.add(k);
       }
     }
     handleEmails.set(key, emails);
   }
 
-  // ---- Attribute evidence per selector --------------------------------------
+  // ---- Attribute evidence per selector (clean rows only) -------------------
   type AttrMap = Map<string, Map<string, Set<string>>>;
   const attrsOf = new Map<string, AttrMap>();
   const bump = (selKey: string, attr: string, value: string, cls: string) => {
@@ -526,9 +575,10 @@ export function scoreAssociations(
   };
 
   for (const a of eligible) {
+    if (quarOf.get(a.id)) continue; // rule 3: quarantined rows testify nothing
     const bags = artifactSels.get(a.id);
     if (!bags) continue;
-    const selKeys = [...bags.own, ...bags.declared];
+    const selKeys = [...bags.own, ...bags.declared, ...bags.linked];
     if (selKeys.length === 0) continue;
     const classes = classesOf(a);
     const cls = classes.length > 0 ? classes.join("+") : "unclassed";
@@ -544,23 +594,26 @@ export function scoreAssociations(
     }
   }
 
-  // ---- Pair evidence ---------------------------------------------------------
+  // ---- Pair evidence (clean rows only) --------------------------------------
   const coCount = new Map<string, Map<string, number>>();
   const coRecord = new Map<string, Set<string>>();
   const pairKey = (x: string, y: string) => (x < y ? `${x}__${y}` : `${y}__${x}`);
 
   for (const a of eligible) {
+    if (quarOf.get(a.id)) continue; // rule 3: quarantined rows testify nothing
     const bags = artifactSels.get(a.id);
     if (!bags) continue;
     const classes = classesOf(a);
     const cls = classes.length > 0 ? classes.join("+") : "unclassed";
-    const all = [...new Set([...bags.own, ...bags.declared])].sort();
+    const all = [...new Set([...bags.own, ...bags.declared, ...bags.linked])].sort();
     for (let i = 0; i < all.length; i++) {
       for (let j = i + 1; j < all.length; j++) {
         const pk = pairKey(all[i], all[j]);
         let m = coCount.get(pk);
         if (!m) coCount.set(pk, (m = new Map()));
         m.set(cls, (m.get(cls) ?? 0) + 1);
+        // The declaration bonus is earned by STRUCTURED declarations only —
+        // never by a provenance stamp or a string we scanned out of the value.
         if (bags.declared.includes(all[i]) || bags.declared.includes(all[j])) {
           let s = coRecord.get(pk);
           if (!s) coRecord.set(pk, (s = new Set()));
@@ -650,11 +703,14 @@ export function scoreAssociations(
         base.reasons.push(`Seen together in ${cls} (${A.kind}↔${B.kind}, +${Math.round(w * 100)}).`);
       }
 
-      // 2) declared co-record links, per independent source class
+      // 2) structured declared co-record links, per independent source class.
+      //    A declaration of an INFRASTRUCTURE selector is still infrastructure
+      //    evidence: it adds weight, but it must NEVER clear infraOnly — a
+      //    record naming "this email sat behind this IP" does not make an IP
+      //    identity-grade (rule 5; the cap below does its job either way).
       for (const cls of [...declared].sort()) {
         weights.push(CO_RECORD_WEIGHT);
         classesOut.add(cls);
-        // Rule 5: a declared field naming an IP/address is still infrastructure.
         if (!touchesInfra) infraOnly = false;
         base.reasons.push(`Named in a declared linking field (${cls}, +${Math.round(CO_RECORD_WEIGHT * 100)}).`);
       }
@@ -665,7 +721,7 @@ export function scoreAssociations(
         if (agree) {
           weights.push(w);
           for (const c of agree.classes) classesOut.add(c);
-          if (attr === "dob") infraOnly = false;
+          if (attr === "dob") infraOnly = false; // a shared DOB is person-grade
           const label = attr === "areaCode" ? "area code" : attr;
           base.reasons.push(`${label[0].toUpperCase()}${label.slice(1)} '${attr === "name" ? agree.value.replace(/^name:/, "") : agree.value}' agrees across ${agree.classes.size} independent records (+${Math.round(w * 100)}).`);
         }
@@ -713,7 +769,7 @@ export function scoreAssociations(
     for (const a of c.artifacts) {
       const bags = artifactSels.get(a.id);
       if (!bags) continue;
-      for (const k of [...bags.own, ...bags.declared]) clusterOf.set(k, { id: c.id, label: c.label });
+      for (const k of [...bags.own, ...bags.declared, ...bags.linked]) clusterOf.set(k, { id: c.id, label: c.label });
     }
   }
 
