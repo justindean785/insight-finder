@@ -18,13 +18,14 @@ import {
 } from "lucide-react";
 import { addBreadcrumb, captureError } from "@/lib/telemetry";
 import { toast } from "sonner";
+import { caseListTitle } from "@/lib/case-name";
 
 type Counts = {
   cases: number;
   artifacts: number;
   memories: number;
   lastCaseAt: string | null;
-  recentCases: Array<{ id: string; title: string | null; updated_at: string }>;
+  recentCases: Array<{ id: string; title: string | null; seed_value: string | null; updated_at: string }>;
 };
 
 const EMPTY: Counts = { cases: 0, artifacts: 0, memories: 0, lastCaseAt: null, recentCases: [] };
@@ -68,7 +69,7 @@ export default function HomeHub() {
           supabase.from("agent_memory").select("id", { count: "exact", head: true }).eq("user_id", user.id),
           supabase
             .from("threads")
-            .select("id,title,updated_at")
+            .select("id,title,seed_value,updated_at")
             .eq("user_id", user.id)
             .order("updated_at", { ascending: false })
             .limit(5),
@@ -270,7 +271,7 @@ export default function HomeHub() {
                   <MessageSquare className="w-4 h-4 text-muted-foreground shrink-0" />
                   <div className="min-w-0 flex-1">
                     <div className="text-sm text-foreground truncate">
-                      {c.title?.trim() || "Untitled case"}
+                      {caseListTitle(c.title, c.seed_value)}
                     </div>
                     <div className="text-micro text-muted-foreground font-mono">
                       {relativeTime(c.updated_at)}

@@ -1,6 +1,7 @@
 import { Link, Navigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useInsightsData } from "@/hooks/useInsightsData";
+import { caseListTitle } from "@/lib/case-name";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
 import {
@@ -234,7 +235,7 @@ export function InsightsOverview({ embedded = false }: { embedded?: boolean } = 
                 >
                   <div className="min-w-0 flex-1">
                     <div className="text-sm text-foreground truncate">
-                      {c.title?.trim() || "Untitled case"}
+                      {caseListTitle(c.title)}
                     </div>
                     <div className="text-micro text-muted-foreground font-mono">
                       {c.artifactCount} artifacts · last activity {relativeTime(c.lastAt)}
