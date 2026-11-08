@@ -12,6 +12,7 @@ import { connectionsView, linksOf } from "@/lib/workbench-connections";
 import { readSelectedEntity, SELECT_ENTITY_EVENT } from "@/lib/workbench-selection";
 import { pickSubjectName } from "@/lib/report-hygiene";
 import { cn } from "@/lib/utils";
+import { ASSOCIATION_LIKELIHOOD_ENABLED, AssociationLikelihood } from "@/components/workspace/AssociationLikelihood";
 
 const ISOLATED_LIMIT = 12;
 
@@ -291,6 +292,7 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
           )}
         </section>
       )}
+      {ASSOCIATION_LIKELIHOOD_ENABLED && <AssociationLikelihood items={items} seedValue={seed.value} reviews={reviews} />}
       <p className="px-5 pb-5 text-[11px] leading-relaxed text-faint-foreground">
         Found together does not mean owned by the same person. Name-only candidates and quarantined observations stay separate.
       </p>

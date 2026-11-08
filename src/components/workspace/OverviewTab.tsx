@@ -13,6 +13,8 @@ import { useAgentAssessment } from "@/hooks/useAgentAssessment";
 import { readableSourceLabel } from "@/lib/tool-display";
 import { timeAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import type { ReviewAdjustment } from "@/lib/intel";
+import { ASSOCIATION_LIKELIHOOD_ENABLED, LikelyLinksChip } from "@/components/workspace/AssociationLikelihood";
 import { fmtWallClock } from "@/lib/duration";
 import { buildDecisionQueue } from "@/lib/decision-queue";
 import { RunCockpit } from "@/components/workspace/RunCockpit";
@@ -210,6 +212,17 @@ export function OverviewTab({ threadId }: { threadId: string }) {
     degraded: tools?.degraded ?? 0,
   }), [tools]);
   const review = useReviewStates(threadId);
+  // Analyst verdicts keyed by row, for the association-likelihood chip (flag-gated).
+  const reviewGet = review.get;
+  const reviewMap = useMemo(() => {
+    const m: Record<string, ReviewAdjustment> = {};
+    if (!ASSOCIATION_LIKELIHOOD_ENABLED) return m;
+    for (const a of items) {
+      const r = reviewGet(a.id);
+      if (r !== "new") m[a.id] = r;
+    }
+    return m;
+  }, [items, reviewGet]);
   // "Waiting on you" is the Evidence badge's own number, from the same model.
   const sheet = useCaseSheetModel(threadId);
 
@@ -326,7 +339,12 @@ export function OverviewTab({ threadId }: { threadId: string }) {
         <SectionHeading
           title="The case, at a glance"
           subtitle="What the collected evidence supports — and what it doesn't."
-          right={<span className="text-[11px] tabular-nums text-faint-foreground">{total} artifact{total === 1 ? "" : "s"} · {activity.persistedTotal} tool call{activity.persistedTotal === 1 ? "" : "s"}</span>}
+          right={
+            <span className="flex flex-wrap items-center justify-end gap-2">
+              {ASSOCIATION_LIKELIHOOD_ENABLED && <LikelyLinksChip items={items} seedValue={snapshot.seed.value} reviews={reviewMap} />}
+              <span className="text-[11px] tabular-nums text-faint-foreground">{total} artifact{total === 1 ? "" : "s"} · {activity.persistedTotal} tool call{activity.persistedTotal === 1 ? "" : "s"}</span>
+            </span>
+          }
         />
         {assessment.report && (
           <p className="flex flex-wrap items-center gap-x-2 rounded-[7px] border border-[hsl(var(--brand)/0.25)] bg-[linear-gradient(110deg,hsl(var(--brand)/0.08),hsl(var(--surface-1)))] px-3.5 py-2.5 text-[12px] text-muted-foreground" data-assessment-summary>
