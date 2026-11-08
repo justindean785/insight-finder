@@ -262,7 +262,11 @@ const SHARED_INFRA_PROVIDER_ROOTS = new Set([
 ]);
 /** AWS Route 53 delegation sets sit under `awsdns-NN.<tld>`. */
 const AWS_DNS_ROOT = /^awsdns-\d+\.[a-z.]+$/;
-const INFRA_LABEL = /^(?:ns\d*|dns\d*|mx\d*|aspmx\d*|alt\d+|smtp\d*|mail|relay\d*|mta\d*|mailstore\d*|pop\d*|imap\d*|mailgate\d*|inbound\d*)$/;
+// An infrastructure word, then any run of digit groups or single-letter suffixes joined by
+// hyphens: `ns`, `ns10`, `mx1`, and the hyphenated provider forms `ns-123` (Route 53),
+// `ns-100-a` (Gandi), `ns1-01` (Azure DNS). The word must START the label, so `nsfw-group`
+// is not infrastructure.
+const INFRA_LABEL = /^(?:ns|dns|mx|aspmx|smtp|relay|mta|mailstore|pop|imap|mailgate|inbound)(?:-?\d+|-[a-z])*$|^alt\d+$|^mail$/;
 
 export function clusterSharedInfraInertDisabled(
   env: (k: string) => string | undefined = (k) => Deno.env.get(k),

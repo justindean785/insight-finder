@@ -77,6 +77,38 @@ Deno.test("the subject's OWN domain rows still join each other", () => {
   assertEquals(members[1].cluster_id, members[2].cluster_id, "apex and www join on the domain root");
 });
 
+Deno.test("hyphenated nameserver labels of the listed providers are recognised (Route 53, Gandi, Azure DNS)", () => {
+  // Codex review on #990: the provider-root check passed for these hosts but the label
+  // pattern only accepted `ns\d*`, so they still created identity subjects.
+  for (const host of [
+    "ns-123.awsdns-45.com",
+    "ns-1536.awsdns-00.org",
+    "ns-100-a.gandi.net",
+    "ns1-01.azure-dns.com",
+    "ns2-01.azure-dns.net",
+  ]) {
+    const row = art({ kind: "domain", value: host, source: "dns_lookup" });
+    assert(isSharedInfraArtifact(row), `${host} must be shared infrastructure`);
+    assert(isClusterInert(row), host);
+  }
+  const { members, subjects } = clusterArtifacts([
+    art({ kind: "domain", value: "ns-123.awsdns-45.com", source: "dns_lookup" }),
+    art({ kind: "domain", value: "ns-456.awsdns-45.com", source: "dns_lookup" }),
+    art({ kind: "domain", value: "ns-100-a.gandi.net", source: "dns_lookup" }),
+    art({ kind: "domain", value: "ns-100-b.gandi.net", source: "dns_lookup" }),
+  ]);
+  assertEquals(subjects.length, 0, "no subject may form on a provider's hyphenated nameservers");
+  for (const m of members) assertEquals(m.cluster_id, null);
+});
+
+Deno.test("hyphenated labels do not widen the rule beyond the listed providers", () => {
+  // Same label shapes under the SUBJECT's own domain, or an unlisted host, stay ordinary.
+  assert(!isSharedInfraArtifact(art({ kind: "domain", value: "ns-1.samplecivic.test" })));
+  assert(!isSharedInfraArtifact(art({ kind: "domain", value: "ns1-01.unlisted-dns.test" })));
+  // A tenant-style label that merely starts with letters of an infra word is not infra.
+  assert(!isSharedInfraArtifact(art({ kind: "domain", value: "nsfw-group.gandi.net" })));
+});
+
 Deno.test("a subject-controlled nameserver or mail host is NOT shared infrastructure", () => {
   const ownNs = art({ kind: "domain", value: "ns1.samplecivic.test", source: "dns_lookup" });
   const ownMail = art({ kind: "domain", value: "mail.samplecivic.test", source: "dns_lookup" });
