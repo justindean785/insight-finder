@@ -72,3 +72,51 @@ export const SET_SUBJECT_CONFIRM_BODY =
   "share a selector with it can read as linked, and renames the case. It does not change " +
   "this row's confidence or any other evidence, and it does not start a run. The uploaded " +
   "file stays in the first message.";
+
+/** One awaitable step of the PostgREST filter chain `writeSubject` builds. */
+export interface SubjectWriteChain extends PromiseLike<{ data: { id: string }[] | null; error: { message: string } | null }> {
+  eq(col: string, val: string): SubjectWriteChain;
+  is(col: string, val: null): SubjectWriteChain;
+  select(cols: string): SubjectWriteChain;
+}
+
+/** The slice of the supabase client the write needs — structural so a test can fake it. */
+export interface SubjectWriteClient {
+  from(table: "threads"): { update(patch: SubjectPatch): SubjectWriteChain };
+}
+
+export type SubjectWriteResult =
+  | { ok: true }
+  | { ok: false; reason: "error"; message: string }
+  /** Zero rows were written: the seed changed since the analyst saw it, OR row-level
+   *  security refused the write. PostgREST reports neither as an error. */
+  | { ok: false; reason: "no_rows" };
+
+/** Deliberately says nothing about permissions: RLS refusal and a changed seed are
+ *  indistinguishable here, and "reload" is the one action that is right for both. */
+export const SET_SUBJECT_NO_ROWS_MESSAGE = "Case changed — reload and try again.";
+
+/**
+ * Persist the subject patch as a compare-and-set on the seed the client last saw.
+ *
+ * Two properties, both from the #983 review:
+ *  - `.select("id")` makes a zero-row UPDATE observable. PostgREST answers an UPDATE
+ *    that RLS (or the filter) reduced to nothing with 200 and NO error, so checking
+ *    `error` alone toasts success for a write that never happened.
+ *  - the `seed_value` filter is the concurrency token: if another tab or an edge turn
+ *    re-seeded the case meanwhile, nothing is written and the analyst's click cannot
+ *    clobber it. A null seed needs `IS NULL` — `= NULL` never matches in SQL.
+ */
+export async function writeSubject(
+  client: SubjectWriteClient,
+  threadId: string,
+  expectedSeedValue: string | null,
+  patch: SubjectPatch,
+): Promise<SubjectWriteResult> {
+  const base = client.from("threads").update(patch).eq("id", threadId);
+  const guarded = expectedSeedValue === null ? base.is("seed_value", null) : base.eq("seed_value", expectedSeedValue);
+  const { data, error } = await guarded.select("id");
+  if (error) return { ok: false, reason: "error", message: error.message };
+  if (!data || data.length === 0) return { ok: false, reason: "no_rows" };
+  return { ok: true };
+}

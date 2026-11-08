@@ -22,7 +22,10 @@ import {
   canReleaseLinkage, releasePatch,
   RELEASE_ACTION_LABEL, RELEASE_CONFIRM_BODY, RELEASE_CONFIRM_TITLE,
 } from "@/lib/quarantine-release";
-import { SET_SUBJECT_CONFIRM_BODY, SET_SUBJECT_CONFIRM_TITLE, SET_SUBJECT_LABEL, subjectPatch } from "@/lib/set-subject";
+import {
+  SET_SUBJECT_CONFIRM_BODY, SET_SUBJECT_CONFIRM_TITLE, SET_SUBJECT_LABEL, SET_SUBJECT_NO_ROWS_MESSAGE,
+  subjectPatch, writeSubject, type SubjectWriteChain, type SubjectWriteClient,
+} from "@/lib/set-subject";
 import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { AuthorityChip, AuthorityCaveat, UnderlyingStrength } from "@/components/ui/authority";
 import {
@@ -73,6 +76,13 @@ const KIND_ICON: Record<string, typeof Mail> = {
   name: User, person: User, crypto: Hash, crypto_wallet: Hash, wallet: Hash, address: MapPin, location: MapPin, ip: Globe, ip_address: Globe,
 };
 
+/** Adapter for `writeSubject`. Structurally comparing the generated supabase client
+ *  to `SubjectWriteClient` overflows the compiler (TS2589), so only the CHAIN SHAPE is
+ *  cast; `.from("threads").update(p)` is still checked against the generated schema. */
+const subjectClient: SubjectWriteClient = {
+  from: () => ({ update: (p) => supabase.from("threads").update(p) as unknown as SubjectWriteChain }),
+};
+
 export function ArtifactInspector({
   artifact, onClose, onChanged, reviewGet, reviewSet, threadId, allArtifacts,
 }: ArtifactInspectorProps) {
@@ -114,8 +124,10 @@ export function ArtifactInspector({
     if (settingSubject || !newSubject) return;
     setSettingSubject(true);
     try {
-      const { error } = await supabase.from("threads").update(newSubject).eq("id", threadId);
-      if (error) return toast.error(error.message);
+      // Compare-and-set against the raw seed this snapshot showed (CaseSnapshot.seed.value
+      // is `threads.seed_value` verbatim), and refuse to report a zero-row write as success.
+      const res = await writeSubject(subjectClient, threadId, caseSeed?.value ?? null, newSubject);
+      if (res.ok === false) return toast.error(res.reason === "error" ? res.message : SET_SUBJECT_NO_ROWS_MESSAGE);
       await caseApi?.refresh();
       toast.success("Case subject set");
     } finally {
