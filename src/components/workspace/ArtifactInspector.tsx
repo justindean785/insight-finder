@@ -22,6 +22,11 @@ import {
   canReleaseLinkage, releasePatch,
   RELEASE_ACTION_LABEL, RELEASE_CONFIRM_BODY, RELEASE_CONFIRM_TITLE,
 } from "@/lib/quarantine-release";
+import {
+  SET_SUBJECT_CONFIRM_BODY, SET_SUBJECT_CONFIRM_TITLE, SET_SUBJECT_LABEL, SET_SUBJECT_NO_ROWS_MESSAGE,
+  subjectPatch, writeSubject, type SubjectWriteChain, type SubjectWriteClient,
+} from "@/lib/set-subject";
+import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { AuthorityChip, AuthorityCaveat, UnderlyingStrength } from "@/components/ui/authority";
 import {
   useReviewStates, REVIEW_CLASS, REVIEW_LABEL, startRecheck,
@@ -71,6 +76,13 @@ const KIND_ICON: Record<string, typeof Mail> = {
   name: User, person: User, crypto: Hash, crypto_wallet: Hash, wallet: Hash, address: MapPin, location: MapPin, ip: Globe, ip_address: Globe,
 };
 
+/** Adapter for `writeSubject`. Structurally comparing the generated supabase client
+ *  to `SubjectWriteClient` overflows the compiler (TS2589), so only the CHAIN SHAPE is
+ *  cast; `.from("threads").update(p)` is still checked against the generated schema. */
+const subjectClient: SubjectWriteClient = {
+  from: () => ({ update: (p) => supabase.from("threads").update(p) as unknown as SubjectWriteChain }),
+};
+
 export function ArtifactInspector({
   artifact, onClose, onChanged, reviewGet, reviewSet, threadId, allArtifacts,
 }: ArtifactInspectorProps) {
@@ -100,6 +112,27 @@ export function ArtifactInspector({
       () => toast.success(label),
       () => toast.error("Copy failed"),
     );
+  };
+
+  // "Set as case subject" — offered only once the case snapshot has loaded: an
+  // unloaded seed reads as empty, which would offer it on a case that has one.
+  const caseApi = useOptionalCaseSnapshot();
+  const caseSeed = caseApi?.snapshot?.hydrated ? caseApi.snapshot.seed : null;
+  const newSubject = caseSeed ? subjectPatch(caseSeed.value, artifact) : null;
+  const [settingSubject, setSettingSubject] = useState(false);
+  const setAsSubject = async () => {
+    if (settingSubject || !newSubject) return;
+    setSettingSubject(true);
+    try {
+      // Compare-and-set against the raw seed this snapshot showed (CaseSnapshot.seed.value
+      // is `threads.seed_value` verbatim), and refuse to report a zero-row write as success.
+      const res = await writeSubject(subjectClient, threadId, caseSeed?.value ?? null, newSubject);
+      if (res.ok === false) return toast.error(res.reason === "error" ? res.message : SET_SUBJECT_NO_ROWS_MESSAGE);
+      await caseApi?.refresh();
+      toast.success("Case subject set");
+    } finally {
+      setSettingSubject(false);
+    }
   };
 
   const [releasing, setReleasing] = useState(false);
@@ -244,6 +277,33 @@ export function ArtifactInspector({
                   </AlertDialogContent>
                 </AlertDialog>
               )}
+            </div>
+          )}
+
+          {/* Set as case subject — only for a case with none (an upload-only first
+              message) and a concrete, eligible selector. See set-subject.ts. */}
+          {newSubject && (
+            <div className="panel-inset mt-4 p-3">
+              <p className="text-micro leading-snug text-muted-foreground">
+                This case has no subject yet, so no row can be linked to anyone.
+              </p>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="outline" size="sm" disabled={settingSubject} className="mt-3 h-7 w-full font-mono text-eyebrow uppercase tracking-[0.14em]">
+                    {SET_SUBJECT_LABEL}
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>{SET_SUBJECT_CONFIRM_TITLE}</AlertDialogTitle>
+                    <AlertDialogDescription className="whitespace-pre-line text-left">{SET_SUBJECT_CONFIRM_BODY}</AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => void setAsSubject()}>{SET_SUBJECT_LABEL}</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           )}
 

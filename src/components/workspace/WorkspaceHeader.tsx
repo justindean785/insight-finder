@@ -3,17 +3,17 @@ import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useCaseSnapshot, type CaseSnapshot } from "@/hooks/useCaseSnapshot";
-import { ChevronRight, Plus, Copy, Link2, Mail, Phone, Globe, Network, User, Hash, FileSearch, MapPin } from "lucide-react";
+import { ChevronRight, Plus, Copy, Link2, Mail, Phone, Globe, Network, User, Hash, FileSearch, MapPin, Paperclip } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { verifiedHint, verifiedLabel } from "@/lib/authority";
 import { toast } from "sonner";
-import { extractDisplaySeed, type SeedKind } from "@/lib/seed";
+import { extractDisplaySeed, type DisplaySeedKind } from "@/lib/seed";
 import { humanCaseName } from "@/lib/case-name";
 import { timeAgo } from "@/lib/time";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CaseStatusPill, CaseSyncStatus } from "@/components/workspace/CaseStatus";
 
-const KIND_ICON: Record<SeedKind, typeof Globe> = {
+const KIND_ICON: Record<DisplaySeedKind, typeof Globe> = {
   email: Mail,
   username: User,
   phone: Phone,
@@ -23,9 +23,10 @@ const KIND_ICON: Record<SeedKind, typeof Globe> = {
   crypto: Hash,
   address: MapPin,
   other: FileSearch,
+  attachment: Paperclip,
 };
 
-const KIND_LABEL: Record<SeedKind, string> = {
+const KIND_LABEL: Record<DisplaySeedKind, string> = {
   email: "Email",
   username: "Username",
   phone: "Phone",
@@ -35,6 +36,7 @@ const KIND_LABEL: Record<SeedKind, string> = {
   crypto: "Wallet",
   address: "Address",
   other: "Selector",
+  attachment: "Attachment",
 };
 
 /** One figure in the case line. Number + word, never colour alone. */
@@ -241,7 +243,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
 
   const display = snapshot?.seed.value
     ? extractDisplaySeed(snapshot.seed.value, snapshot.seed.type)
-    : { selector: "", kind: "other" as SeedKind, title: snapshot?.hydrated ? "New investigation" : "" };
+    : { selector: "", kind: "other" as DisplaySeedKind, title: snapshot?.hydrated ? "New investigation" : "" };
   const caseName = humanCaseName(snapshot?.seed.caseTitle ?? null, snapshot?.seed.value ?? null, display.title);
   const hydrated = Boolean(snapshot?.hydrated);
   const changedAt = snapshot?.updatedAt ?? null;
@@ -416,7 +418,7 @@ export function MobileCaseStrip() {
   const { snapshot } = useCaseSnapshot();
   const display = snapshot?.seed.value
     ? extractDisplaySeed(snapshot.seed.value, snapshot.seed.type)
-    : { selector: "", kind: "other" as SeedKind, title: snapshot?.hydrated ? "New investigation" : "" };
+    : { selector: "", kind: "other" as DisplaySeedKind, title: snapshot?.hydrated ? "New investigation" : "" };
   return (
     <div className="flex min-h-14 min-w-0 flex-1 items-center gap-2 py-1.5 pr-1.5">
       <div className="min-w-0 flex-1">

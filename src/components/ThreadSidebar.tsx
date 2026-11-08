@@ -12,11 +12,12 @@ import {
 import {
   Plus, LogOut, Trash2, PanelLeftOpen, PanelLeftClose, Search, Brain, CheckCircle2,
   ShieldAlert, Database, Activity, BarChart3, Wallet, FolderOpen,
-  Mail, Phone, Globe, Network, User, Hash, FileSearch, Settings, type LucideIcon,
+  Mail, Phone, Globe, Network, User, Hash, FileSearch, Paperclip, Settings, type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { detectSeed } from "@/lib/seed";
 import { threadDisplayTitle } from "@/lib/case-name";
+import { attachmentOnlyNames } from "@/lib/attachments";
 import { isRunningThread } from "@/lib/thread-status";
 import { selectStaleActiveIds } from "@/lib/stale-thread";
 import { SUPPORT_MAILTO } from "@/lib/contact";
@@ -29,7 +30,13 @@ import type { Database as SupabaseDatabase } from "@/integrations/supabase/types
 const SEED_ICON: Record<string, LucideIcon> = {
   email: Mail, phone: Phone, domain: Globe, url: Globe, ip: Network,
   username: User, person: User, name: User, organization: User, crypto: Hash,
+  attachment: Paperclip,
 };
+/** The seed kind a row SHOWS. An upload-only case is stored as "other" (the
+ *  edge reads no selector out of the attachment markdown); it reads as one. */
+function shownSeedKind(seedType: string | null, seedValue: string | null): string | null {
+  return attachmentOnlyNames(seedValue) ? "attachment" : seedType;
+}
 function seedIcon(seedType: string | null, title: string): LucideIcon {
   const kind = (seedType ?? detectSeed(title)?.kind ?? "other").toLowerCase();
   return SEED_ICON[kind] ?? FileSearch;
@@ -392,7 +399,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             const recent = threads.filter((t) => t.id !== threadId).slice(0, 7);
             return (active ? [active, ...recent] : recent);
           })().map((t) => {
-            const Icon = seedIcon(t.seed_type, t.title);
+            const Icon = seedIcon(shownSeedKind(t.seed_type, t.seed_value), t.title);
             const active = t.id === threadId;
             return (
               <RailTip key={t.id} label={`${threadDisplayTitle(t.title, t.seed_value)} · ${formatUsd(t.cost_micro_usd)}`}>
@@ -783,9 +790,9 @@ function ThreadRow({
           </span>
         </div>
         <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] leading-tight text-muted-foreground">
-          {t.seed_type && (
+          {shownSeedKind(t.seed_type, t.seed_value) && (
             <span className="shrink-0 rounded border border-border-subtle bg-white/[0.03] px-1 py-px text-micro uppercase">
-              {t.seed_type}
+              {shownSeedKind(t.seed_type, t.seed_value)}
             </span>
           )}
           <span className="shrink-0 tabular-nums">{timeAgo(t.updated_at)}</span>
