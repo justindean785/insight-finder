@@ -451,3 +451,49 @@ describe("output discipline", () => {
     }
   });
 });
+
+describe("review fixes (PR #994)", () => {
+  it("the same source classes in a different order are one observation, not two", () => {
+    const rows = (second: string[]) => [
+      art("email", "a@example.com", { id: "e1" }),
+      art("email", "b@example.com", { id: "e2" }),
+      art("breach_exposure", "row: a@example.com / b@example.com", { id: "r1", metadata: { tag: ["breach", "public_record"] } }),
+      art("breach_exposure", "copy: a@example.com / b@example.com", { id: "r2", metadata: { tag: second } }),
+    ];
+    const classes = (a: Artifact) => ((a.metadata ?? {}) as { tag?: string[] }).tag ?? ["self"];
+    const same = scoreAssociations(rows(["breach", "public_record"]), null, undefined, { classesOf: classes });
+    const reordered = scoreAssociations(rows(["public_record", "breach"]), null, undefined, { classesOf: classes });
+    const s1 = pair(same, "email:a@example.com", "email:b@example.com")!.score;
+    const s2 = pair(reordered, "email:a@example.com", "email:b@example.com")!.score;
+    expect(s2).toBe(s1);
+    expect(s2).toBe(50);
+  });
+
+  it("a rejected selector stays out when another row re-records it", () => {
+    const rep = scoreAssociations(
+      [
+        art("email", "a@example.com", { id: "rej1" }),
+        art("email", "b@example.com", { id: "e2" }),
+        art("breach_exposure", "row: a@example.com / b@example.com", { id: "r1", metadata: { email_associated: "a@example.com" } }),
+      ],
+      null,
+      { rej1: "dismissed" },
+      { classesOf: classesByTag(() => "breach") },
+    );
+    expect(rep.pairs.some((p) => p.a === "email:a@example.com" || p.b === "email:a@example.com")).toBe(false);
+  });
+
+  it("a handle with separators is recognised in composite text", () => {
+    const rep = scoreAssociations(
+      [
+        art("username", "quiet_falcon77", { id: "u1" }),
+        art("breach_exposure", "corpus-a row: a@example.com / quiet_falcon77", { id: "r1" }),
+      ],
+      null,
+      undefined,
+      { classesOf: classesByTag(() => "breach") },
+    );
+    const p = pair(rep, "email:a@example.com", "handle:quietfalcon77");
+    expect(p?.score).toBe(45);
+  });
+});

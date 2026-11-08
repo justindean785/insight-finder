@@ -341,7 +341,8 @@ export function OverviewTab({ threadId }: { threadId: string }) {
           subtitle="What the collected evidence supports — and what it doesn't."
           right={
             <span className="flex flex-wrap items-center justify-end gap-2">
-              {ASSOCIATION_LIKELIHOOD_ENABLED && <LikelyLinksChip items={items} seedValue={snapshot.seed.value} reviews={reviewMap} />}
+              {/* Withheld until verdicts are read: an unread rejection is not "new". */}
+              {ASSOCIATION_LIKELIHOOD_ENABLED && review.availability === "ok" && <LikelyLinksChip items={items} seedValue={snapshot.seed.value} reviews={reviewMap} />}
               <span className="text-[11px] tabular-nums text-faint-foreground">{total} artifact{total === 1 ? "" : "s"} · {activity.persistedTotal} tool call{activity.persistedTotal === 1 ? "" : "s"}</span>
             </span>
           }

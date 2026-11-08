@@ -334,7 +334,7 @@ function ownSelector(a: Artifact): { kind: SelectorKind; key: string } | null {
  */
 function declaredSelectors(
   a: Artifact,
-  knownHandles: string[],
+  knownHandles: ReadonlySet<string>,
 ): Array<{ kind: SelectorKind; key: string; declared: boolean }> {
   const meta = (a.metadata ?? {}) as Record<string, unknown>;
   const out = new Map<string, { kind: SelectorKind; declared: boolean }>();
@@ -383,8 +383,15 @@ function declaredSelectors(
     const text = String(a.value ?? "");
     for (const m of text.matchAll(EMAIL_RE)) add("email", m[0], false);
     for (const m of text.matchAll(IP_RE)) add("ip", m[0], false);
-    for (const h of knownHandles) {
-      if (new RegExp(`\\b${h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text)) add("handle", h, false);
+    // Compare in normalized form: `knownHandles` holds normalizeHandle output
+    // (separators stripped), so a raw-text regex would miss "quiet_falcon77".
+    // Whole tokens only, so a mailbox's local part is not read as a handle.
+    if (knownHandles.size > 0) {
+      for (const tok of text.split(/[\s,;|/()<>"'[\]{}]+/)) {
+        if (!tok || tok.includes("@")) continue;
+        const n = normalizeHandle(tok.replace(/^[:.-]+|[:.-]+$/g, ""));
+        if (n && knownHandles.has(n)) add("handle", n, false);
+      }
     }
   }
 
@@ -479,11 +486,16 @@ export function scoreAssociations(
   const quarOf = new Map<string, boolean>();
   const ownOf = new Map<string, { kind: SelectorKind; key: string } | null>();
   let excluded = 0;
+  /** Rule 2 at selector level: a rejected row's own selector stays out even when
+   *  another row re-records it (same contract as analyst-decisions buildDecisionSets). */
+  const rejectedKeys = new Set<string>();
 
   for (const a of sorted) {
     const review = reviews?.[a.id];
     if (isRejectedArtifact(a, review)) {
       excluded++;
+      const own = ownSelector(a);
+      if (own) rejectedKeys.add(own.key);
       continue; // rule 2
     }
     if (isNegativeResultArtifact(a)) continue; // a lookup that found nothing names nothing
@@ -493,11 +505,18 @@ export function scoreAssociations(
     ownOf.set(a.id, ownSelector(a));
   }
 
-  const knownHandles: string[] = [];
+  const knownHandles = new Set<string>();
   for (const a of eligible) {
     const own = ownOf.get(a.id);
-    if (own?.kind === "handle") knownHandles.push(own.key.slice("handle:".length));
+    if (own?.kind === "handle" && !rejectedKeys.has(own.key)) knownHandles.add(own.key.slice("handle:".length));
   }
+
+  /** One evidence class per row: a canonical (sorted, de-duplicated) key, so the
+   *  same classes in a different order are not a new independent observation. */
+  const classKey = (a: Artifact): string => {
+    const cs = [...new Set(classesOf(a))].sort();
+    return cs.length > 0 ? cs.join("+") : "unclassed";
+  };
 
   // ---- Pass 2: full registration ------------------------------------------
   interface SelAccum {
@@ -519,6 +538,7 @@ export function scoreAssociations(
     raw: string,
     bag: "own" | "declared" | "linked",
   ) => {
+    if (rejectedKeys.has(key)) return; // rule 2: a rejected selector cannot be revived
     const quar = quarOf.get(a.id) ?? false;
     let s = selectors.get(key);
     if (!s) {
@@ -580,8 +600,7 @@ export function scoreAssociations(
     if (!bags) continue;
     const selKeys = [...bags.own, ...bags.declared, ...bags.linked];
     if (selKeys.length === 0) continue;
-    const classes = classesOf(a);
-    const cls = classes.length > 0 ? classes.join("+") : "unclassed";
+    const cls = classKey(a);
     for (const st of statesOf(a)) for (const k of selKeys) bump(k, "state", st, cls);
     const ac = areaCodeOf(a);
     if (ac) for (const k of selKeys) bump(k, "areaCode", ac, cls);
@@ -603,8 +622,7 @@ export function scoreAssociations(
     if (quarOf.get(a.id)) continue; // rule 3: quarantined rows testify nothing
     const bags = artifactSels.get(a.id);
     if (!bags) continue;
-    const classes = classesOf(a);
-    const cls = classes.length > 0 ? classes.join("+") : "unclassed";
+    const cls = classKey(a);
     const all = [...new Set([...bags.own, ...bags.declared, ...bags.linked])].sort();
     for (let i = 0; i < all.length; i++) {
       for (let j = i + 1; j < all.length; j++) {

@@ -74,6 +74,6 @@ describe("flag wiring", () => {
     const conn = readFileSync(resolve(__dirname, "../components/workspace/WorkbenchConnections.tsx"), "utf8");
     const over = readFileSync(resolve(__dirname, "../components/workspace/OverviewTab.tsx"), "utf8");
     expect(conn).toMatch(/ASSOCIATION_LIKELIHOOD_ENABLED && <AssociationLikelihood /);
-    expect(over).toMatch(/ASSOCIATION_LIKELIHOOD_ENABLED && <LikelyLinksChip /);
+    expect(over).toMatch(/ASSOCIATION_LIKELIHOOD_ENABLED && review\.availability === "ok" && <LikelyLinksChip /);
   });
 });
