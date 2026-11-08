@@ -43,6 +43,9 @@ export function LongProse({ children, disabled = false }: { children: ReactNode;
         data-long-prose={clamped ? "clamped" : overflows ? "expanded" : undefined}
         className={cn(clamped && "overflow-hidden [mask-image:linear-gradient(to_bottom,black_78%,transparent)]")}
         style={clamped ? { maxHeight: LONG_PROSE_CLAMP_PX } : undefined}
+        // A link below the cutoff is still a tab stop: open the message when
+        // focus enters it, so keyboard focus never lands in masked, clipped text.
+        onFocus={clamped ? () => setExpanded(true) : undefined}
       >
         {children}
       </div>
