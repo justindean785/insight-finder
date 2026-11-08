@@ -1,6 +1,6 @@
 import { readProviderExport } from "@/lib/provider-export";
 import { extractDisplaySeed, type SeedKind } from "@/lib/seed";
-import { attachmentLabel, attachmentOnlyNames } from "@/lib/attachments";
+import { attachmentLabel, attachmentOnlyNames, parseUserMessage } from "@/lib/attachments";
 
 /**
  * The case's own name, when it says more than the selector does. A blank,
@@ -77,4 +77,17 @@ export function threadDisplayTitle(title: string | null | undefined, seedValue?:
   if (derived) return derived;
   const provider = readProviderExport(seedValue)?.provider ?? readProviderExport(t)?.provider;
   return provider ? `${provider} export` : t;
+}
+
+/**
+ * The secondary text a list surface prints under a case's name: the seed the analyst
+ * gave. A seed with an upload carries the composer's "Attached files:" block, whose
+ * link is a 7-day SIGNED storage URL — a capability URL that must not be rendered into
+ * a surface people screenshot or share. Print only the words the analyst typed; an
+ * upload-only case has none, so the file already named in the label is not repeated.
+ */
+export function seedHint(seedValue: string | null | undefined): string {
+  const raw = seedValue ?? "";
+  const { body, attachments } = parseUserMessage(raw);
+  return attachments.length > 0 ? body : raw;
 }
