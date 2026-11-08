@@ -96,11 +96,11 @@ describe("computePivots — a quarantined selector is never actionable", () => {
     // stranger's number under the failure case, and pivoting on it is what moved
     // the whole investigation onto a different person.
     const artifacts = [
-      art({ kind: "phone", value: "+1 555 0100", metadata: QUARANTINED }),
+      art({ kind: "phone", value: "+1 415 555 0100", metadata: QUARANTINED }),
       art({ kind: "email", value: "linked@example.com" }),
     ];
     const out = run(artifacts);
-    expect(out.find((p) => p.value === "+1 555 0100")).toBeUndefined();
+    expect(out.find((p) => p.value === "+1 415 555 0100")).toBeUndefined();
     // The un-quarantined lead is untouched — this filter is narrow.
     expect(out.find((p) => p.value === "linked@example.com")).toBeDefined();
   });
@@ -126,11 +126,11 @@ describe("computePivots — a quarantined selector is never actionable", () => {
     // value quarantined here cannot reappear through the other surface. Assert on
     // the engine's whole output rather than a single card.
     const artifacts = [
-      art({ kind: "phone", value: "+1 555 0199", metadata: QUARANTINED }),
+      art({ kind: "phone", value: "+1 415 555 0199", metadata: QUARANTINED }),
       art({ kind: "email", value: "collision@example.com", metadata: QUARANTINED }),
     ];
     const out = run(artifacts, [
-      reportPivot({ value: "+1 555 0199", type: "phone" }),
+      reportPivot({ value: "+1 415 555 0199", type: "phone" }),
       reportPivot({ value: "collision@example.com", type: "email" }),
     ]);
     expect(out).toHaveLength(0);
@@ -184,13 +184,13 @@ describe("computePivots — the quarantine does not over-block", () => {
     const artifacts = [
       art({ kind: "email", value: "lead@example.com" }),
       art({ kind: "username", value: "leadhandle" }),
-      art({ kind: "phone", value: "+1 555 0123" }),
+      art({ kind: "phone", value: "+1 415 555 0123" }),
     ];
     const before = computePivots({
       artifacts, seedValue: "subject@example.com", reportPivots: [], skipSet: NONE,
     });
     expect(before.map((p) => p.value).sort()).toEqual(
-      ["+1 555 0123", "lead@example.com", "leadhandle"],
+      ["+1 415 555 0123", "lead@example.com", "leadhandle"],
     );
   });
 
@@ -236,11 +236,11 @@ describe("computePivots — the quarantine does not over-block", () => {
     // row must not be the subject of an authority decision in either direction.
     // Letting them into `linked` was the collision bug by a second route.
     const artifacts = [
-      art({ kind: "phone", value: "+1 555 0100", metadata: QUARANTINED }),
+      art({ kind: "phone", value: "+1 415 555 0100", metadata: QUARANTINED }),
       // Same normalized text as the quarantined phone, but a kind that is not a pivot.
       art({ kind: "address", value: "1 555 0100" }),
     ];
-    expect(run(artifacts).find((p) => p.value === "+1 555 0100")).toBeUndefined();
+    expect(run(artifacts).find((p) => p.value === "+1 415 555 0100")).toBeUndefined();
   });
 
   it("is strictly `=== true` — a legacy row keeps its authority", () => {
@@ -263,15 +263,15 @@ describe("quarantined evidence stays visible — inert, not deleted", () => {
     // The whole point of the contract: the analyst must be able to SEE the
     // disputed row and why it was disputed. Making it non-actionable must not
     // make it invisible.
-    const quarantined = art({ kind: "phone", value: "+1 555 0100", metadata: QUARANTINED });
+    const quarantined = art({ kind: "phone", value: "+1 415 555 0100", metadata: QUARANTINED });
     const md = buildReportMarkdown({
       seedValue: "subject@example.com",
       seedType: "email",
       artifacts: [quarantined, art({ kind: "email", value: "linked@example.com" })],
     });
-    expect(md).toContain("+1 555 0100");
+    expect(md).toContain("+1 415 555 0100");
     expect(md).toContain("same-name collision axis");
     // ...and it is simultaneously absent from the actionable pivot list.
-    expect(run([quarantined]).find((p) => p.value === "+1 555 0100")).toBeUndefined();
+    expect(run([quarantined]).find((p) => p.value === "+1 415 555 0100")).toBeUndefined();
   });
 });

@@ -8,6 +8,7 @@ import {
   type AuthoritativeFindings,
 } from "@/lib/authoritative-findings";
 import { detectSeed, extractDisplaySeed } from "@/lib/seed";
+import { isPlausiblePhone } from "@/lib/recommended-pivots";
 import { auditEntryToolName, toolActionLabel } from "@/lib/tool-display";
 import { humanizeSourceChain, primaryToolSlug, tokenizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
@@ -861,6 +862,12 @@ export function buildPivots(artifacts: Artifact[], seedValue: string | null): Pi
     // (bizfile.com, opencorporates.com, bbb.org…), not subject identifiers.
     // Pivoting on them produces nothing actionable.
     if ((pType === "domain" || pType === "url") && isInfraDomain(v)) continue;
+    // A pivot spends a paid lookup, so a malformed selector is never offered.
+    // A `phone` row persisted from a document can be two copies of one number
+    // run together (20 digits). Same predicate as the report-text path; the
+    // artifact's kind is the "this is a phone" context a bare digit run needs.
+    // The row itself stays in the evidence — only the Run card is withheld.
+    if (pType === "phone" && !isPlausiblePhone(v, `phone ${v}`)) continue;
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
     if (meta.false_positive === true) continue;
 
