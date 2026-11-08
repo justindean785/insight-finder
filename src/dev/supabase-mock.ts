@@ -107,24 +107,24 @@ const artifacts = [
   { id: "evt-1", thread_id: THREAD_ID, kind: "event", value: "Sacramento Freight Expo 2025 — listed exhibitor", confidence: 48, source: "gemini_deep_dork", created_at: iso(11), metadata: { sources: ["gemini_deep_dork"], corroborations: 1, source_class: "ai_summary", confidence_cap_applied: 55 } },
   { id: "wl-1", thread_id: THREAD_ID, kind: "weak_lead", value: "Sierra — mentioned in a stream title", confidence: 20, source: "socialfetch_web_read", created_at: iso(10), metadata: { sources: ["socialfetch_web_read"], corroborations: 1, source_class: "social_profile_passive" } },
 
-  // ── Bulk-corpus spam — the gsalas916-style wall this change collapses ─────
+  // ── Bulk-corpus spam — the wall of rows this change collapses ─────
   // Legacy shape: many rows, one reason. The board groups these into one card.
-  { id: "bulk-1", thread_id: THREAD_ID, kind: "name", value: "Gabriel G. Salas", confidence: 45, source: "indicia_address", created_at: iso(9), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
-  { id: "bulk-2", thread_id: THREAD_ID, kind: "name", value: "Esther Salas", confidence: 45, source: "indicia_address", created_at: iso(8), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
-  { id: "bulk-3", thread_id: THREAD_ID, kind: "name", value: "Gabriel Gilbert Gilbert Salas", confidence: 45, source: "indicia_address", created_at: iso(7), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
-  { id: "bulk-4", thread_id: THREAD_ID, kind: "name", value: "Michael O. Wong", confidence: 45, source: "indicia_address", created_at: iso(6), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
-  { id: "bulk-5", thread_id: THREAD_ID, kind: "name", value: "Sandra Salas", confidence: 45, source: "indicia_address", created_at: iso(5), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
-  { id: "bulk-summary", thread_id: THREAD_ID, kind: "bulk_corpus_harvest", value: "67 unlinked identities — bulk corpus (gsalas916@icloud.com)", confidence: 40, source: "indicia_address", created_at: iso(4), metadata: {
+  { id: "bulk-1", thread_id: THREAD_ID, kind: "name", value: "Avery Q. Sample", confidence: 45, source: "indicia_address", created_at: iso(9), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-2", thread_id: THREAD_ID, kind: "name", value: "Blake Sample", confidence: 45, source: "indicia_address", created_at: iso(8), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-3", thread_id: THREAD_ID, kind: "name", value: "Avery Quinn Quinn Sample", confidence: 45, source: "indicia_address", created_at: iso(7), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-4", thread_id: THREAD_ID, kind: "name", value: "Morgan P. Example", confidence: 45, source: "indicia_address", created_at: iso(6), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-5", thread_id: THREAD_ID, kind: "name", value: "Casey Sample", confidence: 45, source: "indicia_address", created_at: iso(5), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-summary", thread_id: THREAD_ID, kind: "bulk_corpus_harvest", value: "67 unlinked identities — bulk corpus (bulk.seed@mail.example)", confidence: 40, source: "indicia_address", created_at: iso(4), metadata: {
     bulk_corpus: true,
     identity_count: 67,
     subject_unlinked: true,
     subject_unlinked_reason:
       "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject",
     harvested_identities: [
-      { kind: "name", value: "Gabriel G. Salas" },
-      { kind: "name", value: "Esther Salas" },
-      { kind: "email", value: "lil.est58@yahoo.com" },
-      { kind: "email", value: "bboyjr03@verizon.net" },
+      { kind: "name", value: "Avery Q. Sample" },
+      { kind: "name", value: "Blake Sample" },
+      { kind: "email", value: "harvest.one@mail.example" },
+      { kind: "email", value: "harvest.two@mail.example" },
     ],
   } },
 
