@@ -91,3 +91,13 @@ export function seedHint(seedValue: string | null | undefined): string {
   const { body, attachments } = parseUserMessage(raw);
   return attachments.length > 0 ? body : raw;
 }
+
+/**
+ * The name a case LIST row prints: `threadDisplayTitle` (an upload-only case reads
+ * "Attachment: <file>", a pasted provider export reads its subject) with the
+ * "Untitled case" fallback. Pass the seed when the list has it; without one an
+ * upload-only title is still recognised from the title itself.
+ */
+export function caseListTitle(title: string | null | undefined, seedValue?: string | null): string {
+  return threadDisplayTitle(title, seedValue).trim() || "Untitled case";
+}
