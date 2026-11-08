@@ -66,7 +66,7 @@ import { positionalPairingSelfTest, toolInputObjectRepairSelfTest } from "./mess
 import { streamErrorDetailSelfTest } from "./stream-error-classify.ts";
 import { contradictionClaimSelfTest } from "./contradictions.ts";
 import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
-import { clusterBookkeepingSelfTest, legacyNeedsReviewContradiction } from "./lib/cluster.ts";
+import { clusterBookkeepingSelfTest, clusterSharedInfraSelfTest, legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { providerAuthPriorSelfTest } from "./lib/provider-auth-prior.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
@@ -798,6 +798,13 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Pure. PRESENCE proves the deployed bundle; ok:false = the rule failed its own probe.
   // Kill switch: CLUSTER_BOOKKEEPING_INERT_DISABLED.
   r.checks.cluster_bookkeeping_inert = clusterBookkeepingSelfTest();
+
+  // Are a hosting/mail provider's nameserver and mail-exchanger rows (`ns10.<provider>`,
+  // `mx1.biz.mail.<provider>`) kept out of identity clusters? They were saved as plain domain
+  // rows, whitelisted as a "handle", and pulled any prose row naming the provider into a
+  // subject of their own. Pure. PRESENCE proves the deployed bundle; "LEGACY" =
+  // CLUSTER_SHARED_INFRA_INERT_DISABLED=true; ok:false = the rule failed its own probe.
+  r.checks.cluster_shared_infra_inert = clusterSharedInfraSelfTest();
 
   // Does a source token that records a lookup finding NOTHING — "(404)", "(0 hits)",
   // "(no PTR)", "(circuit-broken)" — contribute a source class? It must not: an empty

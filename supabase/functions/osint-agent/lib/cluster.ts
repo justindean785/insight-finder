@@ -228,10 +228,96 @@ export function isBookkeepingArtifact(a: Artifact): boolean {
   return /"label"\s*:\s*"(?:triage_decision|cluster_decision)"/i.test(a.metaRaw ?? "");
 }
 
+// ---- Shared infrastructure is not identity ------------------------------------
+// A site's NAMESERVERS and MAIL EXCHANGERS (`ns10.<provider>`, `mx1.biz.mail.<provider>`)
+// were saved as plain `domain` rows. `strongTokens` turns every domain row into
+// `domain:<label>` AND `handle:<label>`, and `collectKnownHandles` whitelists the label,
+// so the provider's name became a "handle": the nameserver rows formed a subject of
+// their own, and any prose row that merely said "<Provider> site" joined it — while the
+// organisation stayed unlinked from its own domain (measured 2026-11-08). A hosting or
+// mail provider serves thousands of unrelated organisations; its plumbing says nothing
+// about who owns a site. Such rows are inert for clustering: no selector tokens, no
+// known-handle contribution, no cluster membership. NOT `excluded` — they keep their
+// tier and stay on the board.
+//
+// Deliberately narrow: a row is shared infrastructure only when (1) it is a domain-kind
+// row, (2) its registrable domain is a curated DNS/mail/hosting PROVIDER, and (3) a label
+// ABOVE the registrable domain is infrastructure-shaped (`ns*`, `mx*`, `mail`, …). So the
+// subject's own `ns1.<subject domain>` and a tenant site `<tenant>.<provider>` are NOT
+// caught. Tenant subdomains (`<tenant>.<platform>`) carry a related defect — `domainRoot`
+// reads the platform, not the tenant — and are left to their own change.
+// Kill switch, read at CALL TIME: CLUSTER_SHARED_INFRA_INERT_DISABLED=true.
+const SHARED_INFRA_PROVIDER_ROOTS = new Set([
+  "nationbuilder.com",
+  "yahoo.com", "yahoodns.net",
+  "google.com", "googlemail.com", "googledomains.com",
+  "outlook.com",
+  "cloudflare.com",
+  "domaincontrol.com", "secureserver.net", "registrar-servers.com", "worldnic.com",
+  "ultradns.net", "ultradns.com", "ultradns.org", "nsone.net", "dnsmadeeasy.com", "dynect.net",
+  "akam.net", "edgekey.net", "he.net",
+  "mailgun.org", "sendgrid.net", "zoho.com", "zoho.eu", "pphosted.com", "mimecast.com",
+  "wixdns.net", "squarespacedns.com", "azure-dns.com", "azure-dns.net", "azure-dns.org", "azure-dns.info",
+  "ovh.net", "gandi.net", "hostgator.com", "bluehost.com", "dreamhost.com", "ionos.com", "1and1.com",
+]);
+/** AWS Route 53 delegation sets sit under `awsdns-NN.<tld>`. */
+const AWS_DNS_ROOT = /^awsdns-\d+\.[a-z.]+$/;
+const INFRA_LABEL = /^(?:ns\d*|dns\d*|mx\d*|aspmx\d*|alt\d+|smtp\d*|mail|relay\d*|mta\d*|mailstore\d*|pop\d*|imap\d*|mailgate\d*|inbound\d*)$/;
+
+export function clusterSharedInfraInertDisabled(
+  env: (k: string) => string | undefined = (k) => Deno.env.get(k),
+): boolean {
+  return (env("CLUSTER_SHARED_INFRA_INERT_DISABLED") ?? "").trim().toLowerCase() === "true";
+}
+
+/** STRUCTURAL: domain-kind (alias-aware), provider-owned registrable domain, and an
+ *  infrastructure-shaped label above it. Never keyed on free text. */
+export function isSharedInfraArtifact(a: Artifact): boolean {
+  if (canonicalKind(a.kind, a.value) !== "domain") return false;
+  const host = String(a.value ?? "").trim().toLowerCase()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/^www\./, "").split(/[/?#:]/)[0];
+  const labels = host.split(".").filter(Boolean);
+  if (labels.length < 3) return false; // an apex is the provider itself (or the subject), not plumbing
+  const registrable = labels.slice(-2).join(".");
+  if (!SHARED_INFRA_PROVIDER_ROOTS.has(registrable) && !AWS_DNS_ROOT.test(registrable)) return false;
+  return labels.slice(0, -2).some((l) => INFRA_LABEL.test(l));
+}
+
 /** Inert for clustering: excluded/quarantined rows, and (unless switched off)
- *  bookkeeping rows. Distinct from `isExcluded`, which also drives the "Excluded" tier. */
+ *  bookkeeping rows and shared-infrastructure rows. Distinct from `isExcluded`, which
+ *  also drives the "Excluded" tier. */
 export function isClusterInert(a: Artifact): boolean {
-  return isExcluded(a) || (!clusterBookkeepingInertDisabled() && isBookkeepingArtifact(a));
+  return isExcluded(a) ||
+    (!clusterBookkeepingInertDisabled() && isBookkeepingArtifact(a)) ||
+    (!clusterSharedInfraInertDisabled() && isSharedInfraArtifact(a));
+}
+
+/** /health self-test: a provider's nameserver rows neither form a subject nor pull a
+ *  prose row that names the provider into a group, and the subject's own domain rows
+ *  still join. Pure. */
+export function clusterSharedInfraSelfTest(): { ok: boolean; detail: string } {
+  if (clusterSharedInfraInertDisabled()) {
+    return { ok: true, detail: "LEGACY via CLUSTER_SHARED_INFRA_INERT_DISABLED" };
+  }
+  const mk = (kind: string, value: string, source: string): Artifact => ({ kind, value, source, confidence: 50, metaRaw: "{}" });
+  const { members, subjects } = clusterArtifacts([
+    mk("domain", "ns1.nationbuilder.com", "dns_lookup"),
+    mk("domain", "ns2.nationbuilder.com", "dns_lookup"),
+    mk("organization", "Selftest Org is a NationBuilder site", "web_read"),
+    mk("domain", "selftest.example.test", "whois"),
+    mk("domain", "www.selftest.example.test", "dns_lookup"),
+  ]);
+  const infraClustered = members[0].cluster_id !== null || members[1].cluster_id !== null;
+  const orgPulled = members[2].cluster_id !== null && members[2].cluster_id === members[0].cluster_id;
+  const ownJoined = members[3].cluster_id !== null && members[3].cluster_id === members[4].cluster_id;
+  const providerSubject = subjects.some((s) => s.members.length >= 2 && s.members.every((m) => /nationbuilder/i.test(String(m.value))));
+  const ok = !infraClustered && !orgPulled && ownJoined && !providerSubject;
+  return {
+    ok,
+    detail: ok
+      ? "provider ns*/mx* rows are inert for clustering: never a member, never a handle; the subject's own domain rows still join"
+      : `infraClustered=${infraClustered} orgPulled=${orgPulled} ownJoined=${ownJoined} providerSubject=${providerSubject}`,
+  };
 }
 
 /** /health self-test: a setup row naming the seed handle is NOT a cluster member and
