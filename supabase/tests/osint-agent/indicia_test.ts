@@ -4,6 +4,9 @@ import {
   indicia_address, indicia_web_dbs, indicia_hudsonrock,
   extractIndiciaRecords, inferHudsonRockType, WEB_DB_SERVICES,
 } from "../../functions/osint-agent/tools/indicia.ts";
+import {
+  indiciaSnusbaseTypeSelfTest, inferSnusbaseType, resolveWebDbsRequest, SNUSBASE_TYPES,
+} from "../../functions/osint-agent/lib/indicia-web-dbs.ts";
 import { buildTools, type ToolContext } from "../../functions/osint-agent/tool-registry.ts";
 import { classifyToolOutcome } from "../../functions/osint-agent/tool-outcome.ts";
 import { classifySource } from "../../functions/osint-agent/source-classification.ts";
@@ -362,4 +365,145 @@ Deno.test("indicia_hudsonrock: a valid explicit type is honoured over inference"
     await exec(indicia_hudsonrock, { query: "hunter2", type: "PASSWORD" });
   });
   assertEquals((sentBody as unknown as Record<string, unknown>).type, "password");
+});
+
+// ---- snusbaseType (tasks/todo.md T1) -------------------------------------------
+// The endpoint REQUIRES snusbaseType whenever snusbase is in `services`, and the
+// default set includes snusbase — so every call that omitted `services` was a
+// guaranteed `HTTP 400: snusbaseType is required when snusbase is selected`.
+// Allowed values are the provider's OpenAPI enum (read 2026-11-09), not guesses.
+
+Deno.test("indicia_web_dbs: an omitted services list sends a snusbaseType (the live 400)", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [] } });
+  }, async () => {
+    await exec(indicia_web_dbs, { query: "example_handle" });
+  });
+  const body = sentBody as unknown as Record<string, unknown>;
+  assertEquals(body.services, [...WEB_DB_SERVICES]);
+  assertEquals(body.snusbaseType, "username");
+});
+
+Deno.test("indicia_web_dbs: every inferred snusbaseType is in the provider enum", () => {
+  for (const q of ["jane@example.com", "192.0.2.10", "2001:db8::1", "d41d8cd98f00b204e9800998ecf8427e",
+    "example.org", "sub.example.co.uk", "Jane Q Example", "example_handle", "jordan.vale"]) {
+    const t = inferSnusbaseType(q);
+    assert(t !== null && (SNUSBASE_TYPES as readonly string[]).includes(t), `${q} -> ${t}`);
+  }
+});
+
+Deno.test("indicia_web_dbs: inferSnusbaseType maps each selector shape", () => {
+  assertEquals(inferSnusbaseType("jane@example.com"), "email");
+  assertEquals(inferSnusbaseType("192.0.2.10"), "lastip");
+  assertEquals(inferSnusbaseType("2001:db8::1"), "lastip");
+  assertEquals(inferSnusbaseType("d41d8cd98f00b204e9800998ecf8427e"), "hash"); // md5
+  assertEquals(inferSnusbaseType("da39a3ee5e6b4b0d3255bfef95601890afd80709"), "hash"); // sha1
+  assertEquals(inferSnusbaseType("example.org"), "_domain");
+  assertEquals(inferSnusbaseType("sub.example.co.uk"), "_domain");
+  assertEquals(inferSnusbaseType("Jane Q Example"), "name");
+  assertEquals(inferSnusbaseType("example_handle"), "username");
+  // A dotted handle on a non-TLD label stays a username, not a domain.
+  assertEquals(inferSnusbaseType("jordan.vale"), "username");
+  // Snusbase has no phone type: null means "do not send snusbase".
+  assertEquals(inferSnusbaseType("+1 (202) 555-0100"), null);
+  assertEquals(inferSnusbaseType("202.555.0100"), null);
+});
+
+Deno.test("indicia_web_dbs: password is never inferred, only accepted explicitly", () => {
+  for (const q of ["hunter2", "P@ssw0rd!", "correct horse battery staple", "example_handle"]) {
+    assert(inferSnusbaseType(q) !== "password", q);
+  }
+  const r = resolveWebDbsRequest({ query: "example_handle", snusbaseType: "PASSWORD" });
+  assert(r.ok);
+  if (r.ok) {
+    assertEquals(r.body.snusbaseType, "password");
+    assertEquals(r.typeSource, "explicit");
+  }
+});
+
+Deno.test("indicia_web_dbs: an explicit snusbaseType outside the enum falls back to inference", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [] } });
+  }, async () => {
+    await exec(indicia_web_dbs, { query: "jane@example.com", snusbaseType: "_email" });
+  });
+  assertEquals((sentBody as unknown as Record<string, unknown>).snusbaseType, "email");
+});
+
+Deno.test("indicia_web_dbs: no snusbaseType is sent when snusbase is not requested", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [] } });
+  }, async () => {
+    await exec(indicia_web_dbs, { query: "jane@example.com", services: ["leakcheck"] });
+  });
+  const body = sentBody as unknown as Record<string, unknown>;
+  assertEquals(body.services, ["leakcheck"]);
+  assertEquals("snusbaseType" in body, false);
+});
+
+Deno.test("indicia_web_dbs: a phone-shaped selector drops snusbase and still queries the rest", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  let r: Record<string, unknown> = {};
+  await withStubbedFetch((_url, init) => {
+    sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+    return jsonResponse(200, { success: true, data: { web: [] } });
+  }, async () => {
+    r = await exec(indicia_web_dbs, { query: "+1 202 555 0100" });
+  });
+  const body = sentBody as unknown as Record<string, unknown>;
+  assertEquals(body.services, WEB_DB_SERVICES.filter((s) => s !== "snusbase"));
+  assertEquals("snusbaseType" in body, false);
+  assertEquals(r.services_skipped, ["snusbase"]);
+});
+
+Deno.test("indicia_web_dbs: snusbase-only on a phone is gated: no call, skipped, selector not echoed", async () => {
+  let called = false;
+  let r: Record<string, unknown> = {};
+  await withStubbedFetch(() => {
+    called = true;
+    return jsonResponse(200, { success: true, data: {} });
+  }, async () => {
+    r = await exec(indicia_web_dbs, { query: "+1 202 555 0100", services: ["snusbase"] });
+  });
+  assertEquals(called, false, "a gated request must not spend a provider call");
+  assertEquals(r.provider_attempted, false);
+  assertEquals(classifyToolOutcome(r.error as string, null), "skipped");
+  assertEquals(String(r.error).includes("555"), false, "selector leaked into the error string");
+});
+
+Deno.test("indicia_web_dbs: INDICIA_SNUSBASE_TYPE_DISABLED removes snusbase from every request", async () => {
+  const prev = Deno.env.get("INDICIA_SNUSBASE_TYPE_DISABLED");
+  Deno.env.set("INDICIA_SNUSBASE_TYPE_DISABLED", "true");
+  try {
+    let sentBody: Record<string, unknown> | null = null;
+    await withStubbedFetch((_url, init) => {
+      sentBody = JSON.parse(String((init as RequestInit)?.body ?? "{}")) as Record<string, unknown>;
+      return jsonResponse(200, { success: true, data: { web: [] } });
+    }, async () => {
+      await exec(indicia_web_dbs, { query: "example_handle", snusbaseType: "username" });
+    });
+    const body = sentBody as unknown as Record<string, unknown>;
+    assertEquals(body.services, WEB_DB_SERVICES.filter((s) => s !== "snusbase"));
+    assertEquals("snusbaseType" in body, false);
+    const health = indiciaSnusbaseTypeSelfTest();
+    assertEquals(health.ok, true);
+    assertEquals(health.switch, "INDICIA_SNUSBASE_TYPE_DISABLED=true");
+  } finally {
+    if (prev === undefined) Deno.env.delete("INDICIA_SNUSBASE_TYPE_DISABLED");
+    else Deno.env.set("INDICIA_SNUSBASE_TYPE_DISABLED", prev);
+  }
+});
+
+Deno.test("indicia_web_dbs: /health self-test passes and is wired as checks.indicia_snusbase_type", async () => {
+  const health = indiciaSnusbaseTypeSelfTest(false);
+  assertEquals(health.ok, true, health.detail);
+  assertEquals(health.switch, "INDICIA_SNUSBASE_TYPE_DISABLED=false");
+  const src = await Deno.readTextFile(new URL("../../functions/osint-agent/health-handler.ts", import.meta.url));
+  assert(src.includes("r.checks.indicia_snusbase_type = indiciaSnusbaseTypeSelfTest();"));
 });
