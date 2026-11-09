@@ -148,7 +148,7 @@ describe("computePivots — a collision row is never an actionable pivot", () =>
   it("never gives a collision row HIGH or MEDIUM priority — it gives it no card at all", () => {
     const artifacts = [
       art({ kind: "email", value: "namesake@example.com", confidence: 95, metadata: POSSIBLE_COLLISION }),
-      art({ kind: "phone", value: "+1 555 0142", confidence: 40, metadata: STATUS_EXCLUDED }),
+      art({ kind: "phone", value: "+1 415 555 0142", confidence: 40, metadata: STATUS_EXCLUDED }),
       art({ kind: "domain", value: "excluded.example", confidence: 90, metadata: { excluded_collision: true } }),
       art({ kind: "username", value: "flagged_collision", confidence: 88, metadata: { collision: true } }),
     ];
@@ -263,10 +263,10 @@ describe("computePivots — eligible selectors stay pivotable", () => {
     // once on the collision axis and once from a provider that matched on the
     // subject's own email. Blocking the string would discard the good row.
     const artifacts = [
-      art({ kind: "phone", value: "+1 555 0177", metadata: POSSIBLE_COLLISION }),
-      art({ kind: "phone", value: "+1 555 0177", source: "hunter_verify", metadata: {} }),
+      art({ kind: "phone", value: "+1 415 555 0177", metadata: POSSIBLE_COLLISION }),
+      art({ kind: "phone", value: "+1 415 555 0177", source: "hunter_verify", metadata: {} }),
     ];
-    expect(run(artifacts).find((p) => p.value === "+1 555 0177")).toBeDefined();
+    expect(run(artifacts).find((p) => p.value === "+1 415 555 0177")).toBeDefined();
   });
 
   it("does not let a NAME row restore authority to a same-normalizing username", () => {
