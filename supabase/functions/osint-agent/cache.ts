@@ -19,6 +19,9 @@ import {
   OPSIS_GUARD_SKIP_PREFIX, OPSIS_RESULTS_HINT_CODES, decideOpsisSearch, findPendingForSelector, noteOpsisResultsOutcome, noteOpsisSearchOutcome,
   opsisResultsHint, opsisResultsHintDisabled, opsisSearchGuardDisabled, uncollectedOpsisRuns,
 } from "./lib/opsis-search-guard.ts";
+import {
+  type Attempt, PAID_GUARD_POLICIES, decidePaidCall, paidGuardDisabled, paidGuardDryRun, paidGuardRefusal,
+} from "./lib/paid-provider-guard.ts";
 // Union of both sides. #519 replaced this file's quarantine read with the paged
 // `loadRefusedArtifacts`, which absorbs what `buildRefusedKeys` did here, so that
 // symbol is deliberately NOT re-imported — it is unused in this module after the
@@ -442,7 +445,11 @@ const SELECTOR_INPUT_KEYS = new Set([
 // the planner passes a different `purpose`/`reason`. Deliberately conservative —
 // result-shaping params (kind/depth/limit/focus/…) are NOT here, so a different
 // mode can never be served a wrong-mode cache hit.
-const ANNOTATION_PARAM_KEYS = new Set(["purpose", "reason", "rationale", "note", "notes"]);
+// `force_second_source` / `second_source_justification` (lib/paid-provider-guard.ts) decide
+// ADMISSION of a paid call, never its result, so they are annotation keys too.
+const ANNOTATION_PARAM_KEYS = new Set([
+  "purpose", "reason", "rationale", "note", "notes", "force_second_source", "second_source_justification",
+]);
 
 /** params minus pure annotation keys — feeds the thread-scoped selector-reuse
  * hash only; the cross-thread input_hash still uses the FULL params. Exported for
@@ -765,10 +772,15 @@ export function wrapToolsWithCache(
   // The circuit breaker forgets everything between requests; tool_usage_log does
   // not. Loaded ONCE per run: only this case's FAILED rows, so the read is small.
   // FAILS OPEN on any error, like loadToolHealth — a cost control, not authorization.
-  let deadTargetsPromise: Promise<Map<string, number>> | null = null;
-  const loadDeadTargets = (): Promise<Map<string, number>> => {
-    if (!deadTargetsPromise) {
-      deadTargetsPromise = (async () => {
+  //
+  // The paged read of this case's attempt history is SHARED with the paid-provider
+  // guard (lib/paid-provider-guard.ts), which needs the same rows to see which free
+  // tools already tried a selector. `null` means the read failed or was truncated;
+  // each consumer fails open on it in its own way.
+  let attemptRowsPromise: Promise<Array<Record<string, unknown>> | null> | null = null;
+  const loadAttemptRows = (): Promise<Array<Record<string, unknown>> | null> => {
+    if (!attemptRowsPromise) {
+      attemptRowsPromise = (async () => {
         try {
           // ⚠️ PAGED, and it has to be. An unbounded PostgREST select returns at most
           // `db-max-rows` with NO error — a well-formed short 200 — which is exactly
@@ -791,7 +803,7 @@ export function wrapToolsWithCache(
               .range(from, from + DEAD_TARGET_PAGE - 1);
             if (error) {
               console.warn("[dead-target] load failed (gate open):", error.message);
-              return new Map();
+              return null;
             }
             const got = (data ?? []) as Array<Record<string, unknown>>;
             rows.push(...got);
@@ -808,19 +820,49 @@ export function wrapToolsWithCache(
               rows_read: rows.length,
               reason: "page_cap",
             }));
-            return new Map();
+            return null;
           }
-          return buildDeadTargets(
-            rows,
-            (input) => circuit.normalizeSelector(detectSelectorType(input), detectSelectorValue(input)),
-          );
+          return rows;
         } catch (e) {
           console.warn("[dead-target] load threw (gate open):", e);
-          return new Map();
+          return null;
         }
       })();
     }
+    return attemptRowsPromise;
+  };
+  let deadTargetsPromise: Promise<Map<string, number>> | null = null;
+  const loadDeadTargets = (): Promise<Map<string, number>> => {
+    if (!deadTargetsPromise) {
+      deadTargetsPromise = (async () => {
+        const rows = await loadAttemptRows();
+        if (!rows) return new Map();
+        return buildDeadTargets(
+          rows,
+          (input) => circuit.normalizeSelector(detectSelectorType(input), detectSelectorValue(input)),
+        );
+      })();
+    }
     return deadTargetsPromise;
+  };
+  // ---- Paid-provider guard attempts (lib/paid-provider-guard.ts) ----------------
+  // Attempts made in THIS run. The history read above is loaded once per run, so a
+  // free tool that failed two steps ago in this same run is only visible here.
+  // Appended by logUsage for every live (non-cached) call.
+  const runAttempts: Attempt[] = [];
+  const selectorOfInput = (input: unknown): string => {
+    const i = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+    const value = detectSelectorValue(i);
+    return value ? circuit.normalizeSelector(detectSelectorType(i), value) : "";
+  };
+  const loadPaidGuardAttempts = async (): Promise<Attempt[]> => {
+    const rows = await loadAttemptRows();
+    const prior: Attempt[] = (rows ?? []).filter((r) => r.cached !== true).map((r) => ({
+      tool: String(r.tool_name ?? ""),
+      selector: selectorOfInput((r.input_json as Record<string, unknown> | null)?.input ?? r.input_json),
+      outcome: String(r.outcome ?? ""),
+    }));
+    return [...prior, ...runAttempts];
   };
   // ---- subject_unlinked DISPATCH boundary --------------------------------------
   // Quarantine binds at write and read-back; without this it never bound at
@@ -1066,6 +1108,15 @@ export function wrapToolsWithCache(
         ? (isProvenEmptyResult(name, resultForOutcome) ? "empty" : "ok")
         : classifyToolOutcome(errorMsg, statusCode);
       const okStored = outcome !== "failed";
+      // Paid-provider guard: remember this run's live attempts (a replay proves nothing
+      // about whether the target is reachable now, so cached rows are not recorded).
+      if (!cached) {
+        runAttempts.push({
+          tool: name,
+          selector: selectorOfInput((inputJson as { input?: unknown } | null)?.input),
+          outcome,
+        });
+      }
       // Per-call list price: an opted-in indicia_person (allowMissingFirstName) is ledgered at its real, higher cost.
       const callCost = costForToolCall(name, (inputJson as { input?: unknown } | null)?.input);
       const cost = (cached || freeCall) ? 0 : callCost;
@@ -1578,6 +1629,50 @@ export function wrapToolsWithCache(
           }
         }
 
+        // ---- Paid-provider guard: free first (lib/paid-provider-guard.ts) -------
+        // Same placement rule as the dead-target gate above and the Opsis guard below:
+        // after every cache layer (a replay is free and is never refused), before the
+        // tool-call cap, the circuit and the paid-slot reservation (a refusal reserves
+        // nothing). Only tools that registered a policy are gated.
+        // Kill switch PAID_PROVIDER_GUARD_DISABLED; shadow mode PAID_PROVIDER_GUARD_DRY_RUN.
+        let paidGuardAdmission: Record<string, unknown> | null = null;
+        const paidPolicy = PAID_GUARD_POLICIES.get(name);
+        if (paidPolicy && !paidGuardDisabled()) {
+          const decision = decidePaidCall({
+            policy: paidPolicy,
+            selector: sel && selectorValue ? sel : "",
+            attempts: await loadPaidGuardAttempts(),
+            forceSecondSource: inp.force_second_source,
+            justification: inp.second_source_justification,
+          });
+          if (decision.allow) {
+            paidGuardAdmission = decision.admitted_by === "force_second_source"
+              ? { paid_guard_admitted_by: "force_second_source", paid_guard_justification: decision.justification }
+              : { paid_guard_admitted_by: "free_attempt", paid_guard_rule: decision.rule, paid_guard_cleared_by: decision.cleared_by };
+          } else if (paidGuardDryRun()) {
+            console.log(JSON.stringify({
+              event: "paid_guard_shadow_refusal", thread_id: ctx.investigationId, tool: name, reason: decision.reason,
+            }));
+            paidGuardAdmission = { paid_guard_admitted_by: "dry_run", paid_guard_shadow_reason: decision.reason };
+          } else {
+            const refusal = paidGuardRefusal(name, paidPolicy, decision.reason);
+            console.log(JSON.stringify({
+              event: "paid_guard_refused", thread_id: ctx.investigationId, tool: name, reason: decision.reason,
+            }));
+            await logUsage(false, false, Date.now() - t0, refusal.error, null, true, {
+              input: inputJson,
+              runtime: { ...runtimeMetaBase, rejection_reason: `paid_guard_${decision.reason}`, rejection_source: "paid_guard", stale_cache: !!staleRecord },
+            });
+            return attachRuntimeMeta(refusal, {
+              ...runtimeMetaBase,
+              rejection_reason: `paid_guard_${decision.reason}`,
+              stage: "TARGETED_PIVOT",
+              cache_layer: "miss",
+              stale_cache: !!staleRecord,
+            });
+          }
+        }
+
         // ---- Opsis search-side guard (lib/opsis-search-guard.ts) --------------
         // A paid opsis_search is admitted only when the run can still READ it before the
         // report, and only while at most MAX_UNCOLLECTED_OPSIS_RUNS runs await reading.
@@ -1926,7 +2021,7 @@ export function wrapToolsWithCache(
           finishCall(ctx.investigationId, name);
           logUsage(false, false, Date.now() - t0, msg, null, false, {
             input: inputJson,
-            runtime: { ...runtimeMetaBase, stage: runtimeDecision.stage, cycle_id: runtimeDecision.cycleId, cache_layer: "miss", stale_cache: !!staleRecord },
+            runtime: { ...runtimeMetaBase, stage: runtimeDecision.stage, cycle_id: runtimeDecision.cycleId, cache_layer: "miss", stale_cache: !!staleRecord, ...(paidGuardAdmission ?? {}) },
           });
           circuit.recordResult(ctx.investigationId, name, sel, purpose, {
             status: circuit.classifyResult(null, e),
@@ -2010,6 +2105,7 @@ export function wrapToolsWithCache(
             cache_layer: "miss",
             stale_cache: !!staleRecord,
             source_created_at: createdAtIso,
+            ...(paidGuardAdmission ?? {}),
           },
         }, result);
         if (AUTO_EVIDENCE_TOOLS.has(name)) {
