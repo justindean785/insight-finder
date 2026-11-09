@@ -129,6 +129,8 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   // People Data Labs — data-broker person aggregator (profiles/employment/emails).
   // Now has a class that says so; weight is unchanged (same cap as breach).
   pdl_person_enrich: "data_broker",
+  // Context.dev people search: candidate profiles from a people index — broker/lead tier.
+  contextdev_people_search: "data_broker",
   leakcheck: "breach", // bare alias of leakcheck_lookup seen in compound source strings
   // ── Threat-intel / ransomware-victim exposure ──
   // ransomware.live and the dead deepfind_ransomware_exposure report that an
@@ -182,6 +184,8 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   google_dorks: "ai_summary",
   dork_harvest: "ai_summary",
   jina_reader_scrape: "independent_public",
+  // Context.dev scrape is a fetcher like jina: the content is the public page itself.
+  contextdev_scrape: "independent_public",
   exa_get_contents: "independent_public",
   // RapidAPI multi-breach aggregator — breach class.
   rapidapi_all_breaches: "breach",

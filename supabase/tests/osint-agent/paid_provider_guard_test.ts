@@ -102,9 +102,11 @@ Deno.test("self-test: passes, reports mode and the registered-policy count", () 
   assertEquals(paidProviderGuardSelfTest(false, true).mode, "dry_run");
 });
 
-Deno.test("no provider is guarded by this module on its own (policies register in provider PRs)", () => {
-  const registered = [...PAID_GUARD_POLICIES.keys()].filter((k) => k !== PAID);
-  assertEquals(registered, []);
+Deno.test("the guarded set is exactly the static policy list (lib/paid-guard-policies.ts)", async () => {
+  await import("../../functions/osint-agent/lib/paid-guard-policies.ts");
+  const { GUARDED_PAID_TOOLS } = await import("../../functions/osint-agent/lib/paid-guard-policies.ts");
+  const registered = [...PAID_GUARD_POLICIES.keys()].filter((k) => k !== PAID).sort();
+  assertEquals(registered, [...GUARDED_PAID_TOOLS].sort());
 });
 
 // ---- The real wrap path ------------------------------------------------------------
@@ -297,7 +299,8 @@ Deno.test("wrap: a tool with no registered policy is never gated", async () => {
 
 Deno.test("wiring: /health reports checks.paid_provider_guard and SKIP_RE names the refusal head", async () => {
   const health = await Deno.readTextFile(new URL("../../functions/osint-agent/health-handler.ts", import.meta.url));
-  assert(health.includes("r.checks.paid_provider_guard = paidProviderGuardSelfTest();"));
+  assert(health.includes("const paidGuardHealth = { ...paidProviderGuardSelfTest(), guarded: [...GUARDED_PAID_TOOLS] };"));
+  assert(health.includes("r.checks.paid_provider_guard = paidGuardHealth;"));
   const outcome = await Deno.readTextFile(new URL("../../functions/osint-agent/tool-outcome.ts", import.meta.url));
   assert(outcome.includes("paid guard:"));
 });

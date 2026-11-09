@@ -117,6 +117,9 @@ const PROVIDER_TOOLS: Record<string, string[]> = {
     "indicia_web_dbs",
     "indicia_hudsonrock",
   ],
+  // Both Context.dev tools share one key and one credit balance: a 402/429 on one
+  // means the other is equally dead for the run.
+  contextdev: ["contextdev_scrape", "contextdev_people_search"],
 };
 const TOOL_PROVIDER = new Map<string, string>();
 for (const [provider, tools] of Object.entries(PROVIDER_TOOLS)) {

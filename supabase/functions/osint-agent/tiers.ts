@@ -55,6 +55,8 @@ export const TIER_B: ReadonlyArray<string> = [
   "indicia_web_dbs",
   "indicia_hudsonrock",
   "pdl_person_enrich",
+  // Context.dev people search — candidate profiles from a people index (broker tier).
+  "contextdev_people_search",
 ];
 
 export const TIER_C: ReadonlyArray<string> = [
@@ -65,6 +67,8 @@ export const TIER_C: ReadonlyArray<string> = [
   "github_code_search",
   "reddit_user",
   "hackernews_user",
+  // Context.dev scrape — a fetcher for pages the free readers could not read; same tier as jina.
+  "contextdev_scrape",
   "jina_reader_scrape",
   "markdown_extract",
   "minimax_web_search",
