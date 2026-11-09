@@ -57,6 +57,19 @@ export const TIER_B: ReadonlyArray<string> = [
   "pdl_person_enrich",
   // Context.dev people search — candidate profiles from a people index (broker tier).
   "contextdev_people_search",
+  // SocQ — third-party social-data collection (new, unproven): a profile/post observation, broker-adjacent tier.
+  "socq_instagram_profile",
+  "socq_x_profile",
+  "socq_linkedin_profile",
+  "socq_instagram_posts",
+  "socq_instagram_post_info",
+  "socq_instagram_followers_count",
+  "socq_x_user_posts",
+  "socq_linkedin_company",
+  "socq_linkedin_posts",
+  "socq_instagram_search",
+  "socq_x_search",
+  "socq_task_result",
 ];
 
 export const TIER_C: ReadonlyArray<string> = [

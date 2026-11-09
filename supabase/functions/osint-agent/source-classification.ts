@@ -131,6 +131,19 @@ const TOOL_CLASS: Record<string, SourceClass> = {
   pdl_person_enrich: "data_broker",
   // Context.dev people search: candidate profiles from a people index — broker/lead tier.
   contextdev_people_search: "data_broker",
+  // SocQ: a third-party read of a public profile/post, like socialfetch_lookup (cap 40, never high).
+  socq_instagram_profile: "social_profile_passive",
+  socq_x_profile: "social_profile_passive",
+  socq_linkedin_profile: "social_profile_passive",
+  socq_instagram_posts: "social_profile_passive",
+  socq_instagram_post_info: "social_profile_passive",
+  socq_instagram_followers_count: "social_profile_passive",
+  socq_x_user_posts: "social_profile_passive",
+  socq_linkedin_company: "social_profile_passive",
+  socq_linkedin_posts: "social_profile_passive",
+  socq_instagram_search: "social_profile_passive",
+  socq_x_search: "social_profile_passive",
+  socq_task_result: "social_profile_passive",
   leakcheck: "breach", // bare alias of leakcheck_lookup seen in compound source strings
   // ── Threat-intel / ransomware-victim exposure ──
   // ransomware.live and the dead deepfind_ransomware_exposure report that an

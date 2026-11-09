@@ -139,6 +139,19 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   // timeout contract measures the module's LARGEST budget, so both caps clear 38s.
   contextdev_scrape: 42_000,
   contextdev_people_search: 42_000,
+  // SocQ: submit + poll bounded at 40s (lib/socq.ts SOCQ_TOTAL_TIMEOUT_MS), under this cap.
+  socq_instagram_profile: 48_000,
+  socq_x_profile: 48_000,
+  socq_linkedin_profile: 48_000,
+  socq_instagram_posts: 48_000,
+  socq_instagram_post_info: 48_000,
+  socq_instagram_followers_count: 48_000,
+  socq_x_user_posts: 48_000,
+  socq_linkedin_company: 48_000,
+  socq_linkedin_posts: 48_000,
+  socq_instagram_search: 48_000,
+  socq_x_search: 48_000,
+  socq_task_result: 48_000,
   indicia_hudsonrock: 32_000,
   // SocialFetch server-side web read (/v1/web/markdown) fetches + renders +
   // converts a full page upstream, which legitimately exceeds the 12s default.

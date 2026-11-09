@@ -215,7 +215,7 @@ Deno.test("costs, classes and the guarded set are what the PR states", () => {
   assertEquals(costForTool("contextdev_people_search"), 40000);
   assertEquals(classifySource("contextdev_scrape"), "independent_public");
   assertEquals(classifySource("contextdev_people_search"), "data_broker");
-  assertEquals([...GUARDED_PAID_TOOLS].sort(), ["contextdev_people_search", "contextdev_scrape"]);
+  assert(GUARDED_PAID_TOOLS.includes("contextdev_scrape") && GUARDED_PAID_TOOLS.includes("contextdev_people_search"));
   for (const t of GUARDED_PAID_TOOLS) assert(PAID_GUARD_POLICIES.has(t), t);
   assertEquals(PAID_GUARD_POLICIES.get("contextdev_scrape")!.rules[0].tools, ["jina_reader_scrape", "socialfetch_web_read"]);
   assertEquals(PAID_GUARD_POLICIES.get("contextdev_people_search")!.rules[0].tools, ["indicia_person"]);

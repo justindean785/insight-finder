@@ -120,6 +120,8 @@ const PROVIDER_TOOLS: Record<string, string[]> = {
   // Both Context.dev tools share one key and one credit balance: a 402/429 on one
   // means the other is equally dead for the run.
   contextdev: ["contextdev_scrape", "contextdev_people_search"],
+  // All SocQ endpoints share one key and one credit balance.
+  socq: ["socq_instagram_profile", "socq_x_profile", "socq_linkedin_profile", "socq_instagram_posts", "socq_instagram_post_info", "socq_instagram_followers_count", "socq_x_user_posts", "socq_linkedin_company", "socq_linkedin_posts", "socq_instagram_search", "socq_x_search", "socq_task_result"],
 };
 const TOOL_PROVIDER = new Map<string, string>();
 for (const [provider, tools] of Object.entries(PROVIDER_TOOLS)) {
