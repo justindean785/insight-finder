@@ -80,11 +80,11 @@ export function CaseSheetView({
     <div className="flex h-full min-h-0 flex-col overflow-y-auto">
       {/* ── Subject ───────────────────────────────────────────────────── */}
       <section aria-label="Subject" className="flex flex-col gap-2.5 border-b border-border-subtle px-5 py-4">
-        <h3 className="text-[12px] font-medium text-faint-foreground">Subject</h3>
+        <h3 className="text-[13px] font-semibold text-foreground">Subject</h3>
         {reviewsUnavailable ? (
           <p role="status" className="text-[13px] leading-snug text-muted-foreground">{REVIEWS_UNAVAILABLE}</p>
         ) : subject ? (
-          <div className="flex items-center gap-3">
+          <div className="flex items-start gap-3">
             <span
               aria-hidden
               className="grid h-11 w-11 shrink-0 place-items-center rounded-lg border border-border bg-surface-3 text-[15px] font-semibold text-muted-foreground"
@@ -92,10 +92,10 @@ export function CaseSheetView({
               {subject.initials}
             </span>
             <div className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate text-[17px] font-semibold tracking-[-0.01em] text-foreground" title={subject.artifact.value}>
+              <span className="text-[17px] font-semibold leading-snug tracking-[-0.01em] text-foreground [overflow-wrap:anywhere]">
                 {subject.artifact.value}
               </span>
-              <span className="truncate text-[12.5px] text-subtle-foreground" title={subject.view.basis}>
+              <span className="mt-0.5 text-[12.5px] leading-snug text-subtle-foreground">
                 {subject.view.basis}
               </span>
             </div>
@@ -162,7 +162,7 @@ export function CaseSheetView({
       <section aria-label="Optional exception review" className="flex flex-col gap-3 px-3.5 py-4">
         <div className="px-1.5">
           <div className="flex items-baseline">
-            <h3 className="text-[14px] font-semibold text-foreground">Optional exception review</h3>
+            <h3 className="text-[13px] font-semibold text-foreground">Optional exception review</h3>
             {!reviewsUnavailable && (
               <span className="ml-2 rounded-full bg-surface-3 px-1.5 font-mono text-[12px] leading-[20px] tabular-nums text-foreground">
                 {queueTotal}
@@ -172,7 +172,7 @@ export function CaseSheetView({
               <span className="ml-auto text-[12px] text-subtle-foreground">showing {queue.length}</span>
             )}
           </div>
-          <p className="mt-1 text-[12.5px] leading-relaxed text-muted-foreground">Correlation runs automatically. Review only disputed evidence or unconfirmed links; Confirm, Dismiss, and Key are optional analyst overrides.</p>
+          <p className="mt-1 text-[12.5px] leading-snug text-subtle-foreground">Correlation runs automatically. Review only disputed evidence or unconfirmed links; Confirm, Dismiss, and Key are optional analyst overrides.</p>
         </div>
         {reviewsUnavailable ? (
           <p className="px-1.5 text-[13px] leading-snug text-muted-foreground">{REVIEWS_UNAVAILABLE}</p>
@@ -203,7 +203,7 @@ export function CaseSheetView({
                 <li
                   key={artifact.id}
                   data-ask={ask}
-                  className="flex flex-col gap-2.5 rounded-lg border border-border-subtle bg-surface-2 p-3.5"
+                  className="flex flex-col gap-2 rounded-md border border-border-subtle bg-surface-2 px-3 py-2.5"
                 >
                   <div className="flex items-start gap-2">
                     <span
@@ -212,7 +212,7 @@ export function CaseSheetView({
                         "min-w-0 flex-1 text-foreground",
                         prose
                           ? "text-[13px] leading-[1.5] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden"
-                          : "truncate font-mono text-[13px]",
+                          : "font-mono text-[13px] leading-snug [overflow-wrap:anywhere]",
                       )}
                     >
                       {artifact.value}
@@ -220,11 +220,11 @@ export function CaseSheetView({
                     <AuthorityChip view={view} className="shrink-0" />
                   </div>
                   <AuthorityCaveat view={view} />
-                  <p className="text-[12.5px] leading-relaxed text-muted-foreground">{ASK_LABEL[ask]}</p>
+                  <p className="text-[12.5px] leading-snug text-muted-foreground">{ASK_LABEL[ask]}</p>
                   <button
                     type="button"
                     onClick={() => jumpToEvidence(artifact.id)}
-                    className="inline-flex h-9 w-full items-center justify-between gap-2 whitespace-nowrap rounded-md border border-border bg-secondary px-3 text-[12.5px] font-medium text-foreground transition-colors duration-fast hover:bg-surface-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11"
+                    className="-mx-1 inline-flex h-7 w-fit items-center gap-1 whitespace-nowrap rounded px-1 text-[12.5px] font-medium text-foreground underline-offset-2 transition-colors duration-fast hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11"
                   >
                     Decide in Evidence <ArrowRight className="h-3.5 w-3.5" aria-hidden />
                   </button>

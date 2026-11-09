@@ -8,7 +8,8 @@ import { authorityFor } from "@/lib/authority";
 import { AuthorityChip } from "@/components/ui/authority";
 import { ArtifactPivotActionWith } from "@/components/pivots/ArtifactPivotAction";
 import { useThreadQueriedTargets } from "@/hooks/useThreadQueriedTargets";
-import { connectionsView, linksOf } from "@/lib/workbench-connections";
+import { connectionsView, linksOf, unlinkedReasons } from "@/lib/workbench-connections";
+import { isProseValue } from "@/lib/evidence-bands";
 import { readSelectedEntity, SELECT_ENTITY_EVENT } from "@/lib/workbench-selection";
 import { pickSubjectName } from "@/lib/report-hygiene";
 import { cn } from "@/lib/utils";
@@ -75,6 +76,7 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
   const graph = useMemo(() => buildEntityGraph(items, seed.value, seed.type, reviews), [items, seed.value, seed.type, reviews]);
   const view = useMemo(() => connectionsView(graph), [graph]);
   const subject = useMemo(() => pickSubjectName(items, reviews), [items, reviews]);
+  const why = useMemo(() => (view.realLinks === 0 ? unlinkedReasons(items, seed.value) : null), [view.realLinks, items, seed.value]);
   // Automatic subject-first navigation: an analyst can still select any node,
   // but nobody has to hunt through an "unlinked" list to find the person map.
   const node = (selected ? graph.nodes.find((n) => n.id === selected) : null)
@@ -142,6 +144,25 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
         <p className="text-[11px] leading-relaxed text-faint-foreground">
           Evidence links include shared selectors and same-record associations. They explain how records relate, not that they belong to one person.
         </p>
+        {why && why.total > 0 && (
+          <div data-why-unlinked className="mt-3 rounded-md border border-border-subtle bg-surface-2 px-3 py-2.5 text-[12.5px] leading-relaxed text-muted-foreground">
+            <p className="font-medium text-foreground">Why nothing reads as linked yet</p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+              {why.noSubject && (
+                <li>This case started from an upload, so it has no subject selector for anything to link to.</li>
+              )}
+              {why.breachOnly > 0 && (
+                <li>{why.breachOnly} of {why.total} rows are breach records. Breach records can show selectors appearing together, but never prove identity on their own.</li>
+              )}
+              {why.quarantined > 0 && (
+                <li>{why.quarantined} of {why.total} rows are quarantined: their link to the subject is unproven, so they lend no linkage.</li>
+              )}
+              {!why.noSubject && why.breachOnly === 0 && why.quarantined === 0 && (
+                <li>No two rows share a selector yet. A corroborating pivot forms the first link.</li>
+              )}
+            </ul>
+          </div>
+        )}
         {view.seedRecords > 0 && (
           <p className="mt-1 text-[11px] text-subtle-foreground">{view.seedRecords} record{view.seedRecords === 1 ? "" : "s"} only repeat the seed; not counted as links.</p>
         )}
@@ -236,11 +257,11 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
                   onClick={() => setSelected(n.id)}
                   aria-pressed={n.id === selected}
                   className={cn(
-                    "flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "flex w-full min-w-0 items-start gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     n.id === selected && "bg-white/[0.06]",
                   )}
                 >
-                  <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-foreground">{n.art?.value ?? n.label}</span>
+                  <RowValue value={n.art?.value ?? n.label} />
                   <span className="shrink-0 text-[11px] text-subtle-foreground">{n.kind}</span>
                   <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground" title={`${count} real link${count === 1 ? "" : "s"}`}>{count}</span>
                 </button>
@@ -254,7 +275,7 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
         <section aria-label="Unlinked candidates" className="border-t border-border-subtle px-3.5 py-3">
           <h3 className="px-1.5 pb-1 text-[12px] font-medium text-foreground">
             Unlinked candidates <span className="font-mono text-[11px] font-normal tabular-nums text-muted-foreground">{view.isolated.length}</span>
-            <span className="ml-2 text-[11px] font-normal text-subtle-foreground">no shared selector or source-record association yet</span>
+            <span className="block text-[11.5px] font-normal text-subtle-foreground">No shared selector or source-record association yet</span>
           </h3>
           {view.isolated.length > 6 && (
             <div className="mb-1.5 px-1.5">
@@ -276,11 +297,11 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
                   onClick={() => setSelected(n.id)}
                   aria-pressed={n.id === selected}
                   className={cn(
-                    "flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "flex w-full min-w-0 items-start gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     n.id === selected && "bg-white/[0.06]",
                   )}
                 >
-                  <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-foreground">{n.art?.value ?? n.label}</span>
+                  <RowValue value={n.art?.value ?? n.label} />
                   <span className="shrink-0 text-[11px] text-subtle-foreground">{n.kind}</span>
                 </button>
               </li>
@@ -295,5 +316,19 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
         Found together does not mean owned by the same person. Name-only candidates and quarantined observations stay separate.
       </p>
     </div>
+  );
+}
+
+/**
+ * One row value. A selector is compared character by character, so it keeps the
+ * data face and wraps anywhere instead of ending in an ellipsis; a finding
+ * written into the value column is prose and reads in the sans face over at
+ * most two lines (DESIGN.md: "Don't truncate a sentence like a selector").
+ */
+function RowValue({ value }: { value: string }) {
+  return isProseValue(value) ? (
+    <span title={value} className="min-w-0 flex-1 overflow-hidden text-[12.5px] leading-snug text-foreground [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [display:-webkit-box]">{value}</span>
+  ) : (
+    <span className="min-w-0 flex-1 font-mono text-[12px] leading-snug text-foreground [overflow-wrap:anywhere]">{value}</span>
   );
 }

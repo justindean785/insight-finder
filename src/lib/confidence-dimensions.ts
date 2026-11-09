@@ -95,7 +95,7 @@ function selectorType(a: Artifact): string | null {
   return null;
 }
 
-function isConflicted(a: Artifact): boolean {
+function isConflicted(a: Artifact, review?: ReviewAdjustment): boolean {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
   const k = a.kind.toLowerCase();
   // isBreachKind, not the bare literal: #405 replaced kind:"breach" with
@@ -110,7 +110,14 @@ function isConflicted(a: Artifact): boolean {
   // Without the quarantine half, a name-only harvest inflated BOTH dimensions it
   // feeds: `live` (selector breadth) counted quarantined selectors as coverage,
   // and the Identity score rose off clusters built from them.
-  return isClusterIneligible(a) || m.conflict === true || m.collision === true || m.false_positive === true || isBreachKind(k) || k.endsWith("_conflict");
+  // A breach row is an UNVERIFIED indicator (DIMENSION_DEFINITIONS.conflictFree)
+  // until the analyst confirms or keys it. Measured 2026-11-08 on a live 70-row
+  // upload case: 3 of 14 analyst-verified rows were breach_exposure, so readiness
+  // read "11 of 29" against 14 verified and the analyst's own verdict could never
+  // reach the numerator. The verdict lifts ONLY this clause: quarantine,
+  // collision, conflict and false-positive flags above still exclude the row.
+  const breachIndicator = isBreachKind(k) && review !== "confirmed" && review !== "key";
+  return isClusterIneligible(a) || m.conflict === true || m.collision === true || m.false_positive === true || breachIndicator || k.endsWith("_conflict");
 }
 
 export function buildConfidenceProfile(input: {
@@ -125,9 +132,9 @@ export function buildConfidenceProfile(input: {
   const total = artifacts.length;
   const rev = (a: Artifact): ReviewAdjustment => reviews[a.id];
 
-  const conflicts = artifacts.filter(isConflicted);
+  const conflicts = artifacts.filter((a) => isConflicted(a, rev(a)));
   const conflictCount = conflicts.length;
-  const live = artifacts.filter((a) => !isConflicted(a));
+  const live = artifacts.filter((a) => !isConflicted(a, rev(a)));
 
   // ── Identity ─────────────────────────────────────────────────────────
   const clusters = buildIdentityClusters(artifacts, seedValue, reviews).clusters;

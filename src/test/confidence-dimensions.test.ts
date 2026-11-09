@@ -177,3 +177,43 @@ describe("buildConfidenceProfile — honest, deterministic confidence axes", () 
     expect(many.value).toBeGreaterThan(one.value);
   });
 });
+
+// 2026-11-08, live 70-artifact upload case: 14 analyst-verified rows, but readiness
+// read "11 of 29" and Conflict-free "40 conflict / collision / breach indicators
+// among 70". The 3 missing verified rows were breach_exposure rows the analyst had
+// CONFIRMED: `isConflicted` treated every breach kind as a conflict, regardless of
+// review, so the analyst's own verdict could never reach the numerator.
+// DIMENSION_DEFINITIONS.conflictFree already says "UNVERIFIED breach indicators".
+describe("analyst-confirmed breach rows (DIMENSION_DEFINITIONS: unverified breach indicators)", () => {
+  const breach = (id: string, metadata: Record<string, unknown> | null = null) =>
+    A({ id, kind: "breach_exposure", value: `breach ${id}@example.com`, source: "breach_check", metadata });
+  const base = [
+    A({ id: "e1", kind: "email", value: "a@example.com" }),
+    A({ id: "e2", kind: "email", value: "b@example.com" }),
+  ];
+
+  it("a confirmed or key breach row counts toward readiness and is not a conflict", () => {
+    for (const verdict of ["confirmed", "key"] as const) {
+      const p = buildConfidenceProfile({ artifacts: [...base, breach("b1")], seedValue: "a@example.com", reviews: { b1: verdict }, nowMs: NOW });
+      expect(dim(p, "readiness").reason).toMatch(/^1 of 3 reportable/);
+      expect(p.conflictCount).toBe(0);
+    }
+  });
+
+  it("an unreviewed breach row is unchanged: still a conflict, still outside readiness", () => {
+    const p = buildConfidenceProfile({ artifacts: [...base, breach("b1")], seedValue: "a@example.com", nowMs: NOW });
+    expect(p.conflictCount).toBe(1);
+    expect(dim(p, "readiness").reason).toMatch(/^0 of 2 reportable/);
+  });
+
+  it("a confirmed verdict never lifts quarantine on a breach row", () => {
+    const p = buildConfidenceProfile({
+      artifacts: [...base, breach("b1", { subject_unlinked: true, subject_unlinked_reason: "name-only harvest" })],
+      seedValue: "a@example.com",
+      reviews: { b1: "confirmed" },
+      nowMs: NOW,
+    });
+    expect(p.conflictCount).toBe(1);
+    expect(dim(p, "readiness").reason).toMatch(/^0 of 2 reportable/);
+  });
+});

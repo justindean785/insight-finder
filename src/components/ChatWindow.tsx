@@ -42,6 +42,7 @@ import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type R
 import { PivotStrip } from "@/components/pivots/PivotStrip";
 import { SessionStrip } from "@/components/chat/SessionStrip";
 import { AgentAssessmentCards } from "@/components/chat/AgentAssessmentCards";
+import { LongProse } from "@/components/chat/LongProse";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
 import { countWorkbenchRunnablePivots } from "@/lib/next-step-queue";
 import { registerPivotRunner } from "@/lib/pivot-runner";
@@ -1358,9 +1359,11 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             </details>
           )}
           <div className="chat-card__body">
-            <div className="chat-prose">
-              <MarkdownBlock content={prose} />
-            </div>
+            <LongProse disabled={Boolean(live)}>
+              <div className="chat-prose">
+                <MarkdownBlock content={prose} />
+              </div>
+            </LongProse>
           </div>
           <div className="chat-card__footer">
             <button
@@ -3442,7 +3445,7 @@ function ChatWindowInner({
           column sits on the transcript column at every width (#645). On a
           phone the workspace's bottom tab bar sits below this and owns the
           safe-area inset, so the dock keeps only its own vertical padding. */}
-      <div className="relative z-10 border-t border-border-subtle bg-background px-5 pb-1.5 pt-2 sm:pb-5 sm:pt-4 lg:px-7">
+      <div className="relative z-10 border-t border-border-subtle bg-background px-5 pb-1.5 pt-2 sm:pb-2.5 sm:pt-2.5 lg:px-7">
         <div className="chat-column">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
@@ -3479,11 +3482,11 @@ function ChatWindowInner({
               Workbench immediately above; repeating them here created two rows
               of identical, undersized buttons on a phone. */}
           {isFollowUp && !isLoading && (
-            <div className="mb-2.5 flex flex-wrap gap-2" data-composer-suggestions>
+            <div className="mb-1.5 flex flex-wrap gap-2" data-composer-suggestions>
               <button
                 type="button"
                 onClick={() => void sendText("What changed in the latest run? List only the new findings and any contradiction, as compact lines; do not restate earlier findings.")}
-                className="inline-flex h-11 items-center gap-1.5 rounded-md border border-border bg-[hsl(var(--surface-1))] px-3 text-[13px] font-medium text-muted-foreground hover:border-[hsl(var(--brand)/0.5)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-9"
+                className="inline-flex h-11 items-center gap-1.5 rounded-md border border-border bg-[hsl(var(--surface-1))] px-3 text-[13px] font-medium text-muted-foreground hover:border-[hsl(var(--brand)/0.5)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-7 sm:px-2.5 sm:text-[12.5px] [@media(pointer:coarse)]:sm:h-11"
               >
                 What changed?
               </button>
@@ -3642,11 +3645,14 @@ function ChatWindowInner({
             id={composerIds.help}
             aria-live="polite"
             className={cn(
-              "mt-1.5 min-h-[1.25rem] truncate px-1 text-micro",
+              "mt-1 min-h-[1.25rem] truncate px-1 text-micro",
               preflight.errors.target ? "text-[hsl(var(--danger))]" : "text-muted-foreground",
-              // On a phone the default instruction is the placeholder's job;
-              // the line only appears when it says something about THIS input.
-              preflight.empty && !preflight.errors.target && "max-sm:sr-only",
+              // The default instruction is the placeholder's job (and Stop says
+              // what Stop does): the line only takes a row of the transcript's
+              // height when it says something about THIS input. It stays in the
+              // accessibility tree either way — the textarea is described by it.
+              // Measured 2026-11-08: the dock took ~230px of a 681px viewport.
+              preflight.empty && !preflight.errors.target && "sr-only",
             )}
           >
             {preflight.errors.target
