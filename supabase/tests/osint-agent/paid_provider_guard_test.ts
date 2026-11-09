@@ -301,3 +301,33 @@ Deno.test("wiring: /health reports checks.paid_provider_guard and SKIP_RE names 
   const outcome = await Deno.readTextFile(new URL("../../functions/osint-agent/tool-outcome.ts", import.meta.url));
   assert(outcome.includes("paid guard:"));
 });
+
+Deno.test("wrap: selectors are keyed type:value — a free failure on a NAME does not clear a USERNAME with the same text", () =>
+  withPolicy(async () => {
+    registerPaidGuardPolicy("test_paid_profile", {
+      provider: "testprovider",
+      rules: [{ tools: ["free_profile"], outcomes: ["failed", "empty"], label: "free_profile_blocked" }],
+      tryFirst: ["free_profile"],
+    });
+    try {
+      const paid = { n: 0 };
+      seq += 1;
+      const investigationId = `44444444-5555-4666-8777-${String(seq).padStart(12, "0")}`;
+      clearRuntime(investigationId);
+      circuit.clearThread(investigationId);
+      const rows = [{ tool_name: "free_profile", outcome: "failed", input_json: { input: { name: "example handle" } } }];
+      const w = wrapToolsWithCache({ test_paid_profile: tool(paid, { ok: true }) }, { investigationId, userId: "u1", supabase: fakeSupabase({ rows }) });
+      await run(w, "test_paid_profile", { username: "Example Handle" });
+      assertEquals(paid.n, 0, "a name-typed failure must not clear a username-typed paid call");
+      const rows2 = [{ tool_name: "free_profile", outcome: "failed", input_json: { input: { handle: "@Example_Handle" } } }];
+      seq += 1;
+      const id2 = `44444444-5555-4666-8777-${String(seq).padStart(12, "0")}`;
+      clearRuntime(id2);
+      circuit.clearThread(id2);
+      const w2 = wrapToolsWithCache({ test_paid_profile: tool(paid, { ok: true }) }, { investigationId: id2, userId: "u1", supabase: fakeSupabase({ rows: rows2 }) });
+      await run(w2, "test_paid_profile", { username: "example_handle" });
+      assertEquals(paid.n, 1, "handle and username are both username-typed, and '@' and case are normalized away");
+    } finally {
+      PAID_GUARD_POLICIES.delete("test_paid_profile");
+    }
+  }));

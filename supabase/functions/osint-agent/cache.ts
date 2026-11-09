@@ -850,10 +850,15 @@ export function wrapToolsWithCache(
   // free tool that failed two steps ago in this same run is only visible here.
   // Appended by logUsage for every live (non-cached) call.
   const runAttempts: Attempt[] = [];
+  // Keyed `type:normalizedValue`, never by value alone (circuit.normalizeSelector returns
+  // the value only): a `name` and a `username` that share text must not clear each other.
+  const paidGuardSelectorKey = (type: string, value: string): string => {
+    const v = value ? circuit.normalizeSelector(type, value) : "";
+    return v ? `${type}:${v}` : "";
+  };
   const selectorOfInput = (input: unknown): string => {
     const i = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-    const value = detectSelectorValue(i);
-    return value ? circuit.normalizeSelector(detectSelectorType(i), value) : "";
+    return paidGuardSelectorKey(detectSelectorType(i), detectSelectorValue(i));
   };
   const loadPaidGuardAttempts = async (): Promise<Attempt[]> => {
     const rows = await loadAttemptRows();
@@ -1640,7 +1645,7 @@ export function wrapToolsWithCache(
         if (paidPolicy && !paidGuardDisabled()) {
           const decision = decidePaidCall({
             policy: paidPolicy,
-            selector: sel && selectorValue ? sel : "",
+            selector: paidGuardSelectorKey(selectorType, selectorValue),
             attempts: await loadPaidGuardAttempts(),
             forceSecondSource: inp.force_second_source,
             justification: inp.second_source_justification,

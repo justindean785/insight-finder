@@ -139,7 +139,7 @@ export function decidePaidCall(input: {
 const REFUSAL_NOTE: Record<"free_first" | "justification_required" | "no_selector", string> = {
   free_first: "No free tool has tried this selector yet in this case. Run one of try_first; if it comes back empty or blocked, this paid call is admitted.",
   justification_required: "force_second_source needs a second_source_justification (why a paid second source is worth it).",
-  no_selector: "This paid call names no selector, so nothing can have been tried first.",
+  no_selector: "This paid call names no selector (e.g. a free-text search), so nothing can have been tried first. Run it only with force_second_source and a second_source_justification.",
 };
 
 /** The refusal envelope the model reads. Constant `error`; never echoes caller text. */
