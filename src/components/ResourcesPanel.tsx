@@ -1535,19 +1535,24 @@ export function EvidenceBoard({
 
   const slot = useToolbarSlot();
 
-  // The prototype's chips, each still ONE of STATUS_FILTER_GROUPS (no second
-  // taxonomy): Supported = strong, Unresolved = review (which keeps conflicts in
-  // the Analyst union), Conflicts = the conflict subset, Quarantined, then Leads
-  // and Excluded behind More.
+  // The chips, each still ONE of STATUS_FILTER_GROUPS (no second taxonomy):
+  // Corroborated = strong, Single source = review (which keeps conflicts in the
+  // Analyst union), Conflicts = the conflict subset, Quarantined, then Leads and
+  // Excluded behind More.
+  //
+  // They were labelled "Supported" / "Unresolved", which are the AGENT
+  // ASSESSMENT's group names (linkage to the seed). These chips count AUTHORITY
+  // (how well a row is sourced), so one case read "Supported 0" here and
+  // "1 supported finding" on the Overview. Each chip now names what it counts.
   const filterOptions: CompactOption<EvidenceStatusFilter>[] = [
-    { key: "analyst", label: "Analyst view", count: counts.analyst, hint: "Everything that needs a decision — leads and exclusions hidden" },
+    { key: "analyst", label: "Analyst view", count: counts.analyst, hint: "Findings and open exceptions. Leads and exclusions are hidden." },
     { key: "all", label: "All", count: counts.all },
-    { key: "strong", label: "Supported", count: counts.strong, tone: "ok", hint: "Verified, infrastructure and probable rows — the engine's supported findings" },
+    { key: "strong", label: "Corroborated", count: counts.strong, tone: "ok", hint: "Verified, infrastructure and probable rows: sourcing that holds. Linkage to the seed is the Linkage column." },
     {
-      key: "review", label: "Unresolved", count: counts.review, tone: "warn",
-      // The tab badge's "to decide" counts a different set: conflicts plus quarantined rows awaiting a
+      key: "review", label: "Single source", count: counts.review, tone: "warn",
+      // The tab badge counts a different set: conflicts plus quarantined rows open for an optional
       // linkage call. Quarantined rows are listed under Quarantined, not here, so the two differ.
-      hint: "Rows that need another source, and conflicts. Not the tab's \"to decide\" count, which adds quarantined rows awaiting a linkage call.",
+      hint: "Rows that rest on one source, and conflicts. Not the tab's optional count, which adds quarantined rows.",
     },
     ...(counts.conflict > 0
       ? [{ key: "conflict" as const, label: "Conflicts", count: counts.conflict, tone: "warn" as const, hint: "Rows that contradict the seed or another identity cluster" }]

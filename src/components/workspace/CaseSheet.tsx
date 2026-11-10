@@ -101,7 +101,7 @@ export function CaseSheetView({
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto">
       {/* ── Subject ───────────────────────────────────────────────────── */}
-      <section aria-label="Subject" className="flex flex-col gap-2.5 border-b border-border-subtle px-5 py-4">
+      <section aria-label="Subject" className="flex flex-col gap-2.5 border-b border-border-subtle px-5 py-5">
         <h3 className="text-[13px] font-semibold text-foreground">Subject</h3>
         {reviewsUnavailable ? (
           <p role="status" className="text-[13px] leading-snug text-muted-foreground">{REVIEWS_UNAVAILABLE}</p>
@@ -154,7 +154,7 @@ export function CaseSheetView({
       </section>
 
       {/* ── Agent assessment ──────────────────────────────────────────── */}
-      <section aria-label="Agent assessment" className="flex flex-col gap-3 border-b border-border-subtle px-5 py-4">
+      <section aria-label="Agent assessment" className="flex flex-col gap-3 border-b border-border-subtle px-5 py-5">
         <div className="flex items-baseline">
           <h3 className="text-[13px] font-semibold text-foreground">Agent assessment</h3>
           {assessment && !reviewsUnavailable && (
@@ -208,7 +208,7 @@ export function CaseSheetView({
 
       {/* ── Connections ───────────────────────────────────────────────── */}
       {assessment && assessment.total > 0 && !reviewsUnavailable && (
-        <section aria-label="Connections to the seed" className="flex flex-col gap-3 border-b border-border-subtle px-5 py-4">
+        <section aria-label="Connections to the seed" className="flex flex-col gap-3 border-b border-border-subtle px-5 py-5">
           <div className="flex items-baseline">
             <h3 className="text-[13px] font-semibold text-foreground">Connections to the seed</h3>
             <span className="ml-2 rounded-full bg-surface-3 px-1.5 font-mono text-[12px] leading-[20px] tabular-nums text-foreground">{assessment.connectionTotal}</span>
@@ -299,7 +299,7 @@ export function CaseSheetView({
       )}
 
       {/* ── Optional exception review ────────────────────────────────── */}
-      <section aria-label="Optional exception review" className="flex flex-col gap-3 px-3.5 py-4">
+      <section aria-label="Optional exception review" className="flex flex-col gap-3 px-3.5 py-5">
         <div className="px-1.5">
           <div className="flex items-baseline">
             <h3 className="text-[13px] font-semibold text-foreground">Optional exception review</h3>

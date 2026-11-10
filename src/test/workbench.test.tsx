@@ -326,15 +326,15 @@ describe("the workbench tab strip shares the main strip's recipe", () => {
       art("email", "ok@example.test"),
     ]);
     const sheet = screen.getByRole("tab", { name: /^Finding/ });
-    const chip = sheet.querySelector("[title*='awaiting your call']");
+    const chip = sheet.querySelector("[title*='open for optional review']");
     expect(chip?.textContent).toContain("2");
     // Never a bare number: the unit is read after it, so it is not taken for an evidence count.
-    expect(sheet.textContent).toContain("awaiting your call");
+    expect(sheet.textContent).toContain("open for optional review");
   });
 
   it("no chip when nothing awaits a call", () => {
     renderWorkbench([art("email", "ok@example.test")]);
-    expect(screen.getByRole("tab", { name: /^Finding/ }).querySelector("[title*='awaiting your call']")).toBeNull();
+    expect(screen.getByRole("tab", { name: /^Finding/ }).querySelector("[title*='open for optional review']")).toBeNull();
   });
 });
 
