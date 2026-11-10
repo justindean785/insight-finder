@@ -10,6 +10,8 @@ import { looksLikePostalAddress, normalizeAddressValue } from "./address.ts";
 // writers disagree about what "one phone" is.
 import { canonicalPhoneValue } from "./lib/selector-normalize.ts";
 import { isNullishLiteral } from "./lib/nullish-literal.ts";
+// Zero-import leaf as well: the IANA TLD list, mirrored from src/lib/tld-list.ts.
+import { endsInKnownTld } from "./lib/tld-list.ts";
 
 // ---- Seed normalization -------------------------------------------------------
 // Must match src/lib/seed.ts so cache keys line up.
@@ -25,6 +27,36 @@ export type DetectedSeed = { kind: string; raw: string; normalized: string };
 export function seedAccountIdDisabled(): boolean {
   const env = (globalThis as { Deno?: { env?: { get(k: string): string | undefined } } }).Deno?.env;
   return env?.get("SEED_ACCOUNT_ID_DISABLED") === "true";
+}
+
+/**
+ * Kill switch for the dotted-handle rule, read at call time (same `globalThis` route as above, for the same reason).
+ * SEED_DOTTED_HANDLE_DISABLED=true restores the old classification: every dotted token is a domain.
+ */
+export function seedDottedHandleDisabled(): boolean {
+  const env = (globalThis as { Deno?: { env?: { get(k: string): string | undefined } } }).Deno?.env;
+  return env?.get("SEED_DOTTED_HANDLE_DISABLED") === "true";
+}
+
+/** File extensions that are not TLDs. A bare file name ("report.pdf") is not a handle, so it keeps the
+ *  classification it always had. MUST match DOCUMENT_EXTENSIONS in src/lib/seed.ts. */
+const DOCUMENT_EXTENSIONS = new Set([
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "rtf", "odt", "ods",
+  "png", "jpg", "jpeg", "gif", "svg", "webp", "json", "xml", "html", "htm", "log",
+]);
+
+/**
+ * Is a DOMAIN-shaped token really a domain? Only when its last label is a real TLD (IANA root zone or a reserved
+ * name). A dotted social handle ("sample.handle") has the same shape; typed as a domain it got the domain playbook,
+ * nothing resolved, and the agent swept a SHORTENED handle that belongs to other people (measured 2026-11-10:
+ * 41 findings, 0 linked to the seed). An unknown suffix falls through to the username rule with the full dotted
+ * value kept. A handle that ends in a real TLD ("name.dev") stays a domain; "@name.dev" means the handle.
+ * MUST match detectSeed in src/lib/seed.ts.
+ */
+function dottedTokenIsDomain(raw: string): boolean {
+  if (seedDottedHandleDisabled()) return true;
+  if (endsInKnownTld(raw)) return true;
+  return DOCUMENT_EXTENSIONS.has(raw.slice(raw.lastIndexOf(".") + 1).toLowerCase());
 }
 
 export function detectSeedServer(input: string): DetectedSeed | null {
@@ -62,7 +94,7 @@ export function detectSeedServer(input: string): DetectedSeed | null {
   } else if (PHONE.test(raw)) {
     return { kind: "phone", raw, normalized: raw.replace(/[^\d+]/g, "") };
   }
-  if (DOMAIN.test(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
+  if (DOMAIN.test(raw) && dottedTokenIsDomain(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
   if (USER.test(raw)) return { kind: "username", raw, normalized: raw.toLowerCase() };
   // "@handle" is a username seed. It classified as `other` (USER has no `@`),
   // so a handle typed the way every platform displays it lost the username
@@ -495,6 +527,40 @@ export function validateArtifact(kind: string, rawValue: string): ValidateResult
       return { ok: true, kind: "other", value: v, metaPatch: { original_kind: kind } };
     }
   }
+}
+
+/**
+ * /health self-test: a dotted handle is a username seed, not a domain. A token whose last label is not a TLD must
+ * classify as `username` with the full dotted value kept; real and reserved TLDs must still classify as `domain`.
+ * Pure. Its PRESENCE proves the deployed bundle carries the rule; `switch` reports SEED_DOTTED_HANDLE_DISABLED;
+ * ok:false means the classifier failed its own probe.
+ */
+export function seedDottedHandleSelfTest(): { ok: boolean; enabled: boolean; switch: string; detail: string } {
+  const sw = "SEED_DOTTED_HANDLE_DISABLED";
+  if (seedDottedHandleDisabled()) {
+    return { ok: true, enabled: false, switch: `${sw}=true`, detail: "LEGACY: every dotted token is a domain" };
+  }
+  const cases: Array<[string, string, string]> = [
+    ["sample.handle", "username", "sample.handle"],
+    ["First.Last.priv", "username", "first.last.priv"],
+    ["@sample.handle", "username", "sample.handle"],
+    ["example.com", "domain", "example.com"],
+    ["sub.example.co.uk", "domain", "sub.example.co.uk"],
+    ["example.invalid", "domain", "example.invalid"],
+    ["report.pdf", "domain", "report.pdf"],
+  ];
+  const wrong = cases.filter(([input, kind, normalized]) => {
+    const d = detectSeedServer(input);
+    return d?.kind !== kind || d?.normalized !== normalized;
+  }).map(([input]) => input);
+  return wrong.length
+    ? { ok: false, enabled: true, switch: `${sw}=false`, detail: `misclassified: ${wrong.join(" | ")}` }
+    : {
+      ok: true,
+      enabled: true,
+      switch: `${sw}=false`,
+      detail: "a dotted token is a domain only when its last label is a real or reserved TLD; otherwise a username, full value kept",
+    };
 }
 
 /**
