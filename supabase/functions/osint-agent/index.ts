@@ -490,6 +490,12 @@ Deno.serve(async (req) => {
       const s = detectSeedServer(seedValueRaw);
       return s && s.kind === "person" ? s.normalized : "";
     })();
+    // The seed handle, or null when this run was seeded on anything but a username. A lookup on a shortened
+    // form of it is tainted, not refused — see lib/seed-handle-guard.ts.
+    const seedHandleForGuard = (() => {
+      const s = detectSeedServer(seedValueRaw);
+      return s && s.kind === "username" ? s.normalized : null;
+    })();
     beginCycle(
       threadId,
       "Classify the seed, reject weak pivots, and select the smallest high-value initial batch.",
@@ -1644,6 +1650,8 @@ Deno.serve(async (req) => {
         manualOverrideSelector,
         toolCallBudget,
         budgetCeiling,
+        // The seed, only when it is a username: input to the shortened-seed-handle guard (lib/seed-handle-guard.ts).
+        seedHandle: seedHandleForGuard,
         shouldStopLiveLookups: () =>
           shouldForceFinalize(Date.now() - runStartedAt, 0) || anthropicBudgetStatus().exhausted,
         // The opsis_results exemptions in cache.ts hold only while prepareStep has the run

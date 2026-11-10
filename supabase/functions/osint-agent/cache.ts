@@ -32,6 +32,7 @@ import { dispatchTypeCandidates, isDispatchRefused, loadRefusedArtifacts, quaran
 import { dispatchSelectorAliasesDisabled, dispatchSelectorCandidates } from "./lib/dispatch-selector.ts";
 import { unprovenLinkageMarker, UNPROVEN_LINKAGE_KEY, type UnprovenLinkage } from "./lib/unproven-linkage.ts";
 import { promotionQuarantineEnabled } from "./env.ts";
+import { shortenedSeedLookup } from "./lib/seed-handle-guard.ts";
 import type { QuarantineRow } from "./lib/dispatch-quarantine.ts";
 import { buildRejectedDispatchKeys, crossCaseDispatchRows, isRejectedDispatch, rejectionRefusal } from "./lib/dispatch-rejection.ts";
 import { dispatchSpellings } from "./lib/cross-case-reviews.ts";
@@ -694,6 +695,10 @@ export function wrapToolsWithCache(
     // `capped` is surfaced by index.ts (finalize + telemetry). Optional so callers
     // that don't set it (tests, other entrypoints) are unaffected.
     toolCallBudget?: { genuine: number; reserved: number; capped: boolean };
+    // The run's seed, when (and only when) it was typed `username` — normalized, dots kept. Sole input to the
+    // shortened-seed-handle guard (lib/seed-handle-guard.ts). Optional and fails OPEN to the old behaviour:
+    // callers that do not pass it get no guard.
+    seedHandle?: string | null;
     // Request-owned latch for telemetry's `budget_exhausted` stop reason: set when
     // a runtime-policy budget ceiling REFUSES a call in THIS invocation. Never
     // keyed by thread — overlapping invocations share one, and each request's
@@ -1233,6 +1238,7 @@ export function wrapToolsWithCache(
         // is a human ruling about reality, quarantine is a machine claim about
         // provenance, and re-spending on a struck-out row argues with the analyst.
         let unprovenLinkage: UnprovenLinkage | null = null;
+        let seedHandleHint: string | null = null;
         {
           const { keys: refusedKeys, rows: refusedRows } = await loadRefusedKeys();
           // Candidates, not the computed type alone — the paid breach tools take
@@ -1293,6 +1299,19 @@ export function wrapToolsWithCache(
               parent_value: hitSel,
               parent_reason: why ?? null,
             }));
+          }
+          // A handle lookup on a SHORTENED form of the seed handle ("sample" for the seed "sample.handle") is a
+          // lookup on a different account. It runs, with the same taint as above and a hint naming the exact
+          // handle (lib/seed-handle-guard.ts; kill switch SEED_HANDLE_GUARD_DISABLED). Checked on the RAW input
+          // value, and only when no stronger reason already tainted the call. `force` does not shed it.
+          if (!unprovenLinkage) {
+            const shortened = shortenedSeedLookup(ctx.seedHandle, candidateTypes, selectorValue);
+            if (shortened) {
+              unprovenLinkage = unprovenLinkageMarker("username", shortened.queried, shortened.reason);
+              seedHandleHint = shortened.hint;
+              // No selector values in the log: the seed is the analyst's subject.
+              console.log(JSON.stringify({ event: "seed_handle_shortened_dispatch", tool: name }));
+            }
           }
           // Same position, same shape, for the analyst's own rejections. `force`
           // does not override it either: the analyst clears a rejection by
@@ -1371,6 +1390,8 @@ export function wrapToolsWithCache(
           // live-call path would let a CACHED replay of the same quarantined
           // selector come back clean and promote.
           ...(unprovenLinkage ? { [UNPROVEN_LINKAGE_KEY]: unprovenLinkage } : {}),
+          // Rides the base meta for the same reason: a cached replay of the shortened-handle lookup must say so too.
+          ...(seedHandleHint ? { seed_handle_hint: seedHandleHint } : {}),
           // Rides the base meta so every tool_usage_log row — live or replayed — records
           // which interpretation served it. Omitted for unversioned tools.
           ...(cacheVersion == null ? {} : { cache_version: cacheVersion }),
