@@ -80,3 +80,55 @@ export function findLastReportIndex(list: UIMessage[]): number {
   for (let i = list.length - 1; i >= 0; i--) if (isReportMessage(list[i])) return i;
   return -1;
 }
+
+/** Text of an analyst message, as typed or as the app sent it. */
+function analystText(m: UIMessage): string {
+  if (m.role !== "user") return "";
+  return ((m.parts ?? []) as PartLike[])
+    .filter((p) => p?.type === "text")
+    .map((p) => p.text ?? "")
+    .join("");
+}
+
+/**
+ * Does this analyst message open a new EXCHANGE?
+ *
+ * Supersession never crosses an exchange boundary: a reply is only ever
+ * "rewritten" by a later report inside the same exchange. Without a boundary,
+ * every reply that contains a table collapsed as soon as the next one arrived.
+ * Seen in production 2026-11-10: 12 of 13 agent replies on one case were
+ * folded as "Superseded report", among them the answers to three separate
+ * phone pivots and the full closing report itself, folded by a later pivot's
+ * short answer.
+ *
+ * Decide from STRUCTURE only: the role, and whether the text is one of the
+ * prompts this app itself sends (`CONTINUE_PROMPT`, `REPORT_PROMPT`, a pivot
+ * card via `parsePivotPrompt`). Never from what the analyst's words mean.
+ */
+export function startsNewExchange(m: UIMessage): boolean {
+  const text = analystText(m);
+  // TODO(human): return true when this analyst message opens a new exchange.
+  void text;
+  return false;
+}
+
+/**
+ * Which messages render collapsed as superseded: an earlier report-shaped
+ * reply, when a later report exists in the SAME exchange. The newest report of
+ * every exchange stays open. Interrupted-run notices are never reports, so they
+ * are neither collapsed nor able to collapse anything.
+ */
+export function supersededFlags(list: UIMessage[]): boolean[] {
+  const flags = new Array<boolean>(list.length).fill(false);
+  let start = 0;
+  const close = (end: number) => {
+    let last = -1;
+    for (let i = end - 1; i >= start; i--) if (isReportMessage(list[i])) { last = i; break; }
+    for (let i = start; i < last; i++) flags[i] = isReportMessage(list[i]);
+  };
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].role === "user" && startsNewExchange(list[i])) { close(i); start = i; }
+  }
+  close(list.length);
+  return flags;
+}
