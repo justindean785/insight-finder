@@ -48,6 +48,12 @@ import { z } from "npm:zod@3";
 import { fetchT } from "../fetch_retry.ts";
 import { parseStructuredName } from "../name-parse.ts";
 import { indiciaMissingFirstNameDisabled } from "../costs.ts";
+import {
+  indiciaSnusbaseTypeDisabled,
+  resolveWebDbsRequest,
+  SNUSBASE_TYPES,
+  WEB_DB_SERVICES,
+} from "../lib/indicia-web-dbs.ts";
 
 const INDICIA_BASE = "https://api.indicia.app";
 // Under the 32s per-tool cap set for indicia_* in cache.ts TOOL_TIMEOUT_OVERRIDE_MS,
@@ -67,16 +73,11 @@ const INDICIA_BASE = "https://api.indicia.app";
 const INDICIA_HTTP_TIMEOUT_MS = 30_000;
 
 /**
- * The closed set of web-DB corpora the `/web-dbs` endpoint accepts. The endpoint
- * requires a non-empty `services` list and rejects any name outside this set, so
- * both the default and the filter read from here — one list, not three.
+ * The closed set of web-DB corpora the `/web-dbs` endpoint accepts, and the
+ * provider's `snusbaseType` enum. Both live in lib/indicia-web-dbs.ts (pure, so
+ * /health can self-test the resolution) and are re-exported here for callers.
  */
-export const WEB_DB_SERVICES = [
-  "cloudsint",
-  "leakcheck",
-  "snusbase",
-  "intelligencex.identityportal",
-] as const;
+export { SNUSBASE_TYPES, WEB_DB_SERVICES } from "../lib/indicia-web-dbs.ts";
 
 /** The closed set of selector types the `/hudsonrock` endpoint accepts. */
 export const HUDSONROCK_TYPES = ["domain", "email", "ip", "password", "username"] as const;
@@ -406,28 +407,52 @@ export const indicia_web_dbs = tool({
   description:
     "Indicia web-DB breach aggregator (api.indicia.app) — queries multiple breach corpora (leakcheck, snusbase, cloudsint, …) for a selector. Breach-dump data: LEAD until corroborated, never auto-pivot leaked passwords. 1-2 tokens/call.",
   inputSchema: z.object({
-    query: z.string().min(3).describe("Selector (email, username, phone, …)."),
+    query: z.string().min(3).describe("Selector (email, username, IP, hash, domain, full name, …)."),
     services: z.array(z.string()).optional().describe(
       `Optional subset of web-DB services: ${WEB_DB_SERVICES.join(" | ")}. Defaults to all.`,
     ),
+    snusbaseType: z.string().optional().describe(
+      `Snusbase search type: ${SNUSBASE_TYPES.join(" | ")}. Inferred from the selector shape when omitted ` +
+        "(never password). Pass 'username' for a dotted handle that looks like a domain. A phone number has no Snusbase type, so snusbase is skipped for it.",
+    ),
   }),
-  execute: async ({ query, services }, opts) => {
+  execute: async ({ query, services, snusbaseType }, opts) => {
     // `services` is REQUIRED by the endpoint and validated against a closed set —
     // omitting it, or naming a service outside the set, is an unconditional 400.
-    // Resolved HERE rather than only in the zod schema: execute() is called
-    // directly by tests and by any path that skips schema parsing, and an explicit
+    // When snusbase is selected the endpoint ALSO requires `snusbaseType`; omitting
+    // it was the live `snusbaseType is required` 400 (tasks/todo.md T1). Resolved
+    // HERE rather than only in the zod schema: execute() is called directly by
+    // tests and by any path that skips schema parsing, and an explicit
     // `services: []` would satisfy a .default() while still 400ing.
-    const requested = (services ?? [])
-      .map((s) => String(s).trim().toLowerCase())
-      .filter((s) => (WEB_DB_SERVICES as readonly string[]).includes(s));
-    const resolved = requested.length > 0 ? requested : [...WEB_DB_SERVICES];
-    return indiciaRequest(
+    const resolved = resolveWebDbsRequest(
+      { query, services, snusbaseType },
+      { snusbaseDisabled: indiciaSnusbaseTypeDisabled() },
+    );
+    if (!resolved.ok) {
+      // Declined before contacting the provider — a skip, never a measured empty.
+      // The error never echoes the selector (it is lifted into tool_usage_log).
+      return {
+        error: resolved.error,
+        source: "indicia",
+        endpoint: "web-dbs",
+        // No fetch was issued, so the paid-call slot reserved at admission is
+        // released — runtime-policy.ts:isPreProviderGate.
+        provider_attempted: false,
+      };
+    }
+    const result = await indiciaRequest(
       "/v1/search/intelligence/web-dbs",
       "web-dbs",
-      { query, services: resolved },
-      query,
+      resolved.body,
+      resolved.body.query,
       getSignal(opts),
     );
+    return {
+      ...result,
+      services: resolved.body.services,
+      ...(resolved.snusbaseType ? { snusbase_type: resolved.snusbaseType, snusbase_type_source: resolved.typeSource } : {}),
+      ...(resolved.dropped.length > 0 ? { services_skipped: resolved.dropped } : {}),
+    };
   },
 });
 
