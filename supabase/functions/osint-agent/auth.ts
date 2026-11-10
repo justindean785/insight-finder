@@ -9,7 +9,8 @@ import { stripNulCharacters } from "./safety.ts";
 import type { UIMessage } from "npm:ai@6";
 import { corsHeaders, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY } from "./env.ts";
 import { checkRateLimit as checkRateLimitDistributed, MAX_REQS_PER_MIN, MAX_REQS_PER_HOUR } from "./ratelimit.ts";
-import { detectSeedServer, formatThreadTitle } from "./validation.ts";
+import { detectSeedServer } from "./validation.ts";
+import { deriveThreadSeed } from "./lib/attachment-seed.ts";
 import { recoverStaleThreadById } from "./recovery.ts";
 import { acquireRunLease, runLeaseRefusalResponse, withLeaseCleanup, type LeaseDb, type RunLeaseHeld } from "./lib/run-lease.ts";
 
@@ -282,13 +283,16 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
       .trim();
     if (text) {
       const isNewInvestigation = (thread as { title?: string | null }).title === "New investigation";
-      const detected = isNewInvestigation ? detectSeedServer(text) : null;
+      // The composer's "Attached files:" block (with signed storage URLs) never becomes
+      // the title or seed: lib/attachment-seed.ts. Kill switch ATTACHMENT_SEED_STRIP_DISABLED.
+      const seed = deriveThreadSeed(text, isNewInvestigation ? detectSeedServer : () => null);
+      const detected = seed.detected;
       if (detected) detectedSeedType = detected.kind;
       await supabase
         .from("threads")
         .update({
-          title: formatThreadTitle(text, detected),
-          seed_value: text.slice(0, 200),
+          title: seed.title,
+          seed_value: seed.seed_value,
           ...(detected ? { seed_type: detected.kind } : {}),
           updated_at: new Date().toISOString(),
         })

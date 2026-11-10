@@ -27,6 +27,8 @@ import { scrubArtifactRows } from "./safety.ts";
 const geminiKey = (): string | undefined => Deno.env.get("GEMINI_API_KEY");
 
 const MARKER = "Attached files:";
+/** The composer's upload-block marker, shared with lib/attachment-seed.ts. */
+export const ATTACHMENT_MARKER = MARKER;
 // - [name](url) (meta)   — Supabase signed URLs are base64url, so they carry no ')'.
 const LINE_RE = /^\s*-\s*\[(.+?)\]\((.+?)\)\s*(?:\((.*)\))?\s*$/;
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|heif)(?:\?|$)/i;

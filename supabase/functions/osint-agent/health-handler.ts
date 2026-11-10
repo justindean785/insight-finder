@@ -68,6 +68,7 @@ import { streamErrorDetailSelfTest } from "./stream-error-classify.ts";
 import { contradictionClaimSelfTest } from "./contradictions.ts";
 import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
 import { clusterBookkeepingSelfTest, clusterSharedInfraSelfTest, legacyNeedsReviewContradiction } from "./lib/cluster.ts";
+import { attachmentSeedSelfTest } from "./lib/attachment-seed.ts";
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { providerAuthPriorSelfTest } from "./lib/provider-auth-prior.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
@@ -775,6 +776,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // proves the build. The execute wiring is pinned by correlate_seed_default_test.ts in CI.
   r.checks.correlate_seed_default = correlateSeedDefaultSelfTest();
   r.checks.input_kind_inference = inputKindInferenceSelfTest(detectSeedServer);
+  // Does an uploaded file's "Attached files:" block (signed storage URL) stay out of the case title and seed?
+  // Pure probe of lib/attachment-seed.ts on synthetic messages; `switch` reports ATTACHMENT_SEED_STRIP_DISABLED.
+  r.checks.attachment_seed = attachmentSeedSelfTest(detectSeedServer);
 
   // breach_exposure needs a breach-class tool that RAN in the case and a non-zero result (record_artifacts), and
   // auto-extraction keeps it only from breach-capable tools. Pure. `switch` reports BREACH_EXPOSURE_GUARD_DISABLED.
