@@ -39,7 +39,9 @@ export function SessionStrip({
     <div
       data-session-strip
       className={cn(
-        "flex h-11 shrink-0 items-center justify-between gap-3 border-b border-border-subtle bg-[hsl(var(--surface-1))] px-5 text-[11px] text-subtle-foreground lg:px-7",
+        "flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle bg-[hsl(var(--surface-1))] px-5 text-[11px] text-subtle-foreground lg:px-7",
+        // Idle, the strip only restates the header; it keeps a slimmer line. Running, it carries the stages and Stop.
+        running ? "h-11" : "h-8",
         className,
       )}
     >
