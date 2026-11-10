@@ -17,6 +17,7 @@
  */
 import type { UIMessage } from "ai";
 import { hasReportShape, stripReasoningPerPart } from "@/lib/report-shape";
+import { REPORT_PROMPT } from "@/lib/run-controls";
 
 type PartLike = { type?: string; text?: string };
 
@@ -101,15 +102,19 @@ function analystText(m: UIMessage): string {
  * phone pivots and the full closing report itself, folded by a later pivot's
  * short answer.
  *
- * Decide from STRUCTURE only: the role, and whether the text is one of the
- * prompts this app itself sends (`CONTINUE_PROMPT`, `REPORT_PROMPT`, a pivot
- * card via `parsePivotPrompt`). Never from what the analyst's words mean.
+ * Every analyst message opens one, with a single exception: the app's own
+ * Write report prompt. That request asks for the full closing report over what
+ * is already recorded, so its answer really is a rewrite of the report before
+ * it and joins that exchange. A typed question, a pivot card and Continue each
+ * ask for something new (the Continue prompt says "do not rewrite the full
+ * report"), so their answers stand on their own.
+ *
+ * Decided from STRUCTURE only: the role, and identity with a prompt this app
+ * itself sends. Never from what the analyst's words mean.
  */
 export function startsNewExchange(m: UIMessage): boolean {
-  const text = analystText(m);
-  // TODO(human): return true when this analyst message opens a new exchange.
-  void text;
-  return false;
+  if (m.role !== "user") return false;
+  return analystText(m).trim() !== REPORT_PROMPT;
 }
 
 /**
