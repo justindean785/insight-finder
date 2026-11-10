@@ -49,7 +49,7 @@ import { registerPivotRunner } from "@/lib/pivot-runner";
 import { DEFAULT_CONTROLS, evaluatePreflight, type PreflightControls } from "@/lib/composer-preflight";
 import { TargetChip } from "@/components/composer/ComposerPreflight";
 import { hasReportShape, joinAssistantTranscript, stripReasoningPerPart } from "@/lib/report-shape";
-import { findLastReportIndex, isReportMessage } from "@/lib/superseded-reports";
+import { findLastReportIndex, isRecoveryNoticeMessage, isReportMessage } from "@/lib/superseded-reports";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import { computePivots } from "@/lib/pivot-engine";
 import { buildEntityGraph } from "@/lib/entity-graph";
@@ -1285,6 +1285,10 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
   const timeLabel = createdAt
     ? new Date(createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : null;
+  // The sweep's interrupted-run notice is a status record, not agent analysis
+  // and not a report: it gets its own card, always open, and is never collapsed
+  // as superseded (see isRecoveryNoticeMessage).
+  const recoveryNotice = isRecoveryNoticeMessage(m);
 
   return (
     <div className="flex w-full flex-col gap-3">
@@ -1312,7 +1316,38 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
           ))}
         </div>
       )}
-      {prose && superseded && (
+      {prose && recoveryNotice && (
+        // Not a <details>: the analyst must not be able to lose the signal that
+        // the run died. The body is the notice as the sweep wrote it, so its
+        // "not a findings report" sentence and last-heartbeat line stay verbatim.
+        <section className="chat-card w-full min-w-0" data-speaker="failed" data-recovery-notice aria-label="Interrupted run notice">
+          <div className="chat-card__header">
+            <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--warning))]" aria-hidden />
+            <span className="text-[hsl(var(--warning))]">Interrupted run</span>
+            {timeLabel && <span className="chat-card__header-time">{timeLabel}</span>}
+            <span className="ml-auto text-eyebrow uppercase tracking-wider text-muted-foreground/70" title="Written by the recovery sweep when the run stopped, not by the agent.">
+              status record · not a report
+            </span>
+          </div>
+          <div className="chat-card__body">
+            <div className="chat-prose">
+              <MarkdownBlock content={prose} />
+            </div>
+          </div>
+          <div className="chat-card__footer">
+            <button
+              type="button"
+              onClick={() => copyToClipboard(prose, "Notice copied")}
+              className="-ml-2 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted-foreground transition-colors hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11"
+              aria-label="Copy notice"
+              title="Copy notice"
+            >
+              <CopyIcon className="w-3 h-3" /> Copy
+            </button>
+          </div>
+        </section>
+      )}
+      {prose && !recoveryNotice && superseded && (
         <details className="chat-card w-full min-w-0 group/sup" data-speaker="agent">
           <summary className="chat-card__header cursor-pointer list-none [&::-webkit-details-marker]:hidden">
             <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/50" aria-hidden />
@@ -1330,7 +1365,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
           </div>
         </details>
       )}
-      {prose && !superseded && (
+      {prose && !recoveryNotice && !superseded && (
         <article className="chat-card w-full min-w-0" data-speaker="agent" aria-label="Agent response">
           {/* Case desk R5: the prototype's agent heading — a 25px "IF" mark,
               the agent's name, the time, and a tag that says what this text is. */}
@@ -1402,11 +1437,14 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
 // only ever passed to the streaming last message (whose object changes anyway),
 // and the rerun handler is presence-stable for a given cached-run message.
 function messagePropsEqual(
-  prev: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; live?: boolean },
-  next: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; live?: boolean },
+  prev: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean; live?: boolean },
+  next: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean; live?: boolean },
 ): boolean {
   return (
     prev.m === next.m &&
+    // `superseded` flips on an UNCHANGED message when a later report lands.
+    // Without it here the earlier report stayed open until a reload.
+    !!prev.superseded === !!next.superseded &&
     prev.createdAt === next.createdAt &&
     prev.rerunBusy === next.rerunBusy &&
     // `live` decides whether this message renders its own tool cards or defers
