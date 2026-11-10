@@ -59,6 +59,28 @@ export function attachmentOnlyNames(text: string | null | undefined): string[] |
   return names.length > 0 ? names : null;
 }
 
+/**
+ * The words the analyst typed, when a stored title or seed is those words
+ * FOLLOWED by the composer's "Attached files:" block. Null when there is no
+ * block, or nothing was typed before it (that is `attachmentOnlyNames`).
+ *
+ * Lenient for the same reason as above: a title is the first 80 characters, so
+ * the block arrives cut anywhere, including inside the marker itself. A cut
+ * marker is recognised only at the very end of the text and only from
+ * "Attached f" on, so an ordinary title ending in "Attached" is left alone.
+ */
+export function typedTextBeforeAttachments(text: string | null | undefined): string | null {
+  const raw = (text ?? "").trim();
+  let i = raw.indexOf(MARKER);
+  if (i === -1) {
+    for (let n = MARKER.length - 1; n >= "Attached f".length; n--) {
+      if (raw.endsWith(MARKER.slice(0, n))) { i = raw.length - n; break; }
+    }
+  }
+  if (i <= 0) return null;
+  return raw.slice(0, i).trim() || null;
+}
+
 /** "scan.pdf" / "scan.pdf +2" — a short label for an attachment-only case. */
 export function attachmentLabel(names: readonly string[]): string {
   return names.length > 1 ? `${names[0]} +${names.length - 1}` : names[0];
