@@ -9,7 +9,7 @@ import { stripNulCharacters } from "./safety.ts";
 import type { UIMessage } from "npm:ai@6";
 import { corsHeaders, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY } from "./env.ts";
 import { checkRateLimit as checkRateLimitDistributed, MAX_REQS_PER_MIN, MAX_REQS_PER_HOUR } from "./ratelimit.ts";
-import { detectSeedServer, formatThreadTitle } from "./validation.ts";
+import { deriveThreadSeed } from "./lib/attachment-block.ts";
 import { recoverStaleThreadById } from "./recovery.ts";
 import { acquireRunLease, runLeaseRefusalResponse, withLeaseCleanup, type LeaseDb, type RunLeaseHeld } from "./lib/run-lease.ts";
 
@@ -282,13 +282,18 @@ export async function setupRequest(req: Request): Promise<SetupContext> {
       .trim();
     if (text) {
       const isNewInvestigation = (thread as { title?: string | null }).title === "New investigation";
-      const detected = isNewInvestigation ? detectSeedServer(text) : null;
+      // The seed is what the analyst TYPED. The composer's "Attached files:" block
+      // (signed storage URLs) is split off first, so it is never stored as the title
+      // or seed and never decides the seed kind. An upload-only message stores an
+      // attachment title and an EMPTY seed. Kill switch (call time):
+      // ATTACHMENT_SEED_STRIP_DISABLED=true. See lib/attachment-block.ts.
+      const { title, seedValue, detected } = deriveThreadSeed(text, { classify: isNewInvestigation });
       if (detected) detectedSeedType = detected.kind;
       await supabase
         .from("threads")
         .update({
-          title: formatThreadTitle(text, detected),
-          seed_value: text.slice(0, 200),
+          title,
+          seed_value: seedValue,
           ...(detected ? { seed_type: detected.kind } : {}),
           updated_at: new Date().toISOString(),
         })

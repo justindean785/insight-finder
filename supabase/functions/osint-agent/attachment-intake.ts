@@ -19,6 +19,7 @@ import type { UIMessage } from "npm:ai@6";
 import { runGeminiVision } from "./tools/gemini_vision.ts";
 import { buildAutoRecordedRow } from "./auto-record-integrity.ts";
 import { scrubArtifactRows } from "./safety.ts";
+import { parseAttachments, type ParsedAttachment } from "./lib/attachment-block.ts";
 
 // Read the key at call time (not an import-time const) so intake enablement is
 // decoupled from module-load order and never pollutes env.ts's boot-time
@@ -26,26 +27,13 @@ import { scrubArtifactRows } from "./safety.ts";
 // the const.
 const geminiKey = (): string | undefined => Deno.env.get("GEMINI_API_KEY");
 
-const MARKER = "Attached files:";
-// - [name](url) (meta)   — Supabase signed URLs are base64url, so they carry no ')'.
-const LINE_RE = /^\s*-\s*\[(.+?)\]\((.+?)\)\s*(?:\((.*)\))?\s*$/;
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|heif)(?:\?|$)/i;
 const PDF_EXT = /\.pdf(?:\?|$)/i;
 const DOC_EXT = /\.(pdf|docx?|pptx?|xlsx?|csv|txt|rtf)(?:\?|$)/i;
 
-export interface ParsedAttachment { name: string; url: string; meta: string }
-
-/** Split the composer's "Attached files:" block off a user message body. */
-export function parseAttachments(text: string): ParsedAttachment[] {
-  const i = text.indexOf(MARKER);
-  if (i === -1) return [];
-  const out: ParsedAttachment[] = [];
-  for (const line of text.slice(i + MARKER.length).split("\n")) {
-    const m = line.match(LINE_RE);
-    if (m) out.push({ name: m[1].trim(), url: m[2].trim(), meta: (m[3] ?? "").trim() });
-  }
-  return out;
-}
+// The block parser is pure and lives in lib/attachment-block.ts (auth.ts and /health
+// use it too, without this file's vision imports). Re-exported for existing callers.
+export { parseAttachments, type ParsedAttachment } from "./lib/attachment-block.ts";
 
 export function isImageAttachment(a: ParsedAttachment): boolean {
   return IMAGE_EXT.test(a.name) || IMAGE_EXT.test(a.url) || /image\//i.test(a.meta);
