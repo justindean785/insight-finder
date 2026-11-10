@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "case": { "label": "fixture-written-row-bridge", "seed_kind": "username", "seed_value": "amber-otter-17" },
+  "artifacts": [
+    { "id": "b1", "kind": "username", "value": "amber-otter-17", "source": "github_user", "confidence": 70,
+      "metadata": { "source_category": ["social_profile_active"], "status": "observed", "auto_recorded": true }, "created_at": "2026-01-02T00:00:01Z" },
+    { "id": "b2", "kind": "username", "value": "slate-lynx-42", "source": "reddit_user", "confidence": 70,
+      "metadata": { "source_category": ["social_profile_active"], "status": "observed", "auto_recorded": true }, "created_at": "2026-01-02T00:00:02Z" },
+    { "id": "b3", "kind": "other", "value": "Correlation pass 3: amber-otter-17 and slate-lynx-42 are separate people - keep apart", "source": "minimax_correlate", "confidence": 55,
+      "metadata": { "source_category": ["ai_summary"], "status": "observed" }, "created_at": "2026-01-02T00:00:03Z" }
+  ],
+  "reviews": [],
+  "tool_usage": []
+}

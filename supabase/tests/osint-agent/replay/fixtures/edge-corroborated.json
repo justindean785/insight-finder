@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "case": { "label": "fixture-edge-corroborated", "seed_kind": "email", "seed_value": "subject@example.com" },
+  "artifacts": [
+    { "id": "e1", "kind": "email", "value": "subject@example.com", "source": "breach_check", "confidence": 60,
+      "metadata": { "source_category": ["breach"], "status": "observed", "auto_recorded": true }, "created_at": "2026-01-05T00:00:01Z" },
+    { "id": "e2", "kind": "username", "value": "copper-kite-55", "source": "github_user", "confidence": 70,
+      "metadata": { "source_category": ["social_profile_active"], "status": "observed", "auto_recorded": true, "linked_email": "subject@example.com" }, "created_at": "2026-01-05T00:00:02Z" },
+    { "id": "e3", "kind": "username", "value": "copper-kite-55", "source": "oathnet_lookup", "confidence": 55,
+      "metadata": { "source_category": ["breach"], "status": "observed", "auto_recorded": true, "email_in_breach": "subject@example.com" }, "created_at": "2026-01-05T00:00:03Z" }
+  ],
+  "reviews": [],
+  "tool_usage": []
+}
