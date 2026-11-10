@@ -14,6 +14,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:edge": "cd supabase/tests/osint-agent && deno test --config=../../functions/osint-agent/deno.json --no-check --allow-net --allow-env --allow-sys --allow-read . ../evidence-export",
+    "replay": "deno run --config=supabase/functions/osint-agent/deno.json --no-check --no-lock --allow-read --allow-env --allow-write=replay-out supabase/tests/osint-agent/replay/replay.ts",
     "stamp:build": "node scripts/stamp-build.mjs",
     "verify:deploy": "node scripts/record-deploy.mjs",
     "record:deploy": "node scripts/record-deploy.mjs --record",
