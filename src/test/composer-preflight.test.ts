@@ -51,13 +51,13 @@ describe("evaluatePreflight", () => {
   });
 
   it("a corrected type is valid, and is stated in the instructions", () => {
-    // "john.dev" ends in a real TLD, so it reads as a domain; the analyst knows it is a handle.
+    // "john.example" ends in a reserved TLD, so it still reads as a domain; the analyst knows it is a handle.
     // (A suffix that is not a TLD, like "john.smith", is detected as a username with no correction.)
-    const r = run("john.dev", { targetKind: "username" });
+    const r = run("john.example", { targetKind: "username" });
     expect(r.target).toMatchObject({ kind: "username", corrected: true });
     expect(r.canSubmit).toBe(true);
     expect(r.customized).toBe(true);
-    expect(r.message).toContain("Target: john.dev (username)");
+    expect(r.message).toContain("Target: john.example (username)");
   });
 
   it("re-selecting the detected type changes nothing that is sent", () => {
@@ -67,8 +67,8 @@ describe("evaluatePreflight", () => {
   });
 
   it("a corrected type adds exactly one line — never the old Scope & controls block", () => {
-    const r = run("john.dev", { targetKind: "username" });
-    expect(r.message).toBe("john.dev\n\nTarget: john.dev (username)");
+    const r = run("john.example", { targetKind: "username" });
+    expect(r.message).toBe("john.example\n\nTarget: john.example (username)");
     expect(r.message).not.toMatch(/Scope & controls|analyst instructions|Authorized scope|Depth:/);
   });
 
