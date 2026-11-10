@@ -548,6 +548,7 @@ export function seedDottedHandleSelfTest(): { ok: boolean; enabled: boolean; swi
     ["sub.example.co.uk", "domain", "sub.example.co.uk"],
     ["example.invalid", "domain", "example.invalid"],
     ["report.pdf", "domain", "report.pdf"],
+    ["example.xn--3ds443g", "domain", "example.xn--3ds443g"], // a punycode TLD the list once split across lines
   ];
   const wrong = cases.filter(([input, kind, normalized]) => {
     const d = detectSeedServer(input);

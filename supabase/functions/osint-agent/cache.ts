@@ -1308,9 +1308,18 @@ export function wrapToolsWithCache(
             // The handle FIELD, when the input has one: it names a handle whatever `kind` the input declares.
             const handleField = [inp.username, inp.handle, inp.vanity].find((x) => typeof x === "string") as string | undefined;
             const handleKeyed = handleField !== undefined;
-            const shortened = handleKeyed
+            let shortened = handleKeyed
               ? shortenedSeedLookup(ctx.seedHandle, candidateTypes, handleField, true)
               : shortenedSeedLookup(ctx.seedHandle, candidateTypes, selectorValue, handleKeyed);
+            // Tools whose selector lives in a field the central detector does not read (Serus identifierValue,
+            // Indicia query) leave `selectorValue` empty. Their RAW candidates are consulted here for the same
+            // reason, and under the same rule, as the governance checks above: only when `sel` is empty.
+            if (!shortened && !sel) {
+              for (const c of dispatchSelectorCandidates(inp, name)) {
+                shortened = shortenedSeedLookup(ctx.seedHandle, [c.type], c.value, false);
+                if (shortened) break;
+              }
+            }
             if (shortened) {
               unprovenLinkage = unprovenLinkageMarker("username", shortened.queried, shortened.reason);
               seedHandleHint = shortened.hint;

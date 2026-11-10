@@ -56,6 +56,19 @@ describe("dotted handle seeds", () => {
     expect(formatThreadTitle("example.com")).toBe("Domain: example.com");
   });
 
+  it("every list entry is one whole label — a line wrapped inside `xn--…` splits a TLD into two wrong ones", () => {
+    // The first version of the list was wrapped at hyphens: 30-odd punycode TLDs were missing and the fragment
+    // "xn" was accepted as a TLD. Parity with the edge copy could not see it; both copies had the same breaks.
+    expect(IANA_TLDS.size).toBe(1436); // IANA version 2026111000; update with the list
+    for (const t of IANA_TLDS) expect(t, t).toMatch(/^[a-z0-9]+(?:-+[a-z0-9]+)*$/);
+    expect(isKnownTld("xn")).toBe(false);
+    expect([...IANA_TLDS].filter((t) => t.startsWith("xn--")).length).toBe(151);
+    for (const t of ["xn--3ds443g", "xn--80adxhks", "xn--4gbrim", "xn--eckvdtc9d", "xn--flw351e", "xn--vermgensberatung-pwb"]) {
+      expect(isKnownTld(t), t).toBe(true);
+      expect(detectSeed(`example.${t}`)?.kind, t).toBe("domain");
+    }
+  });
+
   it("the TLD list is the IANA root zone plus the reserved names", () => {
     expect(IANA_TLDS.size).toBeGreaterThan(1400);
     for (const t of ["com", "org", "dev", "zip", "uk", "xn--p1ai", "example", "invalid", "test", "onion"]) {

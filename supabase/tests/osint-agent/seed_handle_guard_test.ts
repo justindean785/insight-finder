@@ -70,12 +70,13 @@ function wrap(calls: { n: number }, seedHandle: string | null | undefined) {
     {
       username_sweep: sweepTool(calls), oathnet_lookup: sweepTool(calls), breach_check: sweepTool(calls),
       socialfetch_lookup: sweepTool(calls), github_user: sweepTool(calls),
+      serus_darkweb_scan: sweepTool(calls), indicia_hudsonrock: sweepTool(calls),
     },
     { investigationId, userId: "u1", supabase: emptyDb(), ...(seedHandle === undefined ? {} : { seedHandle }) },
   );
 }
-// deno-lint-ignore no-explicit-any
-const run = (tools: Record<string, Tool>, name: string, input: unknown) => (tools[name] as any).execute(input, {}) as Promise<Record<string, any>>;
+type Exec = { execute: (input: unknown, opts: unknown) => Promise<Record<string, unknown>> };
+const run = (tools: Record<string, Tool>, name: string, input: unknown) => (tools[name] as unknown as Exec).execute(input, {});
 const marker = (out: Record<string, unknown>) => (out._runtime as Record<string, unknown> | undefined)?.[UNPROVEN_LINKAGE_KEY] as Record<string, unknown> | undefined;
 const hint = (out: Record<string, unknown>) => (out._runtime as Record<string, unknown> | undefined)?.seed_handle_hint as string | undefined;
 
@@ -165,6 +166,19 @@ Deno.test("a profile fetch on the shortened handle is covered: the handle FIELD 
   assert(marker(await run(tools, "github_user", { username: SHORT })), "github_user {username}");
   assertEquals(marker(await run(tools, "socialfetch_lookup", { kind: "profile", handle: SEED, platform: "twitter" })), undefined, "the exact handle is clean");
   assertEquals(calls.n, 3, "all three ran");
+});
+
+Deno.test("tools whose selector lives in an alternate field are covered: Serus identifierValue, Indicia query", async () => {
+  // The central detector reads neither field, so the selector value it hands the guard is empty for these.
+  const calls = { n: 0 };
+  const tools = wrap(calls, SEED);
+  const serus = await run(tools, "serus_darkweb_scan", { identifierType: "username", identifierValue: SHORT });
+  assert(marker(serus), "serus {identifierType:'username', identifierValue}");
+  assertEquals((marker(serus) as Record<string, unknown>).parent_value, SHORT);
+  assert(marker(await run(tools, "indicia_hudsonrock", { type: "username", query: SHORT })), "indicia {type:'username', query}");
+  assertEquals(marker(await run(tools, "serus_darkweb_scan", { identifierType: "username", identifierValue: SEED })), undefined, "the exact dotted handle is clean");
+  assertEquals(marker(await run(tools, "serus_darkweb_scan", { identifierType: "email", identifierValue: "sample@example.test" })), undefined, "an email is not a handle lookup");
+  assertEquals(calls.n, 4, "all four ran");
 });
 
 Deno.test("`force` does not shed the taint", async () => {

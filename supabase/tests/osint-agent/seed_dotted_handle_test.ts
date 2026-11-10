@@ -55,6 +55,19 @@ Deno.test("the TLD list is the IANA root zone plus the reserved names", () => {
   assert(RESERVED_TLDS.has("localhost"));
 });
 
+Deno.test("every list entry is one whole label: a line wrapped inside `xn--…` splits a TLD into two wrong ones", () => {
+  // The first version of the list was wrapped at hyphens: 30-odd punycode TLDs were missing and the fragment "xn"
+  // was accepted as a TLD. The parity test below could not see it, because both copies had the same breaks.
+  assertEquals(IANA_TLDS.size, 1436, "IANA version 2026111000; update with the list");
+  for (const t of IANA_TLDS) assert(/^[a-z0-9]+(?:-+[a-z0-9]+)*$/.test(t), `not a whole label: ${t}`);
+  assert(!isKnownTld("xn"));
+  assertEquals([...IANA_TLDS].filter((t) => t.startsWith("xn--")).length, 151);
+  for (const t of ["xn--3ds443g", "xn--80adxhks", "xn--4gbrim", "xn--eckvdtc9d", "xn--flw351e", "xn--vermgensberatung-pwb"]) {
+    assert(isKnownTld(t), t);
+    assertEquals(detectSeedServer(`example.${t}`)?.kind, "domain", t);
+  }
+});
+
 Deno.test("PARITY (source assertion): the edge TLD list and the client's are the same list", async () => {
   const listOf = (src: string) => {
     const text = /const IANA_TLD_TEXT = `([^`]*)`/.exec(src)?.[1] ?? "";
