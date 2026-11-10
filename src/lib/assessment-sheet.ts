@@ -23,14 +23,14 @@ export const GROUP_ORDER: readonly AssessmentGroup[] = ["supported", "unresolved
 
 export const GROUP_LABEL: Record<AssessmentGroup, string> = {
   supported: "Linked to seed",
-  unresolved: "Not linked yet",
+  unresolved: "Unresolved",
   conflict: "Contradicts",
   quarantined: "Held, unproven",
 };
 
 export const GROUP_HINT: Record<AssessmentGroup, string> = {
   supported: "Shares an identity cluster with the seed at linkage 60 or higher. The seed itself is not counted.",
-  unresolved: "No email, phone, handle or infrastructure joins it to the seed. Not a low score: no link at all.",
+  unresolved: "Not linked to the seed at 60 or higher: either nothing joins it to the seed, or the link is weak.",
   conflict: "Contradicts the case record.",
   quarantined: "Recorded and disclosed, but its link to the subject is unproven, so it gets no linkage figure.",
 };
@@ -41,10 +41,12 @@ export const SHEET_GROUPING_LIMIT = 3;
 
 export interface SheetConnection {
   artifact: Artifact;
-  /** 0–100, the cluster engine's figure. Never null here: only linked rows are listed. */
+  /** 0–100, the cluster engine's figure. Never null here: only rows that share the seed's cluster are listed. */
   linkage: number;
   /** The engine's first reason for the link. */
   reason: string;
+  /** The engine's plain words for the figure (`linkageWord`), e.g. "Possibly the same person". */
+  verdict: string;
 }
 
 export interface SheetBlocker {
@@ -73,8 +75,10 @@ export interface AssessmentSheet {
    */
   others: number;
   groups: { group: AssessmentGroup; label: string; n: number }[];
-  /** Rows linked to the seed, the seed itself excluded. */
+  /** Rows the engine calls supported (linkage 60 or higher), the seed itself excluded. */
   linkedTotal: number;
+  /** Every row with a linkage figure, weak links included. `connections` is the top of this. */
+  connectionTotal: number;
   connections: SheetConnection[];
   blockers: SheetBlocker[];
   groupings: SheetGrouping[];
@@ -106,13 +110,17 @@ export function buildAssessmentSheet(report: AssessmentReport, items: readonly A
     .map((group) => ({ group, label: GROUP_LABEL[group], n: report.counts[group] - (group === "supported" ? seedRows : 0) }))
     .filter((g) => g.n > 0);
 
-  const linked = report.items
-    .filter((a) => a.group === "supported" && !a.isSeed && a.subjectLinkage !== null && byId.has(a.artifactId))
+  // Every row that shares the seed's cluster carries a figure, including the
+  // weak links the engine still files under "unresolved" (below 60). Listing
+  // only the supported ones would hide a 45% link behind "nothing links".
+  const withFigure = report.items
+    .filter((a) => (a.group === "supported" || a.group === "unresolved") && !a.isSeed && a.subjectLinkage !== null && byId.has(a.artifactId))
     .sort((a, b) => (b.subjectLinkage ?? 0) - (a.subjectLinkage ?? 0) || a.artifactId.localeCompare(b.artifactId));
+  const linkedTotal = withFigure.filter((a) => a.group === "supported").length;
 
-  const connections = linked.slice(0, SHEET_CONNECTION_LIMIT).map((a) => {
+  const connections = withFigure.slice(0, SHEET_CONNECTION_LIMIT).map((a) => {
     const artifact = byId.get(a.artifactId)!;
-    return { artifact, linkage: a.subjectLinkage ?? 0, reason: a.reasons[0] ?? artifact.kind };
+    return { artifact, linkage: a.subjectLinkage ?? 0, reason: a.reasons[0] ?? artifact.kind, verdict: a.verdict };
   });
 
   // Why the unresolved rows do not link. The engine writes that sentence first
@@ -144,11 +152,12 @@ export function buildAssessmentSheet(report: AssessmentReport, items: readonly A
     total,
     others,
     groups,
-    linkedTotal: linked.length,
+    linkedTotal,
+    connectionTotal: withFigure.length,
     connections,
     blockers,
     groupings,
     groupingTotal: apart.length,
-    reading: assessmentReading(report.counts, linked.length, others),
+    reading: assessmentReading(report.counts, linkedTotal, others),
   };
 }

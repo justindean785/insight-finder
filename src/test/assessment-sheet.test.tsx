@@ -83,12 +83,49 @@ describe("buildAssessmentSheet", () => {
   });
 });
 
+describe("a dotted-handle seed whose sweep ran on the shortened handle", () => {
+  // Production shape, 2026-11-10, with synthetic values: the seed is a handle
+  // with a suffix, and every profile the sweep found is for the handle WITHOUT
+  // it. Nothing shares a selector with the seed, so nothing may link to it.
+  const dotted = art({ id: "seed", kind: "username", value: "sample.handle" });
+  const hits = Array.from({ length: 6 }, (_, i) =>
+    art({ id: `hit${i}`, kind: "social_profile", value: `https://site${i}.example/sample`, source: "username_sweep", metadata: { handle: "sample", platform: `Site${i}` } }));
+  const items = [dotted, ...hits];
+
+  it("links none of them to the seed, and prints no percentage", () => {
+    const s = sheetOf(items, "sample.handle");
+    expect(s.linkedTotal).toBe(0);
+    expect(s.connections).toEqual([]);
+  });
+
+  it("reports what the profiles have in common with each other", () => {
+    const s = sheetOf(items, "sample.handle");
+    // Recorded, not assumed: this is what the rail can honestly show on that case.
+    expect({ groupings: s.groupings.map((g) => [g.size, g.reason]), blockers: s.blockers }).toMatchInlineSnapshot(`
+      {
+        "blockers": [
+          {
+            "n": 6,
+            "reason": "Clusters with 5 other findings, but none of them is the seed.",
+          },
+        ],
+        "groupings": [
+          [
+            6,
+            "HANDLE_MATCH: sample",
+          ],
+        ],
+      }
+    `);
+  });
+});
+
 describe("case sheet — agent assessment", () => {
   it("shows the assessment's groups and no authority-ladder 'Review' bucket", () => {
     render(<CaseSheetView model={model(CASE)} hydrated assessment={sheetOf(CASE)} seed={{ value: SEED, type: "email" }} />);
     const region = screen.getByRole("region", { name: "Agent assessment" });
     expect(region.textContent).toContain("1of 4 findings links to the seed");
-    expect(within(region).getByText("Not linked yet")).toBeTruthy();
+    expect(within(region).getByText("Unresolved")).toBeTruthy();
     expect(within(region).getByText("Held, unproven")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Evidence" })).toBeNull();
     expect(within(region).queryByText(/^Review$/)).toBeNull();
@@ -97,7 +134,7 @@ describe("case sheet — agent assessment", () => {
   it("names its population, never a bare 'items'", () => {
     render(<CaseSheetView model={model(CASE)} hydrated assessment={sheetOf(CASE)} />);
     const region = screen.getByRole("region", { name: "Agent assessment" });
-    expect(region.textContent).toContain("5 findings");
+    expect(region.textContent).toContain("4 findings + seed");
     expect(region.textContent).not.toMatch(/\bitems?\b/);
     expect(region.querySelector("[title*='chain-of-custody']")).toBeTruthy();
   });

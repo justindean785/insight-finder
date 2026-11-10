@@ -162,7 +162,8 @@ export function CaseSheetView({
               className="ml-auto font-mono text-[12px] tabular-nums text-faint-foreground"
               title="Deduped case findings across every run. The header's 'evidence logged' counts chain-of-custody entries and can be higher."
             >
-              {assessment.total} {assessment.total === 1 ? "finding" : "findings"}
+              {assessment.others} {assessment.others === 1 ? "finding" : "findings"}
+              {assessment.total > assessment.others && " + seed"}
             </span>
           )}
         </div>
@@ -210,8 +211,8 @@ export function CaseSheetView({
         <section aria-label="Connections to the seed" className="flex flex-col gap-3 border-b border-border-subtle px-5 py-4">
           <div className="flex items-baseline">
             <h3 className="text-[13px] font-semibold text-foreground">Connections to the seed</h3>
-            <span className="ml-2 rounded-full bg-surface-3 px-1.5 font-mono text-[12px] leading-[20px] tabular-nums text-foreground">{assessment.linkedTotal}</span>
-            {assessment.linkedTotal > assessment.connections.length && (
+            <span className="ml-2 rounded-full bg-surface-3 px-1.5 font-mono text-[12px] leading-[20px] tabular-nums text-foreground">{assessment.connectionTotal}</span>
+            {assessment.connectionTotal > assessment.connections.length && (
               <span className="ml-auto text-[12px] text-subtle-foreground">showing {assessment.connections.length}</span>
             )}
           </div>
@@ -227,9 +228,9 @@ export function CaseSheetView({
                   >
                     <span className="min-w-0">
                       <span className="block truncate font-mono text-[13px] text-foreground" title={c.artifact.value}>{c.artifact.value}</span>
-                      <span className="mt-0.5 block truncate text-[12px] text-subtle-foreground" title={c.reason}>{c.reason}</span>
+                      <span className="mt-0.5 block truncate text-[12px] text-subtle-foreground" title={`${c.verdict}. ${c.reason}`}>{c.reason}</span>
                     </span>
-                    <span className="flex w-14 shrink-0 flex-col items-end gap-1">
+                    <span className="flex w-14 shrink-0 flex-col items-end gap-1" title={c.verdict}>
                       <span className="font-mono text-[12.5px] tabular-nums text-foreground">{Math.round(c.linkage)}%</span>
                       <span className="h-[3px] w-full overflow-hidden rounded-full bg-white/[0.08]" aria-hidden>
                         <i className="block h-full rounded-full bg-[hsl(var(--confidence-high))]" style={{ width: `${Math.max(0, Math.min(100, c.linkage))}%` }} />
