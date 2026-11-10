@@ -90,6 +90,7 @@ import { correlateSeedDefaultSelfTest } from "./lib/thread-seed.ts";
 import { detectSeedServer } from "./validation.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
 import { seedDottedHandleSelfTest } from "./validation.ts";
+import { seedHandleGuardSelfTest } from "./lib/seed-handle-guard.ts";
 import { mediaLeadsSelfTest } from "./lib/media-leads.ts";
 import { outcomeLessonsSelfTest } from "./lib/outcome-lessons.ts";
 
@@ -803,6 +804,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // belongs to other people. Pure. PRESENCE proves the deployed bundle; `switch` reports
   // SEED_DOTTED_HANDLE_DISABLED; ok:false = the classifier failed its own probe. (Client mirror: src/lib/seed.ts.)
   r.checks.seed_dotted_handle = seedDottedHandleSelfTest();
+
+  // Is a handle lookup on a SHORTENED form of a dotted seed handle ("sample" for "sample.handle") tainted
+  // unproven_linkage, with a hint naming the exact handle, instead of yielding rows at subject authority? It runs
+  // either way; nothing is refused. Pure. PRESENCE proves the deployed bundle; `switch` reports
+  // SEED_HANDLE_GUARD_DISABLED; ok:false = the predicate failed its own probe.
+  r.checks.seed_handle_guard = seedHandleGuardSelfTest();
 
   // E4: do the analyst's dismissed/wrong marks carry across the user's cases (latest verdict wins,
   // in-thread overrides, "#caseonly" stays put, phones fold by digits, username != name), while
