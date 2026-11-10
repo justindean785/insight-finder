@@ -8,16 +8,17 @@
  * "## Evidence Record — authoritative" — a label only one of them can
  * truthfully hold — stacked in a single scroll.
  *
- * Only the newest report presents as current. The rest stay in the thread,
+ * Within one exchange (an analyst message and the replies to it) only the
+ * newest report presents as current. The earlier ones stay in the thread,
  * collapsed: a superseded report is still the record of what the run believed
- * at that point, so it is never dropped.
+ * at that point, so it is never dropped. A reply to a DIFFERENT analyst message
+ * is not a rewrite and never collapses anything (`supersededFlags`).
  *
  * Lives in lib/ rather than beside the component because exporting non-component
  * values from a component module breaks react-refresh.
  */
 import type { UIMessage } from "ai";
 import { hasReportShape, stripReasoningPerPart } from "@/lib/report-shape";
-import { REPORT_PROMPT } from "@/lib/run-controls";
 
 type PartLike = { type?: string; text?: string };
 
@@ -102,19 +103,16 @@ function analystText(m: UIMessage): string {
  * phone pivots and the full closing report itself, folded by a later pivot's
  * short answer.
  *
- * Every analyst message opens one, with a single exception: the app's own
- * Write report prompt. That request asks for the full closing report over what
- * is already recorded, so its answer really is a rewrite of the report before
- * it and joins that exchange. A typed question, a pivot card and Continue each
- * ask for something new (the Continue prompt says "do not rewrite the full
- * report"), so their answers stand on their own.
+ * Every analyst message opens one. There is deliberately no exception for the
+ * app's own Write report prompt: letting its answer join the exchange before it
+ * folded whichever reply happened to come last (often one pivot answer) and
+ * left the report it actually restates open, so the result depended on order.
  *
- * Decided from STRUCTURE only: the role, and identity with a prompt this app
- * itself sends. Never from what the analyst's words mean.
+ * Decided from STRUCTURE only: the role. Never from what the analyst's words
+ * mean, and never from the reply's prose.
  */
 export function startsNewExchange(m: UIMessage): boolean {
-  if (m.role !== "user") return false;
-  return analystText(m).trim() !== REPORT_PROMPT;
+  return m.role === "user";
 }
 
 /**
@@ -132,7 +130,7 @@ export function supersededFlags(list: UIMessage[]): boolean[] {
     for (let i = start; i < last; i++) flags[i] = isReportMessage(list[i]);
   };
   for (let i = 0; i < list.length; i++) {
-    if (list[i].role === "user" && startsNewExchange(list[i])) { close(i); start = i; }
+    if (startsNewExchange(list[i])) { close(i); start = i; }
   }
   close(list.length);
   return flags;
