@@ -53,6 +53,9 @@ LEAD_REVIEW_STATE.md
 # rows) pulled from production by scripts/harness-snapshot.mjs. Never commit.
 src/dev/fixtures.json
 src/dev/raw/
+# L1 replay harness output (supabase/tests/osint-agent/replay/) — scorecards of a
+# real snapshot carry real values. Never commit.
+replay-out/
 
 # Sensitive scan artifacts — never commit (2026-07-11 PII incident remediation)
 last_scan_tool_usage_full.csv

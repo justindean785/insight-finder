@@ -75,6 +75,12 @@ import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
 import { humanizeSelector } from "@/lib/humanize-selector";
 import { measureRequestBody, reportRequestBodySize } from "@/lib/request-size";
+import {
+  buildFindingFullText,
+  evidenceRecordExpandDisabled,
+  expandEvidenceRecordLines,
+  type FindingFullText,
+} from "@/lib/evidence-record-expand";
 import { currentRunEvents, followMode, isCurrentRunMessage, shouldEndStreamAfterGrace, shouldFollowServer, shouldForceStreamEnd } from "@/lib/server-follow";
 import { ServerFollowPanel } from "@/components/chat/ServerFollowPanel";
 import { useHeldTrue } from "@/hooks/use-held-true";
@@ -1151,7 +1157,7 @@ export function LiveActivityCard({ message, elapsedLabel }: { message: UIMessage
   );
 }
 
-function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded, live }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean; live?: boolean }) {
+function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded, live, findingFullText }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean; live?: boolean; findingFullText?: FindingFullText | null }) {
   if (m.role === "user") {
     const text = (m.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
     // Split the human text from the "Attached files:" block the composer appends,
@@ -1282,6 +1288,9 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
   );
   const integrity = messageIntegrity(parts as Array<{ type?: string; text?: string; state?: string }>, Boolean(live));
   const unadjudicated = narrativeIsUnadjudicated(prose);
+  // Display only: a cut Evidence Record line shows its finding's full stored text
+  // (src/lib/evidence-record-expand.ts). Every check above reads the stored prose.
+  const shownProse = expandEvidenceRecordLines(prose, findingFullText);
   const timeLabel = createdAt
     ? new Date(createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : null;
@@ -1360,7 +1369,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
           </summary>
           <div className="chat-card__body">
             <div className="chat-prose">
-              <MarkdownBlock content={prose} />
+              <MarkdownBlock content={shownProse} />
             </div>
           </div>
         </details>
@@ -1396,7 +1405,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
           <div className="chat-card__body">
             <LongProse disabled={Boolean(live)}>
               <div className="chat-prose">
-                <MarkdownBlock content={prose} />
+                <MarkdownBlock content={shownProse} />
               </div>
             </LongProse>
           </div>
@@ -1437,8 +1446,8 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
 // only ever passed to the streaming last message (whose object changes anyway),
 // and the rerun handler is presence-stable for a given cached-run message.
 function messagePropsEqual(
-  prev: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean; live?: boolean },
-  next: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean; live?: boolean },
+  prev: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean; live?: boolean; findingFullText?: FindingFullText | null },
+  next: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean; live?: boolean; findingFullText?: FindingFullText | null },
 ): boolean {
   return (
     prev.m === next.m &&
@@ -1452,7 +1461,10 @@ function messagePropsEqual(
     // still suppressing them after the run ends — the cards would vanish.
     !!prev.live === !!next.live &&
     !!prev.onRetry === !!next.onRetry &&
-    !!prev.onRerun === !!next.onRerun
+    !!prev.onRerun === !!next.onRerun &&
+    // The finding index is memoized on the artifact list, so this changes only
+    // when the case's rows change — and then a cut line may now be expandable.
+    prev.findingFullText === next.findingFullText
   );
 }
 
@@ -1614,6 +1626,12 @@ function ChatWindowInner({
   const submitLockRef = useRef(false);
   const [rerunBusy, setRerunBusy] = useState(false);
   const { items: artifacts } = useThreadArtifacts(threadId);
+  // Full text behind cut Evidence Record lines (display only; kill switch
+  // VITE_EVIDENCE_RECORD_EXPAND_DISABLED).
+  const findingFullText = useMemo(
+    () => (evidenceRecordExpandDisabled() ? null : buildFindingFullText(artifacts)),
+    [artifacts],
+  );
   // Read at send time to anchor pivot-run windows on server timestamps.
   const artifactsRef = useRef(artifacts);
   artifactsRef.current = artifacts;
@@ -3360,6 +3378,7 @@ function ChatWindowInner({
                   onRerun={hasCacheBanner ? rerunInvestigation : undefined}
                   rerunBusy={rerunBusy}
                   superseded={superseded}
+                  findingFullText={findingFullText}
                   // While following the server, this run's first reply is still in
                   // progress there: not "Interrupted", and the panel lists its calls.
                   // A reply saved before the run started is an earlier run's (a tab
