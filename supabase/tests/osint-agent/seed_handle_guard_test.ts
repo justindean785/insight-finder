@@ -67,7 +67,10 @@ function wrap(calls: { n: number }, seedHandle: string | null | undefined) {
   clearRuntime(investigationId);
   circuit.clearThread(investigationId);
   return wrapToolsWithCache(
-    { username_sweep: sweepTool(calls), oathnet_lookup: sweepTool(calls), breach_check: sweepTool(calls) },
+    {
+      username_sweep: sweepTool(calls), oathnet_lookup: sweepTool(calls), breach_check: sweepTool(calls),
+      socialfetch_lookup: sweepTool(calls), github_user: sweepTool(calls),
+    },
     { investigationId, userId: "u1", supabase: emptyDb(), ...(seedHandle === undefined ? {} : { seedHandle }) },
   );
 }
@@ -97,6 +100,8 @@ Deno.test("only handle lookups engage; a run with no username seed never does", 
   assert(shortenedSeedLookup(SEED, ["value"], SHORT), "breach_check {value}");
   assertEquals(shortenedSeedLookup(SEED, ["email"], SHORT), null);
   assertEquals(shortenedSeedLookup(SEED, ["domain"], SHORT), null);
+  assert(shortenedSeedLookup(SEED, ["profile"], SHORT, true), "a handle-keyed input engages whatever its declared type");
+  assertEquals(shortenedSeedLookup(SEED, ["profile"], SHORT, false), null);
   assertEquals(shortenedSeedLookup(null, ["username"], SHORT), null);
   assertEquals(shortenedSeedLookup("", ["username"], SHORT), null);
 });
@@ -151,6 +156,17 @@ Deno.test("the typed and untyped breach slots are covered too", async () => {
   assertEquals(marker(await run(tools, "oathnet_lookup", { type: "email", value: "sample@example.test" })), undefined, "an email is not a handle lookup");
 });
 
+Deno.test("a profile fetch on the shortened handle is covered: the handle FIELD decides, whatever `kind` says", async () => {
+  // The production shape. `kind: "profile"` is what the dispatch wrapper reads as the selector TYPE, so a guard
+  // keyed on type alone let this call through clean.
+  const calls = { n: 0 };
+  const tools = wrap(calls, SEED);
+  assert(marker(await run(tools, "socialfetch_lookup", { kind: "profile", handle: SHORT, platform: "twitter" })), "socialfetch {kind:'profile', handle}");
+  assert(marker(await run(tools, "github_user", { username: SHORT })), "github_user {username}");
+  assertEquals(marker(await run(tools, "socialfetch_lookup", { kind: "profile", handle: SEED, platform: "twitter" })), undefined, "the exact handle is clean");
+  assertEquals(calls.n, 3, "all three ran");
+});
+
 Deno.test("`force` does not shed the taint", async () => {
   const calls = { n: 0 };
   const out = await run(wrap(calls, SEED), "username_sweep", { username: SHORT, force: true });
@@ -194,7 +210,8 @@ Deno.test("WIRING (source assertions): index.ts feeds the guard the username see
   assert(index.includes('return s && s.kind === "username" ? s.normalized : null;'));
   assert(index.includes("seedHandle: seedHandleForGuard,"));
   const cache = await read("cache.ts");
-  assert(cache.includes("shortenedSeedLookup(ctx.seedHandle, candidateTypes, selectorValue)"));
+  assert(cache.includes("shortenedSeedLookup(ctx.seedHandle, candidateTypes, handleField, true)"));
+  assert(cache.includes("shortenedSeedLookup(ctx.seedHandle, candidateTypes, selectorValue, handleKeyed)"));
   assert(cache.includes("...(seedHandleHint ? { seed_handle_hint: seedHandleHint } : {}),"));
   const health = await read("health-handler.ts");
   assert(health.includes("r.checks.seed_handle_guard = seedHandleGuardSelfTest();"));

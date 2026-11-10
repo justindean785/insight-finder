@@ -1305,7 +1305,12 @@ export function wrapToolsWithCache(
           // handle (lib/seed-handle-guard.ts; kill switch SEED_HANDLE_GUARD_DISABLED). Checked on the RAW input
           // value, and only when no stronger reason already tainted the call. `force` does not shed it.
           if (!unprovenLinkage) {
-            const shortened = shortenedSeedLookup(ctx.seedHandle, candidateTypes, selectorValue);
+            // The handle FIELD, when the input has one: it names a handle whatever `kind` the input declares.
+            const handleField = [inp.username, inp.handle, inp.vanity].find((x) => typeof x === "string") as string | undefined;
+            const handleKeyed = handleField !== undefined;
+            const shortened = handleKeyed
+              ? shortenedSeedLookup(ctx.seedHandle, candidateTypes, handleField, true)
+              : shortenedSeedLookup(ctx.seedHandle, candidateTypes, selectorValue, handleKeyed);
             if (shortened) {
               unprovenLinkage = unprovenLinkageMarker("username", shortened.queried, shortened.reason);
               seedHandleHint = shortened.hint;

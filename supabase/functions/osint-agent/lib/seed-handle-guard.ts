@@ -55,9 +55,13 @@ export function shortenedSeedLookup(
   seedHandle: string | null | undefined,
   candidateTypes: readonly string[],
   queriedRaw: string,
+  /** The value arrived in a handle FIELD (`username` / `handle` / `vanity`). Decides on its own: the wrapper's
+   *  selector type is whatever `kind` the input declares, and `socialfetch_lookup {kind:"profile", handle}` —
+   *  the shape the measured run used — declares "profile". */
+  handleKeyed = false,
 ): ShortenedSeedLookup | null {
   if (!seedHandle || !seedHandleGuardEnabled()) return null;
-  if (!candidateTypes.some((t) => HANDLE_LOOKUP_TYPES.has(String(t).toLowerCase()))) return null;
+  if (!handleKeyed && !candidateTypes.some((t) => HANDLE_LOOKUP_TYPES.has(String(t).toLowerCase()))) return null;
   if (!isShortenedSeedHandle(seedHandle, queriedRaw)) return null;
   const seed = clean(seedHandle);
   const queried = clean(queriedRaw);
@@ -92,6 +96,7 @@ export function seedHandleGuardSelfTest(): { ok: boolean; enabled: boolean; swit
   if (hit("sample.handle", ["username"], "sam")) wrong.push("a prefix not cut at a dot was tainted");
   if (hit("sample.handle", ["username"], "handle")) wrong.push("a suffix label was tainted");
   if (hit("sample.handle", ["email", "domain"], "sample")) wrong.push("a non-handle lookup was tainted");
+  if (shortenedSeedLookup("sample.handle", ["profile"], "sample", true) === null) wrong.push("a handle-keyed profile fetch not caught");
   if (hit("samplehandle", ["username"], "sample")) wrong.push("an undotted seed engaged the guard");
   if (hit(null, ["username"], "sample")) wrong.push("a run with no username seed engaged the guard");
   return wrong.length
