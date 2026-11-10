@@ -17,13 +17,14 @@ export function useCaseSheetModel(threadId: string): {
   const review = useReviewStates(threadId);
   const items = snapshot?.items;
   const tally = snapshot?.authority;
+  const seedValue = snapshot?.seed.value ?? null;
   const model = useMemo(
     () => buildCaseSheet(items ?? [], review.map, tally ?? {
       verified: 0, infrastructure: 0, probable: 0, review: 0, weak: 0, quarantined: 0, conflict: 0, failed: 0,
-    }),
+    }, seedValue),
     // `review.revision` bumps on every verdict change, including a rollback.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items, tally, review.map, review.revision],
+    [items, tally, seedValue, review.map, review.revision],
   );
   return {
     model,
