@@ -91,6 +91,7 @@ import { detectSeedServer } from "./validation.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
 import { seedDottedHandleSelfTest } from "./validation.ts";
 import { seedHandleGuardSelfTest } from "./lib/seed-handle-guard.ts";
+import { seedProfileHandleSelfTest } from "./lib/seed-profile-handle.ts";
 import { mediaLeadsSelfTest } from "./lib/media-leads.ts";
 import { outcomeLessonsSelfTest } from "./lib/outcome-lessons.ts";
 
@@ -810,6 +811,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // either way; nothing is refused. Pure. PRESENCE proves the deployed bundle; `switch` reports
   // SEED_HANDLE_GUARD_DISABLED; ok:false = the predicate failed its own probe.
   r.checks.seed_handle_guard = seedHandleGuardSelfTest();
+
+  // Does a recorded profile row whose URL ends in the EXACT seed handle get metadata.handle, so it can join the
+  // seed's cluster, while a shortened or longer handle, a host label, a bio link and an excluded or quarantined
+  // row get nothing? Pure. PRESENCE proves the deployed bundle; `switch` reports SEED_PROFILE_HANDLE_DISABLED;
+  // ok:false = the predicate failed its own probe.
+  r.checks.seed_profile_handle = seedProfileHandleSelfTest();
 
   // E4: do the analyst's dismissed/wrong marks carry across the user's cases (latest verdict wins,
   // in-thread overrides, "#caseonly" stays put, phones fold by digits, username != name), while
