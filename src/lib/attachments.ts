@@ -81,6 +81,24 @@ export function typedTextBeforeAttachments(text: string | null | undefined): str
   return raw.slice(0, i).trim() || null;
 }
 
+/**
+ * The seed an ENGINE should reason over: the stored seed with the composer's
+ * attachment block removed.
+ *
+ * `threads.seed_value` is the first 200 characters of the first message, so a
+ * case started with typed text plus an upload stores "<selector>\n\nAttached
+ * files:\n- [name](signed-url…". Matched literally, no row ever equals that, and
+ * the case assessment read 0 supported findings on rows that scored 2 with the
+ * typed selector alone.
+ *
+ * For interpretation only. An upload-only seed is returned unchanged (its
+ * readers recognise it with `attachmentOnlyNames`), and callers that WRITE with
+ * the seed as a concurrency token (`set-subject.ts`) must keep the stored value.
+ */
+export function seedWithoutAttachments(seedValue: string | null): string | null {
+  return typedTextBeforeAttachments(seedValue) ?? seedValue;
+}
+
 /** "scan.pdf" / "scan.pdf +2" — a short label for an attachment-only case. */
 export function attachmentLabel(names: readonly string[]): string {
   return names.length > 1 ? `${names[0]} +${names.length - 1}` : names[0];
