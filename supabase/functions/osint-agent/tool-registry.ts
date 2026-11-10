@@ -26,6 +26,7 @@ import { applyDateSanity } from "./date-sanity.ts";
 import { computeAxes, sourceConfidence, isUnrelatedEntity, EXCLUDED_COLLISION_CONFIDENCE, isBioCrossLinkName, BIO_CROSS_LINK_NAME_CAP } from "./confidence.ts";
 import { applyRecordingSourcePolicy, disclosedSourceLabels, resolveRecordingStatus } from "./recording-source-policy.ts";
 import { buildFindingRow } from "./lib/finding-row.ts";
+import { seedProfileHandlePatch } from "./lib/seed-profile-handle.ts";
 import { queryTypesOf } from "./query-type-router.ts";
 import { isSameSurnameOnlyLead, isListingAgentLead } from "./collision-policy.ts";
 import { STRICT_KINDS, inferKind, isStrictKind, classifySource, isLlmAssertedDomainSource, LLM_ASSERTED_PROVENANCE, countIndependentClasses } from "./artifact_types.ts";
@@ -187,6 +188,9 @@ export interface ToolContext {
    *  later. `triageState.seed` cannot stand in for it: triage_seed accepts only
    *  email/username. Optional so existing callers and tests keep working. */
   getSubjectSeedName?: () => string;
+  /** The run's seed when (and only when) it was typed `username`, normalized with dots kept; else null.
+   *  Sole input to the seed-profile-handle stamp (lib/seed-profile-handle.ts). */
+  getSeedHandle?: () => string | null;
 }
 
 // Hosts that reliably return 451/403 THROUGH r.jina.ai — scraping them is a
@@ -5825,6 +5829,13 @@ export function buildTools(ctx: ToolContext) {
               nameQuarantineStamped++;
             }
           }
+          // A profile whose URL ends in the EXACT seed handle carries that handle, so the frontend cluster engine
+          // can join it to the seed (lib/seed-profile-handle.ts; kill switch SEED_PROFILE_HANDLE_DISABLED). Runs
+          // AFTER every exclusion and quarantine stamp above, and refuses a row carrying any of them.
+          {
+            const seedHandlePatch = seedProfileHandlePatch(ctx.getSeedHandle?.() ?? null, finalKind, v.value, meta);
+            if (seedHandlePatch) Object.assign(meta, seedHandlePatch);
+          }
           // One observation is identified only by its authority-bearing surface.
           // Model-authored metadata labels remain persisted for disclosure, but
           // cannot manufacture another observation row or corroboration.
@@ -6311,6 +6322,12 @@ export function buildTools(ctx: ToolContext) {
             delete enrichedMeta.linkage_confirmed;
             singleNameQuarantined = true;
           }
+        }
+        // Same seed-handle stamp as record_artifacts (lib/seed-profile-handle.ts): this shim is a full duplicate
+        // writer, so stamping only the plural tool would make linkage depend on which spelling the model called.
+        {
+          const seedHandlePatch = seedProfileHandlePatch(ctx.getSeedHandle?.() ?? null, finalKind, v.value, enrichedMeta);
+          if (seedHandlePatch) Object.assign(enrichedMeta, seedHandlePatch);
         }
         // THREAD-WIDE dedup, same gate as record_artifacts (2026-08-28). This
         // shim is a full duplicate implementation, not a delegation, and it is

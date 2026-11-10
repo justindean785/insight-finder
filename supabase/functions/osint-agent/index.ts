@@ -318,6 +318,8 @@ Deno.serve(async (req) => {
       supabase, supabaseAdmin, userId, threadId, archiveEnabled, detectedSeedType, messages, manualOverrideSelector,
       // Getter: `subjectSeedName` is derived below. Tools only execute after it is set.
       getSubjectSeedName: () => subjectSeedName,
+      // Getter for the same reason. Null unless the seed is a username (lib/seed-profile-handle.ts).
+      getSeedHandle: () => seedHandleForGuard,
     });
 
     // Earlier assistant turns are HISTORICAL MODEL OUTPUT, not evidence (lib/history-label.ts).
