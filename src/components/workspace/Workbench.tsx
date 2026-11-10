@@ -37,9 +37,10 @@ import { normalizeWorkbenchTab, type WorkbenchTab } from "@/lib/workbench-tab";
  * Nothing here is a new authority or a new path to a run.
  */
 export type { WorkbenchTab };
-const TABS: ReadonlyArray<{ key: WorkbenchTab; label: string; icon: LucideIcon }> = [
+// `short` is what the 320px sheet (below xl) prints; the accessible name stays `label`.
+const TABS: ReadonlyArray<{ key: WorkbenchTab; label: string; short?: string; icon: LucideIcon }> = [
   { key: "finding", label: "Finding", icon: ClipboardList },
-  { key: "pivots", label: "Next pivots", icon: Sparkles },
+  { key: "pivots", label: "Next pivots", short: "Pivots", icon: Sparkles },
   { key: "connections", label: "Connections", icon: Network },
 ];
 
@@ -64,6 +65,11 @@ export function Workbench({ threadId, request = null, onRequestConsumed }: {
     setTab(key);
     setVisited((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
   };
+  // The strip is a clipped scroller, so whichever tab is active is brought into view
+  // (a no-op while every tab fits). Optional call: jsdom has no scrollIntoView.
+  useEffect(() => {
+    refs.current[tab]?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [tab]);
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
     const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
     if (!step && e.key !== "Home" && e.key !== "End") return;
@@ -128,8 +134,14 @@ export function Workbench({ threadId, request = null, onRequestConsumed }: {
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-workbench>
-      {/* 58px tab row (prototype `.panel-tabs`). Right padding leaves room for the sheet's own fold button. */}
-      <div role="tablist" aria-label="Workbench" className="flex h-[52px] shrink-0 items-stretch gap-4 border-b border-border-subtle bg-surface-0 pl-5 pr-12">
+      {/* Tab row (prototype `.panel-tabs`). The 48px on the right belongs to the sheet's
+          own fold button, which ChatPage positions over this row. It is padding on the
+          WRAPPER, and the tablist is its own clipped scroller, so a tab can never sit
+          under that button: at 320px with both count chips the three tabs used to
+          overflow straight beneath it. Below xl the strip is tighter and "Next pivots"
+          prints as "Pivots"; anything that still does not fit scrolls. */}
+      <div className="flex h-[52px] shrink-0 border-b border-border-subtle bg-surface-0 pr-12" data-workbench-tabrow>
+      <div role="tablist" aria-label="Workbench" className="no-scrollbar flex min-w-0 flex-1 items-stretch gap-2.5 overflow-x-auto pl-3.5 xl:gap-4 xl:pl-5">
         {TABS.map((t, i) => (
           <button
             key={t.key}
@@ -144,13 +156,22 @@ export function Workbench({ threadId, request = null, onRequestConsumed }: {
             className={cn(tabButtonClass(tab === t.key, "secondary"), "h-full px-0.5")}
           >
             <t.icon className={cn(tabIconClass(tab === t.key), "hidden 2xl:block")} strokeWidth={1.8} aria-hidden />
-            <span className="leading-none">{t.label}</span>
+            {t.short ? (
+              <span className="leading-none">
+                {/* Printed by CSS (attr), so the DOM text and the accessible name stay `label`. */}
+                <span className="before:content-[attr(data-short)] xl:hidden" data-short={t.short} aria-hidden />
+                <span className="sr-only xl:not-sr-only">{t.label}</span>
+              </span>
+            ) : (
+              <span className="leading-none">{t.label}</span>
+            )}
             {t.key === "finding" && sheetCalls.kind === "decision" && <DecisionChip count={sheetCalls} compact />}
             {t.key === "pivots" && pivotsReady && runnable > 0 && (
               <span className="ml-1 rounded-[3px] bg-[hsl(var(--brand)/0.14)] px-1 py-px font-mono text-[11px] leading-none text-[hsl(var(--brand))]" aria-label={`${runnable} runnable`}>{runnable}</span>
             )}
           </button>
         ))}
+      </div>
       </div>
       {TABS.map((t) => visited.has(t.key) && (
         <div
