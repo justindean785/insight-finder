@@ -39,6 +39,13 @@ describe("subject name — a seed that names no one", () => {
     expect(pickSubjectName([found], undefined, "alex@example.test")?.value).toBe("Alex Example");
   });
 
+  it("is unchanged for an upload-started case whose filename contains a name", () => {
+    const upload = "Attached files:\n- [Alex Example background.pdf](https://files.example.test/x.pdf) (application/pdf, 1.2 MB)";
+    const inFile = art("name", "Alex Example", QUARANTINED);
+    const found = art("name", "Robin Stranger", {}, 70);
+    expect(pickSubjectName([inFile, found], undefined, upload)?.value).toBe("Robin Stranger");
+  });
+
   it("is unchanged when no seed is passed", () => {
     const a = art("name", "Robin Stranger", {}, 70);
     expect(pickSubjectName([a])?.value).toBe("Robin Stranger");

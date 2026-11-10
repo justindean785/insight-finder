@@ -14,6 +14,7 @@ import { effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { isRejectedReview } from "@/lib/review";
 import { isRejectedArtifact } from "@/lib/analyst-decisions";
 import { isQuarantined } from "@/lib/quarantine";
+import { attachmentOnlyNames } from "@/lib/attachments";
 
 // ---------------------------------------------------------------------------
 // #1 — Deterministic, ASCII-safe cluster IDs.
@@ -566,7 +567,9 @@ export function pickSubjectName(
   seedValue?: string | null,
 ): Artifact | null {
   const kinds = ["name", "person"];
-  const seedWords = new Set(nameWords(seedValue ?? ""));
+  // An upload-started case stores the "Attached files:" markdown as its seed. A
+  // filename is not an analyst-chosen subject, so it never constrains the pick.
+  const seedWords = new Set(attachmentOnlyNames(seedValue) !== null ? [] : nameWords(seedValue ?? ""));
   const seedNamesPerson = seedWords.size >= 2 && artifacts.some(
     (a) => kinds.includes(String(a.kind ?? "").toLowerCase()) && seedContainsName(seedWords, String(a.value ?? "")),
   );
