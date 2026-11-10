@@ -107,6 +107,33 @@ Deno.test("written-row bridge: KNOWN-DEFECT (master plan 1d) — a correlation n
   assertEquals(buildScorecard(s).summary.clustering.clusters_bridged_only_by_written_rows, 1);
 });
 
+Deno.test("analyst rejection: clustering replays production's dropRejectedArtifacts — a Wrong on the bridging note removes the bridge", async () => {
+  const s = await load("written-row-bridge.json");
+  s.reviews.push({ artifact_id: "b3", state: "wrong", created_at: "2026-01-02T01:00:00Z" });
+  const card = buildScorecard(s);
+  assertEquals(card.summary.rows.removed_by_analyst_rejection, 1);
+  assertEquals(card.summary.clustering.clusters_bridged_only_by_written_rows, 0);
+  assertEquals(card.summary.clustering.clusters_with_2_plus, 0, "the two handles stay separate");
+});
+
+Deno.test("analyst rejection: a re-record of a rejected value under a new id is removed too", async () => {
+  const s = await load("written-row-bridge.json");
+  s.artifacts.push({ ...s.artifacts.find((a) => a.id === "b3")!, id: "b3-again", created_at: "2026-01-02T00:00:04Z" });
+  s.reviews.push({ artifact_id: "b3", state: "dismissed", created_at: "2026-01-02T01:00:00Z" });
+  assertEquals(buildScorecard(s).summary.rows.removed_by_analyst_rejection, 2);
+});
+
+Deno.test("blind backtest: a rule that labels a row the analyst rejected is scored as a reject", async () => {
+  const s = await load("same-handle-stranger.json");
+  s.reviews.push({ artifact_id: "a3", state: "wrong", created_at: "2026-01-01T00:20:00Z" });
+  const v1 = buildScorecard(s).summary.attribution.v1_literal_strict;
+  assertEquals(v1.rows, 2, "the blind rule still labels both rows");
+  assertEquals(v1.reject, 1);
+  assertEquals(v1.wrong, 1);
+  assertEquals(v1.precision, 0);
+  assertEquals(ruleV1(s, "literal").length, 0, "live mode drops the rejected row, and breach alone is one class");
+});
+
 // ── (c) a nameserver provider outside the curated list ───────────────────────────
 
 Deno.test("nameserver provider: KNOWN-DEFECT (master plan 1d) — ns1/ns2 of an uncurated provider join, and a note naming it joins too", async () => {

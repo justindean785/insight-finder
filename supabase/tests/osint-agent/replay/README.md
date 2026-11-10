@@ -49,11 +49,17 @@ the production default. To replay a switch flipped, set it in the environment fi
 - `evidence` — how much of the case is tool-derived vs typed by the model or analyst,
   how many rows are bare selectors, and how many are written prose (`finding`, `other`,
   `note`, `weak_lead`, `contradiction`, `ai_summary` rows).
+- `rows.removed_by_analyst_rejection` — clustering runs on what production clustering
+  sees: `dropRejectedArtifacts` (the same function `applyClusteringToThread` calls) removes
+  Dismiss/Wrong rows and re-records of the same value first. Cross-case rejections (your
+  verdicts in other cases) are not in a snapshot and are not applied.
 - `clustering` — today's `clusterArtifacts` result: joins by rule, written rows sitting
   inside shared clusters, clusters held together **only** by written rows (a
   counterfactual run with them removed), nameserver/mail-host joins, and analyst-released
   rows that clustering still treats as inert.
-- `attribution` — what each rule would label "auto-corroborated":
+- `attribution` — a **blind backtest**: each rule runs without seeing the analyst's
+  verdicts, then is scored against them, so a rule that would label a row you rejected
+  shows up as a `reject`. What each rule would label "auto-corroborated":
   - `v1_*` — the overhaul's node rule, read four ways (`literal`/`counted` ×
     `strict`/`engine`). `on_vetoed_selectors` counts decisions on a selector the case
     itself contradicted, excluded or rejected.

@@ -8,6 +8,7 @@
 // folder. Committed fixtures (`replay/fixtures/`) are synthetic: RFC 2606 domains,
 // 555-01xx phones, invented handles.
 import type { Artifact as ClusterArtifact } from "../../../functions/osint-agent/lib/cluster.ts";
+import { dropRejectedArtifacts, emptyReviewLoad } from "../../../functions/osint-agent/reviews.ts";
 
 export interface SnapshotArtifact {
   id: string;
@@ -132,3 +133,16 @@ export function latestReviewState(s: Snapshot): Map<string, string> {
 
 /** Analyst verdicts that mean "this row is wrong or not wanted". */
 export const REJECTING_STATES: ReadonlySet<string> = new Set(["dismissed", "wrong"]);
+
+/**
+ * The rows production clustering actually sees: `applyClusteringToThread` runs
+ * `dropRejectedArtifacts` first, which removes every Dismiss/Wrong row AND any
+ * re-record of the same normalized kind|value. Same function, same inputs, so the
+ * replay cannot drift from it. Cross-case rejections (the analyst's verdicts in
+ * OTHER cases) are not in a snapshot and are not applied here.
+ */
+export function analystKeptArtifacts(s: Snapshot): SnapshotArtifact[] {
+  const review = emptyReviewLoad(true);
+  for (const [id, state] of latestReviewState(s)) review.byId.set(id, state);
+  return dropRejectedArtifacts(s.artifacts as unknown as Array<Record<string, unknown>>, review) as unknown as SnapshotArtifact[];
+}

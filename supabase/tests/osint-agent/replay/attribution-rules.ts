@@ -239,8 +239,19 @@ export interface RuleScore {
   unadjudicated: number;
   /** keep / (keep + reject); null when nothing it decided was adjudicated. */
   precision: number | null;
-  /** Decisions on a selector the case itself contradicted, excluded or rejected. */
+  /** Decisions on a selector the case's own evidence contradicted, excluded or marked a collision. */
   on_vetoed_selectors: number;
+}
+
+/**
+ * `verdicts: true` (live) — the rule sees the analyst's verdicts, as it would in
+ * production: rejected rows are ineligible, Confirmed selectors become anchors.
+ * `verdicts: false` (blind) — the rule sees none of them. This is the honest
+ * BACKTEST: score a blind run against the verdicts, otherwise a rule could never
+ * be caught labelling a row the analyst rejected.
+ */
+export interface RuleOptions {
+  verdicts?: boolean;
 }
 
 function v1Eligible(a: SnapshotArtifact, reviews: Map<string, string>): boolean {
@@ -249,6 +260,8 @@ function v1Eligible(a: SnapshotArtifact, reviews: Map<string, string>): boolean 
   if (meta(a).possible_minor === true) return false;
   return !REJECTING_STATES.has(reviews.get(a.id) ?? "");
 }
+
+const NO_VERDICTS: Map<string, string> = new Map();
 
 /**
  * How a row's selectors are read:
@@ -261,8 +274,13 @@ export type SelectorReading = "strict" | "engine";
 const SELECTOR_TOKEN = /^(?:email|phone|handle):/;
 
 /** The v1 proposal, read literally or with the repo's independence counter. */
-export function ruleV1(s: Snapshot, mode: "literal" | "counted", reading: SelectorReading = "strict"): RuleDecision[] {
-  const reviews = latestReviewState(s);
+export function ruleV1(
+  s: Snapshot,
+  mode: "literal" | "counted",
+  reading: SelectorReading = "strict",
+  opts: RuleOptions = {},
+): RuleDecision[] {
+  const reviews = opts.verdicts === false ? NO_VERDICTS : latestReviewState(s);
   const known = collectKnownHandles(s.artifacts.map(toClusterArtifact));
   const selectorsFor = (a: SnapshotArtifact): string[] => {
     if (reading === "strict") {
@@ -304,8 +322,9 @@ export interface RuleV2Report {
 }
 
 /** The master-plan v2 edge rule. */
-export function ruleV2(s: Snapshot): RuleV2Report {
-  const reviews = latestReviewState(s);
+export function ruleV2(s: Snapshot, opts: RuleOptions = {}): RuleV2Report {
+  const blind = opts.verdicts === false;
+  const reviews = blind ? NO_VERDICTS : latestReviewState(s);
   const anchors = new Set<string>();
   const seed = seedSelector(s);
   if (seed) anchors.add(seed);
@@ -313,7 +332,7 @@ export function ruleV2(s: Snapshot): RuleV2Report {
     const sel = selectorOf(a);
     if (sel && reviews.get(a.id) === "confirmed") anchors.add(sel);
   }
-  const vetoed = vetoedSelectors(s);
+  const vetoed = vetoedSelectors(blind ? { ...s, reviews: [] } : s);
 
   type Obs = { id: string; classes: string[]; origin: "tool" | "recorded"; written: boolean };
   const obsFor = new Map<string, Obs[]>();
@@ -370,7 +389,9 @@ export function ruleV2(s: Snapshot): RuleV2Report {
 /** Score a rule's decisions against the analyst's latest verdict on each decided row. */
 export function scoreDecisions(s: Snapshot, decisions: RuleDecision[]): RuleScore {
   const reviews = latestReviewState(s);
-  const vetoed = vetoedSelectors(s);
+  // Vetoes from the case's own evidence only (contradictions, exclusions,
+  // collisions) — analyst rejections are counted separately as `reject`.
+  const vetoed = vetoedSelectors({ ...s, reviews: [] });
   const rows = new Set(decisions.map((d) => d.artifact_id));
   const score: RuleScore = {
     decisions: decisions.length,

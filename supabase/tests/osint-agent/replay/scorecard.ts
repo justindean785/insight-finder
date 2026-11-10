@@ -14,7 +14,7 @@ import {
   scoreDecisions,
   selectorOf,
 } from "./attribution-rules.ts";
-import { latestReviewState, type Snapshot, toClusterArtifact } from "./snapshot.ts";
+import { analystKeptArtifacts, latestReviewState, type Snapshot, toClusterArtifact } from "./snapshot.ts";
 
 export const SCORECARD_SCHEMA = 1;
 
@@ -32,6 +32,7 @@ export interface Scorecard {
   summary: {
     rows: {
       artifacts: number;
+      removed_by_analyst_rejection: number;
       reviews_by_state: Record<string, number>;
       tool_calls_by_outcome: Record<string, number>;
     };
@@ -77,7 +78,9 @@ export interface Scorecard {
 
 export function buildScorecard(s: Snapshot): Scorecard {
   const reviews = latestReviewState(s);
-  const all = s.artifacts;
+  // Clustering sees what production clustering sees: analyst-rejected rows (and
+  // re-records of them) removed first, exactly as `applyClusteringToThread` does.
+  const all = analystKeptArtifacts(s);
   const A = clusterArtifacts(all.map(toClusterArtifact));
   const clusterA = new Map(A.members.map((m) => [m.id!, m.cluster_id]));
   const sizeA = new Map<string, number>();
@@ -105,25 +108,29 @@ export function buildScorecard(s: Snapshot): Scorecard {
 
   const joins = A.decisions.map((d) => ({ a: d.a, b: d.b, token: d.shared_selector, rule: d.rule }));
 
-  const v1ls = ruleV1(s, "literal", "strict");
-  const v1cs = ruleV1(s, "counted", "strict");
-  const v1le = ruleV1(s, "literal", "engine");
-  const v1ce = ruleV1(s, "counted", "engine");
-  const v2 = ruleV2(s);
+  // Attribution is a BLIND backtest: the rules run without the analyst's verdicts and
+  // are then scored against them, so a rule labelling a rejected row shows up.
+  const blind = { verdicts: false };
+  const v1ls = ruleV1(s, "literal", "strict", blind);
+  const v1cs = ruleV1(s, "counted", "strict", blind);
+  const v1le = ruleV1(s, "literal", "engine", blind);
+  const v1ce = ruleV1(s, "counted", "engine", blind);
+  const v2 = ruleV2(s, blind);
 
   return {
     schema: SCORECARD_SCHEMA,
     summary: {
       rows: {
-        artifacts: all.length,
+        artifacts: s.artifacts.length,
+        removed_by_analyst_rejection: s.artifacts.length - all.length,
         reviews_by_state: countBy([...reviews.values()]),
         tool_calls_by_outcome: countBy(s.tool_usage.map((t) => t.outcome ?? "unknown")),
       },
       evidence: {
-        tool_derived: all.filter((a) => originOf(a) === "tool").length,
-        typed_by_model_or_analyst: all.filter((a) => originOf(a) === "recorded").length,
-        written_rows: all.length - nonWritten.length,
-        selector_rows: all.filter((a) => selectorOf(a) !== null).length,
+        tool_derived: s.artifacts.filter((a) => originOf(a) === "tool").length,
+        typed_by_model_or_analyst: s.artifacts.filter((a) => originOf(a) === "recorded").length,
+        written_rows: s.artifacts.filter(isWrittenRow).length,
+        selector_rows: s.artifacts.filter((a) => selectorOf(a) !== null).length,
       },
       clustering: {
         clusters_with_2_plus: A.subjects.filter((x) => x.members.length >= 2).length,
