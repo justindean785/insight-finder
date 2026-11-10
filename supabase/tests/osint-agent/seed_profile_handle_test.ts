@@ -48,6 +48,26 @@ Deno.test("NAMESAKE: the shortened handle, a longer handle and a host label are 
   assertEquals(patch("sample.handle has an account on x.example"), null, "prose");
 });
 
+Deno.test("NAMESAKE: the seed in a referral parameter or a fragment of SOMEONE ELSE'S profile is never read", () => {
+  for (const url of [
+    "https://x.example/someone.else?ref=sample.handle",
+    "https://x.example/someone.else#sample.handle",
+    "https://x.example/someone.else?utm_source=sample.handle",
+    "https://x.example/someone.else?next=/sample.handle",
+    "https://x.example/someone.else?q=sample.handle&username=someone.else",
+    "https://x.example/profile?ref=sample.handle",
+  ]) {
+    assertEquals(patch(url), null, url);
+  }
+  assertEquals(profileUrlHandle("https://x.example/someone.else?ref=sample.handle"), "someone.else");
+  assertEquals(profileUrlHandle("https://x.example/someone.else#sample.handle"), "someone.else");
+  // The identity parameters, and a fragment AFTER the real handle, still work.
+  assert(patch("https://x.example/user?id=sample.handle"));
+  assert(patch("https://x.example/user.aspx?ref=home&username=sample.handle"));
+  assert(patch("https://x.example/sample.handle#about"));
+  assert(patch("https://x.example/sample.handle?ref=someone.else"));
+});
+
 Deno.test("and the reverse: a seed `sample` does not claim `sample.handle`'s profile", () => {
   assertEquals(patch("https://x.example/sample.handle", {}, "social_profile", "sample"), null);
   assert(patch("https://x.example/sample", {}, "social_profile", "sample"));
