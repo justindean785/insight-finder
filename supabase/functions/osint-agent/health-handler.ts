@@ -36,6 +36,7 @@ import { findingPromptSelfTest } from "./lib/finding-prompt.ts";
 import { staticSystemPrompt } from "./lib/base-prompt.ts";
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { opsisResultsHintSelfTest, opsisSearchGuardSelfTest } from "./lib/opsis-search-guard.ts";
+import { paidProviderGuardSelfTest } from "./lib/paid-provider-guard.ts";
 import { nextPivotBriefSelfTest } from "./lib/next-pivot.ts";
 import { memoryBriefSelfTest } from "./lib/memory-brief.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
@@ -605,6 +606,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // read it before the report? Pure probe of lib/opsis-search-guard.ts; PRESENCE proves the
   // build. The wrapper wiring is pinned by opsis_search_guard_test.ts in CI, not by this probe.
   r.checks.opsis_search_guard = opsisSearchGuardSelfTest();
+  // Is a paid web-data call (Context.dev, SocQ) admitted only after a free tool tried the same selector in this case
+  // and came back empty/failed, or with force_second_source + a written justification, and is a refusal an uncharged
+  // skip? Pure; `mode` reports PAID_PROVIDER_GUARD_DISABLED / PAID_PROVIDER_GUARD_DRY_RUN; `guarded_tools` counts the
+  // registered policies (0 until a provider PR registers one). PRESENCE proves the deployed bundle.
+  r.checks.paid_provider_guard = paidProviderGuardSelfTest();
   // Does a refused opsis_results run id name a replacement only when exactly one un-read run in the thread has the exact
   // selector, else point at the paid opsis_search without starting it? Pure; PRESENCE proves the deployed bundle.
   r.checks.opsis_results_hint = opsisResultsHintSelfTest();
