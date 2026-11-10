@@ -19,6 +19,15 @@ async function load(name: string): Promise<Snapshot> {
 const clusterOf = (s: Snapshot, id: string): string | null =>
   clusterArtifacts(s.artifacts.map(toClusterArtifact)).members.find((m) => m.id === id)!.cluster_id;
 
+/** Run `fn` with env switches set, restoring them after (switches are read at call time). */
+async function withEnv<T>(vars: Record<string, string>, fn: () => T | Promise<T>): Promise<T> {
+  const prev = Object.fromEntries(Object.keys(vars).map((k) => [k, Deno.env.get(k)]));
+  for (const [k, v] of Object.entries(vars)) Deno.env.set(k, v);
+  try { return await fn(); } finally {
+    for (const [k, v] of Object.entries(prev)) { if (v === undefined) Deno.env.delete(k); else Deno.env.set(k, v); }
+  }
+}
+
 // ── (a) a breach username and a same-handle stranger's profile ───────────────────
 
 Deno.test("same-handle stranger: clustering keeps the contradicted profile apart (regression guard)", async () => {
@@ -101,10 +110,21 @@ Deno.test("edge corroborated: an analyst Dismiss on X vetoes v2", async () => {
 
 // ── (b) a written row bridges two people ─────────────────────────────────────────
 
-Deno.test("written-row bridge: KNOWN-DEFECT (master plan 1d) — a correlation note that says 'separate' merges the two", async () => {
+Deno.test("written-row bridge: FIXED by 1d-i — a correlation note naming two handles no longer merges them", async () => {
   const s = await load("written-row-bridge.json");
-  assertEquals(clusterOf(s, "b1"), clusterOf(s, "b2"));
-  assertEquals(buildScorecard(s).summary.clustering.clusters_bridged_only_by_written_rows, 1);
+  assertNotEquals(clusterOf(s, "b1"), clusterOf(s, "b2"));
+  const c = buildScorecard(s).summary.clustering;
+  assertEquals(c.clusters_bridged_only_by_written_rows, 0);
+  assertEquals(c.prose_bridges_withheld, 1);
+  assertEquals(clusterOf(s, "b3") === clusterOf(s, "b1") || clusterOf(s, "b3") === clusterOf(s, "b2"), false, "the note joins neither");
+});
+
+Deno.test("written-row bridge: CLUSTER_PROSE_NO_BRIDGE_DISABLED restores the old merge", async () => {
+  const s = await load("written-row-bridge.json");
+  await withEnv({ CLUSTER_PROSE_NO_BRIDGE_DISABLED: "true" }, () => {
+    assertEquals(clusterOf(s, "b1"), clusterOf(s, "b2"));
+    assertEquals(buildScorecard(s).summary.clustering.clusters_bridged_only_by_written_rows, 1);
+  });
 });
 
 Deno.test("analyst rejection: clustering replays production's dropRejectedArtifacts — a Wrong on the bridging note removes the bridge", async () => {
@@ -136,28 +156,103 @@ Deno.test("blind backtest: a rule that labels a row the analyst rejected is scor
 
 // ── (c) a nameserver provider outside the curated list ───────────────────────────
 
-Deno.test("nameserver provider: KNOWN-DEFECT (master plan 1d) — ns1/ns2 of an uncurated provider join, and a note naming it joins too", async () => {
+Deno.test("nameserver provider: FIXED by 1d-iii — ns rows of an uncurated provider are inert, and the note naming it joins nothing", async () => {
   const s = await load("nameserver-provider.json");
   const c = buildScorecard(s).summary.clustering;
-  assertEquals(c.infra_host_joins, 1);
-  assertEquals(clusterOf(s, "c2"), clusterOf(s, "c4"), "the provider label became a 'handle'");
-  assertNotEquals(clusterOf(s, "c1"), clusterOf(s, "c2"), "the subject's own domain stays apart");
+  assertEquals(c.infra_host_joins, 0);
+  assertEquals(clusterOf(s, "c2"), null, "plumbing is not a cluster member");
+  assertEquals(clusterOf(s, "c3"), null);
+  assertNotEquals(clusterOf(s, "c4"), clusterOf(s, "c1"), "the note does not join the subject's domain");
+  assert(clusterOf(s, "c1") !== null, "the subject's own domain still clusters");
+});
+
+Deno.test("nameserver provider: the subject's OWN zone keeps its ns rows (1d-iii is case-aware)", async () => {
+  const s = await load("nameserver-provider.json");
+  s.artifacts.push({ ...s.artifacts.find((a) => a.id === "c2")!, id: "c5", value: "ns1.subject-shop.example", created_at: "2026-01-03T00:00:09Z" });
+  assertEquals(clusterOf(s, "c5"), clusterOf(s, "c1"), "ns1.<subject zone> beside <subject zone> stays a member");
+});
+
+Deno.test("nameserver provider: CLUSTER_INFRA_LABEL_SHAPE_DISABLED restores the old joins", async () => {
+  const s = await load("nameserver-provider.json");
+  await withEnv({ CLUSTER_INFRA_LABEL_SHAPE_DISABLED: "true", CLUSTER_PROSE_NO_BRIDGE_DISABLED: "true" }, () => {
+    assertEquals(buildScorecard(s).summary.clustering.infra_host_joins, 1);
+    assertEquals(clusterOf(s, "c2"), clusterOf(s, "c4"));
+  });
 });
 
 // ── (d) an analyst-released quarantine row ───────────────────────────────────────
 
-Deno.test("released row: KNOWN-DEFECT (master plan 1c/1d) — linkage_confirmed does not lift clustering inertness", async () => {
+Deno.test("released row: FIXED by 1d-ii — an analyst-released row is a cluster member again", async () => {
   const s = await load("released-row.json");
   const d2 = s.artifacts.find((a) => a.id === "d2")!;
-  assert(isClusterInert(toClusterArtifact(d2)));
-  assertEquals(clusterOf(s, "d2"), null);
-  assertEquals(buildScorecard(s).summary.clustering.released_rows_still_inert, 1);
+  assert(!isClusterInert(toClusterArtifact(d2)));
+  assertEquals(clusterOf(s, "d2"), clusterOf(s, "d1"));
+  assertEquals(buildScorecard(s).summary.clustering.released_rows_still_inert, 0);
+});
+
+Deno.test("released row: a quarantined row that was NOT released stays inert; an excluded one stays inert even if 'released'", async () => {
+  const s = await load("released-row.json");
+  const d2 = s.artifacts.find((a) => a.id === "d2")!;
+  const unreleased = { ...d2, metadata: { ...d2.metadata, linkage_confirmed: false } };
+  assert(isClusterInert(toClusterArtifact(unreleased)));
+  const excluded = { ...d2, metadata: { ...d2.metadata, status: "excluded" } };
+  assert(isClusterInert(toClusterArtifact(excluded)));
+});
+
+Deno.test("released row: CLUSTER_RELEASED_ROWS_JOIN_DISABLED restores the old inertness", async () => {
+  const s = await load("released-row.json");
+  await withEnv({ CLUSTER_RELEASED_ROWS_JOIN_DISABLED: "true" }, () => {
+    assertEquals(clusterOf(s, "d2"), null);
+    assertEquals(buildScorecard(s).summary.clustering.released_rows_still_inert, 1);
+  });
+});
+
+// ── (e) prose about one subject, and prose naming two (production log 2026-11-08) ──
+
+Deno.test("prose about one subject: attached without bridging; a note is ABOUT it, an `other` row stays evidence (1d-i)", async () => {
+  const s = await load("prose-about-and-bridge.json");
+  const r = clusterArtifacts(s.artifacts.map(toClusterArtifact));
+  const subj = r.subjects.find((x) => x.members.some((m) => m.id === "e1"))!;
+  // `other` is the catch-all kind (pasted records, model-typed tool output): attached as
+  // evidence, as today — the change for it is only that it can no longer bridge.
+  assertEquals(subj.members.map((m) => m.id).sort(), ["e1", "e2", "e3", "e4"]);
+  assertEquals((subj.about ?? []).map((m) => m.id), ["e7"], "a model note is shown with the subject, not counted as evidence");
+  assert(!subj.sources.includes("record_artifacts"), "the note adds no source");
+  for (const id of ["e3", "e4", "e7"]) assertEquals(clusterOf(s, id), clusterOf(s, "e1"), "shown with the subject");
+  assertEquals(buildScorecard(s).summary.clustering.written_rows_attached_as_about, 1);
+});
+
+Deno.test("prose naming two subjects: withheld, and the two handles stay apart (1d-i)", async () => {
+  const s = await load("prose-about-and-bridge.json");
+  assertNotEquals(clusterOf(s, "e1"), clusterOf(s, "e5"));
+  const r = clusterArtifacts(s.artifacts.map(toClusterArtifact));
+  assertEquals(r.prose_bridges_withheld, 1);
+  const e6 = r.members.find((m) => m.id === "e6")!;
+  assert(e6.cluster_id !== clusterOf(s, "e1") && e6.cluster_id !== clusterOf(s, "e5"));
+});
+
+Deno.test("prose: today's behaviour (switch off) — the finding bridges two handles into one subject of seven", async () => {
+  const s = await load("prose-about-and-bridge.json");
+  await withEnv({ CLUSTER_PROSE_NO_BRIDGE_DISABLED: "true" }, () => {
+    assertEquals(clusterOf(s, "e1"), clusterOf(s, "e5"), "the finding bridged two handles");
+    const card = buildScorecard(s).summary.clustering;
+    assertEquals(card.clusters_with_2_plus, 1);
+    assertEquals(card.singletons, 0);
+    assertEquals(card.clusters_bridged_only_by_written_rows, 1);
+  });
+});
+
+Deno.test("prose: subject ids of prose-free clusters do not move when prose is attached", async () => {
+  const s = await load("prose-about-and-bridge.json");
+  const withProse = clusterOf(s, "e1");
+  const bare = { ...s, artifacts: s.artifacts.filter((a) => ["e1", "e2", "e5"].includes(a.id)) };
+  assertEquals(clusterOf(bare, "e1"), withProse);
 });
 
 // ── harness contract ─────────────────────────────────────────────────────────────
 
 Deno.test("determinism: shuffled input rows give the identical scorecard hash", async () => {
-  for (const name of ["same-handle-stranger.json", "written-row-bridge.json", "nameserver-provider.json", "released-row.json", "edge-corroborated.json"]) {
+  for (const name of ["same-handle-stranger.json", "written-row-bridge.json", "nameserver-provider.json", "released-row.json", "edge-corroborated.json", "prose-about-and-bridge.json"]) {
     const raw = JSON.parse(await Deno.readTextFile(new URL(name, FIXTURES)));
     const h1 = await scorecardHash(buildScorecard(parseSnapshot(raw)));
     const shuffled = { ...raw, artifacts: [...raw.artifacts].reverse(), reviews: [...raw.reviews].reverse() };

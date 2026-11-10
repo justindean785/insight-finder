@@ -4,7 +4,9 @@
 // ids and the 60-character value slices `clusterArtifacts` already logs; it stays in
 // the local, gitignored `replay-out/` folder and is never printed.
 import { clusterArtifacts, isClusterInert } from "../../../functions/osint-agent/lib/cluster.ts";
+import { countIndependentClasses, type SourceClass } from "../../../functions/osint-agent/source-classification.ts";
 import {
+  classesOf,
   isWrittenRow,
   originOf,
   type RuleDecision,
@@ -52,6 +54,14 @@ export interface Scorecard {
       infra_host_joins: number;
       released_rows: number;
       released_rows_still_inert: number;
+      /** Written rows shown with a subject but not counted as its evidence (proposal 1d-i). */
+      written_rows_attached_as_about: number;
+      /** Written rows whose prose named two or more subjects and were left on their own (1d-i). */
+      prose_bridges_withheld: number;
+      /** Subjects (2+ evidence members) whose independent source-class count is HIGHER
+       *  because written rows are among their evidence members — corroboration that is
+       *  prose about the evidence, not evidence. */
+      subjects_with_classes_added_by_written_rows: number;
     };
     attribution: {
       v1_literal_strict: RuleScore;
@@ -82,6 +92,7 @@ export function buildScorecard(s: Snapshot): Scorecard {
   // re-records of them) removed first, exactly as `applyClusteringToThread` does.
   const all = analystKeptArtifacts(s);
   const A = clusterArtifacts(all.map(toClusterArtifact));
+  const byId = new Map(all.map((a) => [a.id, a]));
   const clusterA = new Map(A.members.map((m) => [m.id!, m.cluster_id]));
   const sizeA = new Map<string, number>();
   for (const m of A.members) if (m.cluster_id) sizeA.set(m.cluster_id, (sizeA.get(m.cluster_id) ?? 0) + 1);
@@ -145,6 +156,14 @@ export function buildScorecard(s: Snapshot): Scorecard {
         infra_host_joins: joins.filter((j) => j.rule === "shared first-party domain" && INFRA_HOST.test(j.a) && INFRA_HOST.test(j.b)).length,
         released_rows: released.length,
         released_rows_still_inert: releasedInert.length,
+        written_rows_attached_as_about: A.subjects.reduce((n, x) => n + (x.about?.length ?? 0), 0),
+        prose_bridges_withheld: A.prose_bridges_withheld ?? 0,
+        subjects_with_classes_added_by_written_rows: A.subjects.filter((x) => {
+          if (x.members.length < 2) return false;
+          const rows = x.members.map((m) => byId.get(m.id!)).filter((a): a is NonNullable<typeof a> => !!a);
+          const cls = (xs: typeof rows) => countIndependentClasses([...new Set(xs.flatMap(classesOf))] as SourceClass[]);
+          return cls(rows) > cls(rows.filter((a) => !isWrittenRow(a)));
+        }).length,
       },
       attribution: {
         v1_literal_strict: scoreDecisions(s, v1ls),

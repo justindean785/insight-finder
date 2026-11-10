@@ -147,13 +147,15 @@ Deno.test("infra rows keep their tier — inert is NOT 'Excluded'", () => {
 });
 
 Deno.test("the kill switch restores the old grouping on the running build", async () => {
-  await withEnv("CLUSTER_SHARED_INFRA_INERT_DISABLED", "true", () => {
+  // The case-aware label-shape rule (CLUSTER_INFRA_LABEL_SHAPE_DISABLED) also makes these
+  // rows inert — it covers providers off the curated list — so legacy needs both switches.
+  await withEnv("CLUSTER_SHARED_INFRA_INERT_DISABLED", "true", () => withEnv("CLUSTER_INFRA_LABEL_SHAPE_DISABLED", "true", () => {
     assert(clusterSharedInfraInertDisabled());
     assert(isSharedInfraArtifact(ns10), "the predicate stays structural; only isClusterInert honours the switch");
     assert(!isClusterInert(ns10));
     const { subjects } = clusterArtifacts([ns10, ns11]);
     assertEquals(subjects.length, 1, "legacy: the provider's name forms a subject");
-  });
+  }));
   assert(!clusterSharedInfraInertDisabled(), "the switch is read at call time, not import time");
 });
 

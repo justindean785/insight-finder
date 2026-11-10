@@ -75,9 +75,13 @@ export interface ClusterResult {
     members: ClusterMember[];
     strongSelectors: string[];
     sources: string[];
+    /** 1d-i: written rows attached to this subject for display; NOT evidence, never in `members`. */
+    about?: ClusterMember[];
   }>;
   members: ClusterMember[]; // every input artifact, annotated
   decisions: JoinDecision[];
+  /** 1d-i: prose rows whose prose named two or more subjects and were left on their own. */
+  prose_bridges_withheld?: number;
 }
 
 // ---- Normalization (preserve raw; compare normalized) -------------------------
@@ -287,13 +291,129 @@ export function isSharedInfraArtifact(a: Artifact): boolean {
   return labels.slice(0, -2).some((l) => INFRA_LABEL.test(l));
 }
 
+// ---- PROPOSAL 1d-ii: an analyst-released row is a cluster member again ------------
+// `src/lib/quarantine-release.ts` writes `linkage_confirmed: true` BESIDE the untouched
+// `subject_unlinked` when the analyst releases a quarantined row ("this IS the subject").
+// Every promote/dispatch boundary reads that ruling; clustering did not, so a released
+// row stayed inert here forever (replay fixture `released-row.json`). Scoped to
+// CLUSTERING: `isExcluded` (finding synthesis, the "Excluded" tier, promotion) is not
+// changed here — that is master plan 1c. An `excluded_collision` kind or `status:
+// excluded` is never lifted by a release.
+// Kill switch, read at CALL TIME: CLUSTER_RELEASED_ROWS_JOIN_DISABLED=true.
+export function clusterReleasedRowsJoinDisabled(
+  env: (k: string) => string | undefined = (k) => Deno.env.get(k),
+): boolean {
+  return (env("CLUSTER_RELEASED_ROWS_JOIN_DISABLED") ?? "").trim().toLowerCase() === "true";
+}
+
+/** Quarantined by the write path, then released by the analyst. Structural: both flags. */
+export function isAnalystReleased(a: Artifact): boolean {
+  return metaBoolTrue(a.metaRaw, "subject_unlinked") && metaBoolTrue(a.metaRaw, "linkage_confirmed") &&
+    a.kind !== "excluded_collision" && !metaBoolTrue(a.metaRaw, "excluded_collision") &&
+    !/"status"\s*:\s*"excluded"/i.test(a.metaRaw);
+}
+
 /** Inert for clustering: excluded/quarantined rows, and (unless switched off)
  *  bookkeeping rows and shared-infrastructure rows. Distinct from `isExcluded`, which
  *  also drives the "Excluded" tier. */
 export function isClusterInert(a: Artifact): boolean {
-  return isExcluded(a) ||
+  const excluded = isExcluded(a) && !(!clusterReleasedRowsJoinDisabled() && isAnalystReleased(a));
+  return excluded ||
     (!clusterBookkeepingInertDisabled() && isBookkeepingArtifact(a)) ||
     (!clusterSharedInfraInertDisabled() && isSharedInfraArtifact(a));
+}
+
+// ---- PROPOSAL 1d-iii: nameserver / mail-host rows of a provider nobody curated ---------
+// `isSharedInfraArtifact` only catches providers on a hand-kept list, so `ns1.<any other
+// host>` still turns the host's name into a "handle" (replay fixture
+// `nameserver-provider.json`). Case-aware rule: a domain row with an infrastructure-shaped
+// label ABOVE its registrable domain (`ns*`, `mx*`, `mail`, …) is inert UNLESS that
+// registrable domain is also recorded in the case as a plain (non-infrastructure) domain
+// row — i.e. it is the subject's own zone (`ns1.<subject>.com` beside `<subject>.com`).
+// Fails toward LESS joining: an unrecorded subject zone makes its own ns rows inert.
+// Kill switch, read at CALL TIME: CLUSTER_INFRA_LABEL_SHAPE_DISABLED=true.
+export function clusterInfraLabelShapeDisabled(
+  env: (k: string) => string | undefined = (k) => Deno.env.get(k),
+): boolean {
+  return (env("CLUSTER_INFRA_LABEL_SHAPE_DISABLED") ?? "").trim().toLowerCase() === "true";
+}
+
+function hostLabels(v: string): string[] {
+  const host = String(v ?? "").trim().toLowerCase()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/^www\./, "").split(/[/?#:]/)[0];
+  return host.split(".").filter(Boolean);
+}
+
+/** `{ registrable, infraShaped }` for a domain-kind row, else null. Pure. */
+function infraShape(a: Artifact): { registrable: string; infraShaped: boolean } | null {
+  if (canonicalKind(a.kind, a.value) !== "domain") return null;
+  const labels = hostLabels(a.value);
+  if (labels.length < 2) return null;
+  const registrable = labels.slice(-2).join(".");
+  const infraShaped = labels.length >= 3 && labels.slice(0, -2).some((l) => INFRA_LABEL.test(l));
+  return { registrable, infraShaped };
+}
+
+/** Per-case inertness: the per-row rules plus 1d-iii. Index-aligned with `arts`. */
+export function caseInertFlags(arts: Artifact[]): boolean[] {
+  const base = arts.map((a) => isClusterInert(a));
+  if (clusterInfraLabelShapeDisabled()) return base;
+  const ownZones = new Set<string>();
+  arts.forEach((a, i) => {
+    if (base[i]) return;
+    const s = infraShape(a);
+    if (s && !s.infraShaped) ownZones.add(s.registrable);
+  });
+  return arts.map((a, i) => {
+    if (base[i]) return true;
+    const s = infraShape(a);
+    return !!s && s.infraShaped && !ownZones.has(s.registrable);
+  });
+}
+
+// ---- PROPOSAL 1d-i: prose rows attach to one subject, never bridge two ------------
+// A written row — a model `finding`/`other`/`note`/`weak_lead`/summary, or a
+// `minimax_correlate` / `ai_summary` output — got selector tokens from its PROSE: the
+// first email anywhere in the sentence (`normEmail`) and every word that matches a known
+// handle (`foldWords`). So one sentence naming two handles unioned two subjects, even
+// when the sentence said they are DIFFERENT people (replay fixture `written-row-bridge.json`),
+// and "no pages mention <handle>" / "<handle> = 404 (no account)" joined the subject on
+// the handle (production log 2026-11-08: 43 of 47 joins on one case had a prose side).
+// Now prose-derived tokens never enter union-find. After the selector rows are joined, a
+// prose row is ATTACHED to a cluster only when every prose token it carries that some
+// selector row owns resolves to that ONE cluster; otherwise it stays on its own. Tokens a
+// prose row carries in METADATA (asserted handles, self-admission / ownership-proof
+// fingerprints) are unchanged, and a VERIFIED self-admission row is exempt (its sentence
+// is first-party proof of the link — the C-1 Oakland acceptance case).
+// STRUCTURAL: kind, source tool, source_category. Never by reading the sentence.
+// Kill switch, read at CALL TIME: CLUSTER_PROSE_NO_BRIDGE_DISABLED=true.
+const PROSE_KINDS = new Set([
+  "finding", "other", "note", "weak_lead", "summary", "analysis", "hypothesis", "ai_summary",
+]);
+
+export function clusterProseNoBridgeDisabled(
+  env: (k: string) => string | undefined = (k) => Deno.env.get(k),
+): boolean {
+  return (env("CLUSTER_PROSE_NO_BRIDGE_DISABLED") ?? "").trim().toLowerCase() === "true";
+}
+
+function isModelSummary(a: Artifact): boolean {
+  if (/^minimax_correlate\b/i.test(String(a.source ?? "").trim())) return true;
+  return /"source_category"\s*:\s*(?:"ai_summary"|\[[^\]]*"ai_summary")/i.test(a.metaRaw ?? "");
+}
+
+export function isProseArtifact(a: Artifact): boolean {
+  return PROSE_KINDS.has(String(a.kind ?? "").trim().toLowerCase()) || isModelSummary(a);
+}
+
+/** A prose row that, once attached, is ABOUT its subject rather than evidence for it.
+ *  `other` is the exception: it is the catch-all kind, and on production cases it holds
+ *  pasted records and model-typed tool output (a whois result, a people-search paste)
+ *  that synthesis legitimately counts — so an attached `other` row stays an evidence
+ *  member. It still never bridges. Model summaries are always about-only. */
+export function isAboutOnlyArtifact(a: Artifact): boolean {
+  const k = String(a.kind ?? "").trim().toLowerCase();
+  return (PROSE_KINDS.has(k) && k !== "other") || isModelSummary(a);
 }
 
 /** /health self-test: a provider's nameserver rows neither form a subject nor pull a
@@ -422,7 +542,17 @@ export function collectKnownHandles(arts: Artifact[]): Set<string> {
  * deliberately excluded (collision axis). Returns [] for excluded artifacts. */
 export function strongTokens(a: Artifact, knownHandles: Set<string>): string[] {
   if (isClusterInert(a)) return [];
+  const { structured, fromValue } = tokenParts(a, knownHandles);
+  return [...new Set([...structured, ...fromValue])];
+}
+
+/** `structured` = kind- and metadata-derived tokens; `fromValue` = tokens read out of the
+ *  free-text VALUE (an email anywhere in it, words matching a known handle). For a
+ *  selector row the two overlap (its value IS the selector); for a prose row only
+ *  `fromValue` is prose-derived. Does not apply inertness — callers do. */
+export function tokenParts(a: Artifact, knownHandles: Set<string>): { structured: string[]; fromValue: string[] } {
   const t = new Set<string>();
+  const v = new Set<string>();
 
   // Primary selector by KIND — read through the alias table (lib/kind-alias.ts),
   // never off the raw spelling.
@@ -448,7 +578,7 @@ export function strongTokens(a: Artifact, knownHandles: Set<string>): string[] {
   // stops the alias spellings of the kinds that ARE strong from being dropped.
   const kind = canonicalKind(a.kind, a.value);
   const email = normEmail(a.value);
-  if (email) t.add(`email:${email}`);
+  if (email) { if (kind === "email") t.add(`email:${email}`); v.add(`email:${email}`); }
   if (kind === "phone") { const p = normPhoneE164(a.value); if (p) t.add(`phone:${p}`); }
   if (kind === "username") t.add(`handle:${foldHandle(a.value)}`);
   if (kind === "domain") { const r = domainRoot(a.value); if (r) { t.add(`domain:${r}`); t.add(`handle:${r}`); } }
@@ -465,7 +595,7 @@ export function strongTokens(a: Artifact, knownHandles: Set<string>): string[] {
 
   // Prose value words that MATCH an established distinctive handle (whitelist join).
   for (const word of foldWords(a.value)) {
-    if (knownHandles.has(word)) t.add(`handle:${word}`);
+    if (knownHandles.has(word)) v.add(`handle:${word}`);
   }
 
   // Self-admission / ownership-proof fingerprint (links artifacts that cite the same
@@ -475,7 +605,7 @@ export function strongTokens(a: Artifact, knownHandles: Set<string>): string[] {
   const own = ownershipProof(a);
   if (own && own.length >= 12) t.add(`own:${stableHash(own.toLowerCase().replace(/\s+/g, " ").trim())}`);
 
-  return [...t];
+  return { structured: [...t], fromValue: [...v] };
 }
 
 function foldWords(value: string): string[] {
@@ -546,8 +676,15 @@ export function promoteConfidence(
 
 // ---- Main entry ---------------------------------------------------------------
 export function clusterArtifacts(arts: Artifact[]): ClusterResult {
-  const known = collectKnownHandles(arts);
-  const tokensPer = arts.map((a) => strongTokens(a, known));
+  const inert = caseInertFlags(arts);
+  const known = collectKnownHandles(arts.filter((_, i) => !inert[i]));
+  const parts = arts.map((a, i) => inert[i] ? { structured: [], fromValue: [] } : tokenParts(a, known));
+  const tokensPer = parts.map((p) => [...new Set([...p.structured, ...p.fromValue])]);
+  const proseOn = !clusterProseNoBridgeDisabled();
+  // A VERIFIED first-party self-admission ("I am X" / "X + Y = SAME PERSON", with a proven
+  // quote) is the one written row whose sentence IS the evidence for the link, so it keeps
+  // its bridge. `isVerifiedSelfAdmission` never accepts a model-asserted quote.
+  const prose = arts.map((a, i) => proseOn && !inert[i] && isProseArtifact(a) && !isVerifiedSelfAdmission(a));
 
   // Contradicted selectors (from collision_detector artifacts) — capped, never joined.
   const contradicted = new Set<string>();
@@ -565,8 +702,9 @@ export function clusterArtifacts(arts: Artifact[]): ClusterResult {
   const tokenOwners = new Map<string, number[]>();
   const decisions: JoinDecision[] = [];
   for (let i = 0; i < arts.length; i++) {
-    if (isClusterInert(arts[i]) || memberContradicted[i]) continue;
-    for (const tok of tokensPer[i]) {
+    if (inert[i] || memberContradicted[i]) continue;
+    // 1d-i: a prose row joins on its structured (metadata) tokens only here.
+    for (const tok of prose[i] ? parts[i].structured : tokensPer[i]) {
       const owners = tokenOwners.get(tok) ?? [];
       if (owners.length) {
         const j = owners[0];
@@ -576,6 +714,33 @@ export function clusterArtifacts(arts: Artifact[]): ClusterResult {
         }
       }
       owners.push(i); tokenOwners.set(tok, owners);
+    }
+  }
+
+  // 1d-i: attach each prose row to the ONE cluster its prose names, or leave it alone.
+  // Prose tokens never enter `tokenOwners`, so an attached row can never bridge later.
+  let proseBridgesWithheld = 0;
+  const attached = arts.map(() => false);
+  const rootSize = new Map<number, number>();
+  for (let i = 0; i < arts.length; i++) if (!inert[i]) rootSize.set(uf.find(i), (rootSize.get(uf.find(i)) ?? 0) + 1);
+  // Measured BEFORE any attachment: roots move as rows attach, sizes would not.
+  const joinedBefore = arts.map((_, i) => !inert[i] && (rootSize.get(uf.find(i)) ?? 0) > 1);
+  for (let i = 0; i < arts.length; i++) {
+    if (!prose[i] || memberContradicted[i]) continue;
+    const roots = new Map<number, { owner: number; tok: string }>();
+    for (const tok of parts[i].fromValue) {
+      const owners = tokenOwners.get(tok);
+      if (owners?.length) { const r = uf.find(owners[0]); if (!roots.has(r)) roots.set(r, { owner: owners[0], tok }); }
+    }
+    if (roots.size === 0) continue;
+    const own = uf.find(i);
+    if (joinedBefore[i] && !roots.has(own)) roots.set(own, { owner: own, tok: "" });
+    if (roots.size !== 1) { proseBridgesWithheld++; continue; }
+    const [[r, hit]] = [...roots];
+    if (uf.find(i) !== r) {
+      uf.union(i, r);
+      attached[i] = isAboutOnlyArtifact(arts[i]);
+      decisions.push({ a: arts[hit.owner].value.slice(0, 60), b: arts[i].value.slice(0, 60), shared_selector: hit.tok, rule: "prose row attached to the one subject it names" });
     }
   }
 
@@ -595,7 +760,7 @@ export function clusterArtifacts(arts: Artifact[]): ClusterResult {
   // Assemble clusters.
   const byRoot = new Map<number, number[]>();
   for (let i = 0; i < arts.length; i++) {
-    if (isClusterInert(arts[i])) continue;
+    if (inert[i]) continue;
     const r = uf.find(i);
     (byRoot.get(r) ?? byRoot.set(r, []).get(r)!).push(i);
   }
@@ -606,15 +771,28 @@ export function clusterArtifacts(arts: Artifact[]): ClusterResult {
   }));
 
   const subjects: ClusterResult["subjects"] = [];
-  for (const [root, idxs] of byRoot) {
+  for (const [root, allIdxs] of byRoot) {
+    // 1d-i: an ATTACHED prose row is ABOUT this subject, not evidence for it. It gets the
+    // cluster id (so it shows with the subject) but is not in `members`: every consumer
+    // that counts a subject's sources or independent classes (finding synthesis,
+    // next-pivot links, promotion) reads `members`, so "no pages mention <handle>" can
+    // no longer add a corroborating source class. It does not shape the selector set
+    // either, so a subject's id is what it would be without the prose.
+    const idxs = allIdxs.filter((i) => !attached[i]);
+    const aboutIdxs = allIdxs.filter((i) => attached[i]);
     const selectors = [...new Set(idxs.flatMap((i) => tokensPer[i]))].sort();
     // A JOINED cluster's selector set is unique: any shared token would have unioned
     // the two. Contradicted groups are never unioned on tokens, so two of them can
     // carry the same set; hashing that set gave twenty unrelated singletons one
     // `clus_…`. Key a contradicted cluster by its group identity instead.
     const contraKeys = [...new Set(idxs.map((i) => contraKey[i]).filter((k): k is string => !!k))].sort();
+    // 1d-i: an unattached prose row's selector set is NOT unique (two sentences can name
+    // the same handles without joining), so key it by the row itself.
+    const loneProse = idxs.length === 1 && prose[idxs[0]];
     const hash = contraKeys.length
       ? stableHash(`contra|${contraKeys.join("|")}`)
+      : loneProse
+      ? stableHash(`prose|${arts[idxs[0]].id ?? idxs[0]}`)
       : stableHash(selectors.join("|") || `root${root}`);
     const subjectId = `subj_${hash}`, clusterId = `clus_${hash}`;
     const clusterArts = idxs.map((i) => arts[i]);
@@ -632,10 +810,22 @@ export function clusterArtifacts(arts: Artifact[]): ClusterResult {
         : isContra ? "contradicted selector — capped, needs_review" : `joined on ${selectors.slice(0, 3).join(", ")}`;
       clusterMembers.push(members[i]);
     }
-    subjects.push({ subjectId, clusterId, members: clusterMembers, strongSelectors: selectors, sources: [...distinctSources(clusterArts)].sort() });
+    const about: ClusterMember[] = [];
+    for (const i of aboutIdxs) {
+      members[i].cluster_id = clusterId;
+      members[i].subject_id = subjectId;
+      members[i].promoted_confidence = arts[i].confidence; // never promoted by the subject it describes
+      members[i].tier = tierFor(arts[i].confidence);
+      members[i].join_reason = "about this subject (a written row; not counted as evidence)";
+      about.push(members[i]);
+    }
+    subjects.push({
+      subjectId, clusterId, members: clusterMembers, strongSelectors: selectors, sources: [...distinctSources(clusterArts)].sort(),
+      ...(about.length ? { about } : {}),
+    });
   }
 
-  return { subjects, members, decisions };
+  return { subjects, members, decisions, prose_bridges_withheld: proseBridgesWithheld };
 }
 
 function ruleFor(tok: string): string {

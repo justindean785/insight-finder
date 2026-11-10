@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "case": {
+    "label": "fixture-prose-about-and-bridge",
+    "seed_kind": "username",
+    "seed_value": "ember-fox-31"
+  },
+  "artifacts": [
+    {
+      "id": "e1",
+      "kind": "username",
+      "value": "ember-fox-31",
+      "source": "github_user",
+      "confidence": 70,
+      "metadata": {
+        "source_category": [
+          "social_profile_active"
+        ],
+        "status": "observed",
+        "auto_recorded": true
+      },
+      "created_at": "2026-01-05T00:00:01Z"
+    },
+    {
+      "id": "e2",
+      "kind": "social_profile",
+      "value": "https://social.example.com/ember-fox-31",
+      "source": "username_sweep",
+      "confidence": 60,
+      "metadata": {
+        "source_category": [
+          "username_sweep"
+        ],
+        "status": "observed",
+        "auto_recorded": true
+      },
+      "created_at": "2026-01-05T00:00:02Z"
+    },
+    {
+      "id": "e3",
+      "kind": "other",
+      "value": "Web search (exa): no pages mention the handle 'ember-fox-31'",
+      "source": "exa_search",
+      "confidence": 30,
+      "metadata": {
+        "status": "observed"
+      },
+      "created_at": "2026-01-05T00:00:03Z"
+    },
+    {
+      "id": "e4",
+      "kind": "other",
+      "value": "Profile site user ember-fox-31 = 404 (no account)",
+      "source": "profile_lookup",
+      "confidence": 30,
+      "metadata": {
+        "status": "observed"
+      },
+      "created_at": "2026-01-05T00:00:04Z"
+    },
+    {
+      "id": "e5",
+      "kind": "username",
+      "value": "gray-moth-77",
+      "source": "reddit_user",
+      "confidence": 70,
+      "metadata": {
+        "source_category": [
+          "social_profile_active"
+        ],
+        "status": "observed",
+        "auto_recorded": true
+      },
+      "created_at": "2026-01-05T00:00:05Z"
+    },
+    {
+      "id": "e6",
+      "kind": "finding",
+      "value": "ember-fox-31 and gray-moth-77 post at the same hours; possibly the same operator",
+      "source": "record_finding",
+      "confidence": 45,
+      "metadata": {
+        "status": "observed"
+      },
+      "created_at": "2026-01-05T00:00:06Z"
+    },
+    {
+      "id": "e7",
+      "kind": "note",
+      "value": "Checked ember-fox-31 on three forums; nothing found",
+      "source": "record_artifacts",
+      "confidence": 30,
+      "metadata": {
+        "status": "observed"
+      },
+      "created_at": "2026-01-05T00:00:07Z"
+    }
+  ],
+  "reviews": [],
+  "tool_usage": []
+}
