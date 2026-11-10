@@ -4,6 +4,7 @@
 
 import { readProviderExport } from "@/lib/provider-export";
 import { attachmentLabel, attachmentOnlyNames } from "@/lib/attachments";
+import { endsInKnownTld } from "@/lib/tld-list";
 
 export type SeedKind = "email" | "username" | "phone" | "ip" | "domain" | "url" | "crypto" | "address" | "other";
 
@@ -107,6 +108,9 @@ const DOCUMENT_EXTENSIONS = new Set([
   "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "rtf", "odt", "ods",
   "png", "jpg", "jpeg", "gif", "svg", "webp", "json", "xml", "html", "htm", "log",
 ]);
+function endsInDocumentExtension(value: string): boolean {
+  return DOCUMENT_EXTENSIONS.has(value.slice(value.lastIndexOf(".") + 1).toLowerCase());
+}
 function firstDomainInText(text: string): string | undefined {
   for (const m of text.matchAll(new RegExp(DOMAIN_ANYWHERE.source, "gi"))) {
     const tld = m[0].slice(m[0].lastIndexOf(".") + 1).toLowerCase();
@@ -265,7 +269,16 @@ export function detectSeed(input: string): DetectedSeed | null {
     const digits = raw.replace(/[^\d+]/g, "");
     return { kind: "phone", raw, normalized: digits };
   }
-  if (DOMAIN_RE.test(raw)) return { kind: "domain", raw, normalized: raw.toLowerCase() };
+  // A dotted token is a domain only when its last label is a real TLD. A dotted
+  // social handle ("sample.handle") has the same shape; typed as a domain it got
+  // the domain playbook, nothing resolved, and the agent swept a SHORTENED handle
+  // that belongs to other people. An unknown suffix falls through to USERNAME_RE
+  // with the full dotted value kept. A handle that does end in a real TLD
+  // ("name.dev") stays a domain; the analyst types "@name.dev" to mean the handle.
+  // A bare file name ("report.pdf") is not a handle either: it keeps the
+  // classification it always had rather than being swept as a username.
+  // MUST match detectSeedServer in supabase/functions/osint-agent/validation.ts.
+  if (DOMAIN_RE.test(raw) && (endsInKnownTld(raw) || endsInDocumentExtension(raw))) return { kind: "domain", raw, normalized: raw.toLowerCase() };
   if (USERNAME_RE.test(raw)) return { kind: "username", raw, normalized: raw.toLowerCase() };
   // "@handle" is a username seed — the way every platform displays one. It
   // classified as `other`, so `@hoodken28` lost the username playbook and its
