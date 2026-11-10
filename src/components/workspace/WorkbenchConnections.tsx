@@ -76,7 +76,7 @@ export function WorkbenchConnections({ threadId }: { threadId: string }) {
   }, [items, review]);
   const graph = useMemo(() => buildEntityGraph(items, seed.value, seed.type, reviews), [items, seed.value, seed.type, reviews]);
   const view = useMemo(() => connectionsView(graph), [graph]);
-  const subject = useMemo(() => pickSubjectName(items, reviews), [items, reviews]);
+  const subject = useMemo(() => pickSubjectName(items, reviews, seed.value), [items, reviews, seed.value]);
   const why = useMemo(() => (view.realLinks === 0 ? unlinkedReasons(items, seed.value) : null), [view.realLinks, items, seed.value]);
   // Automatic subject-first navigation: an analyst can still select any node,
   // but nobody has to hunt through an "unlinked" list to find the person map.

@@ -1097,7 +1097,7 @@ export function CaseReport({
     return sanitizeChatText(last?.summary?.trim() ?? "");
   }, [messages]);
   const isBrief = reportType === "brief";
-  const identity = useMemo(() => buildIdentityRows(artifacts, reviews), [artifacts, reviews]);
+  const identity = useMemo(() => buildIdentityRows(artifacts, reviews, seedValue), [artifacts, reviews, seedValue]);
   const registrations = useMemo(() => buildRegistrationRows(artifacts, reviews), [artifacts, reviews]);
   const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue, reviews), [artifacts, seedValue, reviews]);
   const unknowns = useMemo(() => buildUnknowns(artifacts), [artifacts]);
@@ -1128,7 +1128,7 @@ export function CaseReport({
   // collision-flagged, or analyst-rejected), yet the model's prose below may
   // still assert one. The callout surfaces that disagreement at the top of
   // the report so the analyst doesn't have to compare against the Sheet.
-  const engineSubject = useMemo(() => pickSubjectName(artifacts, reviews), [artifacts, reviews]);
+  const engineSubject = useMemo(() => pickSubjectName(artifacts, reviews, seedValue), [artifacts, reviews, seedValue]);
 
   // Evidence-strength buckets per the new audit rules.
   const buckets = useMemo(() => {

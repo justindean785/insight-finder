@@ -96,10 +96,11 @@ export function buildCaseSheet(
   items: readonly Artifact[],
   reviewMap: Readonly<Record<string, ReviewState>>,
   tally: Record<AuthorityState, number>,
+  seedValue?: string | null,
 ): CaseSheetModel {
   const reviewOf = (id: string): ReviewState => reviewMap[id] ?? "new";
 
-  const named = pickSubjectName(items as Artifact[], reviewMap);
+  const named = pickSubjectName(items as Artifact[], reviewMap, seedValue);
   const subject = named
     ? { artifact: named, view: authorityFor(named, reviewOf(named.id)), initials: initialsOf(named.value) }
     : null;

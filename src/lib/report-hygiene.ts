@@ -530,20 +530,57 @@ function pickAllEmailsIdentity(
   return out;
 }
 
+/** Whole words of a seed or a name. Splits on spaces and list punctuation only, so an
+ * email or handle seed stays ONE token and can never read as naming a person. */
+function nameWords(text: string): string[] {
+  return text.toLowerCase().split(/[\s,;:]+/).map((w) => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")).filter(Boolean);
+}
+
+/**
+ * True when every word of `name` (two or more) is a whole word of the seed: the
+ * analyst typed this person as the case's subject. Structural, never prose
+ * inference; one shared word (a surname) is not enough.
+ */
+function seedContainsName(seedWords: ReadonlySet<string>, name: string): boolean {
+  const words = nameWords(name);
+  return words.length >= 2 && words.every((w) => seedWords.has(w));
+}
+
 /**
  * The row the report's "Real name" field names as the subject, exported so every
  * surface that names the subject (the report's Identity panel, the workspace
  * case sheet) picks it by the SAME rule and can never name two different people
  * side by side. Quarantined, collision-flagged and analyst-rejected rows are not
  * candidates; see `pickBestIdentity`.
+ *
+ * When the SEED names a person (it contains the full name of any recorded name
+ * row, eligible or not), only a name found in the seed may be the subject. A
+ * "name, address" seed is stored as kind `other`, so the seed's own name rows
+ * can all sit in quarantine; without this rule the best REMAINING name, another
+ * person's from a breach record, was shown as the subject (measured on a live
+ * case, 2026-11-09). This only withholds a name. It lifts no quarantine.
  */
-export function pickSubjectName(artifacts: Artifact[], reviews?: Record<string, ReviewAdjustment>): Artifact | null {
-  return pickBestIdentity(artifacts, ["name", "person"], reviews);
+export function pickSubjectName(
+  artifacts: Artifact[],
+  reviews?: Record<string, ReviewAdjustment>,
+  seedValue?: string | null,
+): Artifact | null {
+  const kinds = ["name", "person"];
+  const seedWords = new Set(nameWords(seedValue ?? ""));
+  const seedNamesPerson = seedWords.size >= 2 && artifacts.some(
+    (a) => kinds.includes(String(a.kind ?? "").toLowerCase()) && seedContainsName(seedWords, String(a.value ?? "")),
+  );
+  if (!seedNamesPerson) return pickBestIdentity(artifacts, kinds, reviews);
+  return pickBestIdentity(artifacts.filter((a) => seedContainsName(seedWords, String(a.value ?? ""))), kinds, reviews);
 }
 
-export function buildIdentityRows(artifacts: Artifact[], reviews?: Record<string, ReviewAdjustment>): IdentityRow[] {
+export function buildIdentityRows(
+  artifacts: Artifact[],
+  reviews?: Record<string, ReviewAdjustment>,
+  seedValue?: string | null,
+): IdentityRow[] {
   const rows: IdentityRow[] = [];
-  const name = pickSubjectName(artifacts, reviews);
+  const name = pickSubjectName(artifacts, reviews, seedValue);
   if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name, reviews?.[name.id]) });
 
   const dob = pickBestIdentity(artifacts, ["dob"], reviews);
