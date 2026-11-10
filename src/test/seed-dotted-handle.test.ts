@@ -24,7 +24,7 @@ const DOTTED_SEED_TABLE: Array<[input: string, kind: string, normalized: string]
   ["@sample.handle", "username", "sample.handle"],
   ["example.com", "domain", "example.com"],
   ["sub.example.co.uk", "domain", "sub.example.co.uk"],
-  ["sample.dev", "domain", "sample.dev"],
+  ["example.org", "domain", "example.org"],
   ["example.invalid", "domain", "example.invalid"],
   ["host.internal", "domain", "host.internal"],
   ["xn--e1afmkfd.xn--p1ai", "domain", "xn--e1afmkfd.xn--p1ai"],
