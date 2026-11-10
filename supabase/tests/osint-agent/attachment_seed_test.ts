@@ -82,6 +82,23 @@ Deno.test("splitSeedText: typed text is trimmed and the attachments are returned
   assertEquals(hasSeedAttachments(ONE), true);
 });
 
+Deno.test("a signed URL of realistic length (~700 chars) is still split off whole", () => {
+  const longUrl = `https://storage.example.com/storage/v1/object/sign/chat-uploads/a.pdf?token=${"SYNTHETIC".repeat(75)}`;
+  assert(longUrl.length > 700);
+  const d = deriveThreadSeed(`jordan@example.com\n\nAttached files:\n- [scan.pdf](${longUrl}) (application/pdf, 11.4 MB)`, { classify: true });
+  assertEquals(d.detected?.kind, "email");
+  assertEquals(d.seedValue, "jordan@example.com");
+  assert(!leaks(d.title) && !leaks(d.seedValue));
+});
+
+Deno.test("upload-only at run time: the `(seed)` fallback is never a person, so no name echo is exempted", () => {
+  // index.ts: seedValueRaw = splitSeedText(text).typed || "(seed)", and
+  // subjectSeedName is set only when detectSeedServer(seedValueRaw) is a person.
+  const runtimeSeed = splitSeedText(ONE).typed || "(seed)";
+  assertEquals(runtimeSeed, "(seed)");
+  assert(detectSeedServer(runtimeSeed)?.kind !== "person");
+});
+
 Deno.test("classify:false (thread already titled) classifies nothing", () => {
   assertEquals(deriveThreadSeed(`Jordan Example\n\n${ONE}`, { classify: false }).detected, null);
   assertEquals(deriveThreadSeed(ONE, { classify: false }).detected, null);
