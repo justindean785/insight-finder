@@ -39,6 +39,7 @@ import { opsisResultsHintSelfTest, opsisSearchGuardSelfTest } from "./lib/opsis-
 import { paidProviderGuardSelfTest } from "./lib/paid-provider-guard.ts";
 import { GUARDED_PAID_TOOLS } from "./lib/paid-guard-policies.ts";
 import { contextDevKillSwitchOn, contextDevSelfTest } from "./lib/contextdev.ts";
+import { socqKillSwitchOn, socqSelfTest } from "./lib/socq.ts";
 import { nextPivotBriefSelfTest } from "./lib/next-pivot.ts";
 import { memoryBriefSelfTest } from "./lib/memory-brief.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
@@ -618,6 +619,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // name + anchor required, http(s) only), and is the provider configured / switched off (CONTEXT_DEV_DISABLED)?
   // Pure — no provider call. PRESENCE proves the deployed bundle.
   r.checks.contextdev = contextDevSelfTest(!!Deno.env.get("CONTEXT_DEV_API_KEY"), contextDevKillSwitchOn());
+  // SocQ (lib/socq.ts): are submit bodies validated and clamped (one selector, results_limit ≤25, no callback_url),
+  // is a still-running task returned as pending (never cached) for the free socq_task_result, and is the provider
+  // configured / switched off (SOCQ_DISABLED)? Pure — no provider call. PRESENCE proves the deployed bundle.
+  const socqHealth = socqSelfTest(!!Deno.env.get("SOCQ_API_KEY"), socqKillSwitchOn());
+  r.checks.socq = socqHealth;
   // Does a refused opsis_results run id name a replacement only when exactly one un-read run in the thread has the exact
   // selector, else point at the paid opsis_search without starting it? Pure; PRESENCE proves the deployed bundle.
   r.checks.opsis_results_hint = opsisResultsHintSelfTest();

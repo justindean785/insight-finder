@@ -222,6 +222,20 @@ const EXPECTED_INJECTED: ReadonlyArray<{ name: string; module: string; budgetMs:
   // clear it. Not a live measurement: the provider deadline sent with each scrape is 35s.
   { name: "contextdev_scrape",        module: "./lib/contextdev.ts", budgetMs: 38_000 },
   { name: "contextdev_people_search", module: "./lib/contextdev.ts", budgetMs: 38_000 },
+  // SocQ. Tool defs in tools/socq.ts; the whole submit-and-poll budget is
+  // SOCQ_TOTAL_TIMEOUT_MS (40s) in lib/socq.ts. Wrapper caps are 48s.
+  { name: "socq_instagram_profile", module: "./lib/socq.ts", budgetMs: 40_000 },
+  { name: "socq_x_profile", module: "./lib/socq.ts", budgetMs: 40_000 },
+  { name: "socq_linkedin_profile", module: "./lib/socq.ts", budgetMs: 40_000 },
+  { name: "socq_instagram_posts", module: "./lib/socq.ts", budgetMs: 40_000 },
+  { name: "socq_instagram_post_info", module: "./lib/socq.ts", budgetMs: 40_000 },
+  { name: "socq_instagram_followers_count", module: "./lib/socq.ts", budgetMs: 40_000 },
+  { name: "socq_x_user_posts", module: "./lib/socq.ts", budgetMs: 40_000 },
+  { name: "socq_linkedin_company", module: "./lib/socq.ts", budgetMs: 40_000 },
+  { name: "socq_linkedin_posts", module: "./lib/socq.ts", budgetMs: 40_000 },
+  { name: "socq_instagram_search", module: "./lib/socq.ts", budgetMs: 40_000 },
+  { name: "socq_x_search", module: "./lib/socq.ts", budgetMs: 40_000 },
+  { name: "socq_task_result", module: "./lib/socq.ts", budgetMs: 40_000 },
 ];
 
 Deno.test("timeout contract: the injected-tool set is exactly the expected set", () => {
@@ -244,6 +258,18 @@ const BUDGET_INDIRECTION: Readonly<Record<string, string>> = {
   serus_darkweb_scan: "./tools/serus.ts",
   contextdev_scrape: "./tools/contextdev.ts",
   contextdev_people_search: "./tools/contextdev.ts",
+  socq_instagram_profile: "./tools/socq.ts",
+  socq_x_profile: "./tools/socq.ts",
+  socq_linkedin_profile: "./tools/socq.ts",
+  socq_instagram_posts: "./tools/socq.ts",
+  socq_instagram_post_info: "./tools/socq.ts",
+  socq_instagram_followers_count: "./tools/socq.ts",
+  socq_x_user_posts: "./tools/socq.ts",
+  socq_linkedin_company: "./tools/socq.ts",
+  socq_linkedin_posts: "./tools/socq.ts",
+  socq_instagram_search: "./tools/socq.ts",
+  socq_x_search: "./tools/socq.ts",
+  socq_task_result: "./tools/socq.ts",
 };
 
 Deno.test("timeout contract: every injected tool resolves to its expected module", () => {

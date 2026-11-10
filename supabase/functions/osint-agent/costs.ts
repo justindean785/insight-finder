@@ -108,6 +108,25 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   contextdev_scrape: 4000,          // 1 credit  @ $0.004
   contextdev_people_search: 40000,  // 10 credits @ $0.004
 
+  // ---- SocQ ----
+  // Catalog prices in credits per RETURNED record (docs.socq.ai capability-catalog.json,
+  // 2026-11-09). The dollar value of a SocQ credit is NOT published: ledgered at an
+  // UNVERIFIED $0.01/credit (conservative) until the account's plan is confirmed. Single-
+  // record endpoints are priced at one record; list endpoints at the default 10 records,
+  // and costForToolCall scales them by the results_limit actually sent (clamped ≤25).
+  socq_instagram_profile: 6000,           // 0.6 cr
+  socq_x_profile: 6000,                   // 0.6 cr
+  socq_linkedin_profile: 25000,           // 2.5 cr
+  socq_instagram_post_info: 5000,         // 0.5 cr
+  socq_instagram_followers_count: 5200,   // 0.52 cr (results_limit fixed at 1)
+  socq_linkedin_company: 20000,           // 2 cr
+  socq_instagram_posts: 34000,            // 0.34 cr x 10
+  socq_instagram_search: 54000,           // 0.54 cr x 10
+  socq_x_user_posts: 50000,               // 0.5 cr x 10
+  socq_x_search: 70000,                   // 0.7 cr x 10
+  socq_linkedin_posts: 100000,            // 1 cr x 10
+  socq_task_result: 0,                    // GET /v1/tasks/{id} — reading a task is free
+
   // ---- Exa ----
   // Real billing observed: $0.005 keyword, $0.007 neural search, +$0.001
   // per result when contents are requested. We use the typical case.
@@ -228,8 +247,24 @@ export const INDICIA_MISSING_FIRST_NAME_COST_MULTIPLIER = 1;
  * differs from the per-tool price; everything else is `costForTool`. Used for the usage-log cost/charge so the ledger
  * carries the real cost of an opted-in search. (Admission/budget tiering still uses the base price.)
  */
+/** SocQ list endpoints: list price per returned record (µ$). Base prices above assume 10 records. */
+export const SOCQ_PER_RECORD_MICRO_USD: Readonly<Record<string, number>> = {
+  socq_instagram_posts: 3400,
+  socq_instagram_search: 5400,
+  socq_x_user_posts: 5000,
+  socq_x_search: 7000,
+  socq_linkedin_posts: 10000,
+};
+
 export function costForToolCall(name: string, input: unknown): number {
   const base = costForTool(name);
+  const perRecord = SOCQ_PER_RECORD_MICRO_USD[name];
+  if (perRecord !== undefined) {
+    // Same clamp as lib/socq.ts clampResults (1..25, default 10): the ledger matches what is reserved.
+    const raw = (input as { results_limit?: unknown } | null)?.results_limit;
+    const n = typeof raw === "number" && Number.isFinite(raw) ? Math.max(1, Math.min(25, Math.floor(raw))) : 10;
+    return perRecord * n;
+  }
   if (name === "indicia_person" && !indiciaMissingFirstNameDisabled() && (input as { allowMissingFirstName?: unknown } | null)?.allowMissingFirstName === true) {
     return base * INDICIA_MISSING_FIRST_NAME_COST_MULTIPLIER;
   }
