@@ -63,7 +63,7 @@ New tests in the `assessmentReading — the rail's first sentence` block (the ol
 3. keeps 'does not link yet' just below half (1 of 3, 2 of 5)
 4. picks the sentence by the share alone, for every split up to 8 findings (every `linked` from 1 to `others - 1`, for `others` 2 to 8; the expected sentence is restated in the test with integer arithmetic, independent of the implementation)
 
-## §4 The local e2e failure: a macOS timing failure; no regression found
+## §4 The local e2e failure: reproduced only on this workstation; no regression found
 
 `e2e/stage1b-wcag.spec.ts`, "Evidence Ledger — quarantined row selected (release-gate visible)", failed locally on the macOS workstation at both viewports (1280x720 and 1440x900).
 
@@ -75,13 +75,13 @@ What was measured:
 - **The spec (read this session):** the test clicks "More filter", clicks the Quarantined item (which closes the menu), waits for the quarantined row and the inspector, then runs axe. It never waits for the menu to be hidden. `playwright.config.ts` does not disable animations.
 - **#1015's reach (reported by the reviewing session):** in that dropdown it changed chip labels and hints only, no colour.
 
-Conclusion: no regression was found, on #1015 or #1024. The evidence fits a timing failure in the test on this workstation: axe samples the dropdown during its close animation. Linux cannot reproduce a macOS-only failure, so this is "no regression found", not "flake proven". The local failure rate was not measured.
+Conclusion: no regression was found, on #1015 or #1024. The evidence fits a timing failure in the test on this workstation: axe samples the dropdown during its close animation. It was reproduced only on this workstation (macOS); CI on Ubuntu was green on `3c5daf1` and `9120a4c`. A Linux run cannot rule out a failure specific to this machine, so this is "no regression found", not "flake proven". The local failure rate was not measured. The one remaining unknown is whether this workstation also fails at `48c250d` (before #1015).
 
 The e2e job skipping on pull requests is by design (`if: github.event_name == 'push'` in `.github/workflows/ci.yml`), not a fault. Its consequence stands: a local `npm run test:e2e` is the only e2e signal before a merge, and on this workstation it currently shows these two failures.
 
 Option for later, low priority, JD's call: a test-only hardening PR that waits for the menu to be hidden before the axe scan. It must not disable the `color-contrast` rule or exclude the node.
 
-The primary checkout at `/Users/dizosint/insight-finder` sits on an old local branch named `fix/e2e-macos-flake` (tip `750e885`, 124 commits behind `main`, no PR found for that head). It was not read.
+The primary checkout at `/Users/dizosint/insight-finder` sits on a local branch named `fix/e2e-macos-flake`. The name is stale: its tip `750e885` is `chore(deploy): record live build f9eaaaa (#831) (#879)`, and it has no commit that is not already on `main`. It holds no flake work; do not spend time on it.
 
 ## §5 PR board (re-measured about 04:50 PST with `gh pr list`)
 
@@ -113,11 +113,13 @@ Older, unchanged by this session: #963, #973 (conflicts), #929 (red), and drafts
 
 ## §7 What was NOT done, and why
 
-- The macOS e2e test (§4) was not hardened: out of scope for a one-behaviour PR, and low priority now that no regression was found.
+- The e2e test in §4 was not hardened: out of scope for a one-behaviour PR, and low priority now that no regression was found.
 - Nothing in the queue (§5) was started: each item needs JD's named go and its own session.
 - No worktree or branch was removed. Left in place: `.claude/worktrees/rail-about-half` (branch `fix/rail-about-half`, merged) and `.claude/worktrees/right-rail-agentic-scoring-bbd3f1` (the merged #1015 branch).
 - `/health` was not re-measured: no edge change.
 - No browser check of the rendered rail in production. The proof is the `READY` production deployment plus the string in the served chunk. No production case was opened, so whether any existing case sits at exactly half is unknown.
+
+**Correction note:** #1025 merged this handoff as `1d0e0a2` at 13:25:59Z under the docs merge-when-green rule, before JD's reviewing session asked for it to wait for review. The corrections from that review are in a follow-up docs PR.
 
 ## §8 Files in this docs change
 
