@@ -97,9 +97,24 @@ export function assessmentReading(
   linkedTotal: number,
   others: number,
 ): string | null {
-  // TODO(human): choose what the rail says first. See the Learn by Doing note.
-  void counts; void linkedTotal; void others;
-  return null;
+  // The headline above this sentence already prints "N of M findings link to
+  // the seed", so the sentence never repeats the count. It says what the count
+  // cannot: what to read first, or how the whole splits.
+  if (others <= 0) return null;
+  // A contradiction outranks any amount of linkage: it can undo the rest.
+  if (counts.conflict > 0) {
+    return counts.conflict === 1
+      ? "1 finding contradicts the case record. Read it before relying on the rest."
+      : `${counts.conflict} findings contradict the case record. Read them before relying on the rest.`;
+  }
+  if (linkedTotal <= 0) {
+    // Mixed reasons are listed, counted, in the Connections section below.
+    return counts.quarantined >= others ? "Everything found is held: its link to the subject is unproven." : null;
+  }
+  if (linkedTotal >= others) return "Everything found links to the seed.";
+  return linkedTotal * 2 >= others
+    ? "Most of what was found links to the seed."
+    : "Most of what was found does not link to the seed yet.";
 }
 
 export function buildAssessmentSheet(report: AssessmentReport, items: readonly Artifact[]): AssessmentSheet {

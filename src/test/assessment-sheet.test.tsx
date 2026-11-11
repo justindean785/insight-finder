@@ -11,7 +11,7 @@ import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { assessArtifacts } from "@/lib/agent-assessment";
 import { tallyAuthority } from "@/lib/authority";
 import { buildCaseSheet } from "@/lib/case-sheet";
-import { buildAssessmentSheet, SHEET_CONNECTION_LIMIT } from "@/lib/assessment-sheet";
+import { assessmentReading, buildAssessmentSheet, SHEET_CONNECTION_LIMIT } from "@/lib/assessment-sheet";
 import { CaseSheetView } from "@/components/workspace/CaseSheet";
 
 afterEach(cleanup);
@@ -80,6 +80,56 @@ describe("buildAssessmentSheet", () => {
     const s = sheetOf([seedRow, ...many]);
     expect(s.connections.length).toBe(SHEET_CONNECTION_LIMIT);
     expect(s.linkedTotal).toBe(many.length);
+  });
+});
+
+// The headline already prints "N of M findings link to the seed", so the
+// sentence under it never repeats that count. It says the one thing the count
+// cannot: what needs reading first, or how the whole splits.
+describe("assessmentReading — the rail's first sentence", () => {
+  // `supported` includes the seed's own row, as in AssessmentReport.counts.
+  const counts = (over: Partial<Record<"supported" | "unresolved" | "conflict" | "quarantined", number>>) => ({
+    supported: 1, unresolved: 0, conflict: 0, quarantined: 0, ...over,
+  });
+
+  it("prints nothing when the seed is the only row", () => {
+    expect(assessmentReading(counts({}), 0, 0)).toBeNull();
+  });
+
+  it("leads with contradictions, ahead of any amount of linkage", () => {
+    expect(assessmentReading(counts({ supported: 9, conflict: 2 }), 8, 10))
+      .toBe("2 findings contradict the case record. Read them before relying on the rest.");
+  });
+
+  it("uses the singular for one contradiction", () => {
+    expect(assessmentReading(counts({ supported: 4, conflict: 1 }), 3, 4))
+      .toBe("1 finding contradicts the case record. Read it before relying on the rest.");
+  });
+
+  it("says so when every finding links", () => {
+    expect(assessmentReading(counts({ supported: 4 }), 3, 3)).toBe("Everything found links to the seed.");
+  });
+
+  it("says most links when at least half do", () => {
+    expect(assessmentReading(counts({ supported: 3, unresolved: 2 }), 2, 4)).toBe("Most of what was found links to the seed.");
+  });
+
+  it("says most does not link when fewer than half do", () => {
+    expect(assessmentReading(counts({ supported: 2, unresolved: 5 }), 1, 6)).toBe("Most of what was found does not link to the seed yet.");
+  });
+
+  it("names the hold when nothing links and every finding is held", () => {
+    expect(assessmentReading(counts({ quarantined: 3 }), 0, 3))
+      .toBe("Everything found is held: its link to the subject is unproven.");
+  });
+
+  it("stays silent when nothing links for mixed reasons, leaving the why to the Connections section", () => {
+    expect(assessmentReading(counts({ unresolved: 4, quarantined: 1 }), 0, 5)).toBeNull();
+  });
+
+  it("reaches the rail through buildAssessmentSheet", () => {
+    expect(sheetOf(CASE).reading).toBe(assessmentReading(assessArtifacts(CASE, SEED).counts, 1, 4));
+    expect(sheetOf(CASE).reading).not.toBeNull();
   });
 });
 
