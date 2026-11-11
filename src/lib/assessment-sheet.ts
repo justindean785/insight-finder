@@ -112,9 +112,11 @@ export function assessmentReading(
     return counts.quarantined >= others ? "Everything found is held: its link to the subject is unproven." : null;
   }
   if (linkedTotal >= others) return "Everything found links to the seed.";
-  return linkedTotal * 2 >= others
-    ? "Most of what was found links to the seed."
-    : "Most of what was found does not link to the seed yet.";
+  // "Most" means MORE than half. Exactly half is its own sentence: calling 2 of 4
+  // "most" overstates the link.
+  if (linkedTotal * 2 > others) return "Most of what was found links to the seed.";
+  if (linkedTotal * 2 === others) return "About half of what was found links to the seed.";
+  return "Most of what was found does not link to the seed yet.";
 }
 
 export function buildAssessmentSheet(report: AssessmentReport, items: readonly Artifact[]): AssessmentSheet {
