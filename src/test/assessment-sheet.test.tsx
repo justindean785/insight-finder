@@ -110,8 +110,35 @@ describe("assessmentReading — the rail's first sentence", () => {
     expect(assessmentReading(counts({ supported: 4 }), 3, 3)).toBe("Everything found links to the seed.");
   });
 
-  it("says most links when at least half do", () => {
-    expect(assessmentReading(counts({ supported: 3, unresolved: 2 }), 2, 4)).toBe("Most of what was found links to the seed.");
+  it("says most links only when MORE than half do", () => {
+    // 3 of 4 and 3 of 5 link
+    expect(assessmentReading(counts({ supported: 4, unresolved: 1 }), 3, 4)).toBe("Most of what was found links to the seed.");
+    expect(assessmentReading(counts({ supported: 4, unresolved: 2 }), 3, 5)).toBe("Most of what was found links to the seed.");
+  });
+
+  it("says about half when exactly half link", () => {
+    // 2 of 4 and 1 of 2: half is not "most"
+    expect(assessmentReading(counts({ supported: 3, unresolved: 2 }), 2, 4)).toBe("About half of what was found links to the seed.");
+    expect(assessmentReading(counts({ supported: 2, unresolved: 1 }), 1, 2)).toBe("About half of what was found links to the seed.");
+  });
+
+  it("keeps 'does not link yet' just below half", () => {
+    // 1 of 3 and 2 of 5
+    expect(assessmentReading(counts({ supported: 2, unresolved: 2 }), 1, 3)).toBe("Most of what was found does not link to the seed yet.");
+    expect(assessmentReading(counts({ supported: 3, unresolved: 3 }), 2, 5)).toBe("Most of what was found does not link to the seed yet.");
+  });
+
+  it("picks the sentence by the share alone, for every split up to 8 findings", () => {
+    for (let others = 2; others <= 8; others++) {
+      for (let linked = 1; linked < others; linked++) {
+        const expected =
+          linked * 2 > others ? "Most of what was found links to the seed."
+          : linked * 2 === others ? "About half of what was found links to the seed."
+          : "Most of what was found does not link to the seed yet.";
+        // `supported` counts the seed's own row as well as the linked rows.
+        expect(assessmentReading(counts({ supported: linked + 1, unresolved: others - linked }), linked, others)).toBe(expected);
+      }
+    }
   });
 
   it("says most does not link when fewer than half do", () => {
