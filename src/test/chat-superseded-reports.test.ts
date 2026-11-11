@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { isReportMessage, findLastReportIndex } from "@/lib/superseded-reports";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+  isReportMessage,
+  findLastReportIndex,
+  isRecoveryNoticeMessage,
+  RECOVERY_NOTICE_HEADINGS,
+} from "@/lib/superseded-reports";
+import { hasReportShape } from "@/lib/report-shape";
+import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import type { UIMessage } from "ai";
 
 /**
@@ -78,5 +87,100 @@ describe("superseded report detection", () => {
     const last = findLastReportIndex(thread);
     const collapsed = thread.map((m, i) => last >= 0 && i < last && isReportMessage(m));
     expect(collapsed).toEqual([true, false, true, false, false]);
+  });
+});
+
+/**
+ * The interrupted-run notice is a status record, not a report.
+ *
+ * Observed in production on 2026-10-31: a run died, the health sweep posted
+ * its notice, and a later cycle then wrote a report. The transcript collapsed
+ * the notice under "Superseded report — a later cycle rewrote this", so the
+ * analyst lost the signal that the run had died and that the rows under it
+ * were only what had already been written.
+ */
+
+/** Shape of recovery.ts buildRecoveredAssistantText, synthetic values. */
+const noticeText = (heading = RECOVERY_NOTICE_HEADINGS[0]) => [
+  heading,
+  "",
+  "The investigation for **jane@example.com** was interrupted before the agent could write its closing response. **This is not a findings report.** The rows below are whatever was already durably written when the run stopped, presented as-is.",
+  "Last heartbeat: 2026-10-31T09:14:02.000Z.",
+  "",
+  "### Model-reviewed findings",
+  "| # | Kind | Value | Confidence | Status | Source |",
+  "|---:|---|---|---:|---|---|",
+  "| 1 | email | jane@example.com | 60 | verified | hunter_verify |",
+  "",
+  "### Recovery summary",
+  "1 recovered row: 1 model-reviewed, 0 unreviewed.",
+].join("\n");
+
+/** The predicate ChatWindow applies, over the list it applies it to. */
+const collapsedFlags = (thread: UIMessage[]) => {
+  const rendered = dedupeCheckpoints(thread);
+  const last = findLastReportIndex(rendered);
+  return rendered.map((m, i) => last >= 0 && i < last && isReportMessage(m));
+};
+
+describe("interrupted-run notice and supersession", () => {
+  it("mirrors the headings the edge recovery path writes and recognises", () => {
+    const edge = readFileSync(resolve(__dirname, "../../supabase/functions/osint-agent/recovery.ts"), "utf8");
+    const current = /export const RECOVERED_REPORT_HEADING = "([^"]+)";/.exec(edge)?.[1];
+    const legacyBlock = /export const LEGACY_RECOVERED_REPORT_HEADINGS[^=]*=\s*\[([\s\S]*?)\];/.exec(edge)?.[1] ?? "";
+    const legacy = [...legacyBlock.matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+    expect(current).toBeTruthy();
+    expect(legacy.length).toBeGreaterThan(0);
+    expect([...RECOVERY_NOTICE_HEADINGS]).toEqual([current, ...legacy]);
+  });
+
+  it("is report-shaped, which is why the shape gate alone collapsed it", () => {
+    expect(hasReportShape(noticeText())).toBe(true);
+  });
+
+  it("recognises the notice under its current and its legacy heading", () => {
+    for (const h of RECOVERY_NOTICE_HEADINGS) {
+      expect(isRecoveryNoticeMessage(msg("assistant", noticeText(h)))).toBe(true);
+      expect(isReportMessage(msg("assistant", noticeText(h)))).toBe(false);
+    }
+  });
+
+  it("does not take a report that quotes the heading for a notice", () => {
+    const quoting = `${REPORT}\n\nAn earlier run ended with this notice:\n\n${RECOVERY_NOTICE_HEADINGS[0]}\n`;
+    expect(isRecoveryNoticeMessage(msg("assistant", quoting))).toBe(false);
+    expect(isReportMessage(msg("assistant", quoting))).toBe(true);
+    // A longer heading that merely starts the same way is not the marker either.
+    expect(isRecoveryNoticeMessage(msg("assistant", `${RECOVERY_NOTICE_HEADINGS[0]} and analysis\n\n${REPORT}`))).toBe(false);
+  });
+
+  it("never treats a user message as a notice", () => {
+    expect(isRecoveryNoticeMessage(msg("user", noticeText()))).toBe(false);
+  });
+
+  it("keeps the notice open when a later cycle writes a report", () => {
+    const thread = [
+      msg("user", "jane@example.com"),
+      msg("assistant", noticeText()), // run 1 died
+      msg("user", "continue"),
+      msg("assistant", REPORT),       // run 2 finished
+    ];
+    expect(collapsedFlags(thread)).toEqual([false, false, false, false]);
+  });
+
+  it("still collapses an ordinary earlier report around a notice", () => {
+    const thread = [
+      msg("assistant", REPORT),       // 0 — superseded by 3
+      msg("assistant", noticeText()), // 1 — status record, stays open
+      msg("assistant", NARRATION),    // 2
+      msg("assistant", REPORT),       // 3 — current
+    ];
+    expect(collapsedFlags(thread)).toEqual([true, false, false, false]);
+  });
+
+  it("does not let a notice supersede the report before it", () => {
+    // No later cycle rewrote that report: the run after it died.
+    const thread = [msg("assistant", REPORT), msg("user", "continue"), msg("assistant", noticeText())];
+    expect(findLastReportIndex(thread)).toBe(0);
+    expect(collapsedFlags(thread)).toEqual([false, false, false]);
   });
 });
