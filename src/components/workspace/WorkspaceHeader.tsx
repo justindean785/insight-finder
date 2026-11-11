@@ -220,12 +220,13 @@ function CaseStat({ label, value, small = false, hint }: { label: string; value:
 /**
  * Case header — the Case-desk layout (JD's prototype, 2026-11-02).
  *
- * Three bands, top to bottom:
+ * Two bands, top to bottom (compacted 2026-11-10: at 1440x900 the header was
+ * 178px and the transcript kept 53% of the viewport):
  *  1. a top line: the crumb "Insight Finder › <case>" on the left; sync
  *     provenance and the one secondary action (New investigation) on the right;
- *  2. the assessment line — run state as a small-caps word with its dot, then
- *     the date the case last changed;
- *  3. the heading: a 32px subject, "<Kind> seed · selector" and the case line
+ *  2. the heading: a 22px subject with the assessment line beside it (run
+ *     state as a small-caps word with its dot, then the date the case last
+ *     changed), "<Kind> seed · selector" and the case line
  *     (every figure from ONE snapshot version) beneath it, and three labelled
  *     stats on the right — Last assessment / Source records / Spend.
  *
@@ -294,7 +295,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
       className="case-bar relative"
     >
       {/* Band 1 — top line: crumb, then sync provenance and New. */}
-      <div className="flex h-11 items-center justify-between gap-4 border-b border-border-subtle px-4 text-[12px] sm:px-6 lg:px-8 [@media(max-height:700px)]:h-9">
+      <div className="flex h-9 items-center justify-between gap-4 border-b border-border-subtle px-4 text-[12px] sm:px-6 lg:px-8">
         <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2.5 text-subtle-foreground">
           <Link to="/" className="shrink-0 rounded font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
             Insight Finder
@@ -324,30 +325,23 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
         </div>
       </div>
 
-      {/* Bands 2 and 3 — the assessment line and the heading. */}
-      <div className="px-4 pt-5 sm:px-6 lg:px-8 lg:pt-6 [@media(max-height:700px)]:pt-2.5">
-        <div className="flex min-w-0 items-center gap-2.5 text-[11px] uppercase tracking-[0.06em] text-subtle-foreground">
-          <CaseStatusPill snapshot={snapshot} variant="line" />
-          {hydrated && changedDate && changedAt && (
-            <>
-              <span aria-hidden className="text-faint-foreground/60">/</span>
-              <time dateTime={changedAt} className="truncate" title="When this case's record last changed">{changedDate}</time>
-            </>
-          )}
-        </div>
-
-        <div className="mb-4 mt-2 flex items-center justify-between gap-6 lg:mb-5 [@media(max-height:700px)]:mb-2.5 [@media(max-height:700px)]:mt-1">
+      {/* The heading. The assessment line (run word, date) sits on the title's
+          own row, not above it: as a separate band it cost a full row of height
+          on a screen where the transcript had barely half the viewport left. */}
+      <div className="px-4 pt-3 sm:px-6 lg:px-8 [@media(max-height:700px)]:pt-2">
+        <div className="mb-3 flex items-center justify-between gap-6 [@media(max-height:700px)]:mb-2">
           <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-baseline gap-3">
             {caseName ? (
               // The analyst's name for the case leads, in the display face; the
               // selector it started from moves to the line beneath.
-              <h1 className="min-w-0 truncate font-display text-[26px] font-semibold leading-[1.25] tracking-[-0.04em] lg:text-[32px] [@media(max-height:700px)]:text-[20px]" title={caseName}>
+              <h1 className="min-w-0 truncate font-display text-[20px] font-semibold leading-[1.25] tracking-[-0.03em] lg:text-[22px] [@media(max-height:700px)]:text-[18px]" title={caseName}>
                 {caseName}
               </h1>
             ) : display.title ? (
               // No analyst title yet: the selector is the heading, and the copy
               // control sits inside it.
-              <h1 className="flex min-w-0 text-[20px] leading-[1.25] lg:text-[24px] [@media(max-height:700px)]:text-[17px]">
+              <h1 className="flex min-w-0 text-[18px] leading-[1.25] lg:text-[20px] [@media(max-height:700px)]:text-[17px]">
                 {snapshot?.seed.value
                   ? copyButton(display.title, "font-medium [&>span]:text-foreground")
                   : <span className="truncate font-display font-semibold tracking-[-0.03em]">{display.title}</span>}
@@ -355,8 +349,18 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
             ) : (
               <FigureSkeleton width="w-40" />
             )}
+              <div className="flex shrink-0 items-center gap-2 text-[11px] uppercase tracking-[0.06em] text-subtle-foreground">
+                <CaseStatusPill snapshot={snapshot} variant="line" />
+                {hydrated && changedDate && changedAt && (
+                  <>
+                    <span aria-hidden className="text-faint-foreground/60">/</span>
+                    <time dateTime={changedAt} className="hidden truncate md:inline" title="When this case's record last changed">{changedDate}</time>
+                  </>
+                )}
+              </div>
+            </div>
             {hydrated && snapshot?.seed.value && (
-              <div className="mt-1.5 flex min-w-0 items-center gap-2 text-[12px] [@media(max-height:700px)]:mt-0.5">
+              <div className="mt-1 flex min-w-0 items-center gap-2 text-[12px] [@media(max-height:700px)]:mt-0.5">
                 <span className="shrink-0 text-subtle-foreground">{KIND_LABEL[display.kind]} seed</span>
                 {caseName && snapshot?.seed.value && (
                   <>
@@ -369,7 +373,7 @@ export function WorkspaceHeader({ threadId }: { threadId: string }) {
             {/* The case line on its own row, wrapping rather than dropping
                 figures: the stats cluster on the right narrows this column, and
                 "N tool calls" must stay readable at every desktop width. */}
-            <div className="mt-1 flex min-w-0 [@media(max-height:700px)]:mt-0.5">
+            <div className="mt-0.5 flex min-w-0">
               <CaseFigures snapshot={snapshot} spendClassName="lg:hidden" />
             </div>
           </div>
