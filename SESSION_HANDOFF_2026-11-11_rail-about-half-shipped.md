@@ -63,21 +63,25 @@ New tests in the `assessmentReading — the rail's first sentence` block (the ol
 3. keeps 'does not link yet' just below half (1 of 3, 2 of 5)
 4. picks the sentence by the share alone, for every split up to 8 findings (every `linked` from 1 to `others - 1`, for `others` 2 to 8; the expected sentence is restated in the test with integer arithmetic, independent of the implementation)
 
-## §4 The local e2e failure: a macOS-only failure, not a regression on `main`
+## §4 The local e2e failure: a macOS timing failure; no regression found
 
-`e2e/stage1b-wcag.spec.ts`, "Evidence Ledger — quarantined row selected (release-gate visible)", failed locally at both viewports (1280x720 and 1440x900).
+`e2e/stage1b-wcag.spec.ts`, "Evidence Ledger — quarantined row selected (release-gate visible)", failed locally on the macOS workstation at both viewports (1280x720 and 1440x900).
 
 What was measured:
 
-- The violation is axe `color-contrast`, impact serious, on nodes inside the "Filter evidence" dropdown: the menu container has `data-state="closed"`, and the reported contrast is 1.04 (foreground `#111214` on background `#0b0c0e`). That is text caught while the menu fades out, not a resting colour.
-- It fails the same way on pristine `3c5daf1` with the #1024 change stashed (one rerun of that test alone). So #1024 did not cause it.
-- The same suite passed in CI on Ubuntu on both `3c5daf1` and `9120a4c`.
+- **Locally (macOS, this session):** the violation is axe `color-contrast`, impact serious, on nodes inside the "Filter evidence" dropdown. The menu container has `data-state="closed"` and the reported contrast is 1.04 (foreground `#111214` on background `#0b0c0e`): text sampled while the menu fades out, not a resting colour. It failed on `3a7d15b` in the full run and again on `3c5daf1` with the #1024 change stashed (one rerun of that test alone). `PW_REUSE_HARNESS` was unset, so a stale harness server was not being reused (#884).
+- **In a clean Linux environment (reported by JD's reviewing session, not re-run here):** the spec passed 15 of 15 at `48c250d` (before #1015) and 15 of 15 at `3c5daf1` (5 runs at each of 3 viewports).
+- **CI (Ubuntu):** the push-to-`main` e2e job was success on `3c5daf1` and success on `9120a4c`.
+- **The spec (read this session):** the test clicks "More filter", clicks the Quarantined item (which closes the menu), waits for the quarantined row and the inspector, then runs axe. It never waits for the menu to be hidden. `playwright.config.ts` does not disable animations.
+- **#1015's reach (reported by the reviewing session):** in that dropdown it changed chip labels and hints only, no colour.
 
-Reading (mine, not proven): the axe scan runs before the menu's close animation ends on this workstation. The workstation is macOS; CI is Linux. The earlier local figure of 128 passed / 12 skipped was taken before #1015 merged, so it is possible #1015 changed the timing or the page state this test scans, and only the slower local run shows it. What was NOT done: no repeat runs to measure a failure rate, no check of whether the test itself opens that menu, no bisect.
+Conclusion: no regression was found, on #1015 or #1024. The evidence fits a timing failure in the test on this workstation: axe samples the dropdown during its close animation. Linux cannot reproduce a macOS-only failure, so this is "no regression found", not "flake proven". The local failure rate was not measured.
 
-The primary checkout at `/Users/dizosint/insight-finder` sits on an old local branch named `fix/e2e-macos-flake` (tip `750e885`, 124 commits behind `main`, no PR found for that head). The name suggests earlier macOS flake work; it was not read.
+The e2e job skipping on pull requests is by design (`if: github.event_name == 'push'` in `.github/workflows/ci.yml`), not a fault. Its consequence stands: a local `npm run test:e2e` is the only e2e signal before a merge, and on this workstation it currently shows these two failures.
 
-Consequence for the workflow: because the e2e job never runs on PRs, a real e2e regression is first seen on the push to `main`, after the merge. A local `npm run test:e2e` before merge is the only earlier signal, and on this workstation it currently carries these two known failures.
+Option for later, low priority, JD's call: a test-only hardening PR that waits for the menu to be hidden before the axe scan. It must not disable the `color-contrast` rule or exclude the node.
+
+The primary checkout at `/Users/dizosint/insight-finder` sits on an old local branch named `fix/e2e-macos-flake` (tip `750e885`, 124 commits behind `main`, no PR found for that head). It was not read.
 
 ## §5 PR board (re-measured about 04:50 PST with `gh pr list`)
 
@@ -105,10 +109,11 @@ Older, unchanged by this session: #963, #973 (conflicts), #929 (red), and drafts
 - **A commit status of "success" from Vercel does not say `production`.** On the audit commit `3c5daf1` only the status was read in this session; `target` was confirmed only for `9120a4c`.
 - **The new sentence is in a lazy chunk.** A search of only the scripts named in `index.html` misses it; follow the chunk imports.
 - **Two sessions were live at once** (the one that shipped #1015 and this one). The #1015 session stated it would not touch the fix. If both are still open, only one should act on the queue.
+- **"Fails without my change" is not "fails before the suspect change".** This session first compared `3c5daf1` with and without #1024, which cleared #1024 but said nothing about #1015. Clearing #1015 needed a run on `48c250d`, which the reviewing session did.
 
 ## §7 What was NOT done, and why
 
-- The macOS e2e failure (§4) was not fixed or investigated beyond one rerun: out of scope for a one-behaviour PR.
+- The macOS e2e test (§4) was not hardened: out of scope for a one-behaviour PR, and low priority now that no regression was found.
 - Nothing in the queue (§5) was started: each item needs JD's named go and its own session.
 - No worktree or branch was removed. Left in place: `.claude/worktrees/rail-about-half` (branch `fix/rail-about-half`, merged) and `.claude/worktrees/right-rail-agentic-scoring-bbd3f1` (the merged #1015 branch).
 - `/health` was not re-measured: no edge change.
@@ -117,16 +122,17 @@ Older, unchanged by this session: #963, #973 (conflicts), #929 (red), and drafts
 ## §8 Files in this docs change
 
 - `SESSION_HANDOFF_2026-11-11_rail-about-half-shipped.md` (this file).
-- `NEXT_SESSION_PROMPT.md`: rewritten for the next task.
+- `NEXT_SESSION_PROMPT.md`: rewritten for the next task (ship the one PR JD names from the ready queue).
 - `CLAUDE.md`: the "Last verified" state line and the handoff reading order updated to name this file.
 
 ## §9 Next
 
-In order, each its own session, each on JD's named go:
+No session is needed for the e2e failure: it is answered in §4. Each item below is its own session, on JD's named go:
 
-1. **Decide the macOS e2e failure** (§4): read-only measurement first (repeat runs on a fresh worktree off `main`, find whether the test opens the "Filter evidence" menu, compare with `fix/e2e-macos-flake`), then a proposal. This restores the only pre-merge e2e signal.
-2. **#1009, then #1014** (retarget after #1009).
-3. **#1016**, then the edge stack **#1017 → #1018 → #1019** with JD's rulings on #1018 and #1019.
-4. **#1023** (rebase against this handoff's CLAUDE.md edit, or the reverse).
+1. **#1009, then #1014** (retarget #1014 to `main` after #1009 merges).
+2. **#1016**, then the edge chain **#1017 → #1018 → #1019**, with JD's rulings on #1018 and #1019. The repo is squash-only and never deletes branches, so after #1016 squash-merges, #1017's base is still the old branch: retarget it to `main` and rebase by hand before it merges. The same holds down the chain. Each edge PR also needs a rebase on `health-handler.ts`.
+3. **#1023** (rebase against this handoff's CLAUDE.md edit, or the reverse).
+4. **Still JD's:** the upload-only stored-row proof for #1007 (run one upload-only case, then the counts-only query for threads created after 2026-11-11 06:25Z; want 0 leaking with at least 1 thread), and the `stale.yml` decision.
+5. **Optional, low priority:** the test-only hardening in §4.
 
-The opening prompt for item 1 is in `NEXT_SESSION_PROMPT.md`.
+The opening prompt is in `NEXT_SESSION_PROMPT.md`.
