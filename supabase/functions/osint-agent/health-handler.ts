@@ -89,6 +89,7 @@ import { socialfetchCoercionSelfTest } from "./lib/socialfetch-input.ts";
 import { correlateSeedDefaultSelfTest } from "./lib/thread-seed.ts";
 import { detectSeedServer } from "./validation.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
+import { attachmentSeedSelfTest } from "./lib/attachment-block.ts";
 import { mediaLeadsSelfTest } from "./lib/media-leads.ts";
 import { outcomeLessonsSelfTest } from "./lib/outcome-lessons.ts";
 
@@ -796,6 +797,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // tooling. Pure. PRESENCE proves the deployed bundle; ok:false = the classifier failed its
   // own probe. (Client mirror: src/lib/seed.ts, same 15-digit E.164 ceiling.)
   r.checks.seed_account_id = seedAccountIdSelfTest();
+  r.checks.attachment_seed = attachmentSeedSelfTest();
 
   // E4: do the analyst's dismissed/wrong marks carry across the user's cases (latest verdict wins,
   // in-thread overrides, "#caseonly" stays put, phones fold by digits, username != name), while

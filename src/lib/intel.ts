@@ -1,3 +1,4 @@
+import { seedWithoutAttachments } from "@/lib/attachments";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { toSourceStrings } from "@/lib/source-strings";
 import {
@@ -2593,7 +2594,7 @@ export function buildIdentityClusters(
   opts?: { coRecordLinkage?: boolean },
 ): ClusterReport {
   const coRecordOn = opts?.coRecordLinkage ?? CO_RECORD_LINKAGE_ENABLED;
-  const seedHint = detectNameLocationSeed(seedValue);
+  const seedHint = detectNameLocationSeed(seedWithoutAttachments(seedValue));
   const seedState = seedHint?.state ?? null;
   const seedName = seedHint?.name ?? null;
 

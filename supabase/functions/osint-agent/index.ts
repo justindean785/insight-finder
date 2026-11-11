@@ -29,6 +29,7 @@ import {
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
+import { hasSeedAttachments, splitSeedText } from "./lib/attachment-block.ts";
 import {
   extractStepFindings, persistAutoFindings, loadSeenArtifactKeys, decideBackstopAction,
   ESCALATION_ELIGIBLE_TOOLS, bufferEscalationCandidates, drainEscalationBuffer,
@@ -474,11 +475,13 @@ Deno.serve(async (req) => {
     const seedValueRaw = (() => {
       const fu = ((messages ?? []) as Array<{ role?: string; parts?: Array<{ type?: string; text?: string }> }>)
         .find((m) => m?.role === "user");
-      return (fu?.parts ?? [])
+      // The typed text only: the composer's "Attached files:" block is not part of
+      // the seed (lib/attachment-block.ts; kill switch ATTACHMENT_SEED_STRIP_DISABLED).
+      return splitSeedText((fu?.parts ?? [])
         .filter((p) => p?.type === "text")
         .map((p) => p?.text ?? "")
         .join(" ")
-        .trim() || "(seed)";
+        .trim()).typed || "(seed)";
     })();
     // The subject's SEED NAME, or "" when this run was seeded on anything else.
     // Sole input to the queried-name echo exemption in the auto-persist gate: a
@@ -2287,8 +2290,10 @@ Deno.serve(async (req) => {
         // it. Historically this was computed inside the cache block, which ran
         // BEFORE the status write.
         const firstUser = finalMessages.find((m) => m.role === "user");
-        const seedText = ((firstUser?.parts ?? []) as Array<{ type: string; text?: string }>)
+        const firstUserText = ((firstUser?.parts ?? []) as Array<{ type: string; text?: string }>)
           .filter((p) => p.type === "text").map((p) => p.text ?? "").join(" ").trim();
+        // Same split as auth.ts: classify what the analyst typed, not the attachment block.
+        const seedText = splitSeedText(firstUserText).typed;
         const detectedSeed = detectSeedServer(seedText);
         detectedSeedKind = detectedSeed ? detectedSeed.kind : null;
 
@@ -2520,7 +2525,9 @@ Deno.serve(async (req) => {
 
           // ---- Persist investigation cache (per seed, per user) ----
           try {
-            if (detectedSeed && safePartsForCache) {
+            // A run opened with attachments is not cached under its bare typed seed: the
+            // same seed with no file is a different investigation, and must not replay it.
+            if (detectedSeed && safePartsForCache && !hasSeedAttachments(firstUserText)) {
               const { data: arts } = await supabase
                 .from("artifacts")
                 // `id` so analyst verdicts match per-row, not only by kind|value.

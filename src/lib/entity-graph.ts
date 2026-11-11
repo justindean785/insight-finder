@@ -1,3 +1,4 @@
+import { seedWithoutAttachments } from "@/lib/attachments";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import {
   buildIdentityClusters,
@@ -284,6 +285,8 @@ export function buildEntityGraph(
   opts?: { coRecordLinkage?: boolean },
 ): EntityGraph {
   const coRecordOn = opts?.coRecordLinkage ?? CO_RECORD_LINKAGE_ENABLED;
+  // The seed's selector is the typed text, never the composer's attachment block.
+  seedValue = seedWithoutAttachments(seedValue);
   // Stable ordering: everything downstream (selector heroes, layout angles)
   // derives from this sort, so the same case always produces the same frame.
   const sorted = [...artifacts].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));

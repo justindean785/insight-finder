@@ -1,6 +1,6 @@
 import { readProviderExport } from "@/lib/provider-export";
 import { extractDisplaySeed, type SeedKind } from "@/lib/seed";
-import { attachmentLabel, attachmentOnlyNames, parseUserMessage } from "@/lib/attachments";
+import { attachmentLabel, attachmentOnlyNames, parseUserMessage, typedTextBeforeAttachments } from "@/lib/attachments";
 
 /**
  * The case's own name, when it says more than the selector does. A blank,
@@ -14,12 +14,15 @@ import { attachmentLabel, attachmentOnlyNames, parseUserMessage } from "@/lib/at
  * reading the header's subtitle already uses. The stored title is untouched.
  */
 export function humanCaseName(title: string | null, seedValue: string | null, seedDisplay: string): string | null {
-  const t = (title ?? "").trim();
-  if (!t || /^(new investigation|investigation|untitled)$/i.test(t)) return null;
-  if (isPastedExport(t)) return exportSubjectTitle(seedValue) ?? exportSubjectTitle(t);
+  const stored = (title ?? "").trim();
   // An upload's raw "Attached files:" markdown is not a name; the header's seed
   // heading (the filename, from extractDisplaySeed) already says it.
-  if (attachmentOnlyNames(t)) return null;
+  if (attachmentOnlyNames(stored)) return null;
+  // Typed text followed by an upload: the edge stored both in the title. Only
+  // the typed words can be a name.
+  const t = typedTextBeforeAttachments(stored) ?? stored;
+  if (!t || /^(new investigation|investigation|untitled)$/i.test(t)) return null;
+  if (isPastedExport(t)) return exportSubjectTitle(seedValue) ?? exportSubjectTitle(t);
   const norm = (s: string | null) => (s ?? "").trim().toLowerCase();
   if (norm(t) === norm(seedValue) || norm(t) === norm(seedDisplay)) return null;
   return t;
@@ -69,9 +72,12 @@ export function exportSubjectTitle(text: string | null | undefined): string | nu
  * seed-derived one, else "<Provider> export", else the title as stored.
  */
 export function threadDisplayTitle(title: string | null | undefined, seedValue?: string | null): string {
-  const t = title ?? "";
-  const files = attachmentOnlyNames(t);
+  const stored = title ?? "";
+  const files = attachmentOnlyNames(stored);
   if (files) return `Attachment: ${attachmentLabel(files)}`;
+  // Typed text followed by an upload: print the typed words, never the block
+  // (its link is a signed storage URL).
+  const t = typedTextBeforeAttachments(stored) ?? stored;
   if (!isPastedExport(t)) return t;
   const derived = exportSubjectTitle(seedValue) ?? exportSubjectTitle(t);
   if (derived) return derived;

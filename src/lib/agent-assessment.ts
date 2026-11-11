@@ -35,6 +35,7 @@
  *  - Confidence math (`confidence.ts`, `record_finding`) and authority
  *    (`authority.ts`) are untouched. Every number here is theirs.
  */
+import { seedWithoutAttachments } from "@/lib/attachments";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { isMetaArtifact } from "@/hooks/useThreadArtifacts";
 import { buildIdentityClusters, independentSourceClasses, isNegativeResultArtifact, type IdentityCluster, type ReviewAdjustment } from "@/lib/intel";
@@ -162,6 +163,9 @@ export function assessArtifacts(
   reviews?: Record<string, ReviewAdjustment>,
 ): AssessmentReport {
   const rows = artifacts.filter((a) => !isMetaArtifact(a));
+  // Typed text plus an upload stores the attachment block in the seed; no row
+  // equals that, so nothing was ever linked to the seed. See seedWithoutAttachments.
+  seedValue = seedWithoutAttachments(seedValue);
   const report = buildIdentityClusters(rows, seedValue, reviews);
   const clusterOf = new Map<string, IdentityCluster>();
   for (const c of report.clusters) for (const a of c.artifacts) clusterOf.set(a.id, c);
