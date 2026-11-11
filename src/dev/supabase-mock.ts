@@ -479,6 +479,8 @@ if (SNAPSHOT) {
  *   ready        — analyst confirmations lift report readiness past the bar
  *   recovered    — an earlier run died and the sweep posted its interrupted-run
  *                  notice; the report that follows is a later cycle's
+ *   exchanges    — after the closing report the analyst asks two follow-ups,
+ *                  each answered with a short table; no answer rewrites another
  */
 const SCENARIO =
   typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("scenario") ?? "" : "";
@@ -564,6 +566,16 @@ if (!SNAPSHOT && mainThread) {
         "2 recovered rows: 2 model-reviewed, 0 unreviewed.",
       ].join("\n")),
     } as never);
+  }
+  if (SCENARIO === "exchanges") {
+    const say = (id: string, role: "user" | "assistant", minsAgo: number, t: string) =>
+      ({ id, thread_id: THREAD_ID, user_id: USER_ID, role, created_at: iso(minsAgo), parts: text(t) });
+    (FIXTURES.messages as unknown[]).push(
+      say("m-x1", "user", 3, "Check the phone +1 415 555 0142. Is it his?"),
+      say("m-x2", "assistant", 2.5, "The number appears in one broker record and nowhere else.\n\n| Selector | Source | Confidence |\n| --- | --- | --- |\n| +1 415 555 0142 | data broker | 55 |\n\nNot promotable without a second origin."),
+      say("m-x3", "user", 2, "And the handle jharker88?"),
+      say("m-x4", "assistant", 1.5, "The handle is reused on two platforms with the same avatar.\n\n| Selector | Source | Confidence |\n| --- | --- | --- |\n| jharker88 | provider | 74 |\n| jharker88 | provider | 70 |"),
+    );
   }
   if (SCENARIO === "ready") {
     const confirmed = (FIXTURES.artifacts as { id: string; metadata?: Record<string, unknown> }[])

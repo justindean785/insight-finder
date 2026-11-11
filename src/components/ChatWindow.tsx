@@ -49,7 +49,7 @@ import { registerPivotRunner } from "@/lib/pivot-runner";
 import { DEFAULT_CONTROLS, evaluatePreflight, type PreflightControls } from "@/lib/composer-preflight";
 import { TargetChip } from "@/components/composer/ComposerPreflight";
 import { hasReportShape, joinAssistantTranscript, stripReasoningPerPart } from "@/lib/report-shape";
-import { findLastReportIndex, isRecoveryNoticeMessage, isReportMessage } from "@/lib/superseded-reports";
+import { isRecoveryNoticeMessage, supersededFlags } from "@/lib/superseded-reports";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import { computePivots } from "@/lib/pivot-engine";
 import { buildEntityGraph } from "@/lib/entity-graph";
@@ -3364,11 +3364,11 @@ function ChatWindowInner({
             // The newest report stays open; the earlier ones collapse to a line
             // the analyst can expand. Nothing is removed: a superseded report is
             // still the record of what the run believed at that point.
-            const lastReportIdx = findLastReportIndex(rendered);
+            const supersededAt = supersededFlags(rendered);
             return rendered.map((m, idx, arr) => {
               const isLastAssistant = m.role === "assistant" && idx === arr.length - 1;
               const hasCacheBanner = m.role === "assistant" && (m.parts as MessagePartShape[]).some((p) => p?.type === CACHE_BANNER_TYPE);
-              const superseded = lastReportIdx >= 0 && idx < lastReportIdx && isReportMessage(m);
+              const superseded = supersededAt[idx];
               return (
                 <MessageView
                   key={m.id}

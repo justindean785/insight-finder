@@ -6,7 +6,10 @@ import {
   findLastReportIndex,
   isRecoveryNoticeMessage,
   RECOVERY_NOTICE_HEADINGS,
+  startsNewExchange,
+  supersededFlags,
 } from "@/lib/superseded-reports";
+import { CONTINUE_PROMPT, REPORT_PROMPT } from "@/lib/run-controls";
 import { hasReportShape } from "@/lib/report-shape";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import type { UIMessage } from "ai";
@@ -70,10 +73,8 @@ describe("superseded report detection", () => {
 
   it("leaves a single-report thread fully expanded", () => {
     const thread = [msg("user", "seed"), msg("assistant", NARRATION), msg("assistant", REPORT)];
-    const last = findLastReportIndex(thread);
     // Nothing before the only report is itself a report, so nothing collapses.
-    const supersededCount = thread.filter((m, i) => i < last && isReportMessage(m)).length;
-    expect(supersededCount).toBe(0);
+    expect(supersededFlags(thread)).toEqual([false, false, false]);
   });
 
   it("collapses exactly the earlier reports, never the narration between them", () => {
@@ -84,9 +85,7 @@ describe("superseded report detection", () => {
       msg("assistant", NARRATION), // 3 — untouched
       msg("assistant", REPORT),    // 4 — current
     ];
-    const last = findLastReportIndex(thread);
-    const collapsed = thread.map((m, i) => last >= 0 && i < last && isReportMessage(m));
-    expect(collapsed).toEqual([true, false, true, false, false]);
+    expect(supersededFlags(thread)).toEqual([true, false, true, false, false]);
   });
 });
 
@@ -117,11 +116,7 @@ const noticeText = (heading = RECOVERY_NOTICE_HEADINGS[0]) => [
 ].join("\n");
 
 /** The predicate ChatWindow applies, over the list it applies it to. */
-const collapsedFlags = (thread: UIMessage[]) => {
-  const rendered = dedupeCheckpoints(thread);
-  const last = findLastReportIndex(rendered);
-  return rendered.map((m, i) => last >= 0 && i < last && isReportMessage(m));
-};
+const collapsedFlags = (thread: UIMessage[]) => supersededFlags(dedupeCheckpoints(thread));
 
 describe("interrupted-run notice and supersession", () => {
   it("mirrors the headings the edge recovery path writes and recognises", () => {
@@ -182,5 +177,90 @@ describe("interrupted-run notice and supersession", () => {
     const thread = [msg("assistant", REPORT), msg("user", "continue"), msg("assistant", noticeText())];
     expect(findLastReportIndex(thread)).toBe(0);
     expect(collapsedFlags(thread)).toEqual([false, false, false]);
+  });
+});
+
+/**
+ * Supersession is scoped to an exchange.
+ *
+ * Observed in production on 2026-11-10: 12 of 13 agent replies on one case were
+ * folded as "Superseded report". Three separate pivot answers were among them,
+ * and so was the full closing report, folded by a later pivot's short answer.
+ * A reply is only rewritten by a later report that answers the same request.
+ */
+describe("supersession is scoped to an exchange", () => {
+  const PIVOT = "Investigate phone +1 555 0100. Does this number belong to the subject?";
+  const flags = (thread: UIMessage[]) => supersededFlags(dedupeCheckpoints(thread));
+
+  it("opens an exchange on every analyst message, app prompts included", () => {
+    expect(startsNewExchange(msg("user", "jane@example.com"))).toBe(true);
+    expect(startsNewExchange(msg("user", PIVOT))).toBe(true);
+    expect(startsNewExchange(msg("user", CONTINUE_PROMPT))).toBe(true);
+    expect(startsNewExchange(msg("user", REPORT_PROMPT))).toBe(true);
+    expect(startsNewExchange(msg("assistant", REPORT))).toBe(false);
+  });
+
+  it("keeps the answer to each pivot open", () => {
+    const thread = [
+      msg("user", "jane@example.com"), msg("assistant", REPORT),
+      msg("user", PIVOT), msg("assistant", REPORT),
+      msg("user", PIVOT), msg("assistant", REPORT),
+    ];
+    expect(flags(thread)).toEqual([false, false, false, false, false, false]);
+  });
+
+  it("does not let a later pivot answer fold the closing report", () => {
+    const thread = [
+      msg("user", "jane@example.com"), msg("assistant", REPORT),
+      msg("user", REPORT_PROMPT), msg("assistant", REPORT), // the closing report
+      msg("user", PIVOT), msg("assistant", REPORT),
+    ];
+    expect(flags(thread)).toEqual([false, false, false, false, false, false]);
+  });
+
+  it("does not let Write report fold whichever reply came last", () => {
+    // Order must not decide it: the closing report restates the case, not the
+    // one pivot answer that happens to sit before it.
+    const thread = [
+      msg("user", "jane@example.com"), msg("assistant", REPORT),
+      msg("user", PIVOT), msg("assistant", REPORT),
+      msg("user", PIVOT), msg("assistant", REPORT),
+      msg("user", REPORT_PROMPT), msg("assistant", REPORT),
+    ];
+    expect(flags(thread)).toEqual(new Array(8).fill(false));
+  });
+
+  it("KNOWN COST: a full report after each typed follow-up stays open", () => {
+    // The thread-wide rule folded these. Telling a full rewrite from a short
+    // answer would mean reading the reply's prose, so each stays open instead.
+    const thread = [
+      msg("user", "Jordan Vale, age 31"), msg("assistant", REPORT),
+      msg("user", "run next pivots"), msg("assistant", REPORT),
+      msg("user", "run next pivots"), msg("assistant", REPORT),
+    ];
+    expect(flags(thread)).toEqual([false, false, false, false, false, false]);
+  });
+
+  it("still folds earlier reports inside one exchange, never the narration", () => {
+    const thread = [
+      msg("user", "jane@example.com"),
+      msg("assistant", REPORT), msg("assistant", NARRATION), msg("assistant", REPORT),
+    ];
+    expect(flags(thread)).toEqual([false, true, false, false]);
+  });
+
+  it("matches the thread-wide rule when no analyst message intervenes", () => {
+    const thread = [msg("assistant", REPORT), msg("assistant", NARRATION), msg("assistant", REPORT)];
+    expect(flags(thread)).toEqual([true, false, false]);
+  });
+
+  it("keeps an interrupted-run notice out of it in both directions", () => {
+    const thread = [
+      msg("user", "jane@example.com"),
+      msg("assistant", REPORT), msg("assistant", noticeText()), msg("assistant", REPORT),
+    ];
+    expect(flags(thread)).toEqual([false, true, false, false]);
+    expect(flags([msg("user", "seed"), msg("assistant", REPORT), msg("assistant", noticeText())]))
+      .toEqual([false, false, false]);
   });
 });
