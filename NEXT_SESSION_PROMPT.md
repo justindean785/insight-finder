@@ -2,12 +2,12 @@
 
 > **Target agent:** Claude Code (fresh context). Paste the fenced block below as the opening message, as-is.
 > **Written 2026-11-11 (PST).** Replaces the 2026-11-10 prompt (partly executed: #1015 merged as `3c5daf1`; its wording bug was fixed by #1024, `9120a4c`). Every number is a dated measurement, not a state — re-verify.
-> **Audit basis (2026-11-11 about 13:25Z):** `main` `9120a4c` plus this docs PR; Vercel production `READY` on `9120a4c`; CI push run on `9120a4c` all green including e2e; live `osint-agent` last measured `3f6ed05` (`/health` 72 checks, 0 not ok, at about 11:25Z, not re-measured since); `justindean785/insight-finder` is **public**. Read `SESSION_HANDOFF_2026-11-11_rail-about-half-shipped.md` first.
+> **Audit basis (2026-11-11 about 13:25Z):** `main` `1d0e0a2` (#1025, docs; code is `9120a4c`) plus the corrections docs PR; Vercel production `READY` on `9120a4c`; CI push run on `9120a4c` all green including e2e; live `osint-agent` last measured `3f6ed05` (`/health` 72 checks, 0 not ok, at about 11:25Z, not re-measured since); `justindean785/insight-finder` is **public**. Read `SESSION_HANDOFF_2026-11-11_rail-about-half-shipped.md` first.
 
 ```
 # Objective
 
-Ship the ONE pull request JD names from the ready queue below. Nothing in it is approved yet. Run one track per session (frontend, or one edge PR with its deploy cycle), never both. If JD has not named one, show the queue on one screen and ask which.
+Put ONE decision in front of JD and then ship what he names: the merge order for the ready queue below. Nothing in it is approved yet. Show the queue on one screen and ask for a named go per PR. Run one track per session (frontend, or one edge PR with its deploy cycle), never both.
 
 Address the user as JD. Engineering only — the scans contain real people; never put a handle, name, address, phone, ID, credential or storage URL from a run into code, tests, commits, PR text or docs (the repo is public).
 
@@ -36,8 +36,8 @@ Report one line, unprompted, after any compaction, when a PR merges, and before 
 
 - **#1009 → #1014** (frontend). #1009 is based on `main`. #1014 is based on #1009's branch: after #1009 squash-merges, retarget #1014 to `main` and rebase.
 - **#1016 ← #1017 ← #1018 ← #1019** is one four-deep chain: a frontend root (#1016, base `main`) with three edge PRs stacked on it. #1016 and #1017 are two halves of one rule ("a dotted handle is a username seed, not a domain"); merge #1016 right before #1017 deploys, so the screen and the stored seed type do not disagree in between. #1018 is "a lookup on a shortened seed handle runs tainted" (a new quarantine trigger) and #1019 is "a recorded profile whose URL ends in the exact seed handle carries that handle" (a new linkage path): **each needs JD's explicit ruling.**
-- **Merge-train trap:** squash-only with branches kept means that after a parent squash-merges, the child's base is still the old branch. Retarget each child to `main` and rebase by hand before it merges. Each edge PR also conflicts with `main` in `health-handler.ts` since #1007.
-- **#1023** (docs: CLAUDE.md sections to `.claude/rules`). Read the diff first; it needs a rebase against the CLAUDE.md state line.
+- **Merge-train trap:** base branches are kept (never-delete rule), so after a parent squash-merges, the child PR's base is still the old branch. Retarget the child to `main` and rebase before merging. This applies to #1014 (after #1009) and to #1017, #1018 and #1019 (each after its parent). Each edge PR also conflicts with `main` in `health-handler.ts` since #1007.
+- **#1023** (docs: CLAUDE.md sections to `.claude/rules`). Read the diff first. The 2026-11-11 handoff PRs merged before it and edited the CLAUDE.md state line and reading order, so #1023 must rebase: its move of those sections will conflict.
 - Older edge: #963 (clean), #973 (conflicts with `main`), #929 (edge test job red).
 
 # Verification
@@ -48,7 +48,7 @@ Report one line, unprompted, after any compaction, when a PR merges, and before 
 
 Reference counts (2026-11-11, local, `3a7d15b`, same tree as `main` `9120a4c`): vitest 3,420 passed / 1 skipped / 292 files; e2e 126 passed / 12 skipped / 2 failed. Edge was last measured 2026-11-10: 3080 passed / 0 failed / 6 ignored. Never bare `tsc`.
 
-**Known local e2e failure, already answered — do not re-investigate:** on the macOS workstation, `e2e/stage1b-wcag.spec.ts` "Evidence Ledger — quarantined row selected" fails at 1280x720 and 1440x900 with axe `color-contrast` 1.04 on the closing "Filter evidence" menu. No regression was found: the spec passed 15 of 15 on Linux at `48c250d` and at `3c5daf1`, and CI e2e was success on `3c5daf1` and `9120a4c`. Treat exactly those two failures as known; any other e2e failure is yours to explain. Details: handoff §4.
+**Known local e2e failure, already measured — do not re-investigate:** `e2e/stage1b-wcag.spec.ts` "Evidence Ledger — quarantined row selected" fails at 1280x720 and 1440x900 with axe `color-contrast` 1.04 on the closing "Filter evidence" menu. Reproduced only on this workstation; no regression found. Treat exactly those two failures as known; any other e2e failure is yours to explain. Facts and the proposed fix are in item 1 of the last section and in handoff §4.
 
 # Return
 
@@ -56,9 +56,15 @@ What JD approved and when; what merged, with commit ids; for edge, before/after 
 
 # Still JD's, and later work — do not start unless JD names it (one session each)
 
-1. **Stored-row proof for #1007** (owed since 2026-11-10): run one upload-only case, then the counts-only query, never message text: threads created after `2026-11-11 06:25:00+00` whose title or `seed_value` matches `(token=|/object/sign/)`. Want 0 leaking with at least 1 thread; a 0 with no threads is not proof.
-2. **`stale.yml`** on `main` uses placeholder messages and will close inactive issues and PRs: keep, disable or remove — JD's call.
-3. **Test-only hardening, low priority:** wait for the "More filter" menu to be hidden before the axe scan in `stage1b-wcag.spec.ts`. Do not disable the `color-contrast` rule or exclude the node.
+1. **Test-only PR proposal: wait for the menu to be hidden before the axe scan** in `e2e/stage1b-wcag.spec.ts`, "Evidence Ledger — quarantined row selected". Small, frontend test only, JD's go. Measured facts (2026-11-11):
+   - The spec opens the menu itself ("More filter", then the Quarantined menuitem), then waits for the quarantined row and the inspector, never for the menu to be hidden. axe scans the whole page. `playwright.config.ts` does not disable animations.
+   - On the macOS workstation it failed at both viewports with contrast 1.04 on the closing menu (`data-state="closed"`), on `3a7d15b` and on `3c5daf1`.
+   - In a clean Linux environment it passed 5 runs x 3 viewports at `48c250d` (before #1015) and 5 x 3 at `3c5daf1`. CI e2e on Ubuntu passed on `3c5daf1` and `9120a4c`.
+   - Remaining unknown: whether this workstation also fails at `48c250d`.
+   - Proposed fix: wait for the menu to be hidden before `axeFor(page).analyze()`. No weakening of the `color-contrast` rule and no excluding the node. Proof: the test passes `--repeat-each=10` locally at both viewports and the full e2e run shows 128 passed / 12 skipped.
+   - The local branch `fix/e2e-macos-flake` is a stale name (tip `750e885`, a deploy-ledger commit, nothing that is not on `main`). It holds no flake work.
+2. **Stored-row proof for #1007** (owed since 2026-11-10): run one upload-only case, then the counts-only query, never message text: threads created after `2026-11-11 06:25:00+00` whose title or `seed_value` matches `(token=|/object/sign/)`. Want 0 leaking with at least 1 thread; a 0 with no threads is not proof.
+3. **`stale.yml`** on `main` uses placeholder messages and will close inactive issues and PRs: keep, disable or remove — JD's call.
 4. **Investigate chat-flow rework** (not started): critique with screenshots at 1440x900 and about 1000x650, a plan JD can react to, then build. Read drafts #804, #882, #883 first.
 5. **Likelihood register:** whether to set `VITE_ASSOCIATION_LIKELIHOOD=1` in Vercel, and how it reads next to the new rail. JD's call.
 6. **Agent accuracy:** start from a classified sample of recent runs, not a theory.
