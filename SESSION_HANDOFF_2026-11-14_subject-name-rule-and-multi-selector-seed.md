@@ -4,24 +4,22 @@ Every figure here is a dated measurement (2026-11-14, about 11:40Z). Re-measure 
 
 ## 1. State
 
-- `main` is `8c95420` (#1030, the stale-run sweep sends the signed-in user's token).
-- Live edge build is `6e0c7b6` (#1031, CORS preflight answered early; stamp #1034, ledger #1035). JD drove that deploy in the lockdown session.
-- Nothing from this session is merged or deployed.
+- `main` is `2d2584b`: #1032 (Subject Name rule v2, squash `a90c770`) and #1036 (multi-selector seed, squash `2d2584b`) are merged. JD approved both merges.
+- Vercel production succeeded on `a90c770`. The deploy for `2d2584b` and the `main` e2e run for both commits were still in progress when this was written: check them first.
+- Live edge build is `6e0c7b6` (#1031, CORS preflight answered early; stamp #1034, ledger #1035). JD drove that deploy in the lockdown session. Nothing in this session touched the edge.
 
 ## 2. Open PRs
 
-| PR | What | Head | Base | State | PR CI |
-|---|---|---|---|---|---|
-| #1032 | Subject Name rule v2 (frontend) | `8123aff` | `main` | ready, mergeable | green |
-| #1036 | Multi-selector seed (frontend), stacked on #1032 | `3c9e2fd` | the #1032 branch | ready, mergeable | green |
-| #1033 | Maintenance endpoint lockdown (edge) | `79900f1` | `main` | draft | green |
-| #1029 | Edge tool-usage audit (docs) | `edb2e71` | `main` | ready | green |
+| PR | What | Head | State |
+|---|---|---|---|
+| #1033 | Maintenance endpoint lockdown (edge) | `1f87682` | ready, review addressed by its own session, not merged or deployed |
+| #1038 | Maintenance lockdown plan (docs, split out of #1033) | n/a | open |
+| #1029 | Edge tool-usage audit (docs) | `edb2e71` | ready, PR CI green |
 
-- PR CI does not run e2e. Local e2e on `3c9e2fd`: 132 passed, 12 skipped, 0 failed. Unit: 3,545 passed, 1 skipped (298 files). On `8123aff`: 3,522 passed, 1 skipped (296 files); e2e was last run on its parent `d687b3f` (the later commit is tests only).
-- **Merge order:** #1032 first, then retarget #1036 to `main`.
-- **#1033:** its session rebased onto `8c95420` locally, but the force-push was blocked by a permission check, so GitHub still shows the old head. JD must allow the push in that session. Rollout order is in the PR body; deploy needs JD's go and the `edge-deploy` skill.
-- Auto-fix is on for #1032 and #1036 in the session that opened them. A new session must re-bind the PRs to receive review and CI events. There are no scheduled check-ins or other triggers to cancel.
-- Devin reported flags it did not post on #1032 (1) and #1036 (6). They are unread.
+- Last local gates before the #1036 merge, on its head `bc44125` (the merged tree): typecheck pass, lint 0 errors, unit 3,555 passed and 1 skipped (299 files), build pass, e2e 132 passed and 12 skipped, 0 failed.
+- **#1033:** owned by its own session. Rollout order is in the PR body; deploy needs JD's go and the `edge-deploy` skill. Devin raised two flags that show only on Devin's review page; that session is checking them.
+- No subscriptions or scheduled check-ins are left from this session: its PRs are merged.
+- Devin reported flags it did not post on #1032 (1) and #1036 (6). They were never read. Both PRs are merged, so anything real in them is follow-up work.
 
 ## 3. JD's standing decisions from this session
 
