@@ -768,7 +768,6 @@ const PROFILE_CONTACT_KINDS: ReadonlyArray<{ kind: string; label: string }> = [
   { kind: "address", label: "Address" },
 ];
 const PROFILE_UNRESOLVED_LIMIT = 8;
-const PROFILE_NAME_KINDS: ReadonlySet<string> = new Set(["name", "person"]);
 const PROFILE_NAME_GROUPS: ReadonlyArray<Pick<ProfileNameGroup, "key" | "heading" | "footnote">> = [
   {
     key: "linked",

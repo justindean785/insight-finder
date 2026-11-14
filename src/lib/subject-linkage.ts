@@ -137,8 +137,10 @@ export type SubjectNameReading = {
  *     `conflict` group) is never asserted. Its tie is kept; it is listed apart.
  *  4. Asserted: the seed-named name. Without one, the single linked name. Two or
  *     more DIFFERENT linked names are not reconciled by score, so none is
- *     asserted. When the seed names a person (any name row, eligible or not),
- *     only that name may be asserted.
+ *     asserted; a disputed linked name counts as one of them, because dropping
+ *     it first would settle the dispute in the other name's favour. When the
+ *     seed names a person (any name row, eligible or not), only that name may be
+ *     asserted.
  *  5. Every other candidate is returned, grouped by where it stands.
  *
  * It reads the agent assessment and the seed text. It adds no score, reads no
@@ -173,7 +175,10 @@ export function readSubjectName(
     // quarantine still names that person, and nobody else takes the place.
     if (seedNamed) seedNamesPerson = true;
     if (!isSubjectAuthorityEligible(a, reviews?.[a.id]) || derived.has(a.id) || isNullResultValue(a.value, a.source)) continue;
-    const key = canonical(kind, value).replace(/\s+/g, " ");
+    // `canonical` strips a trailing parenthetical, so a value that is ONLY an
+    // annotation ("(redacted)") has no canonical form. It is still a row in the
+    // case: key it by its own text so it is listed, never silently dropped.
+    const key = (canonical(kind, value) || value.trim().toLowerCase()).replace(/\s+/g, " ");
     if (!key) continue;
     const standing: ProfileStanding = seedNamed
       ? (assessed?.group === "conflict" ? "disputed" : "subject")
@@ -195,13 +200,15 @@ export function readSubjectName(
   const tied = all.filter((n) => n.standing === "subject");
   const seedNamed = tied.filter((n) => n.seedNamed).sort((a, b) => Number(b.wholeSeed) - Number(a.wholeSeed) || byName(a, b));
   const linkedOnly = tied.filter((n) => !n.seedNamed);
+  // Every name the linkage ties to the subject, disputed ones included.
+  const linkedByOwnership = all.filter((n) => !n.seedNamed && n.standing !== "unresolved").length;
 
   let asserted: Name | null = null;
   let basis: SubjectNameBasis | null = null;
   if (seedNamed.length > 0) {
     asserted = seedNamed[0];
     basis = "seed";
-  } else if (!seedNamesPerson && linkedOnly.length === 1) {
+  } else if (!seedNamesPerson && linkedOnly.length === 1 && linkedByOwnership === 1) {
     asserted = linkedOnly[0];
     basis = "linked";
   }

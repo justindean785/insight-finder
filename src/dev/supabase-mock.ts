@@ -481,6 +481,12 @@ if (SNAPSHOT) {
  *                  notice; the report that follows is a later cycle's
  *   exchanges    — after the closing report the analyst asks two follow-ups,
  *                  each answered with a short table; no answer rewrites another
+ *   connections  — a subject name on a record that carries the seed, with its
+ *                  exact source-record associations
+ *   names        — names nothing ties to the seed (one of them the strongest
+ *                  row in the case), a linked name whose claim is disputed, and
+ *                  a phone a record does join to the seed: no name is the
+ *                  subject's, on any surface
  */
 const SCENARIO =
   typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("scenario") ?? "" : "";
@@ -587,10 +593,27 @@ if (!SNAPSHOT && mainThread) {
     // Synthetic subject map: exact source-record associations must appear without
     // Confirm/Dismiss, while name-only evidence remains a qualified co-record link.
     FIXTURES.artifacts = [
-      { id: "subject-name", thread_id: THREAD_ID, kind: "name", value: "James Harker", confidence: 80, source: "synthetic_fixture", created_at: iso(4), metadata: { sources: ["synthetic_fixture"], source_class: "independent_public" } },
+      // The name sits on a record that carries the case seed, so it is the
+      // subject's by linkage (audit A01): a name nothing ties to the seed is not
+      // opened as the subject. See the `names` scenario for that case.
+      { id: "subject-seed", thread_id: THREAD_ID, kind: "email", value: "j.harker@northgate-logistics.com", confidence: 70, source: "synthetic_fixture", created_at: iso(5), metadata: { sources: ["synthetic_fixture"], source_class: "provider" } },
+      { id: "subject-name", thread_id: THREAD_ID, kind: "name", value: "James Harker", confidence: 80, source: "synthetic_fixture", created_at: iso(4), metadata: { sources: ["synthetic_fixture"], source_class: "independent_public", email: "j.harker@northgate-logistics.com" } },
       { id: "subject-phone", thread_id: THREAD_ID, kind: "phone", value: "+1 (555) 010-4477", confidence: 55, source: "synthetic_fixture", created_at: iso(3), metadata: { sources: ["synthetic_fixture"], source_class: "breach", name_in_breach: "James Harker", email_associated: "james@example.test" } },
       { id: "subject-email", thread_id: THREAD_ID, kind: "email", value: "james@example.test", confidence: 70, source: "synthetic_fixture", created_at: iso(2), metadata: { sources: ["synthetic_fixture"], source_class: "provider" } },
       { id: "subject-username", thread_id: THREAD_ID, kind: "username", value: "james_harker", confidence: 60, source: "synthetic_fixture", created_at: iso(1), metadata: { sources: ["synthetic_fixture"], source_class: "provider", email_associated: "james@example.test" } },
+    ];
+  }
+  if (SCENARIO === "names") {
+    // Synthetic. The strongest row in the case is a name nothing ties to the
+    // seed; before audit A01 (Name half) every surface printed it as the subject.
+    const SEED_EMAIL = "j.harker@northgate-logistics.com";
+    FIXTURES.artifacts = [
+      { id: "n-seed", thread_id: THREAD_ID, kind: "email", value: SEED_EMAIL, confidence: 70, source: "synthetic_fixture", created_at: iso(8), metadata: { sources: ["synthetic_fixture"], source_class: "provider" } },
+      { id: "n-stranger", thread_id: THREAD_ID, kind: "name", value: "Robin Stranger", confidence: 92, source: "synthetic_fixture", created_at: iso(7), metadata: { sources: ["synthetic_fixture"], source_class: "independent_public", dob: "1980-02-03" } },
+      { id: "n-other", thread_id: THREAD_ID, kind: "name", value: "Avery Other", confidence: 70, source: "synthetic_fixture", created_at: iso(6), metadata: { sources: ["synthetic_fixture"], source_class: "data_broker" } },
+      { id: "n-disputed", thread_id: THREAD_ID, kind: "person", value: "Jamie Harker", confidence: 80, source: "synthetic_fixture", created_at: iso(5), metadata: { sources: ["synthetic_fixture"], source_class: "data_broker", email: SEED_EMAIL, phone: "+1 (555) 010-4477", conflict: true, conflict_note: "A second record gives this address a different holder." } },
+      { id: "n-phone", thread_id: THREAD_ID, kind: "phone", value: "+1 (555) 010-4477", confidence: 75, source: "synthetic_fixture", created_at: iso(4), metadata: { sources: ["synthetic_fixture"], source_class: "data_broker" } },
+      { id: "n-assoc-email", thread_id: THREAD_ID, kind: "email", value: "associate@example.test", confidence: 88, source: "synthetic_fixture", created_at: iso(3), metadata: { sources: ["synthetic_fixture"], source_class: "independent_public" } },
     ];
   }
 }

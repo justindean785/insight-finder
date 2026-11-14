@@ -374,6 +374,85 @@ describe("CaseReport Subject Profile Name requires positive subject linkage (aud
     expect(group(c, "linked")).toContain("Lex Sample");
   });
 
+  it("a disputed linked name still counts: the other linked name is not asserted in its place", () => {
+    // Dropping the disputed name before counting would settle the dispute in
+    // the other name's favour.
+    const rows = [seedEmail(), linked("clean", "Sam Example", 80), linked("flagged", "Samuel Exemplar", 85, { conflict: true })];
+    const c = renderCase(rows);
+    expectNoName(c);
+    expect(group(c, "linked")).toContain("Sam Example");
+    expect(group(c, "disputed")).toContain("Samuel Exemplar");
+  });
+
+  it("CURRENT BEHAVIOUR: two spellings of one linked person are two names, and neither is asserted", () => {
+    // Names are compared by the assessment's own canonical form (case and a
+    // trailing parenthetical). Nothing here decides that "Sam" is "Samuel".
+    const rows = [seedEmail(), linked("l1", "Sam Example", 80), linked("l2", "Samuel Example", 80)];
+    const c = renderCase(rows);
+    expectNoName(c);
+    expect(group(c, "linked")).toContain("Sam Example");
+    expect(group(c, "linked")).toContain("Samuel Example");
+  });
+
+  it("a name that is only an annotation is listed, never dropped and never asserted as a blank", () => {
+    const c = renderCase([seedEmail(), stranger("anno", "(name withheld)", 70)]);
+    expectNoName(c);
+    expect(group(c, "unresolved")).toContain("(name withheld)");
+    cleanup();
+    // A blank value is not a name at all: no Name line, no list.
+    const blank = renderCase([seedEmail(), stranger("blank", "   ", 70)]);
+    expect(profileCell(blank, "Name")).toBeNull();
+    expect(allGroups(blank)).toBe("");
+  });
+
+  it("the asserted name's note says how well the value itself is sourced", () => {
+    // Two independent source classes: no candidate note, the basis alone.
+    const two = linked("rec", "Sam Example", 80, { source_category: ["data_broker", "social"] });
+    const corroborated = profileCell(renderCase([seedEmail(), two]), "Name") ?? "";
+    expect(corroborated).toContain("Linked to the subject");
+    expect(corroborated).not.toContain("Candidate");
+    cleanup();
+    // No source class recorded.
+    const none = art({ id: "rec", kind: "person", value: "Sam Example", confidence: 80, source: "", metadata: { email: SEED } });
+    expect(profileCell(renderCase([seedEmail(), none]), "Name")).toContain("Candidate — needs review · no source class recorded");
+    cleanup();
+    // An analyst confirmation is said as such; it is not a second source.
+    const confirmed = profileCell(renderCase([seedEmail(), linked("rec", "Sam Example", 80)], { reviews: { rec: "confirmed" } }), "Name") ?? "";
+    expect(confirmed).toContain("Analyst-confirmed · single-source");
+    cleanup();
+    // The whole seed: the analyst's own premise carries its basis only.
+    const whole = profileCell(renderCase([art({ id: "n", value: "Alex Example", confidence: 40 })], { seed: "Alex Example", seedType: "name" }), "Name") ?? "";
+    expect(whole).toBe("Alex ExampleSupplied as the case seed");
+  });
+
+  it("a one-word name seed is the subject's name", () => {
+    const rows = [art({ id: "mono", value: "Zephyrine", confidence: 40 }), stranger()];
+    const c = renderCase(rows, { seed: "Zephyrine", seedType: "name" });
+    expect(profileCell(c, "Name")).toBe("ZephyrineSupplied as the case seed");
+  });
+
+  it("the whole seed outranks another name made of the seed's words", () => {
+    const rows = [
+      art({ id: "whole", value: "Alex Example", confidence: 40 }),
+      art({ id: "swapped", value: "Example Alex", confidence: 90 }),
+    ];
+    const c = renderCase(rows, { seed: "Alex Example", seedType: "name" });
+    expect(profileCell(c, "Name")).toBe("Alex ExampleSupplied as the case seed");
+    expect(group(c, "linked")).toContain("Example Alex");
+  });
+
+  it("two equal rows of the linked name: the DOB shown does not depend on arrival order", () => {
+    const a = linked("row-a", "Sam Example", 80, { dob: "1975-06-07" });
+    const b = linked("row-b", "Sam Example", 80, { dob: "1981-01-02" });
+    const seen = new Set<string>();
+    for (const rows of [[seedEmail(), a, b], [seedEmail(), b, a], [b, a, seedEmail()]]) {
+      seen.add(profileCell(renderCase(rows), "DOB / Age") ?? "none");
+      cleanup();
+    }
+    expect(seen.size).toBe(1);
+    expect([...seen][0]).not.toBe("none");
+  });
+
   it("with no name row at all the profile prints no Name line", () => {
     expect(profileCell(renderCase([seedEmail()]), "Name")).toBeNull();
   });
