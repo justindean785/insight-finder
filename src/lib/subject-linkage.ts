@@ -13,8 +13,12 @@
  *
  * What it deliberately does NOT read:
  *  - the analyst's review verdict. "Confirmed" says a value is real, not whose
- *    it is; only `linkage_confirmed` speaks to ownership, and that already
- *    reaches the assessment through the quarantine predicate.
+ *    it is.
+ *  - `linkage_confirmed` directly. A release reaches the assessment only by
+ *    clearing the quarantine; it does not join the row to the seed. So a
+ *    released row with no cluster link to the seed is still "unresolved" here.
+ *    Whether an explicit release should establish ownership by itself is an
+ *    open ruling, not something this module decides.
  *  - the artifact's confidence. A high score on an unlinked row is a well
  *    supported fact about SOMEONE.
  *

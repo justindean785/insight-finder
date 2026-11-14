@@ -755,8 +755,6 @@ function topByConfidence(
   artifacts: Artifact[],
   kinds: string[],
   reviews?: Reviews,
-  /** Positive ownership test. When given, only rows that pass may be picked. */
-  owned?: (a: Artifact) => boolean,
 ): Artifact | null {
   // Case-insensitive kind match + null-safe read. `pickBest` already lowercases;
   // this keeps the narrative builders consistent so a capitalized/undefined
@@ -768,7 +766,7 @@ function topByConfidence(
   // breach echo headline the Subject Profile while the gated Identity panel on
   // the same page named a different person.
   const pool = artifacts.filter(
-    (a) => set.has(String(a.kind ?? "").toLowerCase()) && forSubject(reviews, a) && (!owned || owned(a)),
+    (a) => set.has(String(a.kind ?? "").toLowerCase()) && forSubject(reviews, a),
   );
   if (!pool.length) return null;
   return pool.slice().sort((a, b) => (confOf(reviews, b) ?? 0) - (confOf(reviews, a) ?? 0))[0];
@@ -815,21 +813,36 @@ function buildSubjectProfile(artifacts: Artifact[], reviews?: Reviews, seedValue
     const age = m.age != null ? String(m.age) : "";
     if (dob || age) out.push({ label: "DOB / Age", value: [dob, age && `age ${age}`].filter(Boolean).join(" · ") });
   }
+  // The contact pool, for the asserted fields AND the unresolved list. On top of
+  // the negative gate it applies the two gates the sibling subject surfaces
+  // already apply: a row derived from an analyst-rejected selector is out by
+  // provenance (even when it also joins the seed), and a "no results" row is a
+  // lookup that found nothing, not a contact.
+  const derived = rejectedDerivedIds(artifacts, reviews);
+  const labelOf = new Map(PROFILE_CONTACT_KINDS.map((k) => [k.kind, k.label]));
+  const contacts = artifacts.filter(
+    (a) => labelOf.has(String(a.kind ?? "").toLowerCase()) && forSubject(reviews, a) &&
+      !derived.has(a.id) && !isNullResultValue(a.value, a.source),
+  );
+  const isSeedRow = (a: Artifact) => assessment.byId[a.id]?.isSeed === true;
+  // The seed is the one contact known to be the subject's, so it is never
+  // displaced by a merely linked row with a higher score. Then confidence, then
+  // value, so the choice does not depend on the order rows arrived in.
+  const byProfileRank = (a: Artifact, b: Artifact) =>
+    Number(isSeedRow(b)) - Number(isSeedRow(a)) ||
+    (confOf(reviews, b) ?? 0) - (confOf(reviews, a) ?? 0) ||
+    String(a.value ?? "").localeCompare(String(b.value ?? ""));
   for (const { kind, label } of PROFILE_CONTACT_KINDS) {
-    const top = topByConfidence(artifacts, [kind], reviews, owned);
+    const top = contacts.filter((a) => String(a.kind ?? "").toLowerCase() === kind && owned(a)).sort(byProfileRank)[0];
     // Say on what basis the field is asserted. A linked row cleared the app's
     // support threshold; that is linkage, not verified ownership.
-    if (top) out.push({ label, value: top.value, note: assessment.byId[top.id]?.isSeed ? PROFILE_NOTE_SEED : PROFILE_NOTE_LINKED });
+    if (top) out.push({ label, value: top.value, note: isSeedRow(top) ? PROFILE_NOTE_SEED : PROFILE_NOTE_LINKED });
   }
 
-  // Everything else of those kinds that could have been picked before: same
-  // negative gate, no positive link. Listed by confidence, one line per value.
+  // Everything else in the pool: same gates, no positive link. One line per value.
   const unresolved: ProfileField[] = [];
   const seen = new Set<string>();
-  const labelOf = new Map(PROFILE_CONTACT_KINDS.map((k) => [k.kind, k.label]));
-  const candidates = artifacts
-    .filter((a) => labelOf.has(String(a.kind ?? "").toLowerCase()) && forSubject(reviews, a) && !owned(a))
-    .sort((a, b) => (confOf(reviews, b) ?? 0) - (confOf(reviews, a) ?? 0));
+  const candidates = contacts.filter((a) => !owned(a)).sort(byProfileRank);
   for (const a of candidates) {
     const kind = String(a.kind ?? "").toLowerCase();
     const value = String(a.value ?? "").trim();
