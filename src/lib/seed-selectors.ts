@@ -24,6 +24,7 @@
  * truncated.
  */
 import { attachmentOnlyNames, seedWithoutAttachments } from "@/lib/attachments";
+import { readProviderExport } from "@/lib/provider-export";
 import { detectSeed } from "@/lib/seed";
 
 /** `threads.seed_value` holds the first 200 characters of the first message. */
@@ -50,7 +51,12 @@ const TOKEN_KINDS: ReadonlySet<string> = new Set(["email", "url", "ip", "crypto"
 /** Canonical text of a selector value, for comparison only. */
 function canon(kind: SeedSelectorKind, raw: string): string {
   const v = raw.trim().toLowerCase();
-  if (kind === "phone") return digits(v);
+  if (kind === "phone") {
+    // Same normalisation as the cluster engine's `phoneMergeKey`: only a US
+    // leading 1 is optional. Any other country code is part of the number.
+    const d = digits(v);
+    return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+  }
   if (kind === "username") return v.replace(/^@+/, "");
   if (kind === "url") return v.replace(/\/+$/, "");
   return v;
@@ -64,8 +70,17 @@ export function seedSelectors(seedValue: string | null | undefined): SeedSelecto
   // One selector: the whole-seed path already handles it.
   const whole = detectSeed(typed);
   if (whole && whole.kind !== "other" && whole.kind !== "address") return [];
-  // The stored seed may be cut mid-selector: drop what touches the cut.
-  if (stored.length >= STORED_SEED_MAX && typed === stored) typed = typed.replace(/\S+$/, "");
+  // The stored seed may be cut mid-selector: drop what touches the cut. A phone
+  // holds spaces, so its earlier groups go too, or a cut number's prefix would
+  // read as a shorter number nobody typed.
+  if (stored.length >= STORED_SEED_MAX && typed === stored) {
+    typed = typed.replace(/\S+$/, "").replace(/[+(]?\d[\d\s().-]*$/, "");
+  }
+  // A pasted provider export names the provider's own site and its database as
+  // provenance. Those are not the subject's: read selectors from the scrubbed
+  // text, the same one the case header reads.
+  const exported = readProviderExport(typed);
+  if (exported) typed = exported.scrubbed;
 
   const out: SeedSelector[] = [];
   const seen = new Set<string>();
@@ -107,8 +122,6 @@ export function matchesSeedSelector(row: { kind: string; value: string }, select
     const v = canon(s.kind, String(row.value ?? ""));
     if (!v) continue;
     if (v === s.value) return true;
-    // The same number with and without its country code.
-    if (s.kind === "phone" && v.length >= 10 && s.value.length >= 10 && v.slice(-10) === s.value.slice(-10)) return true;
   }
   return false;
 }

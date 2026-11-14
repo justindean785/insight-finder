@@ -125,4 +125,17 @@ describe("a seed that holds several selectors", () => {
     const report = assessArtifacts([art({ id: "a", value: A })] as never, upload);
     expect(report.byId.a.isSeed).toBe(false);
   });
+
+  it("a name seed still anchors ONE cluster: a namesake record's contacts are not the subject's", () => {
+    // Two records spell the seed's name. They are two people until a selector says otherwise.
+    const rows = [
+      art({ id: "n1", kind: "person", value: "Alex Example", confidence: 70, metadata: { email: "one@example.test" } }),
+      art({ id: "e1", value: "one@example.test", confidence: 70 }),
+      art({ id: "n2", kind: "person", value: "Alex Example", confidence: 70, metadata: { email: "two@example.test" } }),
+      art({ id: "e2", value: "two@example.test", confidence: 70 }),
+    ];
+    const report = assessArtifacts(rows as never, "Alex Example");
+    expect(report.seedClusterIds.length).toBeLessThanOrEqual(1);
+    expect([report.byId.e1.linkedToSeed, report.byId.e2.linkedToSeed].filter(Boolean).length).toBeLessThanOrEqual(1);
+  });
 });

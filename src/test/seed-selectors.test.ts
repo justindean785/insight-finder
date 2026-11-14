@@ -17,7 +17,7 @@ describe("seedSelectors — strong selectors typed into one seed", () => {
       { kind: "username", value: "examplehandle77" },
       { kind: "url", value: "https://example.test/u/sam" },
       { kind: "domain", value: "example.org" },
-      { kind: "phone", value: "15550100100" },
+      { kind: "phone", value: "5550100100" },
     ]);
   });
 
@@ -53,5 +53,29 @@ describe("matchesSeedSelector — kind and value must both match", () => {
     expect(matchesSeedSelector({ kind: "name", value: "examplehandle77" }, sel)).toBe(false);
     expect(matchesSeedSelector({ kind: "username", value: "first@example.test" }, sel)).toBe(false);
     expect(matchesSeedSelector({ kind: "phone", value: "555 010 0199" }, sel)).toBe(false);
+  });
+
+  it("two numbers with different explicit country codes are different numbers", () => {
+    const typed = seedSelectors("first@example.test +1 5550100100");
+    expect(matchesSeedSelector({ kind: "phone", value: "+44 5550100100" }, typed)).toBe(false);
+    expect(matchesSeedSelector({ kind: "phone", value: "555-010-0100" }, typed)).toBe(true);
+    expect(matchesSeedSelector({ kind: "phone", value: "1 (555) 010-0100" }, typed)).toBe(true);
+  });
+});
+
+describe("seedSelectors — text that is not the analyst's selectors", () => {
+  it("a pasted provider export's own site and database are not selectors", () => {
+    const pasted = "=== OATHNET INTELLIGENCE ===\nFound via oathnet.org\nDatabase: example.org\nemail: first@example.test\nphone: +1 555 010 0100";
+    const got = seedSelectors(pasted);
+    expect(got.some((s) => s.kind === "domain")).toBe(false);
+    expect(got.map((s) => s.value)).toContain("first@example.test");
+  });
+
+  it("a spaced phone bisected by the cut leaves no shorter number behind", () => {
+    const head = `first@example.test ${"note ".repeat(40)}`;
+    const cut = (head.slice(0, 200 - 16) + "+44 20 5550 01 00").slice(0, 200);
+    expect(cut.length).toBe(200);
+    expect(seedSelectors(cut).filter((s) => s.kind === "phone")).toEqual([]);
+    expect(seedSelectors(cut).map((s) => s.value)).toContain("first@example.test");
   });
 });

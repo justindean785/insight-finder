@@ -188,8 +188,17 @@ export function assessArtifacts(
   const seedCluster = seedRows.map((a) => clusterOf.get(a.id)).find(Boolean) ?? null;
   // A seed that holds several selectors can sit in several clusters. A row in
   // ANY of them is linked to the subject; its figure stays that cluster's own.
+  // Only a row matched by a TYPED STRONG selector adds a cluster. Rows that
+  // merely equal the whole seed keep the single cluster they always had: with a
+  // name seed those are namesake records, and anchoring each namesake's cluster
+  // would hand its contacts to the subject.
   const seedClusterIds = new Set<string>();
-  for (const a of seedRows) { const c = clusterOf.get(a.id); if (c) seedClusterIds.add(c.id); }
+  if (seedCluster) seedClusterIds.add(seedCluster.id);
+  for (const a of seedRows) {
+    if (!matchesSeedSelector(a, selectors)) continue;
+    const c = clusterOf.get(a.id);
+    if (c) seedClusterIds.add(c.id);
+  }
 
   const items: AgentAssessment[] = rows.map((a) => {
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
