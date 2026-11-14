@@ -24,8 +24,8 @@ All queries are counts only, over `tool_usage_log` unless stated, with `outcome 
 | Claim | Verdict | Citation or query |
 |---|---|---|
 | Limits are 22 steps and 36 calls | CODE-YES | `orchestrator-budget.ts:68` (`MAX_ORCHESTRATOR_STEPS = 22`), `:169` (`MAX_TOOL_CALLS_PER_RUN = 36`) |
-| 106 runs in 10 days, about 5 steps and 8 calls per run | DATA | `select count(*), avg(steps), avg(tool_calls) from (select invocation_id, count(*) steps from orchestrator_step_metrics where created_at > now() - interval '10 days' group by 1) s` (column names must be checked against the live table first) |
-| 62% of runs needed the backup report, 32% forced to finish | DATA | count of `orchestrator_invocations` rows in the window grouped by the salvage and finalize-reason columns. Names not checked. |
+| 106 runs in 10 days, about 5 steps and 8 calls per run | DATA | `select count(*), avg(step_count), avg(tool_call_count) from orchestrator_invocations where created_at > now() - interval '10 days'` (columns per `supabase/migrations/20260908000000_orchestrator_telemetry.sql:18-40`) |
+| 62% of runs needed the backup report, 32% forced to finish | DATA | `select stop_reason, finalize_started, salvage_outcome, count(*) from orchestrator_invocations where created_at > now() - interval '10 days' group by 1,2,3` (`stop_reason` and `finalize_started` per the same migration, `salvage_outcome` per `20261029210000_orchestrator_timing_columns.sql:45`; its values were not read) |
 | About 60k tokens and 16 s per step, context 230k to 620k chars | DATA, and the character figure is a known floor | `orchestrator_step_metrics.context_chars` is fed by `approxPromptChars`, which omits tool schemas and three other terms (traps doc, "Where each number durably lives"). The honest figure is `prompt_size_step`, which is `console.log` only. |
 | Distinct tools per week fell from 72 to 50 after the model change | DATA | `select date_trunc('week', created_at) w, count(distinct tool_name) from tool_usage_log where created_at > now() - interval '35 days' group by 1 order by 1` |
 
@@ -111,7 +111,7 @@ Not proposed: deleting `tools/*.ts`, disabling `reddit_user`, raising `MAX_PAID_
 ## 4. Not checked
 
 - No production query was run. Every count in the forwarded audit is unverified.
-- Table and column names in the queries were not checked against the live schema; the three marked "names not checked" are sketches.
+- Table and column names in the queries were not checked against the live schema. The `orchestrator_*` names come from the repo's migrations, which record intent, not the live schema. The review-table query in 1.4 is a sketch.
 - Which optional keys are unset, so the live tool count and whether HIBP is off.
 - Whether the SocQ, Context.dev, Tavily and Apify secrets exist. #997 and #998 say the first two are "in the vault"; that is the PR author's statement.
 - Whether the pg_cron job exists in the live database, and whether `GRAPH_PIVOTS_ENABLED` is set.
