@@ -400,7 +400,9 @@ describe("promote boundary — CaseReport Identity panel", () => {
   });
 
   it("still presents the clean row — the fix removes authority, not evidence", () => {
-    const rows = buildIdentityRows(FIXTURE);
+    // The seed names this person, which is what makes the clean row the
+    // subject's name (audit A01): being unquarantined is not enough by itself.
+    const rows = buildIdentityRows(FIXTURE, undefined, SEED_VALUE);
     const cleanName = FIXTURE.find((a) => a.id === CLEAN_ID)!;
     expect(rows.some((r) => r.value === cleanName.value && r.field === "Real name")).toBe(true);
   });

@@ -14,7 +14,10 @@ import { effectiveConfidenceOrZero } from "@/lib/display-confidence";
 import { isRejectedReview } from "@/lib/review";
 import { isRejectedArtifact } from "@/lib/analyst-decisions";
 import { isQuarantined } from "@/lib/quarantine";
-import { attachmentOnlyNames } from "@/lib/attachments";
+import { attachmentOnlyNames, seedWithoutAttachments } from "@/lib/attachments";
+// Call-time only, like the intel.ts and quarantine.ts cycles this module already
+// sits in: subject-linkage.ts reads the assessment, which reads the gates here.
+import { readSubjectName } from "@/lib/subject-linkage";
 
 // ---------------------------------------------------------------------------
 // #1 — Deterministic, ASCII-safe cluster IDs.
@@ -548,42 +551,61 @@ function seedContainsName(seedWords: ReadonlySet<string>, name: string): boolean
 }
 
 /**
- * The row the report's "Real name" field names as the subject, exported so every
- * surface that names the subject (the report's Identity panel, the workspace
- * case sheet) picks it by the SAME rule and can never name two different people
- * side by side. Quarantined, collision-flagged and analyst-rejected rows are not
- * candidates; see `pickBestIdentity`.
+ * Does the TYPED seed name this person? Returns the test for one name: true when
+ * every word of the name (two or more) is a whole word of the seed.
  *
- * When the SEED names a person (it contains the full name of any recorded name
- * row, eligible or not), only a name found in the seed may be the subject. A
- * "name, address" seed is stored as kind `other`, so the seed's own name rows
- * can all sit in quarantine; without this rule the best REMAINING name, another
- * person's from a breach record, was shown as the subject (measured on a live
- * case, 2026-11-09). This only withholds a name. It lifts no quarantine.
+ * Only the words the analyst typed count. An upload-started case stores the
+ * "Attached files:" markdown as its seed, and typed text plus an upload stores
+ * the block after the text; a filename is not an analyst-chosen subject, so it
+ * never names anyone. An email or handle seed is one word and names no one.
+ */
+export function seedNameMatcher(seedValue: string | null | undefined): (name: string) => boolean {
+  const typed = seedWithoutAttachments(seedValue ?? null);
+  const seedWords = new Set(attachmentOnlyNames(typed) !== null ? [] : nameWords(typed ?? ""));
+  if (seedWords.size < 2) return () => false;
+  return (name) => seedContainsName(seedWords, name);
+}
+
+/**
+ * The row every surface names as the subject: the report's Subject Profile and
+ * Identity panel, the report's "no established subject name" notice, the
+ * workspace case sheet and the Connections map. One rule, so no two of them can
+ * name different people, or one a name the other withholds.
+ *
+ * The rule is `readSubjectName` (subject-linkage.ts), the positive half of
+ * subject authority (audit A01, 2026-11-13). A name is the subject's only when
+ * the case seed names it or the evidence links it to the seed, and its claim is
+ * not disputed. Until then this returns null: a name that is merely not
+ * quarantined and not rejected is a name in the case, not the subject's.
+ *
+ * It keeps the rule this function had before: when the SEED names a person (it
+ * contains the full name of any recorded name row, eligible or not), only a name
+ * found in the seed may be the subject. A "name, address" seed is stored as kind
+ * `other`, so the seed's own name rows can all sit in quarantine; without it the
+ * best REMAINING name, another person's from a breach record, was shown as the
+ * subject (measured on a live case, 2026-11-09). It lifts no quarantine.
  */
 export function pickSubjectName(
   artifacts: Artifact[],
   reviews?: Record<string, ReviewAdjustment>,
   seedValue?: string | null,
 ): Artifact | null {
-  const kinds = ["name", "person"];
-  // An upload-started case stores the "Attached files:" markdown as its seed. A
-  // filename is not an analyst-chosen subject, so it never constrains the pick.
-  const seedWords = new Set(attachmentOnlyNames(seedValue) !== null ? [] : nameWords(seedValue ?? ""));
-  const seedNamesPerson = seedWords.size >= 2 && artifacts.some(
-    (a) => kinds.includes(String(a.kind ?? "").toLowerCase()) && seedContainsName(seedWords, String(a.value ?? "")),
-  );
-  if (!seedNamesPerson) return pickBestIdentity(artifacts, kinds, reviews);
-  return pickBestIdentity(artifacts.filter((a) => seedContainsName(seedWords, String(a.value ?? ""))), kinds, reviews);
+  return readSubjectName(artifacts, reviews, seedValue).asserted;
 }
 
+/**
+ * `subjectName` is the row `pickSubjectName` chose. A caller that already holds
+ * the reading passes it (null included) so the rule runs once per render; left
+ * out, it is picked here by the same rule.
+ */
 export function buildIdentityRows(
   artifacts: Artifact[],
   reviews?: Record<string, ReviewAdjustment>,
   seedValue?: string | null,
+  subjectName: Artifact | null = pickSubjectName(artifacts, reviews, seedValue),
 ): IdentityRow[] {
   const rows: IdentityRow[] = [];
-  const name = pickSubjectName(artifacts, reviews, seedValue);
+  const name = subjectName;
   if (name) rows.push({ field: "Real name", value: name.value, label: labelForArtifact(name, reviews?.[name.id]) });
 
   const dob = pickBestIdentity(artifacts, ["dob"], reviews);

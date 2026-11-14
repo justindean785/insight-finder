@@ -25,7 +25,7 @@ function art(kind: string, value: string, metadata: Record<string, unknown> = {}
   n += 1;
   return { id: `h${n}`, kind, value, confidence, source: "fixture", created_at: `2026-01-01T00:00:${String(n).padStart(2, "0")}Z`, metadata };
 }
-const model = (items: Artifact[]) => buildCaseSheet(items, {}, tallyAuthority(items, () => "new"));
+const model = (items: Artifact[], seed?: string) => buildCaseSheet(items, {}, tallyAuthority(items, () => "new"), seed);
 
 function navigations(run: () => void): unknown[] {
   const seen: unknown[] = [];
@@ -46,7 +46,8 @@ describe("case sheet handoffs", () => {
 
   it("the subject's chip opens the subject row", () => {
     const name = art("name", "Alex Example", { source_class: ["registry", "social"] }, 80);
-    const m = model([name, art("email", "alex@example.test")]);
+    // The seed names him: a name nothing ties to the seed is not the subject.
+    const m = model([name, art("email", "alex@example.test")], "Alex Example");
     render(<CaseSheetView model={m} hydrated />);
     const subject = screen.getByRole("region", { name: "Subject" });
     const seen = navigations(() => fireEvent.click(within(subject).getByRole("button", { name: /in Evidence/ })));

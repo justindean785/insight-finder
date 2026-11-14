@@ -84,11 +84,14 @@ describe("CaseReport subject surfaces honour quarantine + analyst rejection", ()
   it("control: without quarantine flags or verdicts, every surface picks up the namesake rows", () => {
     const c = renderCase(false);
     const text = c.textContent ?? "";
-    // The cell now also carries the review-state note: a single-source name is a
-    // candidate, not a plain fact (trust-labels). The value itself is unchanged.
+    // The Name is the exception since audit A01 (Name half): it needs positive
+    // linkage to the seed, so a namesake is withheld even with no flag and no
+    // verdict. Both names stay in view, listed as ownership unresolved.
     const nameCell = profileCell(c, "Name") ?? "";
-    expect(nameCell.startsWith("Jordan Vale - Midvale Chamber CEO")).toBe(true);
-    expect(nameCell).toContain("needs review");
+    expect(nameCell).toMatch(/^Not established/);
+    const others = c.querySelector('[data-testid="profile-name-candidates"]')?.textContent ?? "";
+    expect(others).toContain("Jordan Vale - Midvale Chamber CEO");
+    expect(others).toMatch(/ownership unresolved/i);
     expect(profileCell(c, "Aliases / handles")).toContain("jordanvael");
     expect(text).toMatch(/Analyst confidence85%/);
     // With the negatives excluded, only one breach row remains, so the note is
