@@ -66,6 +66,69 @@ success, production deployment 7716608593 on the same SHA. Edge runtime and data
   gate only. Not examined for A01-shaped errors in this change.
 - **Exports.** The markdown/PDF export path was not inspected; this change covers the Report tab.
 - NOT verified: the live case, production data, mobile layout of the new block, export contents.
+  (Superseded in part by the review below.)
+
+### Review of PR #1028 (2026-11-13, requested by JD; reviewer is also the author)
+
+State: `origin/main` `a913e0a` = merge base; PR head was `53f143b`, mergeable, no review decision.
+No other open PR touches the profile code except #593 (conflicting draft, dedupe authority).
+
+- [x] Wider reproduction through the real `CaseReport`, run on `a913e0a` and on `53f143b`
+      (16 synthetic scenarios plus four arrival orders; probe not committed)
+- [x] Audit of the diff against the existing gates
+- [x] Fixes for what the review found in this PR's own code (second commit, see below)
+- [x] Cross-surface read: rail, markdown export, print/PDF
+- [x] Gates re-run on the second commit; browser at 1440×900 and 390×844
+- [ ] JD's ruling on the two rule questions below
+
+Baseline (`a913e0a`) in the wider probe: an unrelated phone, a similar-domain email, a
+"no breach hits" row, a "no results found" row and a rejected-derived phone were each printed as the
+subject's Email or Phone. Email and Phone also changed with arrival order.
+
+Found in `53f143b` and fixed in the second commit (all inside `buildSubjectProfile`):
+- a "no results found" row was listed as an unresolved *contact* → pool applies `isNullResultValue`
+- a contact derived from an analyst-rejected selector was asserted when it also joined the seed →
+  pool applies `rejectedDerivedIds`; such a row is in neither list, like a rejected row
+- a linked email with a higher score displaced the seed email → seed ranks first
+- two linked contacts on equal confidence were picked by arrival order → value is the tie-break
+- `topByConfidence` is back to its `main` signature; the Name path is byte-for-byte untouched
+- `subject-linkage.ts`: rule unchanged; the comment no longer claims a release reaches ownership
+- 6 tests added (16 in the component file); each new gate fails exactly one test when removed
+
+Open, needs JD's ruling (both change the rule JD dictated, so neither was changed):
+- **Released quarantine.** A row released with "Confirm linkage to subject" (`linkage_confirmed`)
+  that has no cluster link to the seed reads "ownership unresolved". Raised by Devin Review;
+  reproduced. Pinned by a test named as current behaviour.
+- **Conflict flag.** A row with `metadata.conflict === true` that joins the seed is asserted as
+  "Linked to the subject". The rule excludes only `quarantined`. No frontend or edge code writes
+  that flag on a contact row (only the dev mock, on location/contradiction rows); whether production
+  rows carry it was not measured.
+
+Not blockers, unchanged from `main`:
+- **Name field.** `topByConfidence(["name","person"])`: an unrelated same-kind row can be the
+  profile's Name (labelled "Candidate — needs review"), and a tie is settled by arrival order.
+- **Composite seed.** Reproduced: with a two-email seed, both emails read unresolved and no Email
+  is asserted.
+- Two different people's records that both carry the seed email put both phones in the seed
+  cluster; one is shown as linked, the other is in Evidence only.
+
+Gates on `efacd2f` (the second commit), with wall time:
+- `npm run typecheck`: pass (11 s)
+- `npm run lint`: 0 errors, 8 warnings, the same 8 as `main` (8 s)
+- `npx vitest run`: 295 files, 3468 passed, 1 skipped, 0 failed (55 s)
+- `npm run build`: pass, no `harness.local` in `dist/` (6 s)
+- `npm run test:e2e`: 128 passed, 12 skipped, 0 failed (152 s). PR CI skips this job.
+- browser, harness Report tab: 1440×900 and 390×844 after a reload, block inside the viewport, no
+  horizontal scroll; a 162-character selector wraps inside the block at 390 px. Screenshots taken
+  at both sizes, not committed. A resize without a reload gave a false 86 px reading.
+
+Cross-surface:
+- rail: reads the same `assessArtifacts`; in the harness it reports 1 linked finding and the profile
+  asserts the same 1 phone
+- markdown export (`buildReportMarkdown`): names the subject by the seed selector only; no profile
+  contact fields found by grep, so no contradiction of this kind. Read by grep, not by running an export.
+- print/PDF: prints `CaseReport` as displayed, so it carries the fix
+- Evidence ledger, inspector, Graph, Overview: not compared row by row
 
 ---
 
