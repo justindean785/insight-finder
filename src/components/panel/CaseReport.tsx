@@ -771,18 +771,18 @@ const PROFILE_UNRESOLVED_LIMIT = 8;
 const PROFILE_NAME_GROUPS: ReadonlyArray<Pick<ProfileNameGroup, "key" | "heading" | "footnote">> = [
   {
     key: "linked",
-    heading: "Names linked to the subject · not reconciled",
-    footnote: "Each links to the subject, but nothing settles which is the subject's own name. One may be an alias; one may be another person.",
+    heading: "Names tied to the subject · not reconciled",
+    footnote: "Tied to the subject by the case seed or a shared record, but not reconciled into one name. One may be an alias; one may be another person.",
   },
   {
     key: "disputed",
-    heading: "Names linked to the subject · claim disputed",
-    footnote: "Linked to the subject, but the case record contradicts the claim. Not stated as the subject's name until the conflict is resolved.",
+    heading: "Names tied to the subject · claim disputed",
+    footnote: "Tied to the subject, but the case record contradicts the claim. Not stated as the subject's name until the conflict is resolved.",
   },
   {
     key: "unresolved",
     heading: "Other names in this case · ownership unresolved",
-    footnote: "Recorded in the case, but nothing links these to the subject. They may belong to someone else.",
+    footnote: "Recorded in the case, but no link to the subject clears the support bar. They may belong to someone else.",
   },
 ];
 
@@ -847,7 +847,7 @@ function buildSubjectProfile(
     out.push({
       label: "Name",
       value: "Not established",
-      note: `${otherNames} name${otherNames === 1 ? "" : "s"} recorded in this case; none is established as the subject's.`,
+      note: `${otherNames} name${otherNames === 1 ? "" : "s"} listed below; none is established as the subject's.`,
       unset: true,
     });
   }

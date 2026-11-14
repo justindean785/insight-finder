@@ -130,8 +130,9 @@ export type SubjectNameReading = {
  *     from a rejected selector; not a "no results" row.
  *  2. A name is tied to the subject on one of two bases:
  *       seed   - the analyst typed it: the row equals the whole seed (`isSeed`),
- *                or every word of it is a whole word of the typed seed
- *                (`seedNameMatcher`);
+ *                or its words appear together and in order in the typed seed
+ *                (`seedNameMatcher`). A name row that merely repeats a selector
+ *                seed (a display name equal to the handle) is not a name;
  *       linked - `profileOwnership` says the row is the subject's by linkage.
  *  3. A tied name whose claim the case record disputes (the assessment's
  *     `conflict` group) is never asserted. Its tie is kept; it is listed apart.
@@ -164,15 +165,22 @@ export function readSubjectName(
   type Name = { standing: ProfileStanding; seedNamed: boolean; wholeSeed: boolean; rows: Array<{ row: Artifact; standing: ProfileStanding }> };
   const names = new Map<string, Name>();
   let seedNamesPerson = false;
+  // A selector seed (a handle, an email) that some non-name row repeats. A NAME
+  // row that equals it is a display name echoing the handle, not a person's name.
+  const selectorSeed = artifacts.some(
+    (a) => !NAME_KINDS.has(String(a.kind ?? "").toLowerCase()) && assessment.byId[a.id]?.isSeed === true,
+  );
   for (const a of artifacts) {
     const kind = String(a.kind ?? "").toLowerCase();
     if (!NAME_KINDS.has(kind)) continue;
     const value = String(a.value ?? "");
     const assessed = assessment.byId[a.id];
-    const wholeSeed = assessed?.isSeed === true;
+    const canon = canonical(kind, value);
+    const echo = assessed?.isSeed === true && selectorSeed;
+    const wholeSeed = assessed?.isSeed === true && !echo;
     // Compare the canonical name, as the grouping below does: "Sam Example (age
     // 41)" is the name "Sam Example", and the annotation's words are not in the seed.
-    const seedNamed = wholeSeed || namedInSeed(canonical(kind, value) || value);
+    const seedNamed = wholeSeed || namedInSeed(canon || value);
     // Read from EVERY name row, eligible or not: a seed whose own name sits in
     // quarantine still names that person, and nobody else takes the place.
     if (seedNamed) seedNamesPerson = true;
@@ -180,11 +188,16 @@ export function readSubjectName(
     // `canonical` strips a trailing parenthetical, so a value that is ONLY an
     // annotation ("(redacted)") has no canonical form. It is still a row in the
     // case: key it by its own text so it is listed, never silently dropped.
-    const key = (canonical(kind, value) || value.trim().toLowerCase()).replace(/\s+/g, " ");
+    const key = (canon || value.trim().toLowerCase()).replace(/\s+/g, " ");
     if (!key) continue;
-    const standing: ProfileStanding = seedNamed
-      ? (assessed?.group === "conflict" ? "disputed" : "subject")
-      : profileStanding(assessed);
+    // An annotation-only value and a handle echo are rows in the case, never a
+    // name tied to the subject: listed as unresolved, never asserted, and never
+    // counted against the real linked name.
+    const standing: ProfileStanding = !canon || echo
+      ? "unresolved"
+      : seedNamed
+        ? (assessed?.group === "conflict" ? "disputed" : "subject")
+        : profileStanding(assessed);
     const name = names.get(key) ?? { standing: "unresolved" as ProfileStanding, seedNamed: false, wholeSeed: false, rows: [] };
     // One disputed row disputes the name; otherwise one tied row ties it.
     if (standing === "disputed" || (standing === "subject" && name.standing === "unresolved")) name.standing = standing;
@@ -201,13 +214,17 @@ export function readSubjectName(
   const all = Array.from(names.values());
   const tied = all.filter((n) => n.standing === "subject");
   const seedNamed = tied.filter((n) => n.seedNamed).sort((a, b) => Number(b.wholeSeed) - Number(a.wholeSeed) || byName(a, b));
+  // Every name the seed ties to the subject, disputed ones included.
+  const seedNamedAll = all.filter((n) => n.seedNamed && n.standing !== "unresolved");
   const linkedOnly = tied.filter((n) => !n.seedNamed);
   // Every name the linkage ties to the subject, disputed ones included.
   const linkedByOwnership = all.filter((n) => !n.seedNamed && n.standing !== "unresolved").length;
 
   let asserted: Name | null = null;
   let basis: SubjectNameBasis | null = null;
-  if (seedNamed.length > 0) {
+  // The whole seed is the analyst's own subject. Otherwise one name the seed
+  // names is asserted; two are not reconciled by score, like two linked names.
+  if (seedNamed.length > 0 && (seedNamed[0].wholeSeed || seedNamedAll.length === 1)) {
     asserted = seedNamed[0];
     basis = "seed";
   } else if (!seedNamesPerson && linkedOnly.length === 1 && linkedByOwnership === 1) {

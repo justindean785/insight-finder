@@ -447,7 +447,42 @@ describe("CaseReport Subject Profile Name requires positive subject linkage (aud
     ];
     const c = renderCase(rows, { seed: "Alex Example", seedType: "name" });
     expect(profileCell(c, "Name")).toBe("Alex ExampleSupplied as the case seed");
-    expect(group(c, "linked")).toContain("Example Alex");
+    // The seed's words in another order are not the name the seed names.
+    expect(group(c, "unresolved")).toContain("Example Alex");
+  });
+
+  it("a name assembled from scattered seed words is not named in the seed", () => {
+    // "Lee" is the street, "Example" the surname: a household member's name.
+    const rows = [art({ id: "typed", value: "Sam Example", confidence: 50 }), art({ id: "relative", value: "Lee Example", confidence: 85 })];
+    const c = renderCase(rows, { seed: "Sam Example, 12 Lee St, Springfield", seedType: "other" });
+    expect((profileCell(c, "Name") ?? "").startsWith("Sam Example")).toBe(true);
+    expect(group(c, "unresolved")).toContain("Lee Example");
+  });
+
+  it("two different names the seed names are not reconciled by score", () => {
+    const rows = [art({ id: "a", value: "Sam Example", confidence: 50 }), art({ id: "b", value: "Alex Other", confidence: 90 })];
+    const c = renderCase(rows, { seed: "Sam Example and Alex Other", seedType: "other" });
+    expectNoName(c);
+    expect(group(c, "linked")).toContain("Sam Example");
+    expect(group(c, "linked")).toContain("Alex Other");
+  });
+
+  it("a display name that repeats a handle seed is not the subject's name", () => {
+    const rows = [
+      art({ id: "h", kind: "username", value: "examplehandle77", confidence: 60 }),
+      art({ id: "echo", kind: "name", value: "examplehandle77 (profile display name)", confidence: 70 }),
+      art({ id: "real", kind: "person", value: "Sam Example", confidence: 80, metadata: { username: "examplehandle77", source_category: ["social"] } }),
+    ];
+    const c = renderCase(rows, { seed: "examplehandle77", seedType: "username" });
+    expect(profileCell(c, "Name") ?? "").not.toContain("examplehandle77");
+    expect(group(c, "unresolved")).toContain("examplehandle77");
+  });
+
+  it("an annotation-only name on a linked record is never tied to the subject", () => {
+    const rows = [seedEmail(), linked("anno", "(redacted)", 80), linked("real", "Sam Example", 80)];
+    const c = renderCase(rows);
+    expect((profileCell(c, "Name") ?? "").startsWith("Sam Example")).toBe(true);
+    expect(group(c, "unresolved")).toContain("(redacted)");
   });
 
   it("two equal rows of the linked name: the DOB shown does not depend on arrival order", () => {

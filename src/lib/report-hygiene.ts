@@ -541,18 +541,9 @@ function nameWords(text: string): string[] {
 }
 
 /**
- * True when every word of `name` (two or more) is a whole word of the seed: the
- * analyst typed this person as the case's subject. Structural, never prose
- * inference; one shared word (a surname) is not enough.
- */
-function seedContainsName(seedWords: ReadonlySet<string>, name: string): boolean {
-  const words = nameWords(name);
-  return words.length >= 2 && words.every((w) => seedWords.has(w));
-}
-
-/**
  * Does the TYPED seed name this person? Returns the test for one name: true when
- * every word of the name (two or more) is a whole word of the seed.
+ * the name's words (two or more) appear in the seed as whole words, together and
+ * in order.
  *
  * Only the words the analyst typed count. An upload-started case stores the
  * "Attached files:" markdown as its seed, and typed text plus an upload stores
@@ -561,9 +552,20 @@ function seedContainsName(seedWords: ReadonlySet<string>, name: string): boolean
  */
 export function seedNameMatcher(seedValue: string | null | undefined): (name: string) => boolean {
   const typed = seedWithoutAttachments(seedValue ?? null);
-  const seedWords = new Set(attachmentOnlyNames(typed) !== null ? [] : nameWords(typed ?? ""));
-  if (seedWords.size < 2) return () => false;
-  return (name) => seedContainsName(seedWords, name);
+  const seq = attachmentOnlyNames(typed) !== null ? [] : nameWords(typed ?? "");
+  if (seq.length < 2) return () => false;
+  // The name's words must appear TOGETHER and IN ORDER. A bag-of-words test let
+  // "Lee Example" pass for a "Sam Example, 12 Lee St" seed: a household member
+  // assembled from the street and the surname. That was harmless while this only
+  // WITHHELD names; it is not once a match asserts one.
+  return (name) => {
+    const words = nameWords(name);
+    if (words.length < 2) return false;
+    for (let i = 0; i + words.length <= seq.length; i++) {
+      if (words.every((w, j) => seq[i + j] === w)) return true;
+    }
+    return false;
+  };
 }
 
 /**
