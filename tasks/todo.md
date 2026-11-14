@@ -1,5 +1,137 @@
 # tasks/todo.md — remediation workstream (audit 2026-10-10)
 
+## Production audit 2026-11-13 — remediation (approved by JD 2026-11-13)
+
+Source: the 2026-11-13 production audit and its deeper-trace addendum (kept outside the repo; they
+describe a real case). Five stages, evidence integrity first. One PR per behaviour change; frontend,
+edge and schema ship separately.
+
+Baseline re-measured 2026-11-13 (not taken from the audit): `origin/main` `a913e0a`, CI on it
+success, production deployment 7716608593 on the same SHA. Edge runtime and database were NOT probed.
+
+- [x] Refresh main, production deployment and open-PR status
+- [x] Review #882 and #1027 for overlap. #882 is a conflicting draft (last push 2026-10-26) touching
+      pivot-queue files only; it matters for stage 3, not stage 1. #1027 touches `CaseSheet` and
+      `assessment-sheet` only. Neither touches `CaseReport`'s subject picker.
+- [x] Reproduce A01 through the real `CaseReport` with synthetic data
+- [x] Stage 1, PR 1 (frontend) — A01, contact fields only: Email / Phone / Address in the Subject
+      Profile require positive subject linkage. Branch `claude/insight-finder-audit-fixes-ef66dc`.
+  - rule: `profileOwnership` in `src/lib/subject-linkage.ts`. In order: no assessment or
+    `group === "quarantined"` → unresolved; `isSeed` → subject; `linkedToSeed` with a non-null
+    `subjectLinkage >= SUPPORTED_LINKAGE_MIN` → subject; everything else → unresolved. It reads the
+    existing agent assessment (`assessArtifacts`); it adds no linkage rule, and reads neither the
+    review verdict nor the artifact's confidence.
+  - surface: `buildSubjectProfile` in `src/components/panel/CaseReport.tsx`. An asserted field says
+    its basis ("Supplied as the case seed" / "Linked to the subject · ownership not independently
+    verified"). Contacts that fail the rule are listed apart under "Other contacts in this case ·
+    ownership unresolved", capped at 8 with the remainder counted.
+  - tests: `src/test/subject-linkage.test.ts` (12), `src/test/case-report-subject-profile-linkage.test.tsx` (10)
+- [ ] Stage 1 remainder — the profile's **Name** still uses `topByConfidence` (negative gate only),
+      not `pickSubjectName`. The Subject Profile is NOT fully fixed until this lands.
+- [ ] Stage 2 (frontend) — multiple-seed parsing. `seedForms` in `agent-assessment.ts` matches only
+      the whole seed string, so a two-email seed recognises neither email as the seed.
+- [ ] Stage 3 (frontend, then edge/schema only if needed) — shared pivot-history state for chat and
+      rail, explicit loading/failed reads, completion tied to the invocation. Review #882 first.
+- [ ] Stage 4 (frontend) — one definition each for corroboration, analyst confirmation, source
+      independence and count scope (A02/A03/A06/A07). Do not collapse the three source metrics.
+- [ ] Stage 5 (edge, then frontend) — shared-hosting attribution restriction on derived artifacts,
+      selector-kind validation, compact pivot outcome.
+
+### Results (PR 1, measured 2026-11-13 in this worktree with its own `npm ci`)
+
+- typecheck (`npm run typecheck`): pass
+- lint: 0 errors, 8 warnings; the same 8 as before the change (3 in `CaseReport.tsx` are the
+  existing react-refresh warnings on exported helpers, shifted two lines by the new imports)
+- vitest, full frontend: 295 files, 3462 passed, 1 skipped, 0 failed
+- `npm run build`: pass; no `harness.local` in `dist/`
+- `npm run test:e2e`: 128 passed, 12 skipped, 0 failed (same as the run before the fix)
+- no baseline failures were observed in any gate
+
+- reproduction: on unmodified `a913e0a`, 4 of the first 5 assertions failed (associate email,
+  address and phone all printed as the subject's)
+- mutation check: removing quarantine precedence, the threshold, or the seed-link requirement each
+  fails at least one test
+- browser (harness, 1024×768, Report tab, read from the DOM): seed email carries the seed note, the
+  record-joined phone carries the linked note, 8 unlinked contacts sit under "ownership unresolved"
+
+### Known limits (measured, not assumed)
+
+- **Composite seeds.** On a case whose seed holds two emails (the audited live case), no row is
+  recognised as the seed until stage 2, so every contact reads "ownership unresolved". That is
+  honest, but the profile is emptier there than it will be after stage 2.
+- **Name field.** Unchanged, see above.
+- **60 is a rung, not a probability.** `SUPPORTED_LINKAGE_MIN` is the app's "supported" threshold.
+  A record-joined contact scores exactly 60 today; any change to cluster scoring moves this surface.
+- **Other subject surfaces** (aliases, digital footprint, breach count, risk) still use the negative
+  gate only. Not examined for A01-shaped errors in this change.
+- **Exports.** The markdown/PDF export path was not inspected; this change covers the Report tab.
+- NOT verified: the live case, production data, mobile layout of the new block, export contents.
+  (Superseded in part by the review below.)
+
+### Review of PR #1028 (2026-11-13, requested by JD; reviewer is also the author)
+
+State: `origin/main` `a913e0a` = merge base; PR head was `53f143b`, mergeable, no review decision.
+No other open PR touches the profile code except #593 (conflicting draft, dedupe authority).
+
+- [x] Wider reproduction through the real `CaseReport`, run on `a913e0a` and on `53f143b`
+      (16 synthetic scenarios plus four arrival orders; probe not committed)
+- [x] Audit of the diff against the existing gates
+- [x] Fixes for what the review found in this PR's own code (second commit, see below)
+- [x] Cross-surface read: rail, markdown export, print/PDF
+- [x] Gates re-run on the second commit; browser at 1440×900 and 390×844
+- [ ] JD's ruling on the two rule questions below
+
+Baseline (`a913e0a`) in the wider probe: an unrelated phone, a similar-domain email, a
+"no breach hits" row, a "no results found" row and a rejected-derived phone were each printed as the
+subject's Email or Phone. Email and Phone also changed with arrival order.
+
+Found in `53f143b` and fixed in the second commit (all inside `buildSubjectProfile`):
+- a "no results found" row was listed as an unresolved *contact* → pool applies `isNullResultValue`
+- a contact derived from an analyst-rejected selector was asserted when it also joined the seed →
+  pool applies `rejectedDerivedIds`; such a row is in neither list, like a rejected row
+- a linked email with a higher score displaced the seed email → seed ranks first
+- two linked contacts on equal confidence were picked by arrival order → value is the tie-break
+- `topByConfidence` is back to its `main` signature; the Name path is byte-for-byte untouched
+- `subject-linkage.ts`: rule unchanged; the comment no longer claims a release reaches ownership
+- 6 tests added (16 in the component file); each new gate fails exactly one test when removed
+
+Open, needs JD's ruling (both change the rule JD dictated, so neither was changed):
+- **Released quarantine.** A row released with "Confirm linkage to subject" (`linkage_confirmed`)
+  that has no cluster link to the seed reads "ownership unresolved". Raised by Devin Review;
+  reproduced. Pinned by a test named as current behaviour.
+- **Conflict flag.** A row with `metadata.conflict === true` that joins the seed is asserted as
+  "Linked to the subject". The rule excludes only `quarantined`. No frontend or edge code writes
+  that flag on a contact row (only the dev mock, on location/contradiction rows); whether production
+  rows carry it was not measured.
+
+Not blockers, unchanged from `main`:
+- **Name field.** `topByConfidence(["name","person"])`: an unrelated same-kind row can be the
+  profile's Name (labelled "Candidate — needs review"), and a tie is settled by arrival order.
+- **Composite seed.** Reproduced: with a two-email seed, both emails read unresolved and no Email
+  is asserted.
+- Two different people's records that both carry the seed email put both phones in the seed
+  cluster; one is shown as linked, the other is in Evidence only.
+
+Gates on `efacd2f` (the second commit), with wall time:
+- `npm run typecheck`: pass (11 s)
+- `npm run lint`: 0 errors, 8 warnings, the same 8 as `main` (8 s)
+- `npx vitest run`: 295 files, 3468 passed, 1 skipped, 0 failed (55 s)
+- `npm run build`: pass, no `harness.local` in `dist/` (6 s)
+- `npm run test:e2e`: 128 passed, 12 skipped, 0 failed (152 s). PR CI skips this job.
+- browser, harness Report tab: 1440×900 and 390×844 after a reload, block inside the viewport, no
+  horizontal scroll; a 162-character selector wraps inside the block at 390 px. Screenshots taken
+  at both sizes, not committed. A resize without a reload gave a false 86 px reading.
+
+Cross-surface:
+- rail: reads the same `assessArtifacts`; in the harness it reports 1 linked finding and the profile
+  asserts the same 1 phone
+- markdown export (`buildReportMarkdown`): names the subject by the seed selector only; no profile
+  contact fields found by grep, so no contradiction of this kind. Read by grep, not by running an export.
+- print/PDF: prints `CaseReport` as displayed, so it carries the fix
+- Evidence ledger, inspector, Graph, Overview: not compared row by row
+
+---
+
 ## Adaptive evidence workflow — Stage 1 (approved 2026-10-25)
 
 Base: `origin/main` `70766fce`. PR #872 (Table inspector) is untouched and still Request Changes.
