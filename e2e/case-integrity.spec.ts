@@ -321,6 +321,64 @@ test.describe("report readiness and exports", () => {
   });
 });
 
+// Audit A01, Name half. Synthetic scenario `names`: the strongest row in the
+// case is a name nothing ties to the seed, and the one linked name is disputed.
+// Before the fix the Subject Profile and the Identity panel printed the stranger.
+test.describe("the subject's name needs a tie to the seed, on every surface", () => {
+  test("no surface names a person the case cannot tie to the seed", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, `${THREAD}?scenario=names`);
+
+    // The rail's case sheet anchors on the seed and says no name holds.
+    const sheetSubject = page.getByRole("region", { name: "Subject" });
+    await expect(sheetSubject).toContainText("No name holds for the subject yet");
+    await expect(sheetSubject).not.toContainText("Robin Stranger");
+
+    await page.getByRole("tab", { name: /Report/ }).click();
+    const report = page.locator("#case-report-print-root");
+    await expect(report.locator("[data-report-subject-refused]")).toBeVisible();
+
+    // The Subject Profile says so in the field, and keeps every name in view.
+    const names = report.getByTestId("profile-name-candidates");
+    await expect(report.getByText("Not established", { exact: true })).toBeVisible();
+    await expect(names.locator('[data-name-group="disputed"]')).toContainText("Jamie Harker");
+    await expect(names.locator('[data-name-group="unresolved"]')).toContainText("Robin Stranger");
+    await expect(names.locator('[data-name-group="unresolved"]')).toContainText("Avery Other");
+    // A stranger's date of birth is not the subject's.
+    await expect(report.getByText("DOB / Age", { exact: true })).toHaveCount(0);
+
+    // The Identity panel on the same page names nobody either.
+    await expect(report.getByRole("cell", { name: "Real name", exact: true })).toHaveCount(0);
+
+    // The contact the record does join to the seed is still asserted, as linked.
+    await expect(report.getByText("+1 (555) 010-4477").first()).toBeVisible();
+    await expect(report.getByText(/Linked to the subject · ownership not independently verified/).first()).toBeVisible();
+  });
+
+  test("Connections does not open an untied name as the subject", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, `${THREAD}?scenario=names`);
+    await page.getByRole("tablist", { name: "Workbench" }).getByRole("tab", { name: "Connections" }).click();
+    await expect(page.getByText("Subject name · automatic evidence map")).toHaveCount(0);
+    await expect(page.getByText("Pick an entity below, or select a node in the Graph.")).toBeVisible();
+  });
+
+  test("390px: the name lists fit the viewport with no horizontal scroll", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await open(page, `${THREAD}?scenario=names`);
+    await page.getByRole("tab", { name: /Report/ }).click();
+    const names = page.locator("#case-report-print-root").getByTestId("profile-name-candidates");
+    await names.scrollIntoViewIfNeeded();
+    await expect(names).toBeVisible();
+    const box = await names.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+  });
+});
+
 test.describe("12 · mobile 390px", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 

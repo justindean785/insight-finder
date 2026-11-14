@@ -215,9 +215,10 @@ describe("CaseReport Subject Profile requires positive subject linkage (audit A0
     expect(seen.size).toBe(1);
   });
 
-  it("CURRENT BEHAVIOUR, ruling pending: a released quarantine with no link to the seed stays unresolved", () => {
+  it("decision A: a released quarantine with no link to the seed stays unresolved", () => {
     // `linkage_confirmed` clears the quarantine; it does not join the row to the
-    // seed. Whether an explicit release should assert ownership is JD's ruling.
+    // seed. JD's ruling (2026-11-13): a release does not establish that the row
+    // belongs to the subject.
     const c = renderCase([
       ...fixture(),
       art({ id: "rel", kind: "phone", value: "+15555550155", confidence: 80, metadata: { subject_unlinked: true, linkage_confirmed: true, linkage_confirmed_at: "2026-11-13T00:00:00Z" } }),

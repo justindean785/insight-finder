@@ -229,8 +229,12 @@ describe("Connections tab", () => {
   });
 
   it("opens the derived subject name automatically and shows exact source-record associations without a review action", () => {
+    // The name sits on a record that carries the seed email, so it is the
+    // subject's by linkage. A name nothing ties to the seed is not opened as the
+    // subject (next test).
     const items = [
-      art("name", "Jane Sample", null, 80),
+      art("email", "seed@example.test", null, 70),
+      art("name", "Jane Sample", { email: "seed@example.test" }, 80),
       art("phone", "+1 (555) 010-4477", { name_in_breach: "Jane Sample", email_associated: "jane@example.test" }),
       art("email", "jane@example.test"),
       art("username", "jane_sample", { email_associated: "jane@example.test" }),
@@ -243,6 +247,19 @@ describe("Connections tab", () => {
     expect(within(selected).getByRole("button", { name: /\+1 \(555\) 010-4477/ })).toBeTruthy();
     expect(selected.textContent).toContain("NAME_RECORD: name_in_breach");
     expect(selected.textContent).toContain("not identity confirmation");
+  });
+
+  it("does not open a name nothing ties to the seed as the subject", () => {
+    const items = [
+      art("name", "Jane Sample", null, 80),
+      art("phone", "+1 (555) 010-4477", { name_in_breach: "Jane Sample", email_associated: "jane@example.test" }),
+      art("email", "jane@example.test"),
+    ];
+    renderWorkbench(items);
+    fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
+    expect(screen.queryByRole("region", { name: "Selected entity" })).toBeNull();
+    expect(screen.queryByText(/Subject name · automatic evidence map/)).toBeNull();
+    expect(screen.getByText(/Pick an entity below/)).toBeTruthy();
   });
 
   it("a zero-hit lookup is disclosed as a clean check, not listed or counted as an unlinked candidate", () => {

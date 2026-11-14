@@ -173,11 +173,13 @@ describe("#478 — the Identity panel honours verdicts", () => {
   // `buildIdentityClusters` (intel.ts:1865) already settled the semantics: a
   // dismissed/wrong row may not seed or strengthen identity. It is excluded.
   it("a rejected name does not occupy Real name at all", () => {
+    // The seed names her, so she is the subject's name until the analyst rejects
+    // the row. (An unlinked name is not a Real name at all since audit A01.)
     const name = art({ id: "z1", kind: "name", value: "Jane Doe", confidence: 85 });
-    const plain = buildIdentityRows([name] as never);
+    const plain = buildIdentityRows([name] as never, undefined, "Jane Doe");
     expect(plain.find((r) => r.field === "Real name")?.value).toBe("Jane Doe");
 
-    const reviewed = buildIdentityRows([name] as never, { z1: "wrong" });
+    const reviewed = buildIdentityRows([name] as never, { z1: "wrong" }, "Jane Doe");
     expect(reviewed.find((r) => r.field === "Real name")).toBeUndefined();
   });
 
@@ -252,15 +254,26 @@ const bonused = (id: string, confidence: number) =>
     metadata: { sources: ["github_user", "whois_lookup", "dns_records"] },
   });
 
+// Both names sit on a record that carries the seed email, so each is linked to
+// the subject. `renderReport`'s seed is the same address.
+const SEED_EMAIL = "subject@example.com";
+const linkedNames = (badId: string, goodId: string) => [
+  art({ id: `${badId}-seed`, kind: "email", value: SEED_EMAIL, confidence: 70, source: "whois_lookup", metadata: null }),
+  art({ id: badId, kind: "name", value: "Rejected Name", confidence: 90, source: "whois_lookup", metadata: { email: SEED_EMAIL } }),
+  art({ id: goodId, kind: "name", value: "Valid Name", confidence: 70, source: "whois_lookup", metadata: { email: SEED_EMAIL } }),
+];
+
 describe("#495 finding A — a rejected row may not WIN an identity field", () => {
   it("a rejected higher-confidence name loses to a valid lower-confidence one", () => {
-    const bad = plain("n-bad", "name", "Rejected Name", 90);
-    const good = plain("n-good", "name", "Valid Name", 60);
+    const [seedRow, bad, good] = linkedNames("n-bad", "n-good");
 
-    const unreviewed = buildIdentityRows([bad, good] as never);
-    expect(unreviewed.find((r) => r.field === "Real name")?.value).toBe("Rejected Name");
+    // Two different names linked to the seed are not reconciled by score (audit
+    // A01), so the higher one does not win while both stand.
+    const unreviewed = buildIdentityRows([seedRow, bad, good] as never, undefined, SEED_EMAIL);
+    expect(unreviewed.find((r) => r.field === "Real name")).toBeUndefined();
 
-    const reviewed = buildIdentityRows([bad, good] as never, { "n-bad": "wrong" });
+    // Rejecting one leaves a single linked name: the verdict reached the picker.
+    const reviewed = buildIdentityRows([seedRow, bad, good] as never, { "n-bad": "wrong" }, SEED_EMAIL);
     expect(reviewed.find((r) => r.field === "Real name")?.value).toBe("Valid Name");
   });
 
@@ -273,12 +286,11 @@ describe("#495 finding A — a rejected row may not WIN an identity field", () =
   });
 
   it("the Subject Profile picks a valid name over a rejected one", () => {
-    const bad = plain("s-bad", "name", "Rejected Name", 90);
-    const good = plain("s-good", "name", "Valid Name", 60);
+    const [seedRow, bad, good] = linkedNames("s-bad", "s-good");
     // "dismissed", NOT "wrong": `wrong` carries a -40 delta that demotes the row
     // by arithmetic alone, so this would pass without the selection fix. Only
     // `dismissed` (delta 0) isolates the picker defect.
-    const container = renderReport([bad, good], { "s-bad": "dismissed" });
+    const container = renderReport([seedRow, bad, good], { "s-bad": "dismissed" });
 
     const labels = Array.from(container.querySelectorAll("span"));
     const nameLabel = labels.find((s) => s.textContent?.trim() === "Name");
@@ -288,8 +300,10 @@ describe("#495 finding A — a rejected row may not WIN an identity field", () =
   it("with no verdicts the pickers are unchanged — pre-#478 behaviour", () => {
     const bad = plain("u-bad", "name", "Higher", 90);
     const good = plain("u-good", "name", "Lower", 60);
-    expect(buildIdentityRows([bad, good] as never, {}).find((r) => r.field === "Real name")?.value)
-      .toBe(buildIdentityRows([bad, good] as never).find((r) => r.field === "Real name")?.value);
+    // The seed names "Lower", so there is a pick for an empty verdict map to leave alone.
+    const withEmptyMap = buildIdentityRows([bad, good] as never, {}, "Lower").find((r) => r.field === "Real name")?.value;
+    expect(withEmptyMap).toBe("Lower");
+    expect(buildIdentityRows([bad, good] as never, undefined, "Lower").find((r) => r.field === "Real name")?.value).toBe(withEmptyMap);
   });
 });
 

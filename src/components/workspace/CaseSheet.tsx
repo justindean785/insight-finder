@@ -147,7 +147,7 @@ export function CaseSheetView({
               </div>
             )}
             <p className="text-[13px] leading-snug text-muted-foreground">
-              No name holds for the subject yet. Quarantined and rejected names are never used here.
+              No name holds for the subject yet. A name is used here only when the case seed names it or evidence links it to the seed; quarantined and rejected names never are.
             </p>
           </>
         )}

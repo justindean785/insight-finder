@@ -101,8 +101,12 @@ export const LINKAGE_ATTENTION_BELOW = 70;
 
 const TIER_WORDS: ReadonlySet<string> = new Set(["confirmed", "likely", "possible", "weak", "unverified"]);
 
-/** Same canonicalisation `useThreadArtifacts` applies before dedup, kept local so the seed match needs no hook import. */
-function canonical(kind: string, raw: string): string {
+/**
+ * Same canonicalisation `useThreadArtifacts` applies before dedup, kept local so the seed match needs no hook import.
+ * Exported so a surface that groups rows by value (the report's Name) calls two
+ * rows the same name exactly when the seed match here would.
+ */
+export function canonical(kind: string, raw: string): string {
   const v = (raw ?? "").trim().toLowerCase();
   const k = kind.toLowerCase();
   if (!v) return v;

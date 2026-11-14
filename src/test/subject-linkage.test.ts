@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { assessArtifacts, SUPPORTED_LINKAGE_MIN, type AgentAssessment } from "@/lib/agent-assessment";
-import { profileOwnership } from "@/lib/subject-linkage";
+import { profileOwnership, profileStanding } from "@/lib/subject-linkage";
 
 /**
  * Audit A01: the positive ownership rule behind the Subject Profile's contact
@@ -117,5 +117,45 @@ describe("profileOwnership — on real assessArtifacts output", () => {
     const r = assessArtifacts([seedRow, phone], SEED);
     expect(r.byId.phone.subjectLinkage).toBeNull();
     expect(profileOwnership(r.byId.phone)).toBe("unresolved");
+  });
+});
+
+/**
+ * Decision B (JD, 2026-11-13): linkage and claim are separate. A conflict flag
+ * leaves supported linkage alone, but a disputed claim is not an authoritative
+ * profile attribute.
+ */
+describe("profileStanding — the claim, read beside the linkage", () => {
+  it("not the subject's by linkage is unresolved, whatever the group", () => {
+    expect(profileStanding(undefined)).toBe("unresolved");
+    expect(profileStanding(assessed({ group: "unresolved" }))).toBe("unresolved");
+    expect(profileStanding(assessed({ group: "conflict" }))).toBe("unresolved");
+    expect(profileStanding(assessed({ linkedToSeed: true, subjectLinkage: SUPPORTED_LINKAGE_MIN - 1, group: "conflict" }))).toBe("unresolved");
+    expect(profileStanding(assessed({ isSeed: true, group: "quarantined", subjectLinkage: null }))).toBe("unresolved");
+  });
+
+  it("the subject's by linkage with an undisputed claim is the subject's", () => {
+    expect(profileStanding(assessed({ isSeed: true, subjectLinkage: 100, group: "supported" }))).toBe("subject");
+    expect(profileStanding(assessed({ linkedToSeed: true, subjectLinkage: SUPPORTED_LINKAGE_MIN, group: "supported" }))).toBe("subject");
+  });
+
+  it("the subject's by linkage with a disputed claim is disputed, and the ownership answer is unchanged", () => {
+    const linkedConflict = assessed({ linkedToSeed: true, subjectLinkage: 85, group: "conflict" });
+    expect(profileOwnership(linkedConflict)).toBe("subject");
+    expect(profileStanding(linkedConflict)).toBe("disputed");
+  });
+
+  it("CURRENT BEHAVIOUR: a seed row whose claim is disputed is disputed too", () => {
+    // The approved rule excludes every conflict-group row, the seed included.
+    expect(profileStanding(assessed({ isSeed: true, subjectLinkage: 100, group: "conflict" }))).toBe("disputed");
+  });
+
+  it("on real assessArtifacts output: a conflict flag keeps the link and disputes the claim", () => {
+    const flagged = art({ id: "rec", kind: "person", value: "Sam Example", confidence: 80, metadata: { email: SEED, source_category: ["data_broker"], conflict: true } });
+    const r = assessArtifacts([seedRow, flagged], SEED);
+    expect(r.byId.rec.linkedToSeed).toBe(true);
+    expect(r.byId.rec.subjectLinkage).toBeGreaterThanOrEqual(SUPPORTED_LINKAGE_MIN);
+    expect(profileOwnership(r.byId.rec)).toBe("subject");
+    expect(profileStanding(r.byId.rec)).toBe("disputed");
   });
 });
