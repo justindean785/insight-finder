@@ -43,8 +43,11 @@ function makeDb(seed: Record<string, Array<Record<string, unknown>>>) {
     c.update = (patch: unknown) => { rec.op = "update"; rec.patch = patch; return c; };
     c.delete = () => { rec.op = "delete"; return c; };
     c.insert = (row: unknown) => { rec.op = "insert"; rec.patch = row; return Promise.resolve({ data: null, error: null }); };
+    // An `update(...)` returns the rows its `eq` filters match, as PostgREST does
+    // with `.select()`, so a guarded recovery claim on a real row WINS. Without
+    // this the fake made every claim lose and "recovered" could never be proven.
     const result = () => {
-      if (rec.op !== "select") return { data: [], error: null, count: 0 };
+      if (rec.op === "delete" || rec.op === "insert") return { data: [], error: null, count: 0 };
       let rows = seed[table] ?? [];
       for (const [kind, col, v] of rec.filters) {
         if (kind === "eq") rows = rows.filter((r) => r[col] === v);
@@ -277,7 +280,9 @@ Deno.test("recovery scoped to user A still recovers user A's own stale thread", 
   const db = makeDb({ threads: [staleThread(THREAD_A, USER_A), staleThread(THREAD_B, USER_B)] });
   const out = await recoverStaleActiveThreads(db as never, { limit: 20, reason: "synthetic", userId: USER_A });
   assertEquals(out.scanned, 1);
+  assertEquals(out.recovered, 1, "user A's own stale thread is actually recovered, not just selected");
   const touched = new Set(db.ops.filter((o) => o.op !== "select").flatMap((o) => o.filters.filter(([, c]) => c === "id" || c === "thread_id").map(([, , v]) => v)));
+  assert(touched.has(THREAD_A), "the recovery claim must write user A's thread");
   assert(!touched.has(THREAD_B), "user B's thread must not be written");
 });
 
