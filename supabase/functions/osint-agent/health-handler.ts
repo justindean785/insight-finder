@@ -46,6 +46,11 @@ import { synthesizeMissingFindings, synthesisEnabled, synthesisDryRun } from "./
 import { sweepRejectedClusterAssignments, describeSweep } from "./lib/rejected-cluster-sweep.ts";
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
 import {
+  MAINTENANCE_REFUSED_DETAIL, maintenanceAuthSelfTest, maintenanceLockdownDisabled, makeVerifyUser,
+  resolveMaintenanceAccess,
+} from "./lib/maintenance-access.ts";
+import { checkRateLimit } from "./ratelimit.ts";
+import {
   CREDENTIAL_HEALTH_SAMPLE_ROWS, CREDENTIAL_HEALTH_WINDOW_MS, MAINTENANCE_SKIPPED_DETAIL, maintenanceRequested,
 } from "./lib/credential-health.ts";
 import { describeToolCacheVersions } from "./lib/tool-cache-version.ts";
@@ -392,7 +397,47 @@ export function isHealthProbe(req: Request): boolean {
   }
 }
 
-export async function handleHealthProbe(req: Request): Promise<Response> {
+/**
+ * Everything the maintenance half of the probe touches, injectable so tests can prove
+ * WHICH sweeps run for WHICH caller without a database. Production passes nothing.
+ */
+export type HealthProbeDeps = {
+  /** Service-role client. Only ever created for an operator or a verified user. */
+  createAdmin: () => ReturnType<typeof createClient>;
+  adminAvailable: () => boolean;
+  verifyUser: (authHeader: string) => Promise<string | null>;
+  rateLimit: (key: string) => Promise<{ ok: boolean }>;
+  probeSecret: string;
+  lockdownDisabled: () => boolean;
+  recover: typeof recoverStaleActiveThreads;
+  sweepRejected: typeof sweepRejectedClusterAssignments;
+  synthesize: typeof synthesizeMissingFindings;
+  sweepCache: typeof sweepExpiredCache;
+  synthesisScopes: () => Array<"forward" | "backfill">;
+  cacheSweepOn: () => boolean;
+};
+
+function healthProbeDeps(overrides: Partial<HealthProbeDeps>): HealthProbeDeps {
+  const injectedAdmin = overrides.createAdmin !== undefined;
+  return {
+    createAdmin: () => createClient(SUPABASE_URL, SERVICE_KEY),
+    adminAvailable: () => injectedAdmin || Boolean(SUPABASE_URL && SERVICE_KEY),
+    verifyUser: makeVerifyUser(SUPABASE_URL, SUPABASE_ANON_KEY),
+    rateLimit: (key) => checkRateLimit(key),
+    probeSecret: OSINT_AGENT_PROBE_SECRET,
+    lockdownDisabled: () => maintenanceLockdownDisabled(),
+    recover: recoverStaleActiveThreads,
+    sweepRejected: sweepRejectedClusterAssignments,
+    synthesize: synthesizeMissingFindings,
+    sweepCache: sweepExpiredCache,
+    synthesisScopes: () => (["forward", "backfill"] as const).filter((sc) => synthesisEnabled(sc)),
+    cacheSweepOn: () => cacheSweepEnabled(),
+    ...overrides,
+  };
+}
+
+export async function handleHealthProbe(req: Request, overrides: Partial<HealthProbeDeps> = {}): Promise<Response> {
+  const d = healthProbeDeps(overrides);
   const r = deriveReadiness({
     MINIMAX_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
     SUPABASE_ANON_KEY,
@@ -418,7 +463,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // and every pure self-test, and reports `checks.maintenance` so a reader can tell
   // which kind of probe produced the payload. Kill switch for the gate itself:
   // HEALTH_MAINTENANCE_ALWAYS=true restores the pre-gate behaviour on every probe.
-  const wantMaintenance = wantProbe || maintenanceRequested(u);
+  // WHO may trigger it is decided below by resolveMaintenanceAccess (lib/maintenance-access.ts):
+  // asking is not enough since the 2026-11-14 lockdown.
+  const maintenanceAsked = maintenanceRequested(u);
 
   // Which provider is ACTUALLY selected at runtime (same pure selector index.ts
   // uses) + its model. This is the DeepSeek STOP-gate signal: selected_provider tells
@@ -855,24 +902,58 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     : selected.provider === "minimax" ? minimaxCheck : null;
   const orchestratorActiveOk = activeCheck ? activeCheck.ok : selectedKeyPresent;
 
-  if (wantProbe) {
-    const supplied = req.headers.get("x-probe-secret") ?? "";
-    if (!OSINT_AGENT_PROBE_SECRET || supplied !== OSINT_AGENT_PROBE_SECRET) {
-      return new Response(
-        JSON.stringify({ ok: false, error: "unauthorized" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
+  // Maintenance access (lockdown, 2026-11-14). operator = valid x-probe-secret (constant
+  // time) → all users, as before; user = Supabase-verified JWT → recovery + rejected-cluster
+  // sweep over THAT user's threads only; anonymous → liveness only, no service-role client.
+  // `?probe=1` without the secret is still 403. Kill switch: MAINTENANCE_LOCKDOWN_DISABLED.
+  const access = await resolveMaintenanceAccess({
+    wantProbe,
+    maintenanceAsked,
+    suppliedSecret: req.headers.get("x-probe-secret"),
+    configuredSecret: d.probeSecret,
+    authHeader: req.headers.get("Authorization"),
+    lockdownDisabled: d.lockdownDisabled(),
+  }, { verifyUser: d.verifyUser, rateLimit: d.rateLimit });
+  if (access.kind === "forbidden") {
+    return new Response(
+      JSON.stringify({ ok: false, error: "unauthorized" }),
+      { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   }
+  // Proof key for this build. Pure: synthetic requests through the same resolver.
+  r.checks.maintenance_auth = await maintenanceAuthSelfTest(d.lockdownDisabled());
 
-  if (!wantMaintenance) {
+  if (access.kind === "none") {
     r.checks.maintenance = { ok: true, detail: MAINTENANCE_SKIPPED_DETAIL };
+  } else if (access.kind === "anonymous") {
+    r.checks.maintenance = { ok: true, detail: MAINTENANCE_REFUSED_DETAIL };
   }
   try {
-    if (wantMaintenance && SUPABASE_URL && SERVICE_KEY) {
-      r.checks.maintenance = { ok: true, detail: "ran: recovery, rejected-cluster sweep, credential health, synthesis, cache sweep" };
-      const admin = createClient(SUPABASE_URL, SERVICE_KEY);
-      const recovered = await recoverStaleActiveThreads(admin, { limit: 20, reason: "stale heartbeat recovered by health sweep" });
+    if (access.kind === "user" && d.adminAvailable()) {
+      // A signed-in browser's open-case sweep. Only the two sweeps that act on the
+      // caller's OWN threads; never synthesis, the cache sweep or the cross-user
+      // credential read. The id is the one Supabase Auth returned, nothing else.
+      r.checks.maintenance = { ok: true, detail: "ran (scope: user): recovery, rejected-cluster sweep" };
+      const admin = d.createAdmin();
+      const recovered = await d.recover(admin, { limit: 20, reason: "stale heartbeat recovered by health sweep", userId: access.userId });
+      r.checks.recovery = recovered.errors
+        ? { ok: false, detail: `recovered ${recovered.recovered}; ${recovered.errors} error(s)` }
+        : { ok: true, detail: `recovered ${recovered.recovered} stale active run(s)` };
+      try {
+        const swept = await d.sweepRejected(admin, { userId: access.userId });
+        r.checks.rejected_cluster_sweep = { ok: swept.ok, detail: describeSweep(swept) };
+      } catch (e) {
+        r.checks.rejected_cluster_sweep = { ok: false, detail: String(e).slice(0, 160) };
+      }
+      console.log(JSON.stringify({ event: "maintenance_sweep", scope: "user", recovered: recovered.recovered, errors: recovered.errors }));
+    } else if (access.kind === "operator" && d.adminAvailable()) {
+      r.checks.maintenance = {
+        ok: true,
+        detail: `ran (scope: all users, via ${access.via}): recovery, rejected-cluster sweep, credential health, synthesis, cache sweep`,
+      };
+      const admin = d.createAdmin();
+      const recovered = await d.recover(admin, { limit: 20, reason: "stale heartbeat recovered by health sweep" });
+      console.log(JSON.stringify({ event: "maintenance_sweep", scope: "operator", via: access.via, recovered: recovered.recovered, errors: recovered.errors }));
       r.checks.recovery = recovered.errors
         ? { ok: false, detail: `recovered ${recovered.recovered}; ${recovered.errors} error(s)` }
         : { ok: true, detail: `recovered ${recovered.recovered} stale active run(s)` };
@@ -882,7 +963,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       // Its presence in the payload is the behavioural proof this build is
       // deployed (see CLAUDE.md, "checks.synthesis" for the pattern).
       try {
-        const swept = await sweepRejectedClusterAssignments(admin);
+        const swept = await d.sweepRejected(admin);
         r.checks.rejected_cluster_sweep = { ok: swept.ok, detail: describeSweep(swept) };
       } catch (e) {
         r.checks.rejected_cluster_sweep = { ok: false, detail: String(e).slice(0, 160) };
@@ -950,14 +1031,14 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       // path can be enabled without the backfill — which is a production write
       // into closed cases — and either can be revoked alone.
       const dryRun = synthesisDryRun();
-      const scopes = (["forward", "backfill"] as const).filter((sc) => synthesisEnabled(sc));
+      const scopes = d.synthesisScopes();
       if (scopes.length === 0) {
         r.checks.synthesis = { ok: true, detail: "disabled" };
       } else {
         let written = 0, proposed = 0, threads = 0, errs = 0;
         const dist = { zero: 0, one: 0, twoPlus: 0 };
         for (const sc of scopes) {
-          const s2 = await synthesizeMissingFindings(admin, { limit: 5, scope: sc, dryRun });
+          const s2 = await d.synthesize(admin, { limit: 5, scope: sc, dryRun });
           written += s2.findingsWritten; proposed += s2.findingsProposed;
           threads += s2.threadsScanned; errs += s2.errors;
           dist.zero += s2.distribution.zero; dist.one += s2.distribution.one; dist.twoPlus += s2.distribution.twoPlus;
@@ -977,10 +1058,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       // cannot turn /health red or make it answer 503 — that is structural, not
       // a promise. Ships DARK (CACHE_SWEEP_ENABLED defaults off) because it
       // deletes production rows; CACHE_SWEEP_DRY_RUN measures the backlog first.
-      if (!cacheSweepEnabled()) {
+      if (!d.cacheSweepOn()) {
         r.checks.cache_sweep = { ok: true, detail: "disabled" };
       } else {
-        const c = await sweepExpiredCache(admin, { dryRun: cacheSweepDryRun() });
+        const c = await d.sweepCache(admin, { dryRun: cacheSweepDryRun() });
         r.checks.cache_sweep = c.errors
           ? { ok: false, detail: `${describeCacheSweep(c)}; ${c.errors} error(s)` }
           : { ok: true, detail: describeCacheSweep(c) };

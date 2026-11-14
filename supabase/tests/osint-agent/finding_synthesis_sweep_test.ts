@@ -233,9 +233,10 @@ const HEALTH = await Deno.readTextFile(new URL("../../functions/osint-agent/heal
 
 Deno.test("wiring: the health sweep actually calls synthesis", () => {
   assert(
-    /await synthesizeMissingFindings\(\s*admin/.test(HEALTH),
-    "the sweep must be invoked, unprefixed, from the health probe",
+    /await d\.synthesize\(\s*admin/.test(HEALTH),
+    "the sweep must be invoked from the health probe (through HealthProbeDeps since the maintenance lockdown)",
   );
+  assert(HEALTH.includes("synthesize: synthesizeMissingFindings,"), "and the default dep must be the real sweep");
   assert(HEALTH.includes("r.checks.synthesis"), "and its outcome must be reported as a check");
 });
 

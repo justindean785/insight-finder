@@ -145,7 +145,9 @@ const INDEX = await Deno.readTextFile(new URL("../../functions/osint-agent/index
 const CLUSTER = await Deno.readTextFile(new URL("../../functions/osint-agent/lib/cluster.ts", import.meta.url));
 
 Deno.test("wiring: the health probe runs the sweep and reports it as a check", () => {
-  assert(/await sweepRejectedClusterAssignments\(\s*admin/.test(HEALTH));
+  // Reached through HealthProbeDeps since the maintenance lockdown; the default is the real sweep.
+  assert(/await d\.sweepRejected\(\s*admin/.test(HEALTH));
+  assert(HEALTH.includes("sweepRejected: sweepRejectedClusterAssignments,"));
   assert(HEALTH.includes("r.checks.rejected_cluster_sweep"));
 });
 

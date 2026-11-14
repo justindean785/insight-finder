@@ -140,8 +140,9 @@ export function describeCredentialHealth(h: CredentialHealth, truncated = false)
 export const CREDENTIAL_HEALTH_SAMPLE_ROWS = 300;
 export const CREDENTIAL_HEALTH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAINTENANCE_SKIPPED_DETAIL =
-  "skipped on a liveness probe — pass ?maintenance=1 (or the authenticated ?probe=1) to run " +
-  "recovery, the rejected-cluster sweep, credential health, synthesis and the cache sweep";
+  "skipped on a liveness probe — ?maintenance=1 runs maintenance only for a verified user session " +
+  "(recovery and the rejected-cluster sweep over that user's threads) or the operator x-probe-secret " +
+  "(all users: recovery, rejected-cluster sweep, credential health, synthesis, cache sweep)";
 
 /** True when the probe asks for the maintenance sweeps, or HEALTH_MAINTENANCE_ALWAYS=true restores the old default. */
 export function maintenanceRequested(
