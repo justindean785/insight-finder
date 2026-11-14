@@ -38,12 +38,15 @@ describe("case sheet — subject", () => {
   it("never names a quarantined name", () => {
     const q = art("name", "Pat Namesake", { subject_unlinked: true, subject_unlinked_reason: "name-only match" }, 90);
     expect(authorityFor(q).state).toBe("quarantined");
-    expect(model([q]).subject).toBeNull();
+    // Control: the same name as the seed, not quarantined, IS named.
+    expect(model([art("name", "Pat Namesake", {}, 90)], {}, "Pat Namesake").subject?.artifact.value).toBe("Pat Namesake");
+    expect(model([q], {}, "Pat Namesake").subject).toBeNull();
   });
 
   it("never names an analyst-rejected name", () => {
     const rejected = art("name", "Wrong Person", {}, 90);
-    expect(model([rejected], { [rejected.id]: "wrong" }).subject).toBeNull();
+    expect(model([rejected], {}, "Wrong Person").subject?.artifact.value).toBe("Wrong Person");
+    expect(model([rejected], { [rejected.id]: "wrong" }, "Wrong Person").subject).toBeNull();
   });
 
   it("shows the engine's authority for the subject, not a raw source count", () => {

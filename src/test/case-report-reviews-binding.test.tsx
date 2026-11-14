@@ -300,8 +300,10 @@ describe("#495 finding A — a rejected row may not WIN an identity field", () =
   it("with no verdicts the pickers are unchanged — pre-#478 behaviour", () => {
     const bad = plain("u-bad", "name", "Higher", 90);
     const good = plain("u-good", "name", "Lower", 60);
-    expect(buildIdentityRows([bad, good] as never, {}).find((r) => r.field === "Real name")?.value)
-      .toBe(buildIdentityRows([bad, good] as never).find((r) => r.field === "Real name")?.value);
+    // The seed names "Lower", so there is a pick for an empty verdict map to leave alone.
+    const withEmptyMap = buildIdentityRows([bad, good] as never, {}, "Lower").find((r) => r.field === "Real name")?.value;
+    expect(withEmptyMap).toBe("Lower");
+    expect(buildIdentityRows([bad, good] as never, undefined, "Lower").find((r) => r.field === "Real name")?.value).toBe(withEmptyMap);
   });
 });
 

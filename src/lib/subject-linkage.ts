@@ -147,7 +147,8 @@ export type SubjectNameReading = {
  * It reads the agent assessment and the seed text. It adds no score, reads no
  * review verdict into ownership, and never looks at a row's confidence except to
  * order rows that already stand equal (then value, then id, so the order rows
- * arrived in decides nothing).
+ * arrived in decides nothing HERE; which cluster the assessment calls the seed's
+ * is the assessment's own choice and is inherited as given).
  */
 export function readSubjectName(
   artifacts: Artifact[],

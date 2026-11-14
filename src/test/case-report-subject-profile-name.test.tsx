@@ -278,7 +278,10 @@ describe("CaseReport Subject Profile Name requires positive subject linkage (aud
     cleanup();
     // The same name on an UNLINKED row does not lend its DOB either.
     const sameNameUnlinked = [seedEmail(), linked("rec", "Sam Example", 80), stranger("namesake", "Sam Example", 95, { dob: "1980-02-03" })];
-    expect(profileCell(renderCase(sameNameUnlinked), "DOB / Age")).toBeNull();
+    const namesakeCase = renderCase(sameNameUnlinked);
+    // Premise: the Name IS asserted here, so the DOB is absent because of the row filter, not for want of a name.
+    expect((profileCell(namesakeCase, "Name") ?? "").startsWith("Sam Example")).toBe(true);
+    expect(profileCell(namesakeCase, "DOB / Age")).toBeNull();
     cleanup();
     const own = [seedEmail(), linked("rec", "Sam Example", 80, { dob: "1975-06-07", age: 51 })];
     expect(profileCell(renderCase(own), "DOB / Age")).toContain("1975-06-07");
@@ -440,7 +443,36 @@ describe("CaseReport Subject Profile Name requires positive subject linkage (aud
     expect(profileCell(c, "Name")).toBe("ZephyrineSupplied as the case seed");
   });
 
-  it("the whole seed outranks another name made of the seed's words", () => {
+  it("the whole seed outranks a shorter name the seed also names", () => {
+    // "Lee Example" is two of the seed's words, together and in order, so the
+    // seed names it too. Only the whole-seed priority keeps the Name asserted.
+    const rows = [
+      art({ id: "whole", value: "Sam Lee Example", confidence: 40 }),
+      art({ id: "part", value: "Lee Example", confidence: 85 }),
+    ];
+    const c = renderCase(rows, { seed: "Sam Lee Example", seedType: "name" });
+    expect(profileCell(c, "Name")).toBe("Sam Lee ExampleSupplied as the case seed");
+    expect(group(c, "linked")).toContain("Lee Example");
+  });
+
+  it("the row that speaks for the asserted name is the linked one, not a stronger namesake row", () => {
+    const rows = [seedEmail(), linked("rec", "Sam Example", 80), stranger("namesake", "Sam Example", 95)];
+    expect(assessed(rows, "namesake").linkedToSeed).toBe(false);
+    const sheet = buildCaseSheet(rows as never, {}, tallyAuthority(rows as never, () => "new"), SEED);
+    expect(sheet.subject?.artifact.id).toBe("rec");
+  });
+
+  it("CURRENT BEHAVIOUR: a released row whose name the seed names is asserted on the seed basis", () => {
+    // Decision A is about release WITHOUT a tie. Here the tie is the typed seed,
+    // not the release, and the printed basis says so.
+    const released = art({ id: "rel", value: "Sam Example", confidence: 60, metadata: {
+      subject_unlinked: true, linkage_confirmed: true, linkage_confirmed_at: "2026-11-13T00:00:00Z",
+    } });
+    const c = renderCase([released], { seed: "Sam Example, 12 Example St Springfield", seedType: "other" });
+    expect(profileCell(c, "Name")).toBe("Sam ExampleNamed in the case seed");
+  });
+
+  it("the seed's words in another order are not the name the seed names", () => {
     const rows = [
       art({ id: "whole", value: "Alex Example", confidence: 40 }),
       art({ id: "swapped", value: "Example Alex", confidence: 90 }),
@@ -476,6 +508,8 @@ describe("CaseReport Subject Profile Name requires positive subject linkage (aud
     const c = renderCase(rows, { seed: "examplehandle77", seedType: "username" });
     expect(profileCell(c, "Name") ?? "").not.toContain("examplehandle77");
     expect(group(c, "unresolved")).toContain("examplehandle77");
+    // The echo is not counted against the real linked name.
+    expect(allGroups(c)).not.toContain("Sam Example");
   });
 
   it("an annotation-only name on a linked record is never tied to the subject", () => {
