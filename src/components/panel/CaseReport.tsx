@@ -48,6 +48,7 @@ import { independentSourceClasses } from "@/lib/intel";
 import { isAnalystConfirmed } from "@/lib/analyst-confirmed";
 import { extractDisplaySeed } from "@/lib/seed";
 import { assessArtifacts, type AssessmentReport } from "@/lib/agent-assessment";
+import { selectorValueKey } from "@/lib/seed-selectors";
 import { profileOwnership, readSubjectName, rejectedDerivedIds, PROFILE_NOTE_LINKED, PROFILE_NOTE_SEED, PROFILE_NOTE_SEED_NAMED, type SubjectNameReading } from "@/lib/subject-linkage";
 import type { MessageSummary } from "@/hooks/useThreadMessages";
 import { isBreachKind } from "@/lib/breach-kinds";
@@ -876,7 +877,7 @@ function buildSubjectProfile(
     const seedValues = new Set<string>();
     const shown = ownedOfKind.filter((a) => {
       if (!isSeedRow(a)) return false;
-      const key = String(a.value ?? "").trim().toLowerCase();
+      const key = selectorValueKey(kind, String(a.value ?? ""));
       if (seedValues.has(key)) return false;
       seedValues.add(key);
       return true;

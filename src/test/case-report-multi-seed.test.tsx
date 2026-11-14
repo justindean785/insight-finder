@@ -64,6 +64,36 @@ describe("a seed that holds several selectors", () => {
     expect(cells(c, /^Phone$/).join("")).toContain("Supplied as the case seed");
   });
 
+  it("one typed phone recorded in two formats is printed once", () => {
+    const rows = [
+      art({ id: "a", value: A }),
+      art({ id: "p1", kind: "phone", value: "+15550100100", confidence: 70 }),
+      art({ id: "p2", kind: "phone", value: "(555) 010-0100", confidence: 60 }),
+    ];
+    const c = renderCase(rows, `${A}, ${PHONE}`);
+    expect(cells(c, /^Phone( \d+)?$/)).toHaveLength(1);
+    cleanup();
+    // The same through the whole-seed path: a seed that is one phone.
+    const one = renderCase(rows.slice(1), PHONE, "phone");
+    expect(cells(one, /^Phone( \d+)?$/)).toHaveLength(1);
+  });
+
+  it("the seed names a person whose row is quarantined: a different LINKED name is not asserted", () => {
+    // The email is a typed selector, so the record that carries it is linked to
+    // the subject. The seed still names Sam Example, and only that name may be
+    // asserted, quarantined or not.
+    const seed = `Sam Example ${A}`;
+    const rows = [
+      art({ id: "a", value: A }),
+      art({ id: "typed", kind: "name", value: "Sam Example", confidence: 60, metadata: { subject_unlinked: true } }),
+      art({ id: "other", kind: "person", value: "Lex Sample", confidence: 80, metadata: { email: A, source_category: ["data_broker"] } }),
+    ];
+    expect(assessArtifacts(rows as never, seed).byId.other.linkedToSeed).toBe(true);
+    const c = renderCase(rows, seed);
+    expect(cells(c, /^Name$/).join(" ")).toMatch(/Not established/);
+    expect(cells(c, /^Name$/).join(" ")).not.toContain("Lex Sample");
+  });
+
   it("a row linked to EITHER seed selector is linked to the subject", () => {
     const rows = [
       art({ id: "a", value: A, confidence: 70 }),

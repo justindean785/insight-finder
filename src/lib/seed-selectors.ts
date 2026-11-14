@@ -113,6 +113,17 @@ export function seedSelectors(seedValue: string | null | undefined): SeedSelecto
   return out;
 }
 
+/**
+ * One key per distinct selector value, in the form the seed match compares.
+ * Two recorded formats of one phone ("+1 (555) 010-0100", "5550100100") share a
+ * key, so a surface that lists seed contacts does not print one number twice.
+ */
+export function selectorValueKey(rowKind: string, value: string): string {
+  const k = String(rowKind ?? "").toLowerCase();
+  const kind = (Object.keys(ARTIFACT_KINDS) as SeedSelectorKind[]).find((s) => ARTIFACT_KINDS[s].has(k));
+  return kind ? canon(kind, String(value ?? "")) : String(value ?? "").trim().toLowerCase();
+}
+
 /** Is this recorded row one of the selectors typed in the seed? Kind and value must both match. */
 export function matchesSeedSelector(row: { kind: string; value: string }, selectors: readonly SeedSelector[]): boolean {
   if (selectors.length === 0) return false;
