@@ -9,6 +9,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { reflowCollapsedTables } from "@/lib/markdown";
 import { osintAgentUrl } from "@/lib/functionsUrl";
+import { sendMaintenanceSweep } from "@/lib/maintenance-sweep";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
@@ -2892,7 +2893,14 @@ function ChatWindowInner({
       // 5,000-row scan plus two sweeps every 30s per open case); the stale-run
       // recovery this effect exists for only runs when asked. Older edge builds
       // ignore the extra parameter, so this is safe to ship ahead of the edge deploy.
-      void fetch(`${FUNCTIONS_URL}?health=1&maintenance=1`, { method: "GET" }).catch(() => {});
+      // Sent AS THE SIGNED-IN USER (Authorization header), and skipped with no
+      // session: the edge lockdown scopes a token-bearing sweep to this user's own
+      // threads and answers an anonymous one with liveness only. See
+      // src/lib/maintenance-sweep.ts.
+      void sendMaintenanceSweep(FUNCTIONS_URL, async () => {
+        const { data } = await supabase.auth.getSession();
+        return data.session?.access_token ?? null;
+      });
     };
     sweep(); // once on open: reap a run already stuck when this thread is loaded
     if (!isLoading) {
