@@ -3,6 +3,7 @@
 // Mirror logic on the edge function so cache keys match.
 
 import { readProviderExport } from "@/lib/provider-export";
+import { attachmentLabel, attachmentOnlyNames } from "@/lib/attachments";
 
 export type SeedKind = "email" | "username" | "phone" | "ip" | "domain" | "url" | "crypto" | "address" | "other";
 
@@ -114,7 +115,14 @@ function firstDomainInText(text: string): string | undefined {
   return undefined;
 }
 
-export type DisplaySeed = { selector: string; kind: SeedKind; title: string };
+/**
+ * What a case's seed READS as. `attachment` is display-only: it is never a cache
+ * key kind (SeedKind stays mirrored with the edge's detectSeedServer) and is
+ * never written to `threads.seed_type`.
+ */
+export type DisplaySeedKind = SeedKind | "attachment";
+
+export type DisplaySeed = { selector: string; kind: DisplaySeedKind; title: string };
 
 export function extractDisplaySeed(
   seedValue: string | null | undefined,
@@ -122,6 +130,12 @@ export function extractDisplaySeed(
 ): DisplaySeed {
   const raw = (seedValue ?? "").trim();
   if (!raw) return { selector: "—", kind: "other", title: "Investigation" };
+
+  // An upload with no typed text. Without this the blob scan below picked the
+  // signed storage URL out of the markdown and framed the case as a `url` seed,
+  // token and all. The file is what the analyst gave us; name the case by it.
+  const files = attachmentOnlyNames(raw);
+  if (files) return { selector: files[0], kind: "attachment", title: attachmentLabel(files) };
 
   // Already a clean single token → trust detectSeed. EXCEPT "address": unlike
   // email/url/phone/domain/username, detectSeed's address pattern tolerates
@@ -196,6 +210,12 @@ export function extractDisplaySeed(
 // slice(0, 80) behavior so nothing regresses. MUST mirror formatThreadTitle
 // in supabase/functions/osint-agent/validation.ts (no shared module exists
 // between src/ and supabase/functions/).
+//
+// A pasted multi-line provider export is NOT classified here (detectSeed reads
+// one clean token), so its stored title is still the raw first 80 chars — on the
+// edge too, and a test pins the two equal. The UI derives the shown title from
+// the seed at display time instead: see exportSubjectTitle / threadDisplayTitle
+// in src/lib/case-name.ts. Fix the stored title on the edge and here together.
 export const THREAD_TITLE_MAX = 80;
 
 const SEED_KIND_LABELS: Record<string, string> = {

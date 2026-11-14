@@ -321,6 +321,84 @@ test.describe("report readiness and exports", () => {
   });
 });
 
+// Audit A01, Name half. Synthetic scenario `names`: the strongest row in the
+// case is a name nothing ties to the seed, and the one linked name is disputed.
+// Before the fix the Subject Profile and the Identity panel printed the stranger.
+test.describe("the subject's name needs a tie to the seed, on every surface", () => {
+  test("no surface names a person the case cannot tie to the seed", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, `${THREAD}?scenario=names`);
+
+    // The rail's case sheet anchors on the seed and says no name holds.
+    const sheetSubject = page.getByRole("region", { name: "Subject" });
+    await expect(sheetSubject).toContainText("No name holds for the subject yet");
+    await expect(sheetSubject).not.toContainText("Robin Stranger");
+
+    await page.getByRole("tab", { name: /Report/ }).click();
+    const report = page.locator("#case-report-print-root");
+    await expect(report.locator("[data-report-subject-refused]")).toBeVisible();
+
+    // The Subject Profile says so in the field, and keeps every name in view.
+    const names = report.getByTestId("profile-name-candidates");
+    await expect(report.getByText("Not established", { exact: true })).toBeVisible();
+    await expect(names.locator('[data-name-group="disputed"]')).toContainText("Jamie Harker");
+    await expect(names.locator('[data-name-group="unresolved"]')).toContainText("Robin Stranger");
+    await expect(names.locator('[data-name-group="unresolved"]')).toContainText("Avery Other");
+    // A stranger's date of birth is not the subject's.
+    await expect(report.getByText("DOB / Age", { exact: true })).toHaveCount(0);
+
+    // The Identity panel on the same page names nobody either.
+    await expect(report.getByRole("cell", { name: "Real name", exact: true })).toHaveCount(0);
+
+    // The contact the record does join to the seed is still asserted, as linked.
+    await expect(report.getByText("+1 (555) 010-4477").first()).toBeVisible();
+    await expect(report.getByText(/Linked to the subject · ownership not independently verified/).first()).toBeVisible();
+  });
+
+  test("Connections does not open an untied name as the subject", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, `${THREAD}?scenario=names`);
+    await page.getByRole("tablist", { name: "Workbench" }).getByRole("tab", { name: "Connections" }).click();
+    await expect(page.getByText("Subject name · automatic evidence map")).toHaveCount(0);
+    await expect(page.getByText("Pick an entity below, or select a node in the Graph.")).toBeVisible();
+  });
+
+  test("390px: the name lists fit the viewport with no horizontal scroll", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await open(page, `${THREAD}?scenario=names`);
+    await page.getByRole("tab", { name: /Report/ }).click();
+    const names = page.locator("#case-report-print-root").getByTestId("profile-name-candidates");
+    await names.scrollIntoViewIfNeeded();
+    await expect(names).toBeVisible();
+    const box = await names.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+  });
+});
+
+// Audit stage 2. Synthetic scenario `multiseed`: the seed holds two emails and a
+// phone. Before the fix no row equalled the whole seed, so all three were listed
+// as "ownership unresolved".
+test.describe("a seed that holds several selectors", () => {
+  test("every typed selector is the subject's; an untyped contact is not", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, `${THREAD}?scenario=multiseed`);
+    await page.getByRole("tab", { name: /Report/ }).click();
+    const report = page.locator("#case-report-print-root");
+    await expect(report.getByText("Email", { exact: true }).first()).toBeVisible();
+    await expect(report.getByText("Email 2", { exact: true })).toBeVisible();
+    await expect(report.getByText("Supplied as the case seed")).toHaveCount(3);
+    const unresolved = report.getByTestId("profile-unresolved-contacts");
+    await expect(unresolved).toContainText("associate@example.test");
+    await expect(unresolved).not.toContainText("first@example.test");
+    await expect(unresolved).not.toContainText("second@example.test");
+    await expect(unresolved).not.toContainText("010-0100");
+  });
+});
+
 test.describe("12 · mobile 390px", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
@@ -391,7 +469,19 @@ test.describe("Workbench — one inspector (Case desk R3)", () => {
     const tabs = page.getByRole("tablist", { name: "Workbench" }).getByRole("tab");
     await expect(tabs).toHaveText([/^Finding/, /^Next pivots/, /^Connections/]);
     await expect(tabs.nth(0)).toHaveAttribute("aria-selected", "true");
-    await expect(page.getByRole("region", { name: "Needs your call" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Optional exception review" })).toBeVisible();
+  });
+
+  test("Connections opens the subject map automatically without an analyst verdict", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, `${THREAD}?scenario=connections`);
+    await page.getByRole("tablist", { name: "Workbench" }).getByRole("tab", { name: "Connections" }).click();
+    const selected = page.getByRole("region", { name: "Selected entity" });
+    await expect(selected).toContainText("James Harker");
+    await expect(selected).toContainText("Subject name · automatic evidence map");
+    await expect(selected.getByRole("button", { name: /\+1 \(555\) 010-4477/ })).toBeVisible();
+    await expect(selected).toContainText("NAME_RECORD: name_in_breach");
+    await expect(selected).toContainText("not identity confirmation");
   });
 
   test("selecting an Evidence row opens it in Finding with the two assessment bars and the analyst's own call", async ({ page }) => {
@@ -411,6 +501,33 @@ test.describe("Workbench — one inspector (Case desk R3)", () => {
     await expect(review.getByRole("button", { name: /^False match/ })).toBeVisible();
     await expect(review.getByRole("button", { name: "Add note" })).toBeVisible();
     await expect(inspector.getByText("Your review is separate from the AI assessment.", { exact: false })).toBeVisible();
+  });
+
+  test("the review actions stay inside the 320px Workbench at lg width, even with the longest labels", async ({ page }) => {
+    // 1024-1279px docks the Workbench at a fixed 320px, which leaves the action row ~249px. The three
+    // labelled buttons plus "Confirmed ✓" / "Marked false" do not fit on one line there, so the row must wrap.
+    await page.setViewportSize({ width: 1100, height: 900 });
+    await open(page, THREAD);
+    await page.getByRole("tab", { name: /Evidence/ }).first().click();
+    const firstRow = page.locator('[class*="ledger-row"]').first();
+    await firstRow.waitFor({ state: "visible" });
+    await firstRow.click();
+    const review = page.locator("[data-inspector]").first().getByRole("group", { name: "Your review" });
+    await expect(review).toBeVisible();
+    const overflow = () => review.evaluate((el) => el.scrollWidth - el.clientWidth);
+    expect(await overflow(), "default labels").toBeLessThanOrEqual(0);
+    await review.getByRole("button", { name: /^Confirm/ }).click();
+    await expect(review.getByRole("button", { name: "Confirmed ✓" })).toBeVisible();
+    expect(await overflow(), "Confirmed ✓ label").toBeLessThanOrEqual(0);
+    await review.getByRole("button", { name: /^False match/ }).click();
+    await expect(review.getByRole("button", { name: "Marked false" })).toBeVisible();
+    expect(await overflow(), "Marked false label").toBeLessThanOrEqual(0);
+    // Every control must also sit inside the group's box, not just not-extend its scroll area.
+    const box = (await review.boundingBox())!;
+    for (const b of await review.getByRole("button").all()) {
+      const r = (await b.boundingBox())!;
+      expect(r.x + r.width, await b.innerText()).toBeLessThanOrEqual(box.x + box.width + 0.5);
+    }
   });
 
   test("Open Next pivots works while the rail is folded (it used to do nothing)", async ({ page }) => {
@@ -447,8 +564,8 @@ test.describe("case sheet → Evidence handoff", () => {
   test("Decide in Evidence opens that row even though the default view hides quarantined rows", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page, THREAD);
-    // The Workbench opens on Finding (Case desk R3); with nothing selected it shows the case sheet and its "Needs your call" queue.
-    const queue = page.getByRole("region", { name: "Needs your call" });
+    // The Workbench opens on Finding (Case desk R3); with nothing selected it shows the case sheet and its "Optional exception review" queue.
+    const queue = page.getByRole("region", { name: "Optional exception review" });
     await expect(queue).toBeVisible();
     // A quarantined (linkage) card — the kind the Analyst view hides.
     const card = queue.getByRole("listitem").filter({ hasText: "Linkage · does this record belong to the subject?" }).first();

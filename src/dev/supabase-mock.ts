@@ -26,6 +26,19 @@ const artifacts = [
   { id: "a6", thread_id: THREAD_ID, kind: "location", value: "Oakland, California, US", confidence: 41, source: "indicia_person", created_at: iso(16), metadata: { confidence_cap_applied: 65, sources: ["indicia_person"], corroborations: 1, source_class: "data_broker" } },
   { id: "a7", thread_id: THREAD_ID, kind: "social_profile", value: "linkedin.com/in/james-harker-logistics", confidence: 79, source: "socialfetch", created_at: iso(11), metadata: { sources: ["socialfetch", "exa_search"], corroborations: 2, source_class: "provider" } },
   { id: "a8", thread_id: THREAD_ID, kind: "ip", value: "203.0.113.47", confidence: 34, source: "oathnet", created_at: iso(6), metadata: { sources: ["oathnet"], corroborations: 1, source_class: "breach_corpus" } },
+  // ── Linked to the subject beyond the seed ────────────────────────────────
+  // Every other row joins the seed's identity cluster only by being the seed,
+  // so the ledger's Linkage column read "Unresolved" everywhere but row a1. This
+  // row names the seed email in `metadata.email` — a concrete selector, which is
+  // how buildIdentityClusters unions rows (never on names) — so the harness shows
+  // a real linkage figure on a non-seed row. Synthetic: 555-01xx is reserved.
+  { id: "link-1", thread_id: THREAD_ID, kind: "phone", value: "+1 415 555 0163", confidence: 72, source: "hunter_verify", created_at: iso(20), metadata: { sources: ["hunter_verify", "exa_search"], corroborations: 2, source_class: "provider", email: "j.harker@northgate-logistics.com" } },
+  // ── Quarantined shared infrastructure ────────────────────────────────────
+  // Both authority axes at once: shared/CDN hosting (strength) and unproven
+  // linkage (authority). Its ledger basis opens with its own underlying label,
+  // which is the row that printed "Shared infrastructure · Shared
+  // infrastructure · not ownership proof" before underlyingRepeatsBasis().
+  { id: "qinfra-1", thread_id: THREAD_ID, kind: "ip", value: "198.51.100.23", confidence: 30, source: "shodan_internetdb", created_at: iso(17), metadata: { sources: ["shodan_internetdb"], corroborations: 1, source_class: "infra", shared_infra: true, subject_unlinked: true, subject_unlinked_reason: "reverse-IP neighbour on a shared CDN edge — hosting proximity, not linkage to the subject" } },
   // ── Quarantined: the same-name collision axis ────────────────────────────
   // A name-only sweep on "James Harker" returned a DIFFERENT James Harker's
   // selectors. The backend flags them `subject_unlinked` (#433) and they are
@@ -94,24 +107,24 @@ const artifacts = [
   { id: "evt-1", thread_id: THREAD_ID, kind: "event", value: "Sacramento Freight Expo 2025 — listed exhibitor", confidence: 48, source: "gemini_deep_dork", created_at: iso(11), metadata: { sources: ["gemini_deep_dork"], corroborations: 1, source_class: "ai_summary", confidence_cap_applied: 55 } },
   { id: "wl-1", thread_id: THREAD_ID, kind: "weak_lead", value: "Sierra — mentioned in a stream title", confidence: 20, source: "socialfetch_web_read", created_at: iso(10), metadata: { sources: ["socialfetch_web_read"], corroborations: 1, source_class: "social_profile_passive" } },
 
-  // ── Bulk-corpus spam — the gsalas916-style wall this change collapses ─────
+  // ── Bulk-corpus spam — the wall of rows this change collapses ─────
   // Legacy shape: many rows, one reason. The board groups these into one card.
-  { id: "bulk-1", thread_id: THREAD_ID, kind: "name", value: "Gabriel G. Salas", confidence: 45, source: "indicia_address", created_at: iso(9), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
-  { id: "bulk-2", thread_id: THREAD_ID, kind: "name", value: "Esther Salas", confidence: 45, source: "indicia_address", created_at: iso(8), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
-  { id: "bulk-3", thread_id: THREAD_ID, kind: "name", value: "Gabriel Gilbert Gilbert Salas", confidence: 45, source: "indicia_address", created_at: iso(7), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
-  { id: "bulk-4", thread_id: THREAD_ID, kind: "name", value: "Michael O. Wong", confidence: 45, source: "indicia_address", created_at: iso(6), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
-  { id: "bulk-5", thread_id: THREAD_ID, kind: "name", value: "Sandra Salas", confidence: 45, source: "indicia_address", created_at: iso(5), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
-  { id: "bulk-summary", thread_id: THREAD_ID, kind: "bulk_corpus_harvest", value: "67 unlinked identities — bulk corpus (gsalas916@icloud.com)", confidence: 40, source: "indicia_address", created_at: iso(4), metadata: {
+  { id: "bulk-1", thread_id: THREAD_ID, kind: "name", value: "Avery Q. Sample", confidence: 45, source: "indicia_address", created_at: iso(9), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-2", thread_id: THREAD_ID, kind: "name", value: "Blake Sample", confidence: 45, source: "indicia_address", created_at: iso(8), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-3", thread_id: THREAD_ID, kind: "name", value: "Avery Quinn Quinn Sample", confidence: 45, source: "indicia_address", created_at: iso(7), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-4", thread_id: THREAD_ID, kind: "name", value: "Morgan P. Example", confidence: 45, source: "indicia_address", created_at: iso(6), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-5", thread_id: THREAD_ID, kind: "name", value: "Casey Sample", confidence: 45, source: "indicia_address", created_at: iso(5), metadata: { subject_unlinked: true, subject_unlinked_reason: "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject", source_class: "data_broker" } },
+  { id: "bulk-summary", thread_id: THREAD_ID, kind: "bulk_corpus_harvest", value: "67 unlinked identities — bulk corpus (bulk.seed@mail.example)", confidence: 40, source: "indicia_address", created_at: iso(4), metadata: {
     bulk_corpus: true,
     identity_count: 67,
     subject_unlinked: true,
     subject_unlinked_reason:
       "harvested from a bulk corpus return — this one lookup yielded 67 person identities for a single selector, which is a dataset of many people rather than one person's record; appearing in that dataset is not linkage to the subject",
     harvested_identities: [
-      { kind: "name", value: "Gabriel G. Salas" },
-      { kind: "name", value: "Esther Salas" },
-      { kind: "email", value: "lil.est58@yahoo.com" },
-      { kind: "email", value: "bboyjr03@verizon.net" },
+      { kind: "name", value: "Avery Q. Sample" },
+      { kind: "name", value: "Blake Sample" },
+      { kind: "email", value: "harvest.one@mail.example" },
+      { kind: "email", value: "harvest.two@mail.example" },
     ],
   } },
 
@@ -464,6 +477,18 @@ if (SNAPSHOT) {
  *   malformed    — the latest report's pivot section carries table rows and a
  *                  footer, which the rail must render as "needs repair"
  *   ready        — analyst confirmations lift report readiness past the bar
+ *   recovered    — an earlier run died and the sweep posted its interrupted-run
+ *                  notice; the report that follows is a later cycle's
+ *   exchanges    — after the closing report the analyst asks two follow-ups,
+ *                  each answered with a short table; no answer rewrites another
+ *   connections  — a subject name on a record that carries the seed, with its
+ *                  exact source-record associations
+ *   names        — names nothing ties to the seed (one of them the strongest
+ *                  row in the case), a linked name whose claim is disputed, and
+ *                  a phone a record does join to the seed: no name is the
+ *                  subject's, on any surface
+ *   multiseed    — the seed holds two emails and a phone; each typed selector
+ *                  is the subject's, and a contact nobody typed is not
  */
 const SCENARIO =
   typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("scenario") ?? "" : "";
@@ -526,11 +551,86 @@ if (!SNAPSHOT && mainThread) {
       parts: text("## Findings report\n\nSubject remains unresolved.\n\n### Recommended Next Pivots\n\n| Action | Target | Type | Reason |\n| --- | --- | --- | --- |\n| Review lead | Keith family residence | name | confirm household |\n\nThis report was generated by an automated OSINT assistant and is provided for informational purposes only.\n\n- Verify `jharker88` reuse across platforms — two handles match"),
     });
   }
+  if (SCENARIO === "recovered") {
+    // Shape of recovery.ts buildRecoveredAssistantText. Spliced in before the
+    // closing report (m5), so the notice is followed by a later report.
+    const list = FIXTURES.messages as { id: string }[];
+    const at = list.findIndex((m) => m.id === "m5");
+    list.splice(at < 0 ? list.length : at, 0, {
+      id: "m-recovery-notice", thread_id: THREAD_ID, user_id: USER_ID, role: "assistant", created_at: iso(20),
+      parts: text([
+        "## Interrupted run — recovered evidence",
+        "",
+        "The investigation for **j.harker@northgate-logistics.com** was interrupted before the agent could write its closing response. **This is not a findings report.** The rows below are whatever was already durably written when the run stopped, presented as-is.",
+        `Last heartbeat: ${iso(24)}.`,
+        "",
+        "### Model-reviewed findings",
+        "| # | Kind | Value | Confidence | Status | Source |",
+        "|---:|---|---|---:|---|---|",
+        "| 1 | email | j.harker@northgate-logistics.com | 88 | verified | hunter_verify |",
+        "| 2 | domain | northgate-logistics.com | 92 | — | rdap_lookup |",
+        "",
+        "### Recovery summary",
+        "2 recovered rows: 2 model-reviewed, 0 unreviewed.",
+      ].join("\n")),
+    } as never);
+  }
+  if (SCENARIO === "exchanges") {
+    const say = (id: string, role: "user" | "assistant", minsAgo: number, t: string) =>
+      ({ id, thread_id: THREAD_ID, user_id: USER_ID, role, created_at: iso(minsAgo), parts: text(t) });
+    (FIXTURES.messages as unknown[]).push(
+      say("m-x1", "user", 3, "Check the phone +1 415 555 0142. Is it his?"),
+      say("m-x2", "assistant", 2.5, "The number appears in one broker record and nowhere else.\n\n| Selector | Source | Confidence |\n| --- | --- | --- |\n| +1 415 555 0142 | data broker | 55 |\n\nNot promotable without a second origin."),
+      say("m-x3", "user", 2, "And the handle jharker88?"),
+      say("m-x4", "assistant", 1.5, "The handle is reused on two platforms with the same avatar.\n\n| Selector | Source | Confidence |\n| --- | --- | --- |\n| jharker88 | provider | 74 |\n| jharker88 | provider | 70 |"),
+    );
+  }
   if (SCENARIO === "ready") {
     const confirmed = (FIXTURES.artifacts as { id: string; metadata?: Record<string, unknown> }[])
       .filter((a) => !a.metadata?.subject_unlinked && !a.metadata?.possible_collision && !a.metadata?.conflict && !a.metadata?.false_positive)
       .map((a, i) => ({ id: `rr${i}`, artifact_id: a.id, thread_id: THREAD_ID, user_id: USER_ID, state: "confirmed", created_at: iso(2), note: null }));
     FIXTURES.artifact_reviews = confirmed;
+  }
+  if (SCENARIO === "connections") {
+    // Synthetic subject map: exact source-record associations must appear without
+    // Confirm/Dismiss, while name-only evidence remains a qualified co-record link.
+    FIXTURES.artifacts = [
+      // The name sits on a record that carries the case seed, so it is the
+      // subject's by linkage (audit A01): a name nothing ties to the seed is not
+      // opened as the subject. See the `names` scenario for that case.
+      { id: "subject-seed", thread_id: THREAD_ID, kind: "email", value: "j.harker@northgate-logistics.com", confidence: 70, source: "synthetic_fixture", created_at: iso(5), metadata: { sources: ["synthetic_fixture"], source_class: "provider" } },
+      { id: "subject-name", thread_id: THREAD_ID, kind: "name", value: "James Harker", confidence: 80, source: "synthetic_fixture", created_at: iso(4), metadata: { sources: ["synthetic_fixture"], source_class: "independent_public", email: "j.harker@northgate-logistics.com" } },
+      { id: "subject-phone", thread_id: THREAD_ID, kind: "phone", value: "+1 (555) 010-4477", confidence: 55, source: "synthetic_fixture", created_at: iso(3), metadata: { sources: ["synthetic_fixture"], source_class: "breach", name_in_breach: "James Harker", email_associated: "james@example.test" } },
+      { id: "subject-email", thread_id: THREAD_ID, kind: "email", value: "james@example.test", confidence: 70, source: "synthetic_fixture", created_at: iso(2), metadata: { sources: ["synthetic_fixture"], source_class: "provider" } },
+      { id: "subject-username", thread_id: THREAD_ID, kind: "username", value: "james_harker", confidence: 60, source: "synthetic_fixture", created_at: iso(1), metadata: { sources: ["synthetic_fixture"], source_class: "provider", email_associated: "james@example.test" } },
+    ];
+  }
+  if (SCENARIO === "multiseed") {
+    // Synthetic. Before stage 2 no row equalled the whole seed string, so every
+    // one of these contacts read "ownership unresolved".
+    mainThread.seed_value = "first@example.test, second@example.test +1 (555) 010-0100";
+    mainThread.seed_type = "other";
+    FIXTURES.artifacts = [
+      { id: "ms-a", thread_id: THREAD_ID, kind: "email", value: "first@example.test", confidence: 70, source: "synthetic_fixture", created_at: iso(8), metadata: { sources: ["synthetic_fixture"], source_class: "provider" } },
+      { id: "ms-b", thread_id: THREAD_ID, kind: "email", value: "second@example.test", confidence: 65, source: "synthetic_fixture", created_at: iso(7), metadata: { sources: ["synthetic_fixture"], source_class: "provider" } },
+      { id: "ms-p", thread_id: THREAD_ID, kind: "phone", value: "(555) 010-0100", confidence: 60, source: "synthetic_fixture", created_at: iso(6), metadata: { sources: ["synthetic_fixture"], source_class: "data_broker" } },
+      { id: "ms-rec", thread_id: THREAD_ID, kind: "person", value: "Sam Example", confidence: 80, source: "synthetic_fixture", created_at: iso(5), metadata: { sources: ["synthetic_fixture"], source_class: "data_broker", email: "second@example.test", address: "12 Example St, Springfield" } },
+      { id: "ms-addr", thread_id: THREAD_ID, kind: "address", value: "12 Example St, Springfield", confidence: 75, source: "synthetic_fixture", created_at: iso(4), metadata: { sources: ["synthetic_fixture"], source_class: "data_broker" } },
+      { id: "ms-other", thread_id: THREAD_ID, kind: "email", value: "associate@example.test", confidence: 90, source: "synthetic_fixture", created_at: iso(3), metadata: { sources: ["synthetic_fixture"], source_class: "independent_public" } },
+    ];
+  }
+  if (SCENARIO === "names") {
+    // Synthetic. The strongest row in the case is a name nothing ties to the
+    // seed; before audit A01 (Name half) every surface printed it as the subject.
+    const SEED_EMAIL = "j.harker@northgate-logistics.com";
+    FIXTURES.artifacts = [
+      { id: "n-seed", thread_id: THREAD_ID, kind: "email", value: SEED_EMAIL, confidence: 70, source: "synthetic_fixture", created_at: iso(8), metadata: { sources: ["synthetic_fixture"], source_class: "provider" } },
+      { id: "n-stranger", thread_id: THREAD_ID, kind: "name", value: "Robin Stranger", confidence: 92, source: "synthetic_fixture", created_at: iso(7), metadata: { sources: ["synthetic_fixture"], source_class: "independent_public", dob: "1980-02-03" } },
+      { id: "n-other", thread_id: THREAD_ID, kind: "name", value: "Avery Other", confidence: 70, source: "synthetic_fixture", created_at: iso(6), metadata: { sources: ["synthetic_fixture"], source_class: "data_broker" } },
+      { id: "n-disputed", thread_id: THREAD_ID, kind: "person", value: "Jamie Harker", confidence: 80, source: "synthetic_fixture", created_at: iso(5), metadata: { sources: ["synthetic_fixture"], source_class: "data_broker", email: SEED_EMAIL, phone: "+1 (555) 010-4477", conflict: true, conflict_note: "A second record gives this address a different holder." } },
+      { id: "n-phone", thread_id: THREAD_ID, kind: "phone", value: "+1 (555) 010-4477", confidence: 75, source: "synthetic_fixture", created_at: iso(4), metadata: { sources: ["synthetic_fixture"], source_class: "data_broker" } },
+      { id: "n-assoc-email", thread_id: THREAD_ID, kind: "email", value: "associate@example.test", confidence: 88, source: "synthetic_fixture", created_at: iso(3), metadata: { sources: ["synthetic_fixture"], source_class: "independent_public" } },
+    ];
   }
 }
 

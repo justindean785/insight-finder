@@ -39,7 +39,8 @@ export function ConfidenceExplain({
           type="button"
           aria-label={`Why is this ${shown.effective ?? 0}%?`}
           className={cn(
-            "inline-grid place-items-center w-4 h-4 rounded-full text-muted-foreground/60 hover:text-foreground hover:bg-surface-3 transition-colors",
+            // 24px: WCAG 2.5.8 minimum target. The glyph stays 12px; only the hit area grows.
+            "inline-grid place-items-center w-6 h-6 rounded-full text-faint-foreground hover:text-foreground hover:bg-surface-3 transition-colors [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:h-11",
             className,
           )}
           onClick={(e) => e.stopPropagation()}

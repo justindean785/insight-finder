@@ -75,10 +75,55 @@ function toolCallIdsOf(message: { parts?: unknown }): string[] {
 export const EVIDENCE_RECORD_HEADING = "## Evidence Record — authoritative";
 
 /**
- * Does `persisted` differ from `live` only by the ONE edit the server makes after
- * the stream ends? lib/evidence-record-persist.ts appends the "Evidence Record —
- * authoritative" block to the LAST text part (or adds a text part when there was
- * none). Every other part must match by partSignature.
+ * The literal line the orchestrator writes where the closing Findings table goes. The server
+ * (lib/findings-table.ts, FINDINGS_TABLE_MARKER) replaces it IN PLACE before persisting, so the
+ * streamed copy carries the marker while the stored copy carries the rendered table.
+ * MUST equal that constant (a test pins the two).
+ */
+export const FINDINGS_TABLE_MARKER = "{{FINDINGS_TABLE}}";
+const MARKER_LINE = /^[ \t]*\{\{FINDINGS_TABLE\}\}[ \t]*:?[ \t]*\r?$/m;
+const MARKER_LINES = /^[ \t]*\{\{FINDINGS_TABLE\}\}[ \t]*:?[ \t]*\r?$/gm;
+
+/**
+ * Is `storedText` the streamed `liveText` after the server's in-place Findings-table expansion?
+ * The text BETWEEN marker lines must survive verbatim and in order; what replaced the marker
+ * lines is deliberately not inspected (the first becomes the table, any further ones are
+ * removed). When `allowEvidenceRecord`, the server's trailing Evidence Record append is also
+ * accepted after the last segment — the two edits compose on the last text part.
+ */
+function matchesFindingsTableExpansion(liveText: string, storedText: string, allowEvidenceRecord: boolean): boolean {
+  if (!MARKER_LINE.test(liveText)) return false;
+  const segments = liveText.split(MARKER_LINES);
+  // Anchored match: the first segment is a PREFIX and the last a SUFFIX of the stored text, so a
+  // marker that ends the text (empty last segment) leaves the rendered table inside the gap
+  // instead of being mistaken for trailing prose. Middle segments are found in order in that gap.
+  const matches = (core: string): boolean => {
+    const first = segments[0];
+    const last = segments[segments.length - 1];
+    if (!core.startsWith(first)) return false;
+    let pos = first.length;
+    const limit = core.length - last.length;
+    if (limit < pos || !core.endsWith(last)) return false;
+    for (let i = 1; i < segments.length - 1; i++) {
+      const at = core.indexOf(segments[i], pos);
+      if (at === -1 || at + segments[i].length > limit) return false;
+      pos = at + segments[i].length;
+    }
+    return true;
+  };
+  if (matches(storedText)) return true;
+  if (!allowEvidenceRecord) return false;
+  // The Evidence Record is appended AFTER the expansion; try again with that block cut off.
+  const cut = storedText.lastIndexOf(`\n\n${EVIDENCE_RECORD_HEADING}`);
+  return cut !== -1 && matches(storedText.slice(0, cut));
+}
+
+/**
+ * Does `persisted` differ from `live` only by the edits the server makes after the stream
+ * ends? (1) lib/evidence-record-persist.ts appends the "Evidence Record — authoritative"
+ * block to the LAST text part (or adds a text part when there was none). (2) lib/findings-table.ts
+ * replaces the `{{FINDINGS_TABLE}}` marker line(s) in place. Every other part must match by
+ * partSignature.
  */
 function extendsStreamedMessage(
   live: { role?: unknown; parts?: unknown },
@@ -98,9 +143,21 @@ function extendsStreamedMessage(
   }
   if (a.length !== b.length) return false;
   return a.every((p, i) => {
-    if (i !== lastText) return partSignature(p) === partSignature(b[i]);
+    if (i !== lastText) {
+      if (partSignature(p) === partSignature(b[i])) return true;
+      // A marker-bearing text part that is not the last one (the table sits before later text).
+      return isText(p) && isText(b[i]) &&
+        matchesFindingsTableExpansion(
+          String((p as Record<string, unknown>).text ?? ""),
+          String((b[i] as Record<string, unknown>).text ?? ""),
+          false,
+        );
+    }
     const liveText = String((p as Record<string, unknown>).text ?? "");
     const storedText = isText(b[i]) ? String((b[i] as Record<string, unknown>).text ?? "") : null;
+    // Unchanged last part: reachable now that an EARLIER part can differ (marker expanded there).
+    if (partSignature(p) === partSignature(b[i])) return true;
+    if (storedText !== null && matchesFindingsTableExpansion(liveText, storedText, true)) return true;
     // The server appends exactly `\n\n<Evidence Record block>`. Any other
     // extension — a restated or expanded answer — is a different message
     // (Codex P2 on #671).

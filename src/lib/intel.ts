@@ -1,3 +1,4 @@
+import { seedWithoutAttachments } from "@/lib/attachments";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { toSourceStrings } from "@/lib/source-strings";
 import {
@@ -8,6 +9,7 @@ import {
   type AuthoritativeFindings,
 } from "@/lib/authoritative-findings";
 import { detectSeed, extractDisplaySeed } from "@/lib/seed";
+import { isPlausiblePhone } from "@/lib/recommended-pivots";
 import { auditEntryToolName, toolActionLabel } from "@/lib/tool-display";
 import { humanizeSourceChain, primaryToolSlug, tokenizeSourceChain } from "@/lib/report-source-labels";
 import { deriveToolStatus, deriveToolReason } from "@/lib/tool-run";
@@ -734,9 +736,9 @@ export const CONF_LABEL_CLASS: Record<ConfLabel, string> = {
   CORRELATED: "text-[hsl(var(--confidence-high))]/90 border-[hsl(var(--confidence-high))]/30 bg-[hsl(var(--confidence-high))]/5",
   INFERRED: "text-primary border-primary/40 bg-primary/10",
   VERIFY: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/40 bg-[hsl(var(--confidence-mid))]/10",
-  CONFLICT: "text-destructive border-destructive/40 bg-destructive/10",
+  CONFLICT: "text-danger border-destructive/40 bg-destructive/10",
   LOW: "text-muted-foreground border-border bg-secondary/60",
-  FAILED: "text-destructive border-destructive/40 bg-destructive/10 line-through",
+  FAILED: "text-danger border-destructive/40 bg-destructive/10 line-through",
 };
 
 // ---- Pivot inference ---------------------------------------------------
@@ -861,6 +863,12 @@ export function buildPivots(artifacts: Artifact[], seedValue: string | null): Pi
     // (bizfile.com, opencorporates.com, bbb.org…), not subject identifiers.
     // Pivoting on them produces nothing actionable.
     if ((pType === "domain" || pType === "url") && isInfraDomain(v)) continue;
+    // A pivot spends a paid lookup, so a malformed selector is never offered.
+    // A `phone` row persisted from a document can be two copies of one number
+    // run together (20 digits). Same predicate as the report-text path; the
+    // artifact's kind is the "this is a phone" context a bare digit run needs.
+    // The row itself stays in the evidence — only the Run card is withheld.
+    if (pType === "phone" && !isPlausiblePhone(v, `phone ${v}`)) continue;
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
     if (meta.false_positive === true) continue;
 
@@ -2586,7 +2594,7 @@ export function buildIdentityClusters(
   opts?: { coRecordLinkage?: boolean },
 ): ClusterReport {
   const coRecordOn = opts?.coRecordLinkage ?? CO_RECORD_LINKAGE_ENABLED;
-  const seedHint = detectNameLocationSeed(seedValue);
+  const seedHint = detectNameLocationSeed(seedWithoutAttachments(seedValue));
   const seedState = seedHint?.state ?? null;
   const seedName = seedHint?.name ?? null;
 

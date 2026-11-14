@@ -142,7 +142,7 @@ export default function Settings() {
             variant="outline"
             onClick={signOut}
             disabled={signingOut}
-            className="h-9 border-destructive/30 text-destructive hover:bg-destructive/10 text-xs"
+            className="h-9 border-destructive/30 text-danger hover:bg-destructive/10 text-xs"
           >
             {signingOut ? "Signing out…" : "Sign out"}
           </Button>

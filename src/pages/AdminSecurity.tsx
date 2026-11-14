@@ -31,7 +31,7 @@ const severityColor: Record<TestResult["severity"], string> = {
   low: "text-muted-foreground border-border bg-secondary/40",
   medium: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/40 bg-[hsl(var(--confidence-mid))]/10",
   high: "text-warning border-warning/40 bg-warning/10",
-  critical: "text-destructive border-destructive/40 bg-destructive/10",
+  critical: "text-danger border-destructive/40 bg-destructive/10",
 };
 
 const categoryLabel: Record<TestResult["category"], string> = {
@@ -85,7 +85,7 @@ export default function AdminSecurity() {
   if (!isAdmin) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-background gap-4 p-6">
-        <ShieldAlert className="w-10 h-10 text-destructive" />
+        <ShieldAlert className="w-10 h-10 text-danger" />
         <h1 className="text-xl font-semibold text-foreground">Admin access required</h1>
         <p className="text-sm text-muted-foreground text-center max-w-md">
           The Security Test Lab is restricted to admin users. Ask an admin to grant your account the <code className="px-1 rounded bg-secondary/60">admin</code> role.
@@ -120,7 +120,7 @@ export default function AdminSecurity() {
         </p>
 
         {error && (
-          <div className="glass-card rounded-lg p-4 text-sm text-destructive border border-destructive/40 bg-destructive/10">
+          <div className="glass-card rounded-lg p-4 text-sm text-danger border border-destructive/40 bg-destructive/10">
             {error}
           </div>
         )}
@@ -136,7 +136,7 @@ export default function AdminSecurity() {
 
             {summary.critical_failures.length > 0 && (
               <div className="glass-card rounded-lg p-4 border border-destructive/40 bg-destructive/10">
-                <div className="text-sm font-medium text-destructive flex items-center gap-2 mb-2">
+                <div className="text-sm font-medium text-danger flex items-center gap-2 mb-2">
                   <ShieldAlert className="w-4 h-4" /> Critical failures
                 </div>
                 <ul className="list-disc list-inside text-sm text-foreground space-y-1">
@@ -154,7 +154,7 @@ export default function AdminSecurity() {
                     <h2 className="text-base font-semibold">{categoryLabel[cat]}</h2>
                     <span className={cn("text-xs px-2 py-0.5 rounded border",
                       failed > 0
-                        ? "text-destructive border-destructive/40 bg-destructive/10"
+                        ? "text-danger border-destructive/40 bg-destructive/10"
                         : "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10")}>
                       {list.length - failed}/{list.length} passed
                     </span>
@@ -166,7 +166,7 @@ export default function AdminSecurity() {
                           <div className="flex items-center gap-2">
                             {r.passed
                               ? <ShieldCheck className="w-4 h-4 text-[hsl(var(--confidence-high))]" />
-                              : <ShieldAlert className="w-4 h-4 text-destructive" />}
+                              : <ShieldAlert className="w-4 h-4 text-danger" />}
                             <span className="font-medium">{r.name}</span>
                             <span className={cn("text-eyebrow uppercase tracking-wide px-1.5 py-0.5 rounded border", severityColor[r.severity])}>
                               {r.severity}
@@ -197,7 +197,7 @@ function Stat({ label, value, tone }: { label: string; value: number | string; t
       <div className={cn(
         "text-xl font-semibold mt-1",
         tone === "good" && "text-[hsl(var(--confidence-high))]",
-        tone === "bad" && "text-destructive",
+        tone === "bad" && "text-danger",
       )}>{value}</div>
     </div>
   );

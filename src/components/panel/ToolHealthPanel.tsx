@@ -21,7 +21,7 @@ const TONE_CLS = {
   empty: "text-muted-foreground/80",
   skipped: "text-muted-foreground",
   degraded: "text-warning",
-  failed: "text-destructive",
+  failed: "text-danger",
 } as const;
 
 function StatCount({ icon: Icon, label, value, tone, hint }: {
@@ -110,7 +110,7 @@ export function ToolHealthPanel({ threadId }: { threadId: string }) {
   }
 
   if (error) {
-    return <div className="p-4 text-xs text-destructive">Couldn't load tool health: {error}</div>;
+    return <div className="p-4 text-xs text-danger">Couldn't load tool health: {error}</div>;
   }
 
   if (totals.total === 0) {
@@ -161,7 +161,7 @@ export function ToolHealthPanel({ threadId }: { threadId: string }) {
 
       {attention.length > 0 && (
         <div className="space-y-1.5">
-          <div className="text-micro font-semibold tracking-normal text-destructive/80 flex items-center gap-1.5">
+          <div className="text-micro font-semibold tracking-normal text-danger flex items-center gap-1.5">
             <XCircle className="h-3 w-3" /> Needs attention ({attention.length}) — faults, or tried repeatedly with nothing back
           </div>
           {attention.map((r) => <HealthRow key={`att-${r.toolName}`} row={r} />)}

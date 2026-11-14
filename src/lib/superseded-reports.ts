@@ -8,9 +8,11 @@
  * "## Evidence Record — authoritative" — a label only one of them can
  * truthfully hold — stacked in a single scroll.
  *
- * Only the newest report presents as current. The rest stay in the thread,
+ * Within one exchange (an analyst message and the replies to it) only the
+ * newest report presents as current. The earlier ones stay in the thread,
  * collapsed: a superseded report is still the record of what the run believed
- * at that point, so it is never dropped.
+ * at that point, so it is never dropped. A reply to a DIFFERENT analyst message
+ * is not a rewrite and never collapses anything (`supersededFlags`).
  *
  * Lives in lib/ rather than beside the component because exporting non-component
  * values from a component module breaks react-refresh.
@@ -30,8 +32,47 @@ export function assistantText(m: UIMessage): string {
   return stripReasoningPerPart(texts);
 }
 
-/** Is this message a closing REPORT rather than inter-step narration? */
+/**
+ * The heading the health sweep writes on its interrupted-run notice, and the
+ * headings earlier builds wrote. Mirrors RECOVERED_REPORT_HEADING and
+ * LEGACY_RECOVERED_REPORT_HEADINGS in supabase/functions/osint-agent/recovery.ts;
+ * chat-superseded-reports.test.ts reads that file and fails if these drift.
+ * Like the edge list, the legacy list is append-only: notices written before a
+ * rename are still sitting in `messages`.
+ */
+export const RECOVERY_NOTICE_HEADINGS: readonly string[] = [
+  "## Interrupted run — recovered evidence",
+  "## Findings report — recovered run",
+];
+
+/**
+ * Is this message the sweep's interrupted-run notice?
+ *
+ * The notice is a STATUS RECORD: it says the run died and that the rows under
+ * it are whatever was already written. It is report-shaped on purpose (the edge
+ * relies on that to avoid stacking a second notice), so `hasReportShape` cannot
+ * tell it from a report, and a later cycle's report used to collapse it under
+ * "Superseded report — a later cycle rewrote this". Nothing rewrote it.
+ *
+ * The signal is the marker the edge itself emits, never what the prose means.
+ * `messages` has no metadata column and the thread's `recovery_reason` is
+ * cleared when the next run starts, so the heading is the only signal that
+ * survives on the message. It must be the FIRST line: a report that quotes the
+ * heading further down is still a report.
+ */
+export function isRecoveryNoticeMessage(m: UIMessage): boolean {
+  const firstLine = assistantText(m).trimStart().split("\n", 1)[0].trimEnd();
+  return RECOVERY_NOTICE_HEADINGS.includes(firstLine);
+}
+
+/**
+ * Is this message a closing REPORT rather than inter-step narration?
+ *
+ * An interrupted-run notice is not one, in either direction: a later report
+ * does not supersede it, and it does not supersede an earlier report.
+ */
 export function isReportMessage(m: UIMessage): boolean {
+  if (isRecoveryNoticeMessage(m)) return false;
   const t = assistantText(m);
   return t.length > 0 && hasReportShape(t);
 }
@@ -40,4 +81,57 @@ export function isReportMessage(m: UIMessage): boolean {
 export function findLastReportIndex(list: UIMessage[]): number {
   for (let i = list.length - 1; i >= 0; i--) if (isReportMessage(list[i])) return i;
   return -1;
+}
+
+/** Text of an analyst message, as typed or as the app sent it. */
+function analystText(m: UIMessage): string {
+  if (m.role !== "user") return "";
+  return ((m.parts ?? []) as PartLike[])
+    .filter((p) => p?.type === "text")
+    .map((p) => p.text ?? "")
+    .join("");
+}
+
+/**
+ * Does this analyst message open a new EXCHANGE?
+ *
+ * Supersession never crosses an exchange boundary: a reply is only ever
+ * "rewritten" by a later report inside the same exchange. Without a boundary,
+ * every reply that contains a table collapsed as soon as the next one arrived.
+ * Seen in production 2026-11-10: 12 of 13 agent replies on one case were
+ * folded as "Superseded report", among them the answers to three separate
+ * phone pivots and the full closing report itself, folded by a later pivot's
+ * short answer.
+ *
+ * Every analyst message opens one. There is deliberately no exception for the
+ * app's own Write report prompt: letting its answer join the exchange before it
+ * folded whichever reply happened to come last (often one pivot answer) and
+ * left the report it actually restates open, so the result depended on order.
+ *
+ * Decided from STRUCTURE only: the role. Never from what the analyst's words
+ * mean, and never from the reply's prose.
+ */
+export function startsNewExchange(m: UIMessage): boolean {
+  return m.role === "user";
+}
+
+/**
+ * Which messages render collapsed as superseded: an earlier report-shaped
+ * reply, when a later report exists in the SAME exchange. The newest report of
+ * every exchange stays open. Interrupted-run notices are never reports, so they
+ * are neither collapsed nor able to collapse anything.
+ */
+export function supersededFlags(list: UIMessage[]): boolean[] {
+  const flags = new Array<boolean>(list.length).fill(false);
+  let start = 0;
+  const close = (end: number) => {
+    let last = -1;
+    for (let i = end - 1; i >= start; i--) if (isReportMessage(list[i])) { last = i; break; }
+    for (let i = start; i < last; i++) flags[i] = isReportMessage(list[i]);
+  };
+  for (let i = 0; i < list.length; i++) {
+    if (startsNewExchange(list[i])) { close(i); start = i; }
+  }
+  close(list.length);
+  return flags;
 }

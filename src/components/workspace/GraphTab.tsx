@@ -189,7 +189,7 @@ const EntityNode = memo(function EntityNode({ data, selected }: NodeProps<Entity
         {data.tail ? (
           <>
             <span className="shrink-0 font-medium text-foreground">{data.head}</span>
-            <span className="min-w-0 truncate text-muted-foreground/55">{data.tail}</span>
+            <span className="min-w-0 truncate text-faint-foreground">{data.tail}</span>
           </>
         ) : (
           <span className="max-w-[190px] truncate font-medium text-foreground">{data.head}</span>
@@ -694,8 +694,13 @@ export function GraphTab({ threadId }: { threadId: string }) {
                   {selectedNode.kind} · {selectedNode.isSeed ? "seed" : GROUP_LABEL[selectedNode.group]}
                 </span>
               </div>
-              <button onClick={() => setSelected(null)} aria-label="Close detail" className="shrink-0 text-muted-foreground hover:text-foreground">
-                <X className="h-4 w-4" />
+              <button
+                type="button"
+                onClick={() => setSelected(null)}
+                aria-label="Close detail"
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+              >
+                <X className="h-4 w-4" aria-hidden />
               </button>
             </div>
             <div className="mt-2 flex items-start gap-2">

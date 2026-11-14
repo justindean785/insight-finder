@@ -129,11 +129,11 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
               </div>
               <span className={
                 "font-mono " +
-                (overCap ? "text-destructive" : warn ? "text-[hsl(var(--confidence-mid))]" : "text-muted-foreground")
+                (overCap ? "text-danger" : warn ? "text-[hsl(var(--confidence-mid))]" : "text-muted-foreground")
               }>{pct}%</span>
             </div>
             {editingCap && capError && (
-              <div className="text-data text-destructive" role="alert">{capError}</div>
+              <div className="text-data text-danger" role="alert">{capError}</div>
             )}
             <div className="h-1.5 rounded-full bg-secondary/60 overflow-hidden">
               <div
@@ -149,7 +149,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
               />
             </div>
             {warn && (
-              <div className={"text-data " + (overCap ? "text-destructive" : "text-[hsl(var(--confidence-mid))]")}>
+              <div className={"text-data " + (overCap ? "text-danger" : "text-[hsl(var(--confidence-mid))]")}>
                 {overCap
                   ? `Over your $${capUsd.toFixed(2)} spend tracker by ${fmtUsd(spentMicro - capUsd * 1_000_000)} — informational only; the run is not stopped. Raise it to hide this.`
                   : "Nearing your spend tracker — informational only, not a hard limit."}
@@ -192,7 +192,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
                     </span>
                   )}
                   {t.failed > 0 && (
-                    <span className="px-1.5 py-0.5 rounded border border-destructive/40 bg-destructive/10 text-destructive">
+                    <span className="px-1.5 py-0.5 rounded border border-destructive/40 bg-destructive/10 text-danger">
                       {t.failed} failed
                     </span>
                   )}
@@ -216,7 +216,7 @@ export function AuditTab({ threadId, artifacts }: { threadId?: string; artifacts
             {failedTools.map((t) => (
               <li key={t.tool} className="flex items-center justify-between font-mono">
                 <span className="text-foreground">{t.tool}</span>
-                <span className="text-destructive">{t.failed} failed</span>
+                <span className="text-danger">{t.failed} failed</span>
               </li>
             ))}
           </ul>

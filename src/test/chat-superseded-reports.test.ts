@@ -1,5 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { isReportMessage, findLastReportIndex } from "@/lib/superseded-reports";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+  isReportMessage,
+  findLastReportIndex,
+  isRecoveryNoticeMessage,
+  RECOVERY_NOTICE_HEADINGS,
+  startsNewExchange,
+  supersededFlags,
+} from "@/lib/superseded-reports";
+import { CONTINUE_PROMPT, REPORT_PROMPT } from "@/lib/run-controls";
+import { hasReportShape } from "@/lib/report-shape";
+import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import type { UIMessage } from "ai";
 
 /**
@@ -61,10 +73,8 @@ describe("superseded report detection", () => {
 
   it("leaves a single-report thread fully expanded", () => {
     const thread = [msg("user", "seed"), msg("assistant", NARRATION), msg("assistant", REPORT)];
-    const last = findLastReportIndex(thread);
     // Nothing before the only report is itself a report, so nothing collapses.
-    const supersededCount = thread.filter((m, i) => i < last && isReportMessage(m)).length;
-    expect(supersededCount).toBe(0);
+    expect(supersededFlags(thread)).toEqual([false, false, false]);
   });
 
   it("collapses exactly the earlier reports, never the narration between them", () => {
@@ -75,8 +85,182 @@ describe("superseded report detection", () => {
       msg("assistant", NARRATION), // 3 — untouched
       msg("assistant", REPORT),    // 4 — current
     ];
-    const last = findLastReportIndex(thread);
-    const collapsed = thread.map((m, i) => last >= 0 && i < last && isReportMessage(m));
-    expect(collapsed).toEqual([true, false, true, false, false]);
+    expect(supersededFlags(thread)).toEqual([true, false, true, false, false]);
+  });
+});
+
+/**
+ * The interrupted-run notice is a status record, not a report.
+ *
+ * Observed in production on 2026-10-31: a run died, the health sweep posted
+ * its notice, and a later cycle then wrote a report. The transcript collapsed
+ * the notice under "Superseded report — a later cycle rewrote this", so the
+ * analyst lost the signal that the run had died and that the rows under it
+ * were only what had already been written.
+ */
+
+/** Shape of recovery.ts buildRecoveredAssistantText, synthetic values. */
+const noticeText = (heading = RECOVERY_NOTICE_HEADINGS[0]) => [
+  heading,
+  "",
+  "The investigation for **jane@example.com** was interrupted before the agent could write its closing response. **This is not a findings report.** The rows below are whatever was already durably written when the run stopped, presented as-is.",
+  "Last heartbeat: 2026-10-31T09:14:02.000Z.",
+  "",
+  "### Model-reviewed findings",
+  "| # | Kind | Value | Confidence | Status | Source |",
+  "|---:|---|---|---:|---|---|",
+  "| 1 | email | jane@example.com | 60 | verified | hunter_verify |",
+  "",
+  "### Recovery summary",
+  "1 recovered row: 1 model-reviewed, 0 unreviewed.",
+].join("\n");
+
+/** The predicate ChatWindow applies, over the list it applies it to. */
+const collapsedFlags = (thread: UIMessage[]) => supersededFlags(dedupeCheckpoints(thread));
+
+describe("interrupted-run notice and supersession", () => {
+  it("mirrors the headings the edge recovery path writes and recognises", () => {
+    const edge = readFileSync(resolve(__dirname, "../../supabase/functions/osint-agent/recovery.ts"), "utf8");
+    const current = /export const RECOVERED_REPORT_HEADING = "([^"]+)";/.exec(edge)?.[1];
+    const legacyBlock = /export const LEGACY_RECOVERED_REPORT_HEADINGS[^=]*=\s*\[([\s\S]*?)\];/.exec(edge)?.[1] ?? "";
+    const legacy = [...legacyBlock.matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+    expect(current).toBeTruthy();
+    expect(legacy.length).toBeGreaterThan(0);
+    expect([...RECOVERY_NOTICE_HEADINGS]).toEqual([current, ...legacy]);
+  });
+
+  it("is report-shaped, which is why the shape gate alone collapsed it", () => {
+    expect(hasReportShape(noticeText())).toBe(true);
+  });
+
+  it("recognises the notice under its current and its legacy heading", () => {
+    for (const h of RECOVERY_NOTICE_HEADINGS) {
+      expect(isRecoveryNoticeMessage(msg("assistant", noticeText(h)))).toBe(true);
+      expect(isReportMessage(msg("assistant", noticeText(h)))).toBe(false);
+    }
+  });
+
+  it("does not take a report that quotes the heading for a notice", () => {
+    const quoting = `${REPORT}\n\nAn earlier run ended with this notice:\n\n${RECOVERY_NOTICE_HEADINGS[0]}\n`;
+    expect(isRecoveryNoticeMessage(msg("assistant", quoting))).toBe(false);
+    expect(isReportMessage(msg("assistant", quoting))).toBe(true);
+    // A longer heading that merely starts the same way is not the marker either.
+    expect(isRecoveryNoticeMessage(msg("assistant", `${RECOVERY_NOTICE_HEADINGS[0]} and analysis\n\n${REPORT}`))).toBe(false);
+  });
+
+  it("never treats a user message as a notice", () => {
+    expect(isRecoveryNoticeMessage(msg("user", noticeText()))).toBe(false);
+  });
+
+  it("keeps the notice open when a later cycle writes a report", () => {
+    const thread = [
+      msg("user", "jane@example.com"),
+      msg("assistant", noticeText()), // run 1 died
+      msg("user", "continue"),
+      msg("assistant", REPORT),       // run 2 finished
+    ];
+    expect(collapsedFlags(thread)).toEqual([false, false, false, false]);
+  });
+
+  it("still collapses an ordinary earlier report around a notice", () => {
+    const thread = [
+      msg("assistant", REPORT),       // 0 — superseded by 3
+      msg("assistant", noticeText()), // 1 — status record, stays open
+      msg("assistant", NARRATION),    // 2
+      msg("assistant", REPORT),       // 3 — current
+    ];
+    expect(collapsedFlags(thread)).toEqual([true, false, false, false]);
+  });
+
+  it("does not let a notice supersede the report before it", () => {
+    // No later cycle rewrote that report: the run after it died.
+    const thread = [msg("assistant", REPORT), msg("user", "continue"), msg("assistant", noticeText())];
+    expect(findLastReportIndex(thread)).toBe(0);
+    expect(collapsedFlags(thread)).toEqual([false, false, false]);
+  });
+});
+
+/**
+ * Supersession is scoped to an exchange.
+ *
+ * Observed in production on 2026-11-10: 12 of 13 agent replies on one case were
+ * folded as "Superseded report". Three separate pivot answers were among them,
+ * and so was the full closing report, folded by a later pivot's short answer.
+ * A reply is only rewritten by a later report that answers the same request.
+ */
+describe("supersession is scoped to an exchange", () => {
+  const PIVOT = "Investigate phone +1 555 0100. Does this number belong to the subject?";
+  const flags = (thread: UIMessage[]) => supersededFlags(dedupeCheckpoints(thread));
+
+  it("opens an exchange on every analyst message, app prompts included", () => {
+    expect(startsNewExchange(msg("user", "jane@example.com"))).toBe(true);
+    expect(startsNewExchange(msg("user", PIVOT))).toBe(true);
+    expect(startsNewExchange(msg("user", CONTINUE_PROMPT))).toBe(true);
+    expect(startsNewExchange(msg("user", REPORT_PROMPT))).toBe(true);
+    expect(startsNewExchange(msg("assistant", REPORT))).toBe(false);
+  });
+
+  it("keeps the answer to each pivot open", () => {
+    const thread = [
+      msg("user", "jane@example.com"), msg("assistant", REPORT),
+      msg("user", PIVOT), msg("assistant", REPORT),
+      msg("user", PIVOT), msg("assistant", REPORT),
+    ];
+    expect(flags(thread)).toEqual([false, false, false, false, false, false]);
+  });
+
+  it("does not let a later pivot answer fold the closing report", () => {
+    const thread = [
+      msg("user", "jane@example.com"), msg("assistant", REPORT),
+      msg("user", REPORT_PROMPT), msg("assistant", REPORT), // the closing report
+      msg("user", PIVOT), msg("assistant", REPORT),
+    ];
+    expect(flags(thread)).toEqual([false, false, false, false, false, false]);
+  });
+
+  it("does not let Write report fold whichever reply came last", () => {
+    // Order must not decide it: the closing report restates the case, not the
+    // one pivot answer that happens to sit before it.
+    const thread = [
+      msg("user", "jane@example.com"), msg("assistant", REPORT),
+      msg("user", PIVOT), msg("assistant", REPORT),
+      msg("user", PIVOT), msg("assistant", REPORT),
+      msg("user", REPORT_PROMPT), msg("assistant", REPORT),
+    ];
+    expect(flags(thread)).toEqual(new Array(8).fill(false));
+  });
+
+  it("KNOWN COST: a full report after each typed follow-up stays open", () => {
+    // The thread-wide rule folded these. Telling a full rewrite from a short
+    // answer would mean reading the reply's prose, so each stays open instead.
+    const thread = [
+      msg("user", "Jordan Vale, age 31"), msg("assistant", REPORT),
+      msg("user", "run next pivots"), msg("assistant", REPORT),
+      msg("user", "run next pivots"), msg("assistant", REPORT),
+    ];
+    expect(flags(thread)).toEqual([false, false, false, false, false, false]);
+  });
+
+  it("still folds earlier reports inside one exchange, never the narration", () => {
+    const thread = [
+      msg("user", "jane@example.com"),
+      msg("assistant", REPORT), msg("assistant", NARRATION), msg("assistant", REPORT),
+    ];
+    expect(flags(thread)).toEqual([false, true, false, false]);
+  });
+
+  it("matches the thread-wide rule when no analyst message intervenes", () => {
+    const thread = [msg("assistant", REPORT), msg("assistant", NARRATION), msg("assistant", REPORT)];
+    expect(flags(thread)).toEqual([true, false, false]);
+  });
+
+  it("keeps an interrupted-run notice out of it in both directions", () => {
+    const thread = [
+      msg("user", "jane@example.com"),
+      msg("assistant", REPORT), msg("assistant", noticeText()), msg("assistant", REPORT),
+    ];
+    expect(flags(thread)).toEqual([false, true, false, false]);
+    expect(flags([msg("user", "seed"), msg("assistant", REPORT), msg("assistant", noticeText())]))
+      .toEqual([false, false, false]);
   });
 });

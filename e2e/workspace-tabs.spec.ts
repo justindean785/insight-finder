@@ -270,4 +270,30 @@ test.describe("workspace tab strip", () => {
     expect(style.boxShadow).not.toBe("none");
     expect(style.boxShadow).toMatch(/inset/);
   });
+
+  /**
+   * The right-hand workbench strip at the NARROW sheet (320px, lg up to xl).
+   * With both count chips showing, its three tabs used to overflow underneath
+   * the sheet's fold button: "Connections" was painted under the icon and its
+   * right half took the fold button's click instead of the tab's.
+   */
+  test("workbench tabs never sit under the sheet's fold button at the 320px sheet", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "1440x900", "one run at an explicit viewport is enough");
+    await page.setViewportSize({ width: 1100, height: 800 });
+    await openWorkspace(page);
+    const strip = page.locator('[role="tablist"][aria-label="Workbench"]');
+    await strip.waitFor({ state: "visible" });
+    const fold = await page.getByRole("button", { name: "Hide case sheet" }).boundingBox();
+    expect(fold).not.toBeNull();
+    for (const t of await strip.getByRole("tab").all()) {
+      const box = (await t.boundingBox())!;
+      expect(box.x + box.width, `"${await t.innerText()}" ends before the fold button`).toBeLessThanOrEqual(fold!.x);
+    }
+    // A real pointer click on the far edge of the last tab selects the tab.
+    const last = strip.getByRole("tab", { name: /^Connections/ });
+    const box = (await last.boundingBox())!;
+    await page.mouse.click(box.x + box.width - 3, box.y + box.height / 2);
+    await expect(last).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator("#case-sheet")).toBeVisible();
+  });
 });

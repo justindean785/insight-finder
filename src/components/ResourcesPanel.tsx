@@ -27,7 +27,7 @@ import {
 } from "@/lib/intel";
 import { evidenceStatus, classLabel } from "@/lib/evidence-status";
 import { independentSourceClasses } from "@/lib/intel";
-import { ANALYST_ACTIONABLE_STATES, authorityFor, LEDGER_SORT_RANK } from "@/lib/authority";
+import { ANALYST_ACTIONABLE_STATES, authorityFor, LEDGER_SORT_RANK, underlyingRepeatsBasis } from "@/lib/authority";
 import { statusFilterForAuthority } from "@/lib/evidence-status-filter";
 import { compareEvidence, EVIDENCE_SORT_LABEL, matchesQuery, type EvidenceSortMode } from "@/lib/evidence-sort";
 import { useAgentAssessment } from "@/hooks/useAgentAssessment";
@@ -297,7 +297,7 @@ function ArtifactsList({
     return (
       <div className="p-3 sm:p-5">
         <div className="flex flex-col items-center gap-4 rounded-2xl border border-destructive/25 bg-[linear-gradient(180deg,hsl(var(--danger-muted)/0.55),hsl(var(--surface-1)/0.92))] px-6 py-12 text-center shadow-[0_34px_110px_-70px_rgba(0,0,0,0.95)]">
-          <div className="grid h-11 w-11 place-items-center rounded-xl border border-destructive/35 bg-destructive/10 text-destructive">
+          <div className="grid h-11 w-11 place-items-center rounded-xl border border-destructive/35 bg-destructive/10 text-danger">
             <AlertTriangle className="h-[18px] w-[18px]" strokeWidth={1.75} />
           </div>
           <div>
@@ -439,7 +439,7 @@ function ArtifactsList({
           artifacts means reading 100 individually-laid-out rows. */}
       {foldableClusters > 1 && (
         <div className="flex items-center justify-end gap-2 px-2.5 pt-1.5">
-          <span className="text-micro text-muted-foreground/55 tabular-nums">
+          <span className="text-micro text-faint-foreground tabular-nums">
             {foldableClusters} large groups
           </span>
           <button
@@ -491,7 +491,7 @@ function ArtifactsList({
                     </span>
                   )}
                   {failedC > 0 && (
-                    <span className="text-micro tabular-nums text-destructive">{failedC} flagged</span>
+                    <span className="text-micro tabular-nums text-danger">{failedC} flagged</span>
                   )}
                   <span className="text-micro tabular-nums text-muted-foreground/70">{all.length}</span>
                 </span>
@@ -587,7 +587,7 @@ function ArtifactsList({
                           >
                             {band.prov ? readableSourceLabel(band.prov) : "source not recorded"}
                           </span>
-                          <span className="shrink-0 text-micro tabular-nums text-muted-foreground/55">
+                          <span className="shrink-0 text-micro tabular-nums text-faint-foreground">
                             · {band.rows.length}
                           </span>
                           {bandQuarantined > 0 && (
@@ -597,7 +597,7 @@ function ArtifactsList({
                             </span>
                           )}
                           {band.lo != null && band.hi != null && band.rows.length > 1 && (
-                            <span className="ml-auto shrink-0 text-micro tabular-nums text-muted-foreground/55">
+                            <span className="ml-auto shrink-0 text-micro tabular-nums text-faint-foreground">
                               {band.lo === band.hi ? `${band.hi}%` : `${band.lo}\u2013${band.hi}%`}
                             </span>
                           )}
@@ -795,8 +795,8 @@ export function ArtifactRow({
               {rState === "key" && <Star className="h-3 w-3 shrink-0 text-primary" aria-hidden />}
               {rState === "recheck" && <ShieldQuestion className="h-3 w-3 shrink-0 text-[hsl(var(--confidence-mid))]" aria-hidden />}
               {rState === "dismissed" && <EyeOff className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />}
-              {fp && <XCircle className="h-3 w-3 shrink-0 text-destructive" aria-hidden />}
-              {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-destructive" aria-hidden />}
+              {fp && <XCircle className="h-3 w-3 shrink-0 text-danger" aria-hidden />}
+              {sensitive && <ShieldAlert className="h-3 w-3 shrink-0 text-danger" aria-hidden />}
               {/* A selector gets the mono, one-line, truncated treatment this
                   column was built for. A SENTENCE does not: the extractor writes
                   whole findings into `value` ("CONTRADICTION: … Carlos Morales
@@ -861,10 +861,10 @@ export function ArtifactRow({
             <AuthorityChip view={authority} />
             <span
               className="ledger-meta mt-0.5 flex items-center gap-1 truncate"
-              title={authority.state === "quarantined" ? `${authority.underlyingLabel} · ${authority.basis}` : authority.basis}
+              title={authority.state === "quarantined" && !underlyingRepeatsBasis(authority) ? `${authority.underlyingLabel} · ${authority.basis}` : authority.basis}
             >
-              <UnderlyingStrength view={authority} />
-              {authority.state === "quarantined" && <span aria-hidden>·</span>}
+              {!underlyingRepeatsBasis(authority) && <UnderlyingStrength view={authority} />}
+              {authority.state === "quarantined" && !underlyingRepeatsBasis(authority) && <span aria-hidden>·</span>}
               <span className="truncate">{authority.basis}</span>
             </span>
           </span>
@@ -1224,7 +1224,7 @@ function ArtifactDrawerInner({
           <Field label="Review">
             <div className="mb-2 flex items-center gap-2 flex-wrap text-xs">
               <Chip tone={REVIEW_CLASS[rState]} mono>{REVIEW_SHORT[rState]}</Chip>
-              {falsePositive && <Chip tone="bg-destructive/15 text-destructive border-destructive/40" mono>false positive</Chip>}
+              {falsePositive && <Chip tone="bg-destructive/15 text-danger border-destructive/40" mono>false positive</Chip>}
             </div>
             <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] p-2">
               <ReviewBtn current={rState} target="confirmed" onClick={() => { void reviewSet(artifact.id, "confirmed", rctx); announceReview("confirmed"); }}>
@@ -1535,19 +1535,24 @@ export function EvidenceBoard({
 
   const slot = useToolbarSlot();
 
-  // The prototype's chips, each still ONE of STATUS_FILTER_GROUPS (no second
-  // taxonomy): Supported = strong, Unresolved = review (which keeps conflicts in
-  // the Analyst union), Conflicts = the conflict subset, Quarantined, then Leads
-  // and Excluded behind More.
+  // The chips, each still ONE of STATUS_FILTER_GROUPS (no second taxonomy):
+  // Corroborated = strong, Single source = review (which keeps conflicts in the
+  // Analyst union), Conflicts = the conflict subset, Quarantined, then Leads and
+  // Excluded behind More.
+  //
+  // They were labelled "Supported" / "Unresolved", which are the AGENT
+  // ASSESSMENT's group names (linkage to the seed). These chips count AUTHORITY
+  // (how well a row is sourced), so one case read "Supported 0" here and
+  // "1 supported finding" on the Overview. Each chip now names what it counts.
   const filterOptions: CompactOption<EvidenceStatusFilter>[] = [
-    { key: "analyst", label: "Analyst view", count: counts.analyst, hint: "Everything that needs a decision — leads and exclusions hidden" },
+    { key: "analyst", label: "Analyst view", count: counts.analyst, hint: "Findings and open exceptions. Leads and exclusions are hidden." },
     { key: "all", label: "All", count: counts.all },
-    { key: "strong", label: "Supported", count: counts.strong, tone: "ok", hint: "Verified, infrastructure and probable rows — the engine's supported findings" },
+    { key: "strong", label: "Corroborated", count: counts.strong, tone: "ok", hint: "Verified, infrastructure and probable rows: sourcing that holds. Linkage to the seed is the Linkage column." },
     {
-      key: "review", label: "Unresolved", count: counts.review, tone: "warn",
-      // The tab badge's "to decide" counts a different set: conflicts plus quarantined rows awaiting a
+      key: "review", label: "Single source", count: counts.review, tone: "warn",
+      // The tab badge counts a different set: conflicts plus quarantined rows open for an optional
       // linkage call. Quarantined rows are listed under Quarantined, not here, so the two differ.
-      hint: "Rows that need another source, and conflicts. Not the tab's \"to decide\" count, which adds quarantined rows awaiting a linkage call.",
+      hint: "Rows that rest on one source, and conflicts. Not the tab's optional count, which adds quarantined rows.",
     },
     ...(counts.conflict > 0
       ? [{ key: "conflict" as const, label: "Conflicts", count: counts.conflict, tone: "warn" as const, hint: "Rows that contradict the seed or another identity cluster" }]

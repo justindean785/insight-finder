@@ -22,6 +22,11 @@ import {
   canReleaseLinkage, releasePatch,
   RELEASE_ACTION_LABEL, RELEASE_CONFIRM_BODY, RELEASE_CONFIRM_TITLE,
 } from "@/lib/quarantine-release";
+import {
+  SET_SUBJECT_CONFIRM_BODY, SET_SUBJECT_CONFIRM_TITLE, SET_SUBJECT_LABEL, SET_SUBJECT_NO_ROWS_MESSAGE,
+  subjectPatch, writeSubject, type SubjectWriteChain, type SubjectWriteClient,
+} from "@/lib/set-subject";
+import { useOptionalCaseSnapshot } from "@/hooks/useCaseSnapshot";
 import { AuthorityChip, AuthorityCaveat, UnderlyingStrength } from "@/components/ui/authority";
 import {
   useReviewStates, REVIEW_CLASS, REVIEW_LABEL, startRecheck,
@@ -71,6 +76,13 @@ const KIND_ICON: Record<string, typeof Mail> = {
   name: User, person: User, crypto: Hash, crypto_wallet: Hash, wallet: Hash, address: MapPin, location: MapPin, ip: Globe, ip_address: Globe,
 };
 
+/** Adapter for `writeSubject`. Structurally comparing the generated supabase client
+ *  to `SubjectWriteClient` overflows the compiler (TS2589), so only the CHAIN SHAPE is
+ *  cast; `.from("threads").update(p)` is still checked against the generated schema. */
+const subjectClient: SubjectWriteClient = {
+  from: () => ({ update: (p) => supabase.from("threads").update(p) as unknown as SubjectWriteChain }),
+};
+
 export function ArtifactInspector({
   artifact, onClose, onChanged, reviewGet, reviewSet, threadId, allArtifacts,
 }: ArtifactInspectorProps) {
@@ -100,6 +112,27 @@ export function ArtifactInspector({
       () => toast.success(label),
       () => toast.error("Copy failed"),
     );
+  };
+
+  // "Set as case subject" — offered only once the case snapshot has loaded: an
+  // unloaded seed reads as empty, which would offer it on a case that has one.
+  const caseApi = useOptionalCaseSnapshot();
+  const caseSeed = caseApi?.snapshot?.hydrated ? caseApi.snapshot.seed : null;
+  const newSubject = caseSeed ? subjectPatch(caseSeed.value, artifact) : null;
+  const [settingSubject, setSettingSubject] = useState(false);
+  const setAsSubject = async () => {
+    if (settingSubject || !newSubject) return;
+    setSettingSubject(true);
+    try {
+      // Compare-and-set against the raw seed this snapshot showed (CaseSnapshot.seed.value
+      // is `threads.seed_value` verbatim), and refuse to report a zero-row write as success.
+      const res = await writeSubject(subjectClient, threadId, caseSeed?.value ?? null, newSubject);
+      if (res.ok === false) return toast.error(res.reason === "error" ? res.message : SET_SUBJECT_NO_ROWS_MESSAGE);
+      await caseApi?.refresh();
+      toast.success("Case subject set");
+    } finally {
+      setSettingSubject(false);
+    }
   };
 
   const [releasing, setReleasing] = useState(false);
@@ -171,7 +204,7 @@ export function ArtifactInspector({
                 type="button"
                 onClick={() => copy(artifact.value, "Value copied")}
                 aria-label="Copy selected value"
-                className="grid h-7 w-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
               >
                 <Copy className="h-3.5 w-3.5" aria-hidden />
               </button>
@@ -179,7 +212,7 @@ export function ArtifactInspector({
                 type="button"
                 onClick={onClose}
                 aria-label="Close inspector"
-                className="grid h-7 w-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
               >
                 <X className="h-4 w-4" aria-hidden />
               </button>
@@ -200,7 +233,7 @@ export function ArtifactInspector({
                 {rState !== "new" && (
                   <Chip tone={REVIEW_CLASS[rState]} className="ml-1" title="Your call, recorded separately from the AI assessment">{REVIEW_LABEL[rState]}</Chip>
                 )}
-                {falsePositive && <Chip tone="bg-destructive/15 text-destructive border-destructive/40">false positive</Chip>}
+                {falsePositive && <Chip tone="bg-destructive/15 text-danger border-destructive/40">false positive</Chip>}
               </small>
             </div>
           </div>
@@ -244,6 +277,33 @@ export function ArtifactInspector({
                   </AlertDialogContent>
                 </AlertDialog>
               )}
+            </div>
+          )}
+
+          {/* Set as case subject — only for a case with none (an upload-only first
+              message) and a concrete, eligible selector. See set-subject.ts. */}
+          {newSubject && (
+            <div className="panel-inset mt-4 p-3">
+              <p className="text-micro leading-snug text-muted-foreground">
+                This case has no subject yet, so no row can be linked to anyone.
+              </p>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="outline" size="sm" disabled={settingSubject} className="mt-3 h-7 w-full font-mono text-eyebrow uppercase tracking-[0.14em]">
+                    {SET_SUBJECT_LABEL}
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>{SET_SUBJECT_CONFIRM_TITLE}</AlertDialogTitle>
+                    <AlertDialogDescription className="whitespace-pre-line text-left">{SET_SUBJECT_CONFIRM_BODY}</AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => void setAsSubject()}>{SET_SUBJECT_LABEL}</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           )}
 
@@ -336,85 +396,90 @@ export function ArtifactInspector({
             </ul>
           )}
 
-          {/* The analyst's call */}
-          <div className="mt-6 flex gap-1.5" role="group" aria-label="Your review">
-            <ReviewBtn
-              current={rState}
-              target="confirmed"
-              primary
-              onClick={() => { void reviewSet(artifact.id, "confirmed", rctx); announceReview("confirmed"); }}
-            >
-              <CheckCircle2 className="h-3 w-3" aria-hidden /> {rState === "confirmed" ? "Confirmed ✓" : "Confirm"}
-            </ReviewBtn>
-            <ReviewBtn current={rState} target="wrong" onClick={() => { void reviewSet(artifact.id, "wrong", rctx); announceReview("wrong"); }}>
-              <XCircle className="h-3 w-3" aria-hidden /> {rState === "wrong" ? "Marked false" : "False match"}
-            </ReviewBtn>
-            <button
-              type="button"
-              onClick={() => setNoteOpen((v) => !v)}
-              aria-expanded={noteOpen}
-              className="flex-1 whitespace-nowrap rounded-[5px] border border-border bg-surface-2 px-2 py-2 text-[11px] font-medium text-foreground hover:bg-surface-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              Add note
-            </button>
-          </div>
-          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
-            <TextBtn active={rState === "key"} onClick={() => { void reviewSet(artifact.id, "key", rctx); announceReview("key"); }}><Star className="h-3 w-3" aria-hidden /> Key</TextBtn>
-            <TextBtn
-              active={rState === "recheck"}
-              onClick={() => {
-                void startRecheck({
-                  set: reviewSet,
-                  threadId,
-                  artifact: { id: artifact.id, value: artifact.value, kind: artifact.kind },
-                  ctx: rctx,
-                }).then((r) => {
-                  if (!r.ok) return;
-                  announceReview("recheck");
-                  toast.success("Rechecking in chat…");
-                  onClose();
-                });
-              }}
-            >
-              <ShieldQuestion className="h-3 w-3" aria-hidden /> Recheck
-            </TextBtn>
-            <TextBtn active={rState === "dismissed"} onClick={() => { void reviewSet(artifact.id, "dismissed", rctx); announceReview("dismissed"); }}><XCircle className="h-3 w-3" aria-hidden /> Dismiss</TextBtn>
-            {rState !== "new" && (
-              <TextBtn onClick={() => { void reviewSet(artifact.id, null, rctx); announceReview(null); }}>Reset</TextBtn>
-            )}
-          </div>
-          {noteOpen && (
-            <div className="mt-3">
-              <textarea
-                value={noteDraft}
-                onChange={(e) => ui.setDraft(artifact.id, e.target.value)}
-                aria-label="Note — justification or context for this artifact"
-                placeholder="Add your reasoning…"
-                rows={3}
-                className="w-full resize-y rounded-[5px] border border-border bg-surface-2 p-2 text-[12px] text-foreground outline-none focus-visible:border-primary/60 focus-visible:ring-2 focus-visible:ring-ring"
-              />
-              <div className="mt-1 flex justify-end">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  className="h-6 px-2 text-data"
-                  onClick={() => {
-                    void review.setNote(artifact.id, noteDraft, rctx).then((r) => {
-                      if (r.ok) {
-                        toast.success("Note saved");
-                        ui.clearDraft(artifact.id);
-                      }
-                    });
-                  }}
-                >
-                  Save note
-                </Button>
-              </div>
+          {/* The analyst's call: a named action area, not an unlabeled row at the
+              bottom of a long assessment. The engine's scores stay unchanged. */}
+          <section aria-labelledby="your-review-heading" className="mt-6 rounded-lg border border-border bg-surface-1/70 p-3.5">
+            <h3 id="your-review-heading" className="text-[13px] font-semibold text-foreground">Your review</h3>
+            <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">Record your call without changing the AI assessment.</p>
+            <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="Your review">
+              <ReviewBtn
+                current={rState}
+                target="confirmed"
+                primary
+                onClick={() => { void reviewSet(artifact.id, "confirmed", rctx); announceReview("confirmed"); }}
+              >
+                <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> {rState === "confirmed" ? "Confirmed ✓" : "Confirm"}
+              </ReviewBtn>
+              <ReviewBtn current={rState} target="wrong" onClick={() => { void reviewSet(artifact.id, "wrong", rctx); announceReview("wrong"); }}>
+                <XCircle className="h-3.5 w-3.5" aria-hidden /> {rState === "wrong" ? "Marked false" : "False match"}
+              </ReviewBtn>
+              <button
+                type="button"
+                onClick={() => setNoteOpen((v) => !v)}
+                aria-expanded={noteOpen}
+                className="min-h-9 flex-1 whitespace-nowrap rounded-[5px] border border-border bg-surface-2 px-2 py-2 text-[12px] font-medium text-foreground hover:bg-surface-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:min-h-11"
+              >
+                Add note
+              </button>
             </div>
-          )}
-          <p className="mt-4 text-[11px] leading-relaxed text-faint-foreground">
-            Your review is separate from the AI assessment. Confirming does not add an independent source.
-          </p>
+            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[12px]">
+              <TextBtn active={rState === "key"} onClick={() => { void reviewSet(artifact.id, "key", rctx); announceReview("key"); }}><Star className="h-3 w-3" aria-hidden /> Key</TextBtn>
+              <TextBtn
+                active={rState === "recheck"}
+                onClick={() => {
+                  void startRecheck({
+                    set: reviewSet,
+                    threadId,
+                    artifact: { id: artifact.id, value: artifact.value, kind: artifact.kind },
+                    ctx: rctx,
+                  }).then((r) => {
+                    if (!r.ok) return;
+                    announceReview("recheck");
+                    toast.success("Rechecking in chat…");
+                    onClose();
+                  });
+                }}
+              >
+                <ShieldQuestion className="h-3 w-3" aria-hidden /> Recheck
+              </TextBtn>
+              <TextBtn active={rState === "dismissed"} onClick={() => { void reviewSet(artifact.id, "dismissed", rctx); announceReview("dismissed"); }}><XCircle className="h-3 w-3" aria-hidden /> Dismiss</TextBtn>
+              {rState !== "new" && (
+                <TextBtn onClick={() => { void reviewSet(artifact.id, null, rctx); announceReview(null); }}>Reset</TextBtn>
+              )}
+            </div>
+            {noteOpen && (
+              <div className="mt-3">
+                <textarea
+                  value={noteDraft}
+                  onChange={(e) => ui.setDraft(artifact.id, e.target.value)}
+                  aria-label="Note — justification or context for this artifact"
+                  placeholder="Add your reasoning…"
+                  rows={3}
+                  className="w-full resize-y rounded-[5px] border border-border bg-surface-2 p-2.5 text-[13px] leading-relaxed text-foreground outline-none focus-visible:border-primary/60 focus-visible:ring-2 focus-visible:ring-ring"
+                />
+                <div className="mt-2 flex justify-end">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-8 px-3 text-data [@media(pointer:coarse)]:h-11"
+                    onClick={() => {
+                      void review.setNote(artifact.id, noteDraft, rctx).then((r) => {
+                        if (r.ok) {
+                          toast.success("Note saved");
+                          ui.clearDraft(artifact.id);
+                        }
+                      });
+                    }}
+                  >
+                    Save note
+                  </Button>
+                </div>
+              </div>
+            )}
+            <p className="mt-3 text-[11.5px] leading-relaxed text-subtle-foreground">
+              Your review is separate from the AI assessment. Confirming does not add an independent source.
+            </p>
+          </section>
 
           <Divider />
 
@@ -501,7 +566,7 @@ function ReviewBtn({ current, target, onClick, children, primary = false }: {
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "inline-flex flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-[5px] border px-2 py-2 text-[11px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "inline-flex min-h-9 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-[5px] border px-2 py-2 text-[12px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:min-h-11",
         active
           ? "border-[hsl(var(--confidence-high)/0.5)] bg-[hsl(var(--confidence-high)/0.15)] text-[hsl(var(--confidence-high))]"
           : primary
@@ -520,7 +585,7 @@ function TextBtn({ onClick, children, active = false }: { onClick: () => void; c
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={cn("inline-flex items-center gap-1 rounded px-1 py-0.5 text-[11px] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", active ? "text-foreground underline underline-offset-2" : "text-muted-foreground")}
+      className={cn("inline-flex min-h-8 items-center gap-1 rounded px-1.5 py-1 text-[12px] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:min-h-11", active ? "text-foreground underline underline-offset-2" : "text-muted-foreground")}
     >
       {children}
     </button>

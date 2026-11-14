@@ -9,6 +9,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { reflowCollapsedTables } from "@/lib/markdown";
 import { osintAgentUrl } from "@/lib/functionsUrl";
+import { sendMaintenanceSweep } from "@/lib/maintenance-sweep";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { FullPageLoader } from "@/components/ui/full-page-loader";
@@ -42,13 +43,14 @@ import { pivotEligibility, pivotSuggestionInput, validatePivotSuggestion, type R
 import { PivotStrip } from "@/components/pivots/PivotStrip";
 import { SessionStrip } from "@/components/chat/SessionStrip";
 import { AgentAssessmentCards } from "@/components/chat/AgentAssessmentCards";
+import { LongProse } from "@/components/chat/LongProse";
 import { NextSteps, type NextStepItem } from "@/components/pivots/NextSteps";
 import { countWorkbenchRunnablePivots } from "@/lib/next-step-queue";
 import { registerPivotRunner } from "@/lib/pivot-runner";
 import { DEFAULT_CONTROLS, evaluatePreflight, type PreflightControls } from "@/lib/composer-preflight";
 import { TargetChip } from "@/components/composer/ComposerPreflight";
 import { hasReportShape, joinAssistantTranscript, stripReasoningPerPart } from "@/lib/report-shape";
-import { findLastReportIndex, isReportMessage } from "@/lib/superseded-reports";
+import { isRecoveryNoticeMessage, supersededFlags } from "@/lib/superseded-reports";
 import { dedupeCheckpoints } from "@/lib/chat-checkpoints";
 import { computePivots } from "@/lib/pivot-engine";
 import { buildEntityGraph } from "@/lib/entity-graph";
@@ -74,6 +76,12 @@ import { parseUserMessage, isImageAttachment } from "@/lib/attachments";
 import { toolDisplayName, toolActionLabel, toolAgentRole, humanizeStage } from "@/lib/tool-display";
 import { humanizeSelector } from "@/lib/humanize-selector";
 import { measureRequestBody, reportRequestBodySize } from "@/lib/request-size";
+import {
+  buildFindingFullText,
+  evidenceRecordExpandDisabled,
+  expandEvidenceRecordLines,
+  type FindingFullText,
+} from "@/lib/evidence-record-expand";
 import { currentRunEvents, followMode, isCurrentRunMessage, shouldEndStreamAfterGrace, shouldFollowServer, shouldForceStreamEnd } from "@/lib/server-follow";
 import { ServerFollowPanel } from "@/components/chat/ServerFollowPanel";
 import { useHeldTrue } from "@/hooks/use-held-true";
@@ -373,14 +381,14 @@ function ToolPart({ part: rawPart, createdAt }: { part: ToolPartShape | null | u
             <span
               className={cn(
                 "truncate text-[13px] font-medium leading-snug",
-                failed ? "text-destructive" : "text-foreground/92",
+                failed ? "text-danger" : "text-foreground/92",
               )}
               title={displayName}
             >
               {actionOnly}
             </span>
             {failed ? (
-              <XCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+              <XCircle className="h-3.5 w-3.5 shrink-0 text-danger" />
             ) : tone === "skip" ? (
               <CircleSlash className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
             ) : done ? (
@@ -918,10 +926,10 @@ function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => voi
     <div className="alert-panel-danger p-5 animate-fade-up">
       <div className="flex items-start gap-3">
         <span className="shrink-0 mt-0.5 inline-flex items-center justify-center w-9 h-9 rounded-xl bg-destructive/15 border border-destructive/30">
-          <AlertTriangle className="w-4 h-4 text-destructive" aria-hidden />
+          <AlertTriangle className="w-4 h-4 text-danger" aria-hidden />
         </span>
         <div className="min-w-0 flex-1 space-y-1">
-          <div className="text-micro font-mono font-semibold tracking-normal text-destructive/80">
+          <div className="text-micro font-mono font-semibold tracking-normal text-danger">
             System alert
           </div>
           <div className="text-sm font-semibold text-foreground">
@@ -941,7 +949,7 @@ function FailedRunCard({ reason, onRetry }: { reason: string; onRetry: () => voi
         <Button
           size="sm"
           onClick={onRetry}
-          className="gap-2 bg-destructive/15 hover:bg-destructive/25 text-destructive border border-destructive/40 shadow-[0_0_24px_-10px_hsl(var(--danger)/0.6)]"
+          className="gap-2 bg-destructive/15 hover:bg-destructive/25 text-danger border border-destructive/40 shadow-[0_0_24px_-10px_hsl(var(--danger)/0.6)]"
         >
           <RotateCcw className="w-3.5 h-3.5" />
           {isContextOverflow ? "Retry with Gemini fallback" : "Retry investigation"}
@@ -1150,7 +1158,7 @@ export function LiveActivityCard({ message, elapsedLabel }: { message: UIMessage
   );
 }
 
-function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded, live }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean; live?: boolean }) {
+function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded, live, findingFullText }: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean; live?: boolean; findingFullText?: FindingFullText | null }) {
   if (m.role === "user") {
     const text = (m.parts as MessagePartShape[]).filter((p) => p.type === "text").map((p) => p.text).join("");
     // Split the human text from the "Attached files:" block the composer appends,
@@ -1281,9 +1289,16 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
   );
   const integrity = messageIntegrity(parts as Array<{ type?: string; text?: string; state?: string }>, Boolean(live));
   const unadjudicated = narrativeIsUnadjudicated(prose);
+  // Display only: a cut Evidence Record line shows its finding's full stored text
+  // (src/lib/evidence-record-expand.ts). Every check above reads the stored prose.
+  const shownProse = expandEvidenceRecordLines(prose, findingFullText);
   const timeLabel = createdAt
     ? new Date(createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : null;
+  // The sweep's interrupted-run notice is a status record, not agent analysis
+  // and not a report: it gets its own card, always open, and is never collapsed
+  // as superseded (see isRecoveryNoticeMessage).
+  const recoveryNotice = isRecoveryNoticeMessage(m);
 
   return (
     <div className="flex w-full flex-col gap-3">
@@ -1311,7 +1326,38 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
           ))}
         </div>
       )}
-      {prose && superseded && (
+      {prose && recoveryNotice && (
+        // Not a <details>: the analyst must not be able to lose the signal that
+        // the run died. The body is the notice as the sweep wrote it, so its
+        // "not a findings report" sentence and last-heartbeat line stay verbatim.
+        <section className="chat-card w-full min-w-0" data-speaker="failed" data-recovery-notice aria-label="Interrupted run notice">
+          <div className="chat-card__header">
+            <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--warning))]" aria-hidden />
+            <span className="text-[hsl(var(--warning))]">Interrupted run</span>
+            {timeLabel && <span className="chat-card__header-time">{timeLabel}</span>}
+            <span className="ml-auto text-eyebrow uppercase tracking-wider text-muted-foreground/70" title="Written by the recovery sweep when the run stopped, not by the agent.">
+              status record · not a report
+            </span>
+          </div>
+          <div className="chat-card__body">
+            <div className="chat-prose">
+              <MarkdownBlock content={prose} />
+            </div>
+          </div>
+          <div className="chat-card__footer">
+            <button
+              type="button"
+              onClick={() => copyToClipboard(prose, "Notice copied")}
+              className="-ml-2 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted-foreground transition-colors hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11"
+              aria-label="Copy notice"
+              title="Copy notice"
+            >
+              <CopyIcon className="w-3 h-3" /> Copy
+            </button>
+          </div>
+        </section>
+      )}
+      {prose && !recoveryNotice && superseded && (
         <details className="chat-card w-full min-w-0 group/sup" data-speaker="agent">
           <summary className="chat-card__header cursor-pointer list-none [&::-webkit-details-marker]:hidden">
             <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/50" aria-hidden />
@@ -1324,12 +1370,12 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
           </summary>
           <div className="chat-card__body">
             <div className="chat-prose">
-              <MarkdownBlock content={prose} />
+              <MarkdownBlock content={shownProse} />
             </div>
           </div>
         </details>
       )}
-      {prose && !superseded && (
+      {prose && !recoveryNotice && !superseded && (
         <article className="chat-card w-full min-w-0" data-speaker="agent" aria-label="Agent response">
           {/* Case desk R5: the prototype's agent heading — a 25px "IF" mark,
               the agent's name, the time, and a tag that says what this text is. */}
@@ -1337,7 +1383,7 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             <span aria-hidden className="grid h-[22px] w-[22px] shrink-0 place-items-center rounded-[6px] border border-[hsl(var(--brand)/0.4)] bg-[hsl(var(--brand)/0.14)] font-display text-[10px] font-bold tracking-[-0.06em] text-[hsl(var(--brand))]">IF</span>
             <span className="text-[12px] font-medium text-foreground/90">Insight agent</span>
             {timeLabel && <span className="text-[11px] font-normal text-faint-foreground">{timeLabel}</span>}
-            <span className="rounded-[3px] border border-[hsl(var(--brand)/0.3)] px-1 py-px text-[9px] font-medium uppercase tracking-[0.05em] text-[hsl(var(--brand)/0.85)]" title="Written by the model. Computed confidence and the analyst's review are in Evidence.">AI analysis</span>
+            <span className="rounded-[3px] border border-[hsl(var(--brand)/0.3)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.05em] text-[hsl(var(--brand))]" title="Written by the model. Computed confidence and the analyst's review are in Evidence.">AI analysis</span>
           </div>
           {(hasStatedLabel(prose) || unadjudicated) && (
             // Above the prose, not below it: a footer is read after the claims have already landed, and a hover
@@ -1358,15 +1404,17 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
             </details>
           )}
           <div className="chat-card__body">
-            <div className="chat-prose">
-              <MarkdownBlock content={prose} />
-            </div>
+            <LongProse disabled={Boolean(live)}>
+              <div className="chat-prose">
+                <MarkdownBlock content={shownProse} />
+              </div>
+            </LongProse>
           </div>
           <div className="chat-card__footer">
             <button
               type="button"
               onClick={() => copyToClipboard(prose, "Message copied")}
-              className="-ml-2 inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-white/[0.04] hover:text-foreground transition-colors"
+              className="-ml-2 inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted-foreground transition-colors hover:bg-white/[0.04] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-11"
               aria-label="Copy message"
               title="Copy message"
             >
@@ -1399,11 +1447,14 @@ function MessageViewImpl({ m, createdAt, onRetry, onRerun, rerunBusy, superseded
 // only ever passed to the streaming last message (whose object changes anyway),
 // and the rerun handler is presence-stable for a given cached-run message.
 function messagePropsEqual(
-  prev: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; live?: boolean },
-  next: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; live?: boolean },
+  prev: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean; live?: boolean; findingFullText?: FindingFullText | null },
+  next: { m: UIMessage; createdAt?: string; onRetry?: () => void; onRerun?: () => void; rerunBusy?: boolean; superseded?: boolean; live?: boolean; findingFullText?: FindingFullText | null },
 ): boolean {
   return (
     prev.m === next.m &&
+    // `superseded` flips on an UNCHANGED message when a later report lands.
+    // Without it here the earlier report stayed open until a reload.
+    !!prev.superseded === !!next.superseded &&
     prev.createdAt === next.createdAt &&
     prev.rerunBusy === next.rerunBusy &&
     // `live` decides whether this message renders its own tool cards or defers
@@ -1411,7 +1462,10 @@ function messagePropsEqual(
     // still suppressing them after the run ends — the cards would vanish.
     !!prev.live === !!next.live &&
     !!prev.onRetry === !!next.onRetry &&
-    !!prev.onRerun === !!next.onRerun
+    !!prev.onRerun === !!next.onRerun &&
+    // The finding index is memoized on the artifact list, so this changes only
+    // when the case's rows change — and then a cut line may now be expandable.
+    prev.findingFullText === next.findingFullText
   );
 }
 
@@ -1483,7 +1537,7 @@ export function ChatWindow({ threadId }: { threadId: string }) {
       <div className="flex-1 grid place-items-center min-w-0 px-6">
         <div className="text-center space-y-3 max-w-sm">
           <div className="inline-flex w-12 h-12 rounded-2xl bg-destructive/10 border border-destructive/30 items-center justify-center mx-auto">
-            <AlertTriangle className="w-5 h-5 text-destructive" />
+            <AlertTriangle className="w-5 h-5 text-danger" />
           </div>
           <h2 className="text-lg font-semibold">Chat not found</h2>
           <p className="text-sm text-muted-foreground">
@@ -1573,6 +1627,12 @@ function ChatWindowInner({
   const submitLockRef = useRef(false);
   const [rerunBusy, setRerunBusy] = useState(false);
   const { items: artifacts } = useThreadArtifacts(threadId);
+  // Full text behind cut Evidence Record lines (display only; kill switch
+  // VITE_EVIDENCE_RECORD_EXPAND_DISABLED).
+  const findingFullText = useMemo(
+    () => (evidenceRecordExpandDisabled() ? null : buildFindingFullText(artifacts)),
+    [artifacts],
+  );
   // Read at send time to anchor pivot-run windows on server timestamps.
   const artifactsRef = useRef(artifacts);
   artifactsRef.current = artifacts;
@@ -2833,7 +2893,14 @@ function ChatWindowInner({
       // 5,000-row scan plus two sweeps every 30s per open case); the stale-run
       // recovery this effect exists for only runs when asked. Older edge builds
       // ignore the extra parameter, so this is safe to ship ahead of the edge deploy.
-      void fetch(`${FUNCTIONS_URL}?health=1&maintenance=1`, { method: "GET" }).catch(() => {});
+      // Sent AS THE SIGNED-IN USER (Authorization header), and skipped with no
+      // session: the edge lockdown scopes a token-bearing sweep to this user's own
+      // threads and answers an anonymous one with liveness only. See
+      // src/lib/maintenance-sweep.ts.
+      void sendMaintenanceSweep(FUNCTIONS_URL, async () => {
+        const { data } = await supabase.auth.getSession();
+        return data.session?.access_token ?? null;
+      });
     };
     sweep(); // once on open: reap a run already stuck when this thread is loaded
     if (!isLoading) {
@@ -3255,7 +3322,7 @@ function ChatWindowInner({
               </p>
 
               <div className="mt-5 w-full max-w-md">
-                <div className="mb-2 text-center font-mono text-eyebrow uppercase tracking-[0.2em] text-muted-foreground/55">
+                <div className="mb-2 text-center font-mono text-eyebrow uppercase tracking-[0.2em] text-faint-foreground">
                   Try an example
                 </div>
                 <div className="flex flex-wrap items-center justify-center gap-2">
@@ -3305,11 +3372,11 @@ function ChatWindowInner({
             // The newest report stays open; the earlier ones collapse to a line
             // the analyst can expand. Nothing is removed: a superseded report is
             // still the record of what the run believed at that point.
-            const lastReportIdx = findLastReportIndex(rendered);
+            const supersededAt = supersededFlags(rendered);
             return rendered.map((m, idx, arr) => {
               const isLastAssistant = m.role === "assistant" && idx === arr.length - 1;
               const hasCacheBanner = m.role === "assistant" && (m.parts as MessagePartShape[]).some((p) => p?.type === CACHE_BANNER_TYPE);
-              const superseded = lastReportIdx >= 0 && idx < lastReportIdx && isReportMessage(m);
+              const superseded = supersededAt[idx];
               return (
                 <MessageView
                   key={m.id}
@@ -3319,6 +3386,7 @@ function ChatWindowInner({
                   onRerun={hasCacheBanner ? rerunInvestigation : undefined}
                   rerunBusy={rerunBusy}
                   superseded={superseded}
+                  findingFullText={findingFullText}
                   // While following the server, this run's first reply is still in
                   // progress there: not "Interrupted", and the panel lists its calls.
                   // A reply saved before the run started is an earlier run's (a tab
@@ -3442,7 +3510,7 @@ function ChatWindowInner({
           column sits on the transcript column at every width (#645). On a
           phone the workspace's bottom tab bar sits below this and owns the
           safe-area inset, so the dock keeps only its own vertical padding. */}
-      <div className="relative z-10 border-t border-border-subtle bg-background px-5 pb-1.5 pt-2 sm:pb-5 sm:pt-4 lg:px-7">
+      <div className="relative z-10 border-t border-border-subtle bg-background px-5 pb-1.5 pt-2 sm:pb-2.5 sm:pt-2.5 lg:px-7">
         <div className="chat-column">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
@@ -3474,35 +3542,16 @@ function ChatWindowInner({
               })}
             </div>
           )}
-          {/* Case desk R5: suggestion chips. The top runnable pivots open their
-              Preview on the Workbench (never a run from here); "What changed?"
-              asks the agent for this run's delta. Shown between runs on a case
-              that has started, so a blank case keeps its one request box. */}
+          {/* Case desk R5: the composer keeps one unique follow-up prompt.
+              Runnable pivots already have a Preview action in the transcript or
+              Workbench immediately above; repeating them here created two rows
+              of identical, undersized buttons on a phone. */}
           {isFollowUp && !isLoading && (
-            <div className="mb-2.5 flex flex-wrap gap-1.5" data-composer-suggestions>
-              {suggestions
-                .filter((it): it is Extract<typeof it, { kind: "pivot" }> & { validation: { status: "valid" } } => it.kind === "pivot" && it.validation.status === "valid")
-                .slice(0, 2)
-                .map((it) => {
-                  const p = it.validation.pivot;
-                  return (
-                    <button
-                      key={it.key}
-                      type="button"
-                      onClick={() => window.dispatchEvent(new CustomEvent("swarmbot:workbench-tab", { detail: { tab: "pivots", open: it.key } }))}
-                      aria-label={`Preview pivot: ${p.action} ${p.target}`}
-                      className="inline-flex max-w-full items-center gap-1.5 rounded-[5px] border border-border bg-[hsl(var(--surface-1))] px-2 py-1 text-[11px] text-muted-foreground hover:border-[hsl(var(--brand)/0.5)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <Play className="h-3 w-3 shrink-0" aria-hidden />
-                      <span className="truncate">{p.action}</span>
-                      <span className="truncate font-mono text-faint-foreground">{p.target}</span>
-                    </button>
-                  );
-                })}
+            <div className="mb-1.5 flex flex-wrap gap-2" data-composer-suggestions>
               <button
                 type="button"
                 onClick={() => void sendText("What changed in the latest run? List only the new findings and any contradiction, as compact lines; do not restate earlier findings.")}
-                className="inline-flex items-center gap-1.5 rounded-[5px] border border-border bg-[hsl(var(--surface-1))] px-2 py-1 text-[11px] text-muted-foreground hover:border-[hsl(var(--brand)/0.5)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="inline-flex h-11 items-center gap-1.5 rounded-md border border-border bg-[hsl(var(--surface-1))] px-3 text-[13px] font-medium text-muted-foreground hover:border-[hsl(var(--brand)/0.5)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-7 sm:px-2.5 sm:text-[12.5px] [@media(pointer:coarse)]:sm:h-11"
               >
                 What changed?
               </button>
@@ -3577,7 +3626,7 @@ function ChatWindowInner({
                 autoCapitalize="off"
                 autoCorrect="off"
                 spellCheck={false}
-                className="min-h-[44px] max-h-52 min-w-0 flex-1 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 px-1 py-2.5 text-[16px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground/70 sm:px-3 sm:py-2 sm:text-body"
+                className="min-h-[44px] max-h-52 min-w-0 flex-1 font-chat bg-transparent border-0 resize-none overflow-y-auto focus-visible:ring-0 focus-visible:ring-offset-0 px-1 py-2.5 text-[16px] leading-6 tracking-[-0.01em] placeholder:text-muted-foreground sm:px-3 sm:py-2 sm:text-body"
               />
               <div className={cn("flex shrink-0 items-center gap-1 sm:gap-1.5 sm:px-2", compactComposer ? "sm:pb-0" : "sm:pb-2")}>
                 <Button
@@ -3661,11 +3710,14 @@ function ChatWindowInner({
             id={composerIds.help}
             aria-live="polite"
             className={cn(
-              "mt-1.5 min-h-[1.25rem] truncate px-1 text-micro",
+              "mt-1 min-h-[1.25rem] truncate px-1 text-micro",
               preflight.errors.target ? "text-[hsl(var(--danger))]" : "text-muted-foreground",
-              // On a phone the default instruction is the placeholder's job;
-              // the line only appears when it says something about THIS input.
-              preflight.empty && !preflight.errors.target && "max-sm:sr-only",
+              // The default instruction is the placeholder's job (and Stop says
+              // what Stop does): the line only takes a row of the transcript's
+              // height when it says something about THIS input. It stays in the
+              // accessibility tree either way — the textarea is described by it.
+              // Measured 2026-11-08: the dock took ~230px of a 681px viewport.
+              preflight.empty && !preflight.errors.target && "sr-only",
             )}
           >
             {preflight.errors.target

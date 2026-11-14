@@ -39,7 +39,7 @@ import {
   type ConfLabel,
   type ReviewAdjustment,
 } from "@/lib/intel";
-import { formatArtifactDisplayValue, buildIdentityRows, isClusterIneligible, isNullResultValue, isSubjectAuthorityEligible, pickSubjectName, type IdentityRow } from "@/lib/report-hygiene";
+import { formatArtifactDisplayValue, buildIdentityRows, isClusterIneligible, isNullResultValue, isSubjectAuthorityEligible, type IdentityRow } from "@/lib/report-hygiene";
 import { toolActionLabel } from "@/lib/tool-display";
 import { tokenizeSourceChain } from "@/lib/report-source-labels";
 import { cn } from "@/lib/utils";
@@ -47,10 +47,12 @@ import { isRejectedReview, type ReviewState } from "@/lib/review";
 import { independentSourceClasses } from "@/lib/intel";
 import { isAnalystConfirmed } from "@/lib/analyst-confirmed";
 import { extractDisplaySeed } from "@/lib/seed";
+import { assessArtifacts, type AssessmentReport } from "@/lib/agent-assessment";
+import { selectorValueKey } from "@/lib/seed-selectors";
+import { profileOwnership, readSubjectName, rejectedDerivedIds, PROFILE_NOTE_LINKED, PROFILE_NOTE_SEED, PROFILE_NOTE_SEED_NAMED, type SubjectNameReading } from "@/lib/subject-linkage";
 import type { MessageSummary } from "@/hooks/useThreadMessages";
 import { isBreachKind } from "@/lib/breach-kinds";
-import { isRejectedArtifact as isRejectedArtifactRow, buildRejectedDerivationIds } from "@/lib/analyst-decisions";
-import { normalizeTarget } from "@/lib/next-step-cards";
+import { isRejectedArtifact as isRejectedArtifactRow } from "@/lib/analyst-decisions";
 
 export type ReportType = "full" | "brief";
 
@@ -81,13 +83,6 @@ type Reviews = Record<string, ReviewAdjustment> | undefined;
 const revOf = (reviews: Reviews, a: Artifact): ReviewAdjustment => reviews?.[a.id];
 /** May this row speak for the subject? See `isSubjectAuthorityEligible`. */
 const forSubject = (reviews: Reviews, a: Artifact): boolean => isSubjectAuthorityEligible(a, revOf(reviews, a));
-/** Rows DERIVED from an analyst-rejected selector. The markdown export's
- *  provenance rule (`buildReportMarkdown`): rejection follows provenance, so a
- *  breach pulled from a rejected email leaves the subject's sections with it. */
-function rejectedDerivedIds(artifacts: Artifact[], reviews: Reviews): Set<string> {
-  const rejectedIds = new Set(artifacts.filter((a) => isRejectedArtifactRow(a, revOf(reviews, a))).map((a) => a.id));
-  return buildRejectedDerivationIds(artifacts, rejectedIds, normalizeTarget);
-}
 /** Breach rows that actually put the SUBJECT in a corpus: authority-eligible,
  *  not derived from a rejected selector, and not a "no breach hits" negative.
  *  Feeds counts that assert exposure, so they agree with the Breach Exposure
@@ -178,7 +173,7 @@ function ArtifactRow({ a, review }: { a: Artifact; review?: ReviewAdjustment }) 
       </td>
       <td className="px-3 py-2 text-data text-muted-foreground">
         {String((m.reason_for_confidence as string) ?? "")}
-        {m.reason_not_confirmed ? <div className="text-destructive/80">{String(m.reason_not_confirmed)}</div> : null}
+        {m.reason_not_confirmed ? <div className="text-danger">{String(m.reason_not_confirmed)}</div> : null}
       </td>
     </tr>
   );
@@ -246,8 +241,8 @@ function SectionHeader({ children, right }: { children: React.ReactNode; right?:
 
 function HunterNote({ children }: { children: React.ReactNode }) {
   return (
-    <aside className="my-3 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2.5 text-foreground/90 leading-relaxed">
-      <div className="text-micro font-semibold tracking-normal text-destructive mb-1">
+    <aside role="note" className="my-3 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2.5 text-foreground/90 leading-relaxed">
+      <div className="text-micro font-semibold tracking-normal text-danger mb-1">
         Hunter's Note
       </div>
       <div className="text-data">{children}</div>
@@ -261,9 +256,9 @@ const CONF_PILL: Record<ConfLabel, string> = {
   CORRELATED: "text-[hsl(var(--confidence-high))]/90 border-[hsl(var(--confidence-high))]/30",
   INFERRED: "text-primary border-primary/40",
   VERIFY: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/40",
-  CONFLICT: "text-destructive border-destructive/40",
+  CONFLICT: "text-danger border-destructive/40",
   LOW: "text-muted-foreground border-border",
-  FAILED: "text-destructive border-destructive/40 line-through",
+  FAILED: "text-danger border-destructive/40 line-through",
 };
 
 // Map our internal labels to the reference vocabulary
@@ -488,7 +483,7 @@ const RISK_COLOR: Record<RiskLevel, string> = {
   LOW: "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/60",
   MEDIUM: "text-[hsl(var(--confidence-mid))] border-[hsl(var(--confidence-mid))]/60",
   HIGH: "text-[hsl(var(--warning))] border-[hsl(var(--warning))]/70",
-  CRITICAL: "text-destructive border-destructive/70",
+  CRITICAL: "text-danger border-destructive/70",
 };
 
 type ReportMetric = {
@@ -749,52 +744,172 @@ function CompactBarChart({ data, color = "hsl(var(--info))" }: { data: ChartDatu
 
 /* ---------- narrative / dossier helpers ---------- */
 
-function topByConfidence(artifacts: Artifact[], kinds: string[], reviews?: Reviews): Artifact | null {
-  // Case-insensitive kind match + null-safe read. `pickBest` already lowercases;
-  // this keeps the narrative builders consistent so a capitalized/undefined
-  // `kind` never silently drops a row (or throws into the ErrorBoundary).
-  const set = new Set(kinds.map((k) => k.toLowerCase()));
-  // Same rule as the identity pickers (`pickBestIdentity`): neither a rejected
-  // row nor a quarantined/collision row may become the subject's headline
-  // Name/Email/Phone/Address. Rejection alone let a quarantined name-only
-  // breach echo headline the Subject Profile while the gated Identity panel on
-  // the same page named a different person.
-  const pool = artifacts.filter(
-    (a) => set.has(String(a.kind ?? "").toLowerCase()) && forSubject(reviews, a),
-  );
-  if (!pool.length) return null;
-  return pool.slice().sort((a, b) => (confOf(reviews, b) ?? 0) - (confOf(reviews, a) ?? 0))[0];
-}
+type ProfileField = { label: string; value: string; note?: string; detail?: string; /** The field states that nothing is established, not a value. */ unset?: boolean };
+/** Names the profile does not assert, kept in view with the reason. Disclosed, never dropped. */
+type ProfileNameGroup = {
+  key: "linked" | "disputed" | "unresolved";
+  heading: string;
+  footnote: string;
+  values: string[];
+  /** How many more names of this group exist beyond the ones listed. */
+  hidden: number;
+};
+type SubjectProfile = {
+  fields: ProfileField[];
+  /** Name candidates the profile does not assert as the subject's: linked but not reconciled, disputed, or unlinked. */
+  nameGroups: ProfileNameGroup[];
+  /** Contacts recorded in the case that nothing links to the subject. Disclosed, never asserted. */
+  unresolved: ProfileField[];
+  /** How many more unresolved contacts exist beyond the ones listed. Never silently dropped. */
+  unresolvedHidden: number;
+};
+const PROFILE_CONTACT_KINDS: ReadonlyArray<{ kind: string; label: string }> = [
+  { kind: "email", label: "Email" },
+  { kind: "phone", label: "Phone" },
+  { kind: "address", label: "Address" },
+];
+const PROFILE_UNRESOLVED_LIMIT = 8;
+const PROFILE_NAME_GROUPS: ReadonlyArray<Pick<ProfileNameGroup, "key" | "heading" | "footnote">> = [
+  {
+    key: "linked",
+    heading: "Names tied to the subject · not reconciled",
+    footnote: "Tied to the subject by the case seed or a shared record, but not reconciled into one name. One may be an alias; one may be another person.",
+  },
+  {
+    key: "disputed",
+    heading: "Names tied to the subject · claim disputed",
+    footnote: "Tied to the subject, but the case record contradicts the claim. Not stated as the subject's name until the conflict is resolved.",
+  },
+  {
+    key: "unresolved",
+    heading: "Other names in this case · ownership unresolved",
+    footnote: "Recorded in the case, but no link to the subject clears the support bar. They may belong to someone else.",
+  },
+];
 
-type ProfileField = { label: string; value: string; note?: string };
-function buildSubjectProfile(artifacts: Artifact[], reviews?: Reviews): ProfileField[] {
+function buildSubjectProfile(
+  artifacts: Artifact[],
+  reviews: Reviews,
+  assessment: AssessmentReport,
+  nameReading: SubjectNameReading,
+): SubjectProfile {
   const out: ProfileField[] = [];
-  const name = topByConfidence(artifacts, ["name", "person"], reviews);
+  // Audit A01: a profile field speaks for the subject only when the row is
+  // positively linked to the seed. `forSubject` alone is a negative gate, so a
+  // clean, high-confidence row about SOMEONE ELSE used to headline the profile.
+  const owned = (a: Artifact) => profileOwnership(assessment.byId[a.id]) === "subject";
+  const isSeedRow = (a: Artifact) => assessment.byId[a.id]?.isSeed === true;
+  // The contact pool gates, for the asserted fields AND the unresolved list. On
+  // top of the negative gate they apply the two gates the sibling subject
+  // surfaces already apply: a row derived from an analyst-rejected selector is
+  // out by provenance (even when it also joins the seed), and a "no results" row
+  // is a lookup that found nothing, not a contact.
+  const derived = rejectedDerivedIds(artifacts, reviews);
+  const inPool = (a: Artifact) => forSubject(reviews, a) && !derived.has(a.id) && !isNullResultValue(a.value, a.source);
+
+  // ── Name (audit A01, Name half) ────────────────────────────────────────────
+  // The Name used to be the highest-confidence name row that was merely not
+  // quarantined or rejected, so an unrelated person's name headlined the
+  // profile, a name seed lost to a stronger stranger and a tie went to whichever
+  // row arrived first. It is now the shared reading (`readSubjectName`), the
+  // same one the Identity panel, the case sheet and the Connections map show.
+  const name = nameReading.asserted;
+  const otherNames = nameReading.linked.length + nameReading.disputed.length + nameReading.unresolved.length;
   if (name) {
     // A single-source name is a candidate, not a finding: say so beside the value
-    // instead of rendering it as a plain fact.
+    // instead of rendering it as a plain fact. A name the analyst typed is the
+    // case's own premise, so it carries its basis only.
     const nameClasses = independentSourceClasses(name).length;
     const nameAttested = isAnalystConfirmed(name, revOf(reviews, name));
-    const nameNote = nameClasses >= 2
+    const sourceNote = nameClasses >= 2
       ? undefined
       : nameAttested
         ? "Analyst-confirmed · single-source"
         : nameClasses === 0
           ? "Candidate — needs review · no source class recorded"
           : `Candidate — needs review · ${nameClasses} source class${nameClasses === 1 ? "" : "es"}`;
-    out.push({ label: "Name", value: name.value, note: nameNote });
-    const m = (name.metadata ?? {}) as Record<string, unknown>;
-    const dob = m.dob ? String(m.dob) : "";
-    const age = m.age != null ? String(m.age) : "";
-    if (dob || age) out.push({ label: "DOB / Age", value: [dob, age && `age ${age}`].filter(Boolean).join(" · ") });
+    out.push(nameReading.basis === "seed"
+      ? { label: "Name", value: name.value, note: isSeedRow(name) ? PROFILE_NOTE_SEED : PROFILE_NOTE_SEED_NAMED }
+      : { label: "Name", value: name.value, note: PROFILE_NOTE_LINKED, detail: sourceNote });
+    // DOB / Age is read only from a row a shared selector joins to the seed. A
+    // row that is the subject's by its NAME alone (typed in the seed, or the
+    // same name on another record) may be a namesake's record.
+    for (const row of nameReading.selectorLinked) {
+      const m = (row.metadata ?? {}) as Record<string, unknown>;
+      const dob = m.dob ? String(m.dob) : "";
+      const age = m.age != null ? String(m.age) : "";
+      if (!dob && !age) continue;
+      out.push({ label: "DOB / Age", value: [dob, age && `age ${age}`].filter(Boolean).join(" · ") });
+      break;
+    }
+  } else if (otherNames > 0) {
+    // Say so in the field itself: an absent Name reads as "none recorded", and
+    // the case does hold names. They are listed below with the reason.
+    out.push({
+      label: "Name",
+      value: "Not established",
+      note: `${otherNames} name${otherNames === 1 ? "" : "s"} listed below; none is established as the subject's.`,
+      unset: true,
+    });
   }
-  const email = topByConfidence(artifacts, ["email"], reviews);
-  if (email) out.push({ label: "Email", value: email.value });
-  const phone = topByConfidence(artifacts, ["phone"], reviews);
-  if (phone) out.push({ label: "Phone", value: phone.value });
-  const addr = topByConfidence(artifacts, ["address"], reviews);
-  if (addr) out.push({ label: "Address", value: addr.value });
-  return out;
+  const nameGroups: ProfileNameGroup[] = [];
+  for (const g of PROFILE_NAME_GROUPS) {
+    const values = nameReading[g.key].map((a) => String(a.value ?? "").trim());
+    if (!values.length) continue;
+    nameGroups.push({ ...g, values: values.slice(0, PROFILE_UNRESOLVED_LIMIT), hidden: Math.max(0, values.length - PROFILE_UNRESOLVED_LIMIT) });
+  }
+
+  // ── Contacts ───────────────────────────────────────────────────────────────
+  const labelOf = new Map(PROFILE_CONTACT_KINDS.map((k) => [k.kind, k.label]));
+  const contacts = artifacts.filter((a) => labelOf.has(String(a.kind ?? "").toLowerCase()) && inPool(a));
+  // The seed is the one contact known to be the subject's, so it is never
+  // displaced by a merely linked row with a higher score. Then confidence, then
+  // value, so the choice does not depend on the order rows arrived in.
+  const byProfileRank = (a: Artifact, b: Artifact) =>
+    Number(isSeedRow(b)) - Number(isSeedRow(a)) ||
+    (confOf(reviews, b) ?? 0) - (confOf(reviews, a) ?? 0) ||
+    String(a.value ?? "").localeCompare(String(b.value ?? ""));
+  for (const { kind, label } of PROFILE_CONTACT_KINDS) {
+    const ownedOfKind = contacts.filter((a) => String(a.kind ?? "").toLowerCase() === kind && owned(a)).sort(byProfileRank);
+    // Every contact the analyst typed in the seed is shown: a seed that holds two
+    // emails names both as the subject's. Without a seed contact, the one best
+    // linked row, as before.
+    const seedValues = new Set<string>();
+    const shown = ownedOfKind.filter((a) => {
+      if (!isSeedRow(a)) return false;
+      const key = selectorValueKey(kind, String(a.value ?? ""));
+      if (seedValues.has(key)) return false;
+      seedValues.add(key);
+      return true;
+    });
+    if (shown.length === 0 && ownedOfKind[0]) shown.push(ownedOfKind[0]);
+    // Say on what basis the field is asserted. A linked row cleared the app's
+    // support threshold; that is linkage, not verified ownership.
+    shown.forEach((a, i) => out.push({
+      label: i === 0 ? label : `${label} ${i + 1}`,
+      value: a.value,
+      note: isSeedRow(a) ? PROFILE_NOTE_SEED : PROFILE_NOTE_LINKED,
+    }));
+  }
+
+  // Everything else in the pool: same gates, no positive link. One line per value.
+  const unresolved: ProfileField[] = [];
+  const seen = new Set<string>();
+  const candidates = contacts.filter((a) => !owned(a)).sort(byProfileRank);
+  for (const a of candidates) {
+    const kind = String(a.kind ?? "").toLowerCase();
+    const value = String(a.value ?? "").trim();
+    const key = `${kind}|${value.toLowerCase()}`;
+    if (!value || seen.has(key)) continue;
+    seen.add(key);
+    unresolved.push({ label: labelOf.get(kind) ?? kind, value });
+  }
+  return {
+    fields: out,
+    nameGroups,
+    unresolved: unresolved.slice(0, PROFILE_UNRESOLVED_LIMIT),
+    unresolvedHidden: Math.max(0, unresolved.length - PROFILE_UNRESOLVED_LIMIT),
+  };
 }
 
 // Digital footprint — the "feels complete" prose block the reference dossier
@@ -1022,7 +1137,7 @@ function MaskedValue({ label, value }: RevealField) {
   const [shown, setShown] = useState(!MASK_BREACH_VALUES);
   if (!MASK_BREACH_VALUES) {
     return (
-      <span className="inline-flex max-w-full items-center gap-1.5 rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px font-mono text-eyebrow text-destructive">
+      <span className="inline-flex max-w-full items-center gap-1.5 rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px font-mono text-eyebrow text-danger">
         <span className="text-micro uppercase tracking-wider text-muted-foreground">{label}</span>
         <span className="break-all [overflow-wrap:anywhere]">{value}</span>
       </span>
@@ -1033,7 +1148,7 @@ function MaskedValue({ label, value }: RevealField) {
       type="button"
       onClick={() => setShown((s) => !s)}
       title={shown ? "Click to hide" : "Click to reveal this breach value"}
-      className="group inline-flex max-w-full items-center gap-1.5 rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px font-mono text-eyebrow text-destructive transition-colors hover:bg-destructive/20"
+      className="group inline-flex max-w-full items-center gap-1.5 rounded border border-destructive/40 bg-destructive/10 px-1.5 py-px font-mono text-eyebrow text-danger transition-colors hover:bg-destructive/20"
     >
       <span className="text-micro uppercase tracking-wider text-muted-foreground">{label}</span>
       <span className="break-all [overflow-wrap:anywhere]">
@@ -1083,7 +1198,14 @@ export function CaseReport({
   toolCallTotal?: number;
 }) {
   const display = useMemo(() => extractDisplaySeed(seedValue, seedType), [seedValue, seedType]);
-  const subjectProfile = useMemo(() => buildSubjectProfile(artifacts, reviews), [artifacts, reviews]);
+  // One assessment and one reading of the subject's name per render: the
+  // profile, the Identity panel and the notice at the top all show this reading.
+  const assessment = useMemo(() => assessArtifacts(artifacts, seedValue ?? null, reviews), [artifacts, seedValue, reviews]);
+  const nameReading = useMemo(() => readSubjectName(artifacts, reviews, seedValue, assessment), [artifacts, reviews, seedValue, assessment]);
+  const { fields: subjectProfile, nameGroups, unresolved: unresolvedContacts, unresolvedHidden } = useMemo(
+    () => buildSubjectProfile(artifacts, reviews, assessment, nameReading),
+    [artifacts, reviews, assessment, nameReading],
+  );
   const corroboratedCount = useMemo(() => countIndependentlyCorroborated(artifacts, reviews), [artifacts, reviews]);
   const analystConfirmedCount = useMemo(() => countAnalystConfirmed(artifacts, reviews), [artifacts, reviews]);
   const profileLinks = useMemo(() => buildProfileLinks(artifacts, reviews), [artifacts, reviews]);
@@ -1097,7 +1219,7 @@ export function CaseReport({
     return sanitizeChatText(last?.summary?.trim() ?? "");
   }, [messages]);
   const isBrief = reportType === "brief";
-  const identity = useMemo(() => buildIdentityRows(artifacts, reviews), [artifacts, reviews]);
+  const identity = useMemo(() => buildIdentityRows(artifacts, reviews, seedValue, nameReading.asserted), [artifacts, reviews, seedValue, nameReading]);
   const registrations = useMemo(() => buildRegistrationRows(artifacts, reviews), [artifacts, reviews]);
   const hunterNotes = useMemo(() => buildHunterNotes(artifacts, seedValue, reviews), [artifacts, seedValue, reviews]);
   const unknowns = useMemo(() => buildUnknowns(artifacts), [artifacts]);
@@ -1128,7 +1250,7 @@ export function CaseReport({
   // collision-flagged, or analyst-rejected), yet the model's prose below may
   // still assert one. The callout surfaces that disagreement at the top of
   // the report so the analyst doesn't have to compare against the Sheet.
-  const engineSubject = useMemo(() => pickSubjectName(artifacts, reviews), [artifacts, reviews]);
+  const engineSubject = nameReading.asserted;
 
   // Evidence-strength buckets per the new audit rules.
   const buckets = useMemo(() => {
@@ -1173,8 +1295,9 @@ export function CaseReport({
             No established subject name.
           </div>
           <p className="mt-1 text-muted-foreground">
-            No name holds for the subject yet. Quarantined and rejected names
-            are never used here. Any name in the narrative below is model-written,
+            No name holds for the subject yet. A name is used here only when the
+            case seed names it or evidence links it to the seed; quarantined and
+            rejected names never are. Any name in the narrative below is model-written,
             not engine-adjudicated — reconcile against Evidence before adopting it.
           </p>
         </aside>
@@ -1283,14 +1406,14 @@ export function CaseReport({
       {/* Subject profile — always rendered so the dossier reads complete; an
           empty case shows an honest "nothing yet" line instead of vanishing. */}
       <SectionHeader>Subject Profile</SectionHeader>
-      {subjectProfile.length > 0 || aliases.length > 0 ? (
+      {subjectProfile.length > 0 || aliases.length > 0 || nameGroups.length > 0 || unresolvedContacts.length > 0 ? (
         <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4 grid gap-2 sm:grid-cols-2">
           {subjectProfile.map((f) => {
             const dobSuspect = /date of birth|dob/i.test(f.label) && isDobPlaceholder(f.value);
             return (
               <div key={f.label} className="flex flex-col">
                 <span className="text-micro font-mono tracking-normal text-muted-foreground">{f.label}</span>
-                <span className="font-mono text-foreground break-words [overflow-wrap:anywhere]">
+                <span className={cn("font-mono break-words [overflow-wrap:anywhere]", f.unset ? "text-muted-foreground" : "text-foreground")}>
                   {f.value}
                   {dobSuspect && (
                     <span
@@ -1304,6 +1427,9 @@ export function CaseReport({
                 {f.note && (
                   <span className="mt-0.5 text-micro font-mono text-muted-foreground">{f.note}</span>
                 )}
+                {f.detail && (
+                  <span className="mt-0.5 text-micro font-mono text-muted-foreground">{f.detail}</span>
+                )}
               </div>
             );
           })}
@@ -1311,6 +1437,42 @@ export function CaseReport({
             <div className="flex flex-col sm:col-span-2">
               <span className="text-micro font-mono tracking-normal text-muted-foreground">Aliases / handles</span>
               <span className="font-mono text-foreground break-words [overflow-wrap:anywhere]">{aliases.join(", ")}</span>
+            </div>
+          )}
+          {nameGroups.length > 0 && (
+            <div className="flex flex-col gap-2 sm:col-span-2 border-t border-white/[0.08] pt-2" data-testid="profile-name-candidates">
+              {nameGroups.map((g) => (
+                <div key={g.key} className="flex flex-col" data-name-group={g.key}>
+                  <span className="text-micro font-mono tracking-normal text-muted-foreground">{g.heading}</span>
+                  <ul className="mt-1 space-y-0.5">
+                    {g.values.map((v) => (
+                      <li key={v} className="font-mono text-data text-muted-foreground break-words [overflow-wrap:anywhere]">{v}</li>
+                    ))}
+                  </ul>
+                  <span className="mt-1 text-micro font-mono text-muted-foreground">
+                    {g.hidden > 0 ? `${g.hidden} more in Evidence. ` : ""}
+                    {g.footnote}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {unresolvedContacts.length > 0 && (
+            <div className="flex flex-col sm:col-span-2 border-t border-white/[0.08] pt-2" data-testid="profile-unresolved-contacts">
+              <span className="text-micro font-mono tracking-normal text-muted-foreground">
+                Other contacts in this case · ownership unresolved
+              </span>
+              <ul className="mt-1 space-y-0.5">
+                {unresolvedContacts.map((f) => (
+                  <li key={`${f.label}|${f.value}`} className="font-mono text-data text-muted-foreground break-words [overflow-wrap:anywhere]">
+                    <span className="text-micro">{f.label}</span> {f.value}
+                  </li>
+                ))}
+              </ul>
+              <span className="mt-1 text-micro font-mono text-muted-foreground">
+                {unresolvedHidden > 0 ? `${unresolvedHidden} more in Evidence. ` : ""}
+                Recorded in the case, but nothing links these to the subject. They may belong to someone else.
+              </span>
             </div>
           )}
         </div>
@@ -1523,7 +1685,7 @@ export function CaseReport({
                           className={cn(
                             "ml-2 align-middle rounded border px-1.5 py-px text-micro font-mono uppercase tracking-wider",
                             b.severity === "CRITICAL"
-                              ? "border-destructive/50 bg-destructive/15 text-destructive"
+                              ? "border-destructive/50 bg-destructive/15 text-danger"
                               : "border-[hsl(var(--warning))]/60 bg-[hsl(var(--warning))]/10 text-[hsl(var(--warning))]",
                           )}
                           title="Full-profile / high-impact breach exposure"
@@ -1565,7 +1727,7 @@ export function CaseReport({
           </div>
           <p className="mt-1 text-data text-muted-foreground">
             {MASK_BREACH_VALUES ? (
-              <>Breach values are masked by default — click <span className="font-mono text-destructive">Reveal</span> to unmask a captured value. Records flagged minor-related stay redacted and cannot be revealed.</>
+              <>Breach values are masked by default — click <span className="font-mono text-danger">Reveal</span> to unmask a captured value. Records flagged minor-related stay redacted and cannot be revealed.</>
             ) : (
               <>Captured breach values are shown in full. Records flagged minor-related stay redacted and are never shown. A dash means no concrete value was captured for that record — only the exposed field classes.</>
             )}
@@ -1825,7 +1987,7 @@ function ReportKpi({
     tone === "ok" ? "text-[hsl(var(--confidence-high))]" :
     tone === "info" ? "text-[hsl(var(--info))]" :
     tone === "warn" ? "text-[hsl(var(--confidence-mid))]" :
-    tone === "danger" ? "text-destructive" :
+    tone === "danger" ? "text-danger" :
     "text-foreground";
   return (
     <div className="report-kpi relative overflow-hidden rounded-xl border border-white/[0.08] bg-[hsl(var(--surface-1))/0.72] p-3">

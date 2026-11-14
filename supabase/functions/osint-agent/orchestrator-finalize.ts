@@ -24,6 +24,14 @@
  */
 import { MAX_ORCHESTRATOR_STEPS, ORCHESTRATOR_WALL_CLOCK_MS, MAX_TOOL_CALLS_PER_RUN } from "./orchestrator-budget.ts";
 import { FINALIZE_PERSIST_DECISION_LINES, LEGACY_FINALIZE_PERSIST_DECISION_LINES, findingPromptV2Disabled } from "./lib/finding-prompt.ts";
+import {
+  FINALIZE_REPORT_LINES,
+  LEGACY_FINALIZE_REPORT_LINES,
+  LEGACY_SALVAGE_REPORT_BULLETS,
+  SALVAGE_REPORT_BULLETS,
+  findingsTableDirectiveEnabled,
+} from "./lib/findings-table-directive.ts";
+import { FINDINGS_TABLE_MARKER } from "./lib/findings-table.ts";
 
 // Reserve the final stretch of the wall-clock budget for a guaranteed synthesis+record
 // step. Once elapsed enters this window the orchestrator stops issuing new lookups and
@@ -746,8 +754,9 @@ export function buildFinalizeDirective(): string {
     "Do not call record_artifacts, memory_save, or any other tool in this phase.",
     "Ignore earlier instructions that say a tool must be called before the report; that",
     "requirement was satisfied or explicitly skipped in the preceding finalize phases.",
-    "Write the complete final Findings report as message text: a short summary, confirmed",
-    "findings grouped by type with confidence and source, and all material gaps.",
+    // Asks for `## Findings` + the `{{FINDINGS_TABLE}}` marker line (the server renders the table from the persisted
+    // rows) instead of a hand-typed table; FINDINGS_TABLE_EXPANSION_DISABLED=true restores the old two lines.
+    ...(findingsTableDirectiveEnabled() ? FINALIZE_REPORT_LINES : LEGACY_FINALIZE_REPORT_LINES),
     "Produce the report even if coverage is partial; state uncertainty honestly. Do not fabricate.",
   ].join("\n");
 }
@@ -952,9 +961,9 @@ export function buildSalvageSynthesisPrompt(seed: string, artifacts: SalvageArti
       rows.length ? `are the ${rows.length} artifacts` : "is the (empty) set of artifacts"
     } gathered.`,
     "Write a complete, honest Findings report using ONLY these artifacts:",
-    "- One short paragraph summarizing who or what was identified.",
-    "- Confirmed findings grouped by type, each with its confidence and source.",
-    "- Explicit gaps and unverified leads.",
+    // The salvage part is appended to the message BEFORE persistFinalMessages expands the marker (index.ts), so a
+    // report written to this layout gets the engine table. FINDINGS_TABLE_EXPANSION_DISABLED=true restores the old bullets.
+    ...(findingsTableDirectiveEnabled() ? SALVAGE_REPORT_BULLETS : LEGACY_SALVAGE_REPORT_BULLETS),
     "Do not invent anything not present below. Do not call any tools.",
     rows.length ? "" : "If the set is empty, state plainly that no confirmed findings were recorded.",
     "",
@@ -992,4 +1001,29 @@ export function opsisFinalizeCollectSelfTest(): { ok: boolean; switch: string; d
       detail: `a paid opsis_search still pending at finalize gets one bounded opsis_results step (max ${MAX_OPSIS_COLLECT_STEPS}, ` +
         "only with wall clock to spare, never on the step/tool cap) before persist → memory → report",
     };
+}
+
+/**
+ * /health → checks.findings_table.directives. Pure; builds both closing-report instructions with the
+ * current switch and reports whether they ask for the engine table. `finalize+salvage` = both carry
+ * `## Findings` + the marker line; `legacy` = FINDINGS_TABLE_EXPANSION_DISABLED=true and neither does.
+ * Anything else is a wiring defect and makes the parent check not-ok. PRESENCE of the field proves this
+ * build; whether the model follows the instruction is a stored-message measurement, not a probe.
+ */
+export function findingsTableDirectivesSelfTest(): {
+  ok: boolean;
+  directives: "finalize+salvage" | "legacy" | "finalize-only" | "salvage-only" | "none" | "legacy-leak";
+} {
+  const carries = (text: string): boolean => {
+    const lines = text.split("\n").map((l) => l.trim());
+    const h = lines.indexOf("## Findings");
+    return h >= 0 && lines[h + 1] === FINDINGS_TABLE_MARKER;
+  };
+  const fin = carries(buildFinalizeDirective());
+  const sal = carries(buildSalvageSynthesisPrompt("synthetic-seed", []));
+  if (!findingsTableDirectiveEnabled()) {
+    return fin || sal ? { ok: false, directives: "legacy-leak" } : { ok: true, directives: "legacy" };
+  }
+  if (fin && sal) return { ok: true, directives: "finalize+salvage" };
+  return { ok: false, directives: fin ? "finalize-only" : sal ? "salvage-only" : "none" };
 }

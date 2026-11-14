@@ -28,7 +28,7 @@ export type TabCount = {
   hint?: string;
   /** Screen-reader-only noun after the number. */
   unit?: string;
-  /** "decision": the number is open calls, not items, so it renders as an attention chip with a "to decide" label. */
+  /** "decision": the number is optional exceptions, not items, so it renders as a quiet chip with an "optional" label. */
   kind?: "decision";
 };
 
@@ -126,18 +126,22 @@ export function WorkspaceTabs({
 }
 
 /**
- * Open decisions, styled like the folded case sheet's count so "Evidence 10"
+ * Optional exceptions, styled like the folded case sheet's count so "Evidence 10"
  * is not read as ten evidence items beside the header's "55 evidence logged".
+ *
+ * Neutral ink, not the warning hue: correlation runs on its own (#967) and
+ * these rows are optional overrides. An amber "11 to decide" told the analyst
+ * the case was waiting on them, which it is not.
  */
 export function DecisionChip({ count, compact = false }: { count: TabCount; compact?: boolean }) {
   if (count.value <= 0) return null;
   return (
     <span
       title={count.hint}
-      className="inline-flex items-center gap-1 rounded-full border border-warning/40 bg-warning/10 px-1.5 text-micro leading-[18px] text-warning"
+      className="inline-flex items-center gap-1 rounded-full border border-border bg-surface-3 px-1.5 text-micro leading-[18px] text-muted-foreground"
     >
       <span className="font-mono tabular-nums">{countText(count.value)}</span>
-      {!compact && <span aria-hidden className="hidden lg:inline">to decide</span>}
+      {!compact && <span aria-hidden className="hidden lg:inline">optional</span>}
       {count.unit && <span className="sr-only"> {count.unit}</span>}
     </span>
   );

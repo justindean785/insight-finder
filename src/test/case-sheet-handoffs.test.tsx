@@ -3,12 +3,15 @@
 // Production, 2026-10-26: the subject read "Needs review" and the bar read
 // "Review 28", and neither could be clicked; right under them "Needs your call 0"
 // read as a contradiction. The sheet stays read-only (no verdict is written
-// here), but each count now opens Evidence on the rows it counts.
+// here). Since 2026-11-10 the bar is the agent's assessment, not the authority
+// tally, so its handoff is Evidence sorted by linkage.
 import { fireEvent, render, screen, within, cleanup } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { tallyAuthority } from "@/lib/authority";
 import { buildCaseSheet } from "@/lib/case-sheet";
+import { assessArtifacts } from "@/lib/agent-assessment";
+import { buildAssessmentSheet } from "@/lib/assessment-sheet";
 import { CaseSheetView } from "@/components/workspace/CaseSheet";
 import { STATUS_FILTER_GROUPS, type EvidenceStatusFilter } from "@/components/ResourcesPanel";
 import { statusFilterForAuthority as pick } from "@/lib/evidence-status-filter";
@@ -22,7 +25,7 @@ function art(kind: string, value: string, metadata: Record<string, unknown> = {}
   n += 1;
   return { id: `h${n}`, kind, value, confidence, source: "fixture", created_at: `2026-01-01T00:00:${String(n).padStart(2, "0")}Z`, metadata };
 }
-const model = (items: Artifact[]) => buildCaseSheet(items, {}, tallyAuthority(items, () => "new"));
+const model = (items: Artifact[], seed?: string) => buildCaseSheet(items, {}, tallyAuthority(items, () => "new"), seed);
 
 function navigations(run: () => void): unknown[] {
   const seen: unknown[] = [];
@@ -33,35 +36,31 @@ function navigations(run: () => void): unknown[] {
 }
 
 describe("case sheet handoffs", () => {
-  it("each count in the Evidence bar opens Evidence on that authority state", () => {
-    const m = model([art("email", "a@example.test"), art("email", "b@example.test")]);
-    const first = m.distribution[0];
-    render(<CaseSheetView model={m} hydrated />);
-    const bar = screen.getByRole("region", { name: "Evidence" });
-    const seen = navigations(() => fireEvent.click(within(bar).getByRole("button", { name: new RegExp(`Show ${first.n} ${first.short}`) })));
-    expect(seen).toEqual([{ tab: "artifacts", authorityState: first.state }]);
+  it("the assessment section opens Evidence, which sorts by linkage by default", () => {
+    const items = [art("email", "a@example.test"), art("email", "b@example.test")];
+    render(<CaseSheetView model={model(items)} hydrated assessment={buildAssessmentSheet(assessArtifacts(items, "a@example.test"), items)} />);
+    const region = screen.getByRole("region", { name: "Agent assessment" });
+    const seen = navigations(() => fireEvent.click(within(region).getByRole("button", { name: /Open Evidence/ })));
+    expect(seen).toEqual([{ tab: "artifacts", artifactId: undefined }]);
   });
 
   it("the subject's chip opens the subject row", () => {
     const name = art("name", "Alex Example", { source_class: ["registry", "social"] }, 80);
-    const m = model([name, art("email", "alex@example.test")]);
+    // The seed names him: a name nothing ties to the seed is not the subject.
+    const m = model([name, art("email", "alex@example.test")], "Alex Example");
     render(<CaseSheetView model={m} hydrated />);
     const subject = screen.getByRole("region", { name: "Subject" });
     const seen = navigations(() => fireEvent.click(within(subject).getByRole("button", { name: /in Evidence/ })));
     expect(seen).toEqual([{ tab: "artifacts", artifactId: m.subject!.artifact.id }]);
   });
 
-  it("an empty decision queue still points at the review rows, and says they are a different queue", () => {
+  it("an empty exception queue says so in one line and asks for nothing", () => {
     const m = model([art("email", "solo@example.test")]);
-    const reviewN = m.distribution.find((d) => d.state === "review")?.n ?? 0;
-    expect(reviewN, "fixture must yield review rows, or this test proves nothing").toBeGreaterThan(0);
     expect(m.queueTotal).toBe(0);
     render(<CaseSheetView model={m} hydrated />);
-    const queue = screen.getByRole("region", { name: "Needs your call" });
-    const link = within(queue).getByRole("button", { name: /a second source, not a decision/ });
-    const seen = navigations(() => fireEvent.click(link));
-    expect(seen).toEqual([{ tab: "artifacts", authorityState: "review" }]);
-    expect(link.getAttribute("aria-label")).toMatch(/also lists Conflict rows/);
+    const queue = screen.getByRole("region", { name: "Optional exception review" });
+    expect(queue.textContent).toContain("Nothing disputed or unattributed.");
+    expect(within(queue).queryByRole("button")).toBeNull();
   });
 });
 

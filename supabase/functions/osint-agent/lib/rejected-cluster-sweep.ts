@@ -60,23 +60,32 @@ const chunk = <T>(xs: T[], n: number): T[][] => {
 
 export async function sweepRejectedClusterAssignments(
   admin: DbLike,
-  opts: { maxThreads?: number; reviewPage?: number; now?: number; ignoreMemo?: boolean } = {},
+  opts: { maxThreads?: number; reviewPage?: number; now?: number; ignoreMemo?: boolean; userId?: string } = {},
 ): Promise<SweepResult> {
   const res: SweepResult = { ok: true, reviews: 0, stale: 0, threads: 0, cleared: 0, errors: 0, skipped: null };
   if (sweepDisabled()) return { ...res, skipped: "disabled" };
+  // Scope (maintenance lockdown, 2026-11-14): a present `userId` (server-verified, never
+  // from the request) limits the sweep to that user's reviews AND that user's threads.
+  // A present-but-blank id fails closed: an unscoped sweep is an all-users sweep. A
+  // scoped pass neither reads nor writes the module-global "recently clean" memo, or one
+  // user's clean pass would suppress the all-users sweep for everyone for 10 minutes.
+  if (opts.userId !== undefined && String(opts.userId).trim() === "") return res;
+  const scopedUser = opts.userId || null;
   const now = opts.now ?? Date.now();
-  if (!opts.ignoreMemo && lastCleanAt && now - lastCleanAt < CLEAN_MEMO_MS) return { ...res, skipped: "recently_clean" };
+  if (!scopedUser && !opts.ignoreMemo && lastCleanAt && now - lastCleanAt < CLEAN_MEMO_MS) return { ...res, skipped: "recently_clean" };
+  const markClean = () => { if (!scopedUser) lastCleanAt = now; };
   const maxThreads = opts.maxThreads ?? 5;
   const reviewPage = opts.reviewPage ?? 2000;
 
   // 1. Every rejected review (bounded page). One indexed read in steady state.
-  const { data: revs, error: rErr } = await admin.from("artifact_reviews")
+  let revQuery = admin.from("artifact_reviews")
     .select("artifact_id,thread_id,user_id,state")
-    .in("state", Array.from(REJECTED_REVIEW_STATES))
-    .limit(reviewPage);
+    .in("state", Array.from(REJECTED_REVIEW_STATES));
+  if (scopedUser) revQuery = revQuery.eq("user_id", scopedUser);
+  const { data: revs, error: rErr } = await revQuery.limit(reviewPage);
   if (rErr || !Array.isArray(revs)) return { ...res, ok: false, errors: 1 };
   res.reviews = revs.length;
-  if (revs.length === 0) { lastCleanAt = now; return res; }
+  if (revs.length === 0) { markClean(); return res; }
 
   // 2. Which of those artifacts still hold an assignment?
   const byArtifact = new Map<string, { thread: string; user: string | null }>();
@@ -95,7 +104,7 @@ export async function sweepRejectedClusterAssignments(
     for (const row of data as Array<Record<string, unknown>>) stale.push(row);
   }
   res.stale = stale.length;
-  if (stale.length === 0 && res.errors === 0) { lastCleanAt = now; return res; }
+  if (stale.length === 0 && res.errors === 0) { markClean(); return res; }
 
   // 3. Per thread (bounded): re-derive the kept set with the SAME review load and
   //    filter finalize uses, over the thread's assigned rows, so alias twins of a
@@ -110,6 +119,14 @@ export async function sweepRejectedClusterAssignments(
   for (const [threadId, userId] of Array.from(threads.entries()).slice(0, maxThreads)) {
     res.threads++;
     try {
+      if (scopedUser) {
+        // Fail closed: a scoped sweep only ever writes threads the caller owns, even if
+        // a review row of theirs points at someone else's thread.
+        const { data: owner, error: oErr } = await admin.from("threads")
+          .select("id,user_id").eq("id", threadId).eq("user_id", scopedUser).maybeSingle();
+        if (oErr) { res.errors++; continue; }
+        if (!owner) continue;
+      }
       const reviews = await loadReviewsForThread(admin as unknown as Parameters<typeof loadReviewsForThread>[0], threadId, userId);
       if (!reviews.ok) { res.errors++; continue; }
       const { data, error } = await admin.from("artifacts")

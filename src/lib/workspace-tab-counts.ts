@@ -47,8 +47,8 @@ export function buildWorkspaceTabCounts(
         // Hint names the scope so the header's "55 evidence logged" and the
         // chip's "Evidence 10" are not read as the same denominator; the
         // chip counts open calls, the header counts persisted rows.
-        hint: `${needsCall} awaiting your call — conflicts and rows whose linkage to the subject is unproven. Not a count of evidence items.`,
-        unit: "awaiting your call",
+        hint: `${needsCall} open for optional review: conflicts and rows whose linkage to the subject is unproven. The agent has already scored them and nothing waits on this. Not a count of evidence items.`,
+        unit: "open for optional review",
         kind: "decision",
       },
     tools: { value: toolsTotal, alert: 0, unit: toolsTotal === 1 ? "tool call" : "tool calls" },

@@ -131,7 +131,7 @@ function SourceStats({ source, threadId }: { source: string; threadId?: string }
     return () => { alive = false; };
   }, [source, threadId]);
 
-  if (err) return <div className="p-3 text-xs text-destructive">{err}</div>;
+  if (err) return <div className="p-3 text-xs text-danger">{err}</div>;
   if (!stats) {
     return (
       <div className="p-4 text-xs text-muted-foreground flex items-center gap-2">

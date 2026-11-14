@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "case": { "label": "fixture-same-handle-stranger", "seed_kind": "email", "seed_value": "subject@example.com" },
+  "artifacts": [
+    { "id": "a1", "kind": "email", "value": "subject@example.com", "source": "breach_check", "confidence": 60,
+      "metadata": { "source_category": ["breach"], "status": "observed", "auto_recorded": true }, "created_at": "2026-01-01T00:00:01Z" },
+    { "id": "a2", "kind": "username", "value": "blue-heron-0142", "source": "serus_darkweb_scan", "confidence": 60,
+      "metadata": { "source_category": ["breach"], "status": "observed", "email_associated": "subject@example.com" }, "created_at": "2026-01-01T00:00:02Z" },
+    { "id": "a3", "kind": "social_profile", "value": "https://social.example.com/blue-heron-0142", "source": "socialfetch_web_read (social.example.com/blue-heron-0142)", "confidence": 40,
+      "metadata": { "source_category": ["social_profile_active"], "status": "contradicted" }, "created_at": "2026-01-01T00:00:03Z" },
+    { "id": "a4", "kind": "contradiction", "value": "@blue-heron-0142 on social.example.com is a different person from the subject", "source": "socialfetch_web_read", "confidence": 40,
+      "metadata": { "source_category": ["social_profile_active"], "status": "contradicted" }, "created_at": "2026-01-01T00:00:04Z" }
+  ],
+  "reviews": [ { "artifact_id": "a2", "state": "key", "created_at": "2026-01-01T00:10:00Z" } ],
+  "tool_usage": [
+    { "tool_name": "serus_darkweb_scan", "outcome": "ok", "input_json": { "input": { "identifierValue": "subject@example.com" } }, "created_at": "2026-01-01T00:00:00Z" },
+    { "tool_name": "socialfetch_web_read", "outcome": "ok", "input_json": { "input": { "url": "https://social.example.com/blue-heron-0142" } }, "created_at": "2026-01-01T00:00:03Z" }
+  ]
+}

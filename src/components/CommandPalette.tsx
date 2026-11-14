@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { useMatch, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
+import { seedHint, threadDisplayTitle } from "@/lib/case-name";
 import {
   CommandDialog,
   CommandInput,
@@ -125,7 +126,7 @@ export function CommandPalette() {
         <CommandEmpty>No matches.</CommandEmpty>
 
         {loadError && (
-          <div className="px-3 py-2 text-data text-destructive">
+          <div className="px-3 py-2 text-data text-danger">
             Couldn't load recent cases. Close and reopen to retry.
           </div>
         )}
@@ -184,8 +185,8 @@ export function CommandPalette() {
               <PaletteItem
                 key={th.id}
                 icon={Database}
-                label={th.title || th.seed_value || "Untitled case"}
-                hint={th.seed_value ?? ""}
+                label={threadDisplayTitle(th.title, th.seed_value) || th.seed_value || "Untitled case"}
+                hint={seedHint(th.seed_value)}
                 onSelect={() => { setOpen(false); navigate(`/chat/${th.id}`); }}
               />
             ))}

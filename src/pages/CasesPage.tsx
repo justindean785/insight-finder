@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { deriveRunState, RUN_STATE_LABEL, type CaseRunState } from "@/lib/case-snapshot";
 import { captureError } from "@/lib/telemetry";
 import { loadCaseMetrics } from "@/lib/case-metrics";
+import { threadDisplayTitle } from "@/lib/case-name";
 import { toast } from "sonner";
 
 type CaseRow = {
@@ -331,7 +332,7 @@ export default function CasesPage() {
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-sm font-medium text-foreground truncate max-w-[min(100%,20rem)]">
-                            {c.title?.trim() || "Untitled case"}
+                            {threadDisplayTitle(c.title, c.seed_value).trim() || "Untitled case"}
                           </span>
                           <span className={cn("text-eyebrow font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border", st.tone)}>
                             {st.text}

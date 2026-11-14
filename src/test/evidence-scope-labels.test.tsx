@@ -12,6 +12,8 @@ import type { UIMessage } from "ai";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { tallyAuthority } from "@/lib/authority";
 import { buildCaseSheet } from "@/lib/case-sheet";
+import { assessArtifacts } from "@/lib/agent-assessment";
+import { buildAssessmentSheet } from "@/lib/assessment-sheet";
 import { CaseSheetView } from "@/components/workspace/CaseSheet";
 import { MessageView } from "@/components/ChatWindow";
 
@@ -26,20 +28,26 @@ const assistant = (text: string): UIMessage =>
   ({ id: "m1", role: "assistant", parts: [{ type: "text", text }] } as unknown as UIMessage);
 
 describe("the sheet's evidence figure names its population", () => {
-  it("counts deduped case artifacts and says so, never a bare 'items'", () => {
-    const items = [art("email", "a@example.test"), art("username", "example_user")];
-    render(<CaseSheetView model={buildCaseSheet(items, {}, tallyAuthority(items, () => "new"))} hydrated />);
-    const bar = screen.getByRole("region", { name: "Evidence" });
-    expect(bar.textContent).toContain("2 artifacts");
+  const view = (items: Artifact[]) => (
+    <CaseSheetView
+      model={buildCaseSheet(items, {}, tallyAuthority(items, () => "new"))}
+      assessment={buildAssessmentSheet(assessArtifacts(items, null), items)}
+      hydrated
+    />
+  );
+
+  it("counts deduped case findings and says so, never a bare 'items'", () => {
+    render(view([art("email", "a@example.test"), art("username", "example_user")]));
+    const bar = screen.getByRole("region", { name: "Agent assessment" });
+    expect(bar.textContent).toContain("2 findings");
     expect(bar.textContent).not.toMatch(/\bitems?\b/);
     const figure = bar.querySelector("[title]");
     expect(figure?.getAttribute("title")).toMatch(/chain-of-custody/i);
   });
 
-  it("uses the singular for one artifact", () => {
-    const items = [art("email", "a@example.test")];
-    render(<CaseSheetView model={buildCaseSheet(items, {}, tallyAuthority(items, () => "new"))} hydrated />);
-    expect(screen.getByRole("region", { name: "Evidence" }).textContent).toMatch(/1 artifact(?!s)/);
+  it("uses the singular for one finding", () => {
+    render(view([art("email", "a@example.test")]));
+    expect(screen.getByRole("region", { name: "Agent assessment" }).textContent).toMatch(/1 finding(?!s)/);
   });
 });
 

@@ -224,8 +224,42 @@ describe("Connections tab", () => {
     const leads = screen.getByRole("region", { name: "Unlinked candidates" });
     fireEvent.click(within(leads).getByRole("button", { name: /lone_handle/ }));
     const selected = screen.getByRole("region", { name: "Selected entity" });
-    expect(within(selected).getByText(/No relationship to another entity has been established/)).toBeTruthy();
+    expect(within(selected).getByText(/No relationship derived yet/)).toBeTruthy();
     expect(within(selected).getByRole("button", { name: "Pivot on this" })).toBeTruthy();
+  });
+
+  it("opens the derived subject name automatically and shows exact source-record associations without a review action", () => {
+    // The name sits on a record that carries the seed email, so it is the
+    // subject's by linkage. A name nothing ties to the seed is not opened as the
+    // subject (next test).
+    const items = [
+      art("email", "seed@example.test", null, 70),
+      art("name", "Jane Sample", { email: "seed@example.test" }, 80),
+      art("phone", "+1 (555) 010-4477", { name_in_breach: "Jane Sample", email_associated: "jane@example.test" }),
+      art("email", "jane@example.test"),
+      art("username", "jane_sample", { email_associated: "jane@example.test" }),
+    ];
+    renderWorkbench(items);
+    fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
+    const selected = screen.getByRole("region", { name: "Selected entity" });
+    expect(selected.textContent).toContain("Jane Sample");
+    expect(selected.textContent).toContain("Subject name · automatic evidence map");
+    expect(within(selected).getByRole("button", { name: /\+1 \(555\) 010-4477/ })).toBeTruthy();
+    expect(selected.textContent).toContain("NAME_RECORD: name_in_breach");
+    expect(selected.textContent).toContain("not identity confirmation");
+  });
+
+  it("does not open a name nothing ties to the seed as the subject", () => {
+    const items = [
+      art("name", "Jane Sample", null, 80),
+      art("phone", "+1 (555) 010-4477", { name_in_breach: "Jane Sample", email_associated: "jane@example.test" }),
+      art("email", "jane@example.test"),
+    ];
+    renderWorkbench(items);
+    fireEvent.click(screen.getByRole("tab", { name: "Connections" }));
+    expect(screen.queryByRole("region", { name: "Selected entity" })).toBeNull();
+    expect(screen.queryByText(/Subject name · automatic evidence map/)).toBeNull();
+    expect(screen.getByText(/Pick an entity below/)).toBeTruthy();
   });
 
   it("a zero-hit lookup is disclosed as a clean check, not listed or counted as an unlinked candidate", () => {
@@ -309,15 +343,15 @@ describe("the workbench tab strip shares the main strip's recipe", () => {
       art("email", "ok@example.test"),
     ]);
     const sheet = screen.getByRole("tab", { name: /^Finding/ });
-    const chip = sheet.querySelector("[title*='awaiting your call']");
+    const chip = sheet.querySelector("[title*='open for optional review']");
     expect(chip?.textContent).toContain("2");
     // Never a bare number: the unit is read after it, so it is not taken for an evidence count.
-    expect(sheet.textContent).toContain("awaiting your call");
+    expect(sheet.textContent).toContain("open for optional review");
   });
 
   it("no chip when nothing awaits a call", () => {
     renderWorkbench([art("email", "ok@example.test")]);
-    expect(screen.getByRole("tab", { name: /^Finding/ }).querySelector("[title*='awaiting your call']")).toBeNull();
+    expect(screen.getByRole("tab", { name: /^Finding/ }).querySelector("[title*='open for optional review']")).toBeNull();
   });
 });
 

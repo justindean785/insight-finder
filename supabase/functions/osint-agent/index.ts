@@ -25,9 +25,11 @@ import {
   degradedTools, deadHosts, resetFirecrawlCreditsLow, INTELBASE_ENABLED,
   promptBudgetHardCeilingEnabled,
   recordArtifactsInputCompactEnabled,
+  findingsTableExpansionEnabled,
 } from "./env.ts";
 
 import { detectSeedServer } from "./validation.ts";
+import { hasSeedAttachments, splitSeedText } from "./lib/attachment-block.ts";
 import {
   extractStepFindings, persistAutoFindings, loadSeenArtifactKeys, decideBackstopAction,
   ESCALATION_ELIGIBLE_TOOLS, bufferEscalationCandidates, drainEscalationBuffer,
@@ -79,8 +81,9 @@ import {
   shouldStopFinalizeAtAttemptCap, FINALIZE_MAX_STEPS,
   extractAssistantReportText, needsReportSalvage, buildSalvageSynthesisPrompt,
   shouldNudgePersistence, buildPersistenceNudgeDirective,
-  hasNoFindingsDecision, resolveTerminalState,
+  hasNoFindingsDecision, resolveTerminalState, hasReportShape, stripReasoning,
 } from "./orchestrator-finalize.ts";
+import { expandFindingsTableInParts } from "./lib/findings-table.ts";
 import { contextCharsFromMessages, createInvocationTelemetry, withPrepareTiming, type SalvageOutcome } from "./telemetry.ts";
 import { measurePromptTerms, measureToolDescriptions, promptSizeEvent } from "./prompt-size.ts";
 import {
@@ -93,6 +96,7 @@ import { repairExactBooleanInput } from "./lib/exact-boolean-repair.ts";
 import { repairMalformedJsonInput } from "./lib/malformed-json-repair.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
+import { corsPreflightEarlyDisabled, corsPreflightResponse, isCorsPreflight } from "./lib/cors-preflight.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
 import {
   buildResumeBrief, loadBriefInputs, nextPivotBriefDisabled, nextPivotBriefEvent,
@@ -102,6 +106,7 @@ import {
   buildMemoryBrief, freshnessCutoffIso, loadToolLessons, memoryBriefDisabled, memoryBriefEvent, memoryBriefLegacyRowsEnabled,
   registeredToolSubjects, toolLessonQuery,
 } from "./lib/memory-brief.ts";
+import { boundedOutcomeRead, deriveOutcomeLessonRows, outcomeLessonCutoffIso } from "./lib/outcome-lessons.ts";
 import { buildTools, TOOL_NAME_ALIASES } from "./tool-registry.ts";
 import { runAttachmentIntake, type AttachmentIntakeResult } from "./attachment-intake.ts";
 import { isMessageSchemaError, classifyStreamProviderError, describeStreamError } from "./stream-error-classify.ts";
@@ -189,6 +194,10 @@ Deno.serve(async (req) => {
   // returns one). Cleared at the handoff: once a run is live, an interruption marker is
   // genuine and must NOT be erased by cleanup.
   let startupLease: { db: LeaseDb; threadId: string; lease: RunLeaseHeld } | null = null;
+  // A CORS preflight is not a run: answer it BEFORE the per-request reset below, or a
+  // preflight served by the same worker as a live run clobbers that run's guard state.
+  // See lib/cors-preflight.ts. Kill switch: CORS_PREFLIGHT_EARLY_DISABLED=true.
+  if (isCorsPreflight(req) && !corsPreflightEarlyDisabled()) return corsPreflightResponse(corsHeaders);
   if (isHealthProbe(req)) return handleHealthProbe(req);
 
   degradedTools.clear();
@@ -471,11 +480,13 @@ Deno.serve(async (req) => {
     const seedValueRaw = (() => {
       const fu = ((messages ?? []) as Array<{ role?: string; parts?: Array<{ type?: string; text?: string }> }>)
         .find((m) => m?.role === "user");
-      return (fu?.parts ?? [])
+      // The typed text only: the composer's "Attached files:" block is not part of
+      // the seed (lib/attachment-block.ts; kill switch ATTACHMENT_SEED_STRIP_DISABLED).
+      return splitSeedText((fu?.parts ?? [])
         .filter((p) => p?.type === "text")
         .map((p) => p?.text ?? "")
         .join(" ")
-        .trim() || "(seed)";
+        .trim()).typed || "(seed)";
     })();
     // The subject's SEED NAME, or "" when this run was seeded on anything else.
     // Sole input to the queried-name echo exemption in the auto-persist gate: a
@@ -1014,13 +1025,22 @@ Deno.serve(async (req) => {
     // overlapped with the intake and review loads for the same reason as the resume brief above. Unlike the resume
     // brief it also applies to a first turn. The eligibility predicates live in `toolLessonQuery` and are re-checked
     // row by row in `buildMemoryBrief`; `loadToolLessons` never rejects and its deadline aborts the query.
+    // Recent live outcomes join the same read as fresh synthetic lesson rows. A failed OR slow outcome read drops
+    // only those derived rows: `boundedOutcomeRead` carries its own, shorter deadline so it settles before the
+    // shared one resolves the whole race empty. No outcome body or case id is logged.
     const toolLessonReads = memoryBriefDisabled() || !memoryBriefLegacyRowsEnabled() ? null : loadToolLessons((signal) =>
-      toolLessonQuery(supabase, {
-        userId,
-        subjects: registeredToolSubjects(Object.keys(tools), TOOL_NAME_ALIASES),
-        cutoffIso: freshnessCutoffIso(),
-        signal,
-      }));
+      Promise.all([
+        toolLessonQuery(supabase, {
+          userId,
+          subjects: registeredToolSubjects(Object.keys(tools), TOOL_NAME_ALIASES),
+          cutoffIso: freshnessCutoffIso(),
+          signal,
+        }),
+        boundedOutcomeRead(supabase, { userId, cutoffIso: outcomeLessonCutoffIso(), signal }),
+      ]).then(([stored, outcomes]) => ({
+        data: [...(stored.data ?? []), ...deriveOutcomeLessonRows(outcomes.data ?? [])],
+        error: stored.error,
+      })));
     // Resolve the attachment intake started above (it overlapped the preflight
     // + setup). Its summary must be present before the system prompt is built.
     const intake = await intakePromise;
@@ -2275,8 +2295,10 @@ Deno.serve(async (req) => {
         // it. Historically this was computed inside the cache block, which ran
         // BEFORE the status write.
         const firstUser = finalMessages.find((m) => m.role === "user");
-        const seedText = ((firstUser?.parts ?? []) as Array<{ type: string; text?: string }>)
+        const firstUserText = ((firstUser?.parts ?? []) as Array<{ type: string; text?: string }>)
           .filter((p) => p.type === "text").map((p) => p.text ?? "").join(" ").trim();
+        // Same split as auth.ts: classify what the analyst typed, not the attachment block.
+        const seedText = splitSeedText(firstUserText).typed;
         const detectedSeed = detectSeedServer(seedText);
         detectedSeedKind = detectedSeed ? detectedSeed.kind : null;
 
@@ -2363,8 +2385,44 @@ Deno.serve(async (req) => {
           } catch (e) {
             console.warn("[evidence-record] render failed (non-fatal):", String(e));
           }
+          // Engine-authored Findings table: the orchestrator writes the literal `{{FINDINGS_TABLE}}`
+          // line and the server renders the table from the SAME rows the Evidence Record just used
+          // (`reviewedArts`: analyst-rejected rows already dropped; unreadable verdicts fail closed
+          // inside the renderer). The expansion works on a COPY — `assistant.parts` is never
+          // assigned, so `resolveTerminalState` below still judges what the model actually wrote —
+          // and it only runs when the message already has report shape without the marker, so a
+          // stub cannot be made to look complete in the STORED row. The salvage part is appended
+          // above, so it is expanded like any other text part when the salvage prompt's marker was
+          // followed (buildSalvageSynthesisPrompt asks for it; a salvage text without the marker
+          // passes through untouched). Never throws; any failure
+          // leaves the parts as they were and logs the error name. Kill switch:
+          // FINDINGS_TABLE_EXPANSION_DISABLED=true, read at call time.
+          let partsToPersist = assistant.parts as unknown[];
+          if (findingsTableExpansionEnabled()) {
+            try {
+              const expansion = expandFindingsTableInParts(
+                partsToPersist,
+                {
+                  rows: reviewedArts,
+                  totalArtifactCount: salvageArts.length,
+                  retrieval: artifactRetrieval,
+                  reviews: reviewsUsable ? "applied" : "unavailable",
+                  rejectedFindingCount,
+                },
+                { shapeOk: (t) => hasReportShape(stripReasoning(t)) },
+              );
+              partsToPersist = expansion.parts;
+              const { name, ...fields } = expansion.event;
+              console.log(JSON.stringify({ event: name, thread_id: threadId, ...fields }));
+            } catch (e) {
+              console.warn(JSON.stringify({
+                event: "findings_table_expansion_failed", thread_id: threadId,
+                error: e instanceof Error ? e.name : "NonError",
+              }));
+            }
+          }
           const safeParts = composePersistedParts(
-            assistant.parts as unknown[],
+            partsToPersist,
             evidenceRecord,
             MAX_PERSISTED_ASSISTANT_PARTS_BYTES,
           );
@@ -2472,7 +2530,9 @@ Deno.serve(async (req) => {
 
           // ---- Persist investigation cache (per seed, per user) ----
           try {
-            if (detectedSeed && safePartsForCache) {
+            // A run opened with attachments is not cached under its bare typed seed: the
+            // same seed with no file is a different investigation, and must not replay it.
+            if (detectedSeed && safePartsForCache && !hasSeedAttachments(firstUserText)) {
               const { data: arts } = await supabase
                 .from("artifacts")
                 // `id` so analyst verdicts match per-row, not only by kind|value.

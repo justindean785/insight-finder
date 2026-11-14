@@ -1,91 +1,75 @@
 # Next-session prompt — Insight Finder
 
-> **Target agent:** Claude Code (fresh context, remote/web sandbox). Paste this whole file as the opening message.
-> **Prerequisites:** GitHub MCP access to `justindean785/insight-finder` and `justindean785/seeker-spark-search-5362c57c`; the Lovable MCP (project `4ce11bc3-039d-4439-b293-acacca9e1e3a`, SELECT-only DB queries) for deploys.
-> **Written 2026-10-14T03:00Z.** Every number is a dated measurement, not a state — re-verify. This file replaces the 2026-10-06 prompt (its queue drained on 2026-10-14; the old prompt's text is in git history).
-> Address the user as **JD**. Engineering only — never investigate any person who appears in a scan.
-> **Standing rules:** `REVEAL_BREACH_DATA` stays **ON**. `RUN_LEASE_DISABLED` stays `true`. Squash merges only, never delete branches, merge `main` into branches (never force-push). Ask before any merge, Lovable deploy message, secret change, closing anything, or billing action. Read a PR's body for sign-off notes before merging it.
+> **Target agent:** Claude Code (fresh context). Paste the fenced block below as the opening message, as-is.
+> **Written 2026-11-11 (PST).** Replaces the 2026-11-10 prompt (partly executed: #1015 merged as `3c5daf1`; its wording bug was fixed by #1024, `9120a4c`). Every number is a dated measurement, not a state — re-verify.
+> **Audit basis (2026-11-11 about 13:25Z):** `main` `1d0e0a2` (#1025, docs; code is `9120a4c`) plus the corrections docs PR; Vercel production `READY` on `9120a4c`; CI push run on `9120a4c` all green including e2e; live `osint-agent` last measured `3f6ed05` (`/health` 72 checks, 0 not ok, at about 11:25Z, not re-measured since); `justindean785/insight-finder` is **public**. Read `SESSION_HANDOFF_2026-11-11_rail-about-half-shipped.md` first.
 
----
-
+```
 # Objective
 
-Take over at a clean point: **the Anthropic orchestrator is live but its API key is invalid**, four finished PRs wait on JD's "merge", and two of them (#758, #756) then need one edge deploy cycle. Do not build or ship anything JD has not named.
+Put ONE decision in front of JD and then ship what he names: the merge order for the ready queue below. Nothing in it is approved yet. Show the queue on one screen and ask for a named go per PR. Run one track per session (frontend, or one edge PR with its deploy cycle), never both.
 
-# Context
+Address the user as JD. Engineering only — the scans contain real people; never put a handle, name, address, phone, ID, credential or storage URL from a run into code, tests, commits, PR text or docs (the repo is public).
 
-Insight Finder (a.k.a. Swarmbot) is JD's OSINT investigator: Vite + React + TS + Tailwind/shadcn on Vercel; Supabase (Postgres/Auth/Storage + Deno edge functions, chiefly `osint-agent`) behind Lovable. **Frontend ships on merge to `main`; the edge function does NOT** — it needs stamp → surgical mirror sync → `verify:deploy` gate → Lovable deploy message → `/health` proof → ledger. The recipe, its traps and this session's measurements are in **`SESSION_HANDOFF_2026-10-14_anthropic-orchestrator-and-the-dropped-connection.md`** — read it first (§0 rules, §1 state, §3 PR queue, §5 traps, §6 ordered plan, §7 verify commands). **If `origin/main` does not contain that file, docs PR #760 (branch `docs/handoff-2026-10-14`) is unmerged: read it from that branch and tell JD.**
+# Session hygiene (CLAUDE.md, JD 2026-10-19)
 
-Verified at hand-off (2026-10-14T02:46Z): canonical `main` = `5faa6ce`; live `osint-agent` build = **`66cf1c3`**; `deploy/live` → `66cf1c3`; mirror `main` = `120c76e`; `diff -rq` empty for all four function dirs; orchestrator **Anthropic pinned, `claude-sonnet-5`**, prompt caching working (~93% cache reads); `reveal_breach_data=true`; run lease `LEGACY`. Baselines: edge **2316 / 0 / 6**, frontend **2560 / 1 / 198 files**, e2e **52 / 2** (measured on the PR branches; re-measure on clean `main`).
+Report one line, unprompted, after any compaction, when a PR merges, and before starting a new task: `Session check: STAY — <reason>` or `Session check: START FRESH — <reason>` (with the handoff path and the opening prompt). Second compaction ⇒ START FRESH.
 
-# Current Problem
+# Standing rules (do not re-litigate)
 
-1. **BLOCKER — `ANTHROPIC_API_KEY` in Lovable is invalid.** Every run since 2026-10-14T02:36Z fails at step 0 with `invalid x-api-key [HTTP 401]`, $0 spent. Only JD can fix it: a key scoped to the **Insight Finder** workspace, saved via the Lovable secure form. Do not ask for, accept or echo a key in chat. Rolling back to `deepseek` would **not** work (Z.AI 429 insufficient balance); `minimax` is the working alternate pin.
-2. **Two production bugs are fixed but unmerged.** #758 (edge): a dropped browser connection ran persistence early, marked the thread finished and discarded the loop's real end while it kept spending — the cause of JD's "stopped mid run" and of the Anthropic-billed vs metered gap. #759 (frontend): a provider 401 was read as the analyst's own session expiring and signed JD out on every scan. Both wait on JD's "merge".
-3. **The Anthropic promo credit ($93.73 left) expires 2026-10-23.** Spend limit is $100/month, auto-reload off. Never enable auto-reload or buy credits.
+- `REVEAL_BREACH_DATA` stays ON. `RUN_LEASE_DISABLED=true` stays. `MAX_PAID_CALLS` stays bounded. Intent is NOT inferred from prose.
+- GLM primary (`glm-5.3-flash`, deepseek slot), Anthropic `claude-sonnet-5` is the start-failure backup. Do not re-pin.
+- Edge ships only via the `edge-deploy` skill: stamp (parent == marker) → surgical mirror sync → `npm run verify:deploy` hard gate (`mirror tree -> equal` + `mirror pushed`) → Lovable deploy message → `/health` build moved → `npm run record:deploy` → ledger PR + `deploy/live`. Never `supabase functions deploy`.
+- One PR = one behaviour change + tests. Never mix frontend and edge. At most one edge PR in flight. Squash only; never delete branches.
+- JD's named go is required for: any merge to `main` he has not named, any edge merge or deploy, stamp, mirror push, Lovable message, secret or flag change, schema, closing a PR. Never answer a Lovable tool-approval pause yourself.
+- Integrity-critical (no change without JD's written sign-off): evidence ranking, `confidence.ts`, `record_finding`, chain-of-custody, credential masking, minor-safety detection, quarantine triggers, linkage paths.
+- No Opus/top-tier subagents; prefer direct tool calls. Never echo a key.
 
-# Files to Inspect
+# Steps
 
-Search the repo if paths differ.
+1. **Orient (read-only).** `git fetch origin main && git log --oneline -6 origin/main`; `gh pr list --state open`; for an edge PR, ONE `/health` read (do not loop it) and `git fetch origin refs/heads/deploy/live:refs/heads/deploy/live`. The primary checkout at `/Users/dizosint/insight-finder` is on an old branch; do not switch it. Work in a new worktree and run `npm ci` in it. Leave every other worktree alone.
+2. **Read the named PR's full diff**, not its tip commit and not its title alone. Check its base branch.
+3. **Rebase or retarget if needed** (see the queue notes), then verify.
+4. **Ship it.** Frontend: verify, wait for CI green on the final head, ask JD "merge #N?", squash-merge on his go, confirm Vercel `target: production` is `READY` on the merge commit. Edge: the full `edge-deploy` cycle, then `/health` proof.
 
-- `SESSION_HANDOFF_2026-10-14_anthropic-orchestrator-and-the-dropped-connection.md` — **read first.**
-- `CLAUDE.md` — authoritative on deploy topology and the SETTLED decisions; its dated block at the top was refreshed 2026-10-14.
-- `deploy-log.jsonl` (ledger; last row `66cf1c3`), `scripts/stamp-build.mjs`, `scripts/record-deploy.mjs`, `supabase/functions/osint-agent/build-info.ts`, `health-handler.ts`.
-- `supabase/functions/osint-agent/lib/client-cancel.ts` + `index.ts` (the #758 fix), `lib/run-end.ts` (the mechanism, documented before it was fixed), `lib/leakcheck-guard.ts` (#756), `src/lib/tool-run.ts` + `src/components/ChatWindow.tsx` (#759), `src/lib/intel.ts` `buildInvestigationSummary` (#757).
-- `supabase/functions/osint-agent/anthropic-orchestrator.ts` (`classifyAnthropicError`, cache breakpoints, run budget) and `providers.ts` (the pin).
+# The ready queue (board re-measured 2026-11-11 about 12:50Z)
 
-# Implementation Requirements
-
-Work in this order and **stop to ask JD** at every outward step.
-
-1. **Orient (read-only):**
-   ```bash
-   git fetch origin main && git log --oneline -5 origin/main
-   git fetch origin refs/heads/deploy/live:refs/heads/deploy/live   # a fresh clone lacks this ref
-   git fetch --unshallow --filter=blob:none                          # the clone is shallow at depth 50
-   curl -s "https://skzqwbyvmwqarfgfvyky.supabase.co/functions/v1/osint-agent?health=1"
-   ```
-   Expect `main` ≥ `5faa6ce`, build `66cf1c3`, `selected_provider: anthropic`, `checks.orchestrator_anthropic.ok` true. If either moved, another session worked here — read the newest handoff and the ledger first. Then `list_pull_requests` (20+ results overflow the tool result; parse the saved file with python).
-2. **Confirm the key is fixed** (read-only DB, Lovable MCP `query_database`): the newest `orchestrator_invocations` row should have `stop_reason` ≠ `stream_error` and `credits_micro_usd > 0`. If the newest rows still say `invalid x-api-key`, tell JD and stop — nothing else can be observed until then.
-3. **Ask JD which PRs to merge.** Recommended: #759 and #757 first (frontend, ship on merge, no deploy); then #758 (+ #756 once JD confirms its defaults: 3 LeakCheck calls per investigation, reserve 20 of the fixed 200-query pool). One edge deploy for both, following handoff §6 step 3 exactly: stamp PR whose parent IS the marker → surgical mirror sync of only the changed files (tests included) → `npm run verify:deploy -- --previous 66cf1c3 --mirror ../seeker-spark-search-5362c57c` prints `mirror tree -> equal` and `mirror pushed` → Lovable deploy message (AS-IS, `osint-agent` only, `wait=false`) → `/health` build moved and `checks.client_cancel_isolation.mode == "server_branch_only"` → `npm run record:deploy` → publish ledger + `deploy/live` (verify `deploy/live == marker` with `git ls-remote`) → ledger PR.
-4. **Phone test after the deploy** (JD runs it): start a scan, switch apps for 30 s, return. Expect a finished report and no "Interrupted" card; expect no `premature_client_cancel` note on the new invocation row.
-5. Then JD's reviews: #741, #738, #593 (keep, need sign-off); #701 (recommend close); #613, #516 (rebase or close). Small follow-ups are listed in handoff §6 step 6 — only on JD's word.
-
-# OSINT / Analyst Requirements
-
-- Evidence-ranking, confidence caps, chain-of-custody, credential masking and minor-safety detection are integrity-critical: **no change without JD's sign-off.**
-- Keep confirmed evidence separate from AI inference; a zero-hit lookup is a coverage observation, not corroboration and not proof of absence.
-- Scans contain real people. Do not research them, do not put their names/handles/IDs in commits, PRs or docs, and use synthetic fixtures in tests.
-
-# Do Not
-
-- Do NOT change `REVEAL_BREACH_DATA`, `RUN_LEASE_DISABLED`, `ORCHESTRATOR_PROVIDER`, `MAX_PAID_CALLS`, or any secret. Everything in `CLAUDE.md` → SETTLED stands.
-- Do NOT merge, stamp, push to the mirror, send a Lovable deploy message, apply schema, close a PR, or touch billing without JD's explicit go-ahead for that step. Never answer a Lovable tool-approval pause yourself.
-- Do NOT use Opus or any top-tier model for subagents. Prefer direct tool calls.
-- Do NOT blanket-overwrite the mirror, click Lovable's "Try to fix", merge the mirror's own PRs, or type a SHA by hand (copy it from `git rev-parse` / the PR payload).
-- Do NOT mix frontend, edge and schema in one PR; do NOT run more than one edge PR at a time.
-- Do NOT trust the Lovable project agent's analyses without checking `/health`, the DB and the console (it reported a wrong limit and "caching off" this session).
-- Do NOT echo JD's billing/card details or any credential. Never ask for, accept or echo an API key in chat.
-
-# Acceptance Criteria
-
-- [ ] Orientation numbers re-measured and compared with this file; any drift reported before acting.
-- [ ] Key status confirmed from a real `orchestrator_invocations` row (not from `/health`, which only proves the pin).
-- [ ] No outward step taken without a named, explicit go-ahead from JD.
-- [ ] If the edge deploy ran: `/health` `build` moved, `checks.client_cancel_isolation` present with mode `server_branch_only`, `verify:deploy` VERIFIED with `mirror tree -> equal`, ledger PR merged, `deploy/live` == marker.
-- [ ] Full suites green on anything you touch; `reveal_breach_data` still `true`.
+- **#1009 → #1014** (frontend). #1009 is based on `main`. #1014 is based on #1009's branch: after #1009 squash-merges, retarget #1014 to `main` and rebase.
+- **#1016 ← #1017 ← #1018 ← #1019** is one four-deep chain: a frontend root (#1016, base `main`) with three edge PRs stacked on it. #1016 and #1017 are two halves of one rule ("a dotted handle is a username seed, not a domain"); merge #1016 right before #1017 deploys, so the screen and the stored seed type do not disagree in between. #1018 is "a lookup on a shortened seed handle runs tainted" (a new quarantine trigger) and #1019 is "a recorded profile whose URL ends in the exact seed handle carries that handle" (a new linkage path): **each needs JD's explicit ruling.**
+- **Merge-train trap:** base branches are kept (never-delete rule), so after a parent squash-merges, the child PR's base is still the old branch. Retarget the child to `main` and rebase before merging. This applies to #1014 (after #1009) and to #1017, #1018 and #1019 (each after its parent). Each edge PR also conflicts with `main` in `health-handler.ts` since #1007.
+- **#1023** (docs: CLAUDE.md sections to `.claude/rules`). Read the diff first. The 2026-11-11 handoff PRs merged before it and edited the CLAUDE.md state line and reading order, so #1023 must rebase: its move of those sections will conflict.
+- Older edge: #963 (clean), #973 (conflicts with `main`), #929 (edge test job red).
 
 # Verification
 
-```bash
-npm run typecheck && npm run lint && npx vitest run            # never bare `tsc`
-cd supabase/tests/osint-agent && deno test --config=../../functions/osint-agent/deno.json --no-check --no-lock --allow-net --allow-env --allow-sys --allow-read . ../evidence-export   # Deno is not preinstalled
-PLAYWRIGHT_CHROMIUM_PATH=/opt/pw-browsers/chromium-1194/chrome-linux/chrome npm run test:e2e > e2e.log 2>&1; echo "playwright exit: $?"
-npm run verify:deploy -- --previous 66cf1c3 --mirror ../seeker-spark-search-5362c57c   # read-only; "mirror tree -> equal" is the hard gate
-```
+    npm run typecheck && npm run lint && npx vitest run
+    npm run test:edge
+    npm run test:e2e        # outside the sandbox; not in PR CI; required for anything touching src/
 
-Run each PR in its own worktree with its own `node_modules`. `npx eslint` every new edge file — CI's Frontend job lints and typechecks `supabase/functions/` too.
+Reference counts (2026-11-11, local, `3a7d15b`, same tree as `main` `9120a4c`): vitest 3,420 passed / 1 skipped / 292 files; e2e 126 passed / 12 skipped / 2 failed. Edge was last measured 2026-11-10: 3080 passed / 0 failed / 6 ignored. Never bare `tsc`.
+
+**Known local e2e failure, already measured — do not re-investigate:** `e2e/stage1b-wcag.spec.ts` "Evidence Ledger — quarantined row selected" fails at 1280x720 and 1440x900 with axe `color-contrast` 1.04 on the closing "Filter evidence" menu. Reproduced only on this workstation; no regression found. Treat exactly those two failures as known; any other e2e failure is yours to explain. Facts and the proposed fix are in item 1 of the last section and in handoff §4.
 
 # Return
 
-Per step: the state you measured, what you changed (files, PR numbers, SHAs copied from tool output), tests run with the real counts, `/health` proof (key + value), what you did **not** do and why, remaining risks, and the exact question for JD. If a solution fails, stop and re-plan instead of patching forward.
+What JD approved and when; what merged, with commit ids; for edge, before/after `/health` (`build`, check count, the new key) and the `verify:deploy` lines; real test counts; what you did NOT do and why; the Session check line.
+
+# Still JD's, and later work — do not start unless JD names it (one session each)
+
+1. **Test-only PR proposal: wait for the menu to be hidden before the axe scan** in `e2e/stage1b-wcag.spec.ts`, "Evidence Ledger — quarantined row selected". Small, frontend test only, JD's go. Measured facts (2026-11-11):
+   - The spec opens the menu itself ("More filter", then the Quarantined menuitem), then waits for the quarantined row and the inspector, never for the menu to be hidden. axe scans the whole page. `playwright.config.ts` does not disable animations.
+   - On the macOS workstation it failed at both viewports with contrast 1.04 on the closing menu (`data-state="closed"`), on `3a7d15b` and on `3c5daf1`.
+   - In a clean Linux environment it passed 5 runs x 3 viewports at `48c250d` (before #1015) and 5 x 3 at `3c5daf1`. CI e2e on Ubuntu passed on `3c5daf1` and `9120a4c`.
+   - Remaining unknown: whether this workstation also fails at `48c250d`.
+   - Proposed fix: wait for the menu to be hidden before `axeFor(page).analyze()`. No weakening of the `color-contrast` rule and no excluding the node. Proof: the test passes `--repeat-each=10` locally at both viewports and the full e2e run shows 128 passed / 12 skipped.
+   - The local branch `fix/e2e-macos-flake` is a stale name (tip `750e885`, a deploy-ledger commit, nothing that is not on `main`). It holds no flake work.
+2. **Stored-row proof for #1007** (owed since 2026-11-10): run one upload-only case, then the counts-only query, never message text: threads created after `2026-11-11 06:25:00+00` whose title or `seed_value` matches `(token=|/object/sign/)`. Want 0 leaking with at least 1 thread; a 0 with no threads is not proof.
+3. **`stale.yml`** on `main` uses placeholder messages and will close inactive issues and PRs: keep, disable or remove — JD's call.
+4. **Investigate chat-flow rework** (not started): critique with screenshots at 1440x900 and about 1000x650, a plan JD can react to, then build. Read drafts #804, #882, #883 first.
+5. **Likelihood register:** whether to set `VITE_ASSOCIATION_LIKELIHOOD=1` in Vercel, and how it reads next to the new rail. JD's call.
+6. **Agent accuracy:** start from a classified sample of recent runs, not a theory.
+7. **Memory across cases:** first deliverable is a measurement (what is saved per run, what the next run retrieves).
+8. **Small follow-ups to #1007** (one edge PR, JD's go): tests for the space-joined form and the multi-upload title; kill-switch parse aligned with the repo convention.
+9. **Backfill** of the 23 stored rows that still hold a signed-URL fragment: JD's call.
+10. Carried from 2026-11-08: the public-repo scrub decision (handoff 11-08 §4), #986 audit trail, `indicia_web_dbs` schema gap, heartbeat fix, GLM pricing table.
+```

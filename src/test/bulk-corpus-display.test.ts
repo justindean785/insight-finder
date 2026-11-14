@@ -22,8 +22,8 @@ describe("bulk-corpus display grouping", () => {
     const reason =
       `${BULK_CORPUS_REASON_MARK} — this one lookup yielded 67 person identities for a single selector`;
     const rows = [
-      art({ id: "1", kind: "name", value: "Gabriel G. Salas", metadata: { subject_unlinked: true, subject_unlinked_reason: reason } }),
-      art({ id: "2", kind: "name", value: "Esther Salas", metadata: { subject_unlinked: true, subject_unlinked_reason: reason } }),
+      art({ id: "1", kind: "name", value: "Avery Q. Sample", metadata: { subject_unlinked: true, subject_unlinked_reason: reason } }),
+      art({ id: "2", kind: "name", value: "Blake Sample", metadata: { subject_unlinked: true, subject_unlinked_reason: reason } }),
       art({ id: "3", kind: "email", value: "a@example.com", metadata: { subject_unlinked: true, subject_unlinked_reason: reason } }),
       art({ id: "4", kind: "phone", value: "+15551234567", metadata: {} }),
     ];
@@ -47,8 +47,8 @@ describe("bulk-corpus display grouping", () => {
     const row = art({
       id: "s",
       kind: "bulk_corpus_harvest",
-      value: "67 unlinked identities — bulk corpus (gsalas916@icloud.com)",
-      metadata: { bulk_corpus: true, harvested_identities: [{ kind: "name", value: "Gabriel G. Salas" }] },
+      value: "67 unlinked identities — bulk corpus (bulk.seed@mail.example)",
+      metadata: { bulk_corpus: true, harvested_identities: [{ kind: "name", value: "Avery Q. Sample" }] },
     });
     expect(isBulkCorpusHarvestArtifact(row)).toBe(true);
     expect(legacyBulkCorpusGroupKey(row)).toBeNull();

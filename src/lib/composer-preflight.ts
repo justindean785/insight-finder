@@ -97,7 +97,9 @@ export function evaluatePreflight(input: PreflightInput): PreflightResult {
     if (direct && direct.kind !== "other") detected = { raw: direct.raw, kind: direct.kind };
     else {
       const extracted = extractDisplaySeed(text, null);
-      if (extracted.kind !== "other") detected = { raw: extracted.selector, kind: extracted.kind };
+      // `attachment` cannot occur here (the composer's text excludes the upload
+      // block), and it is not a selector a run can be scoped to.
+      if (extracted.kind !== "other" && extracted.kind !== "attachment") detected = { raw: extracted.selector, kind: extracted.kind };
       else {
         const exp = readProviderExport(text);
         if (exp && (exp.pick || exp.scrubbed !== text) && extracted.selector !== "—") exportedText = extracted.selector;

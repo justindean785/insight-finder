@@ -130,17 +130,17 @@ describe("computePivots — Key changes ORDER, not confidence", () => {
 
 describe("computePivots — Recheck becomes a verification task", () => {
   it("renders as a re-verify card with the scoped recheck prompt, even if already searched", () => {
-    const a = art({ id: "r", kind: "phone", value: "+1 555 123 4567", confidence: 55 });
+    const a = art({ id: "r", kind: "phone", value: "+1 415 555 4567", confidence: 55 });
     const out = computePivots({
       artifacts: [a], seedValue: null, reportPivots: [], skipSet: NONE,
       queriedSet: new Set(["1 555 123 4567"]), reviews: { r: "recheck" },
     });
-    const task = out.find((p) => p.value === "+1 555 123 4567");
+    const task = out.find((p) => p.value === "+1 415 555 4567");
     expect(task?.decision).toBe("recheck");
     expect(task?.status).toBe("new");
     expect(task?.actionLabel).toBe("Re-verify finding");
     expect(task?.prompt).toMatch(/Re-verify this specific finding/);
-    expect(task?.prompt).toContain("+1 555 123 4567");
+    expect(task?.prompt).toContain("+1 415 555 4567");
     expect(task?.confidence).toBe(55);
   });
 });

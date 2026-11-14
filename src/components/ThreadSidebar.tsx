@@ -12,10 +12,12 @@ import {
 import {
   Plus, LogOut, Trash2, PanelLeftOpen, PanelLeftClose, Search, Brain, CheckCircle2,
   ShieldAlert, Database, Activity, BarChart3, Wallet, FolderOpen,
-  Mail, Phone, Globe, Network, User, Hash, FileSearch, Settings, type LucideIcon,
+  Mail, Phone, Globe, Network, User, Hash, FileSearch, Paperclip, Settings, type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { detectSeed } from "@/lib/seed";
+import { threadDisplayTitle } from "@/lib/case-name";
+import { attachmentOnlyNames } from "@/lib/attachments";
 import { isRunningThread } from "@/lib/thread-status";
 import { selectStaleActiveIds } from "@/lib/stale-thread";
 import { SUPPORT_MAILTO } from "@/lib/contact";
@@ -28,7 +30,13 @@ import type { Database as SupabaseDatabase } from "@/integrations/supabase/types
 const SEED_ICON: Record<string, LucideIcon> = {
   email: Mail, phone: Phone, domain: Globe, url: Globe, ip: Network,
   username: User, person: User, name: User, organization: User, crypto: Hash,
+  attachment: Paperclip,
 };
+/** The seed kind a row SHOWS. An upload-only case is stored as "other" (the
+ *  edge reads no selector out of the attachment markdown); it reads as one. */
+function shownSeedKind(seedType: string | null, seedValue: string | null): string | null {
+  return attachmentOnlyNames(seedValue) ? "attachment" : seedType;
+}
 function seedIcon(seedType: string | null, title: string): LucideIcon {
   const kind = (seedType ?? detectSeed(title)?.kind ?? "other").toLowerCase();
   return SEED_ICON[kind] ?? FileSearch;
@@ -61,6 +69,8 @@ type Thread = {
   // doesn't enumerate (e.g. "failed_context_limit") and they must still render.
   status: string | null;
   seed_type: string | null;
+  // Read only to derive a display title when the stored one is a pasted provider export.
+  seed_value?: string | null;
   // Run markers: an "active" row with neither of these never started (I-1), so
   // it is a draft — not a live run, and not a candidate for the stale sweep.
   run_started_at: string | null;
@@ -102,7 +112,7 @@ function CreditChip({ credits }: { credits: UserCredits | null }) {
     <div
       className={cn(
         "flex items-center gap-1.5 text-xs",
-        depleted ? "text-destructive" : low ? "text-warning" : "text-muted-foreground",
+        depleted ? "text-danger" : low ? "text-warning" : "text-muted-foreground",
       )}
       title={depleted ? "Out of beta credits" : "Remaining beta credits"}
     >
@@ -160,7 +170,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
     const loadThreadsAndBrain = async () => {
       const { data } = await supabase
         .from("threads")
-        .select("id,title,updated_at,credits_used,cost_micro_usd,status,seed_type,run_started_at,last_heartbeat_at")
+        .select("id,title,updated_at,credits_used,cost_micro_usd,status,seed_type,seed_value,run_started_at,last_heartbeat_at")
         .eq("user_id", user.id)
         .order("updated_at", { ascending: false });
       const threadRows = (data as Thread[] | null) ?? [];
@@ -389,10 +399,10 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
             const recent = threads.filter((t) => t.id !== threadId).slice(0, 7);
             return (active ? [active, ...recent] : recent);
           })().map((t) => {
-            const Icon = seedIcon(t.seed_type, t.title);
+            const Icon = seedIcon(shownSeedKind(t.seed_type, t.seed_value), t.title);
             const active = t.id === threadId;
             return (
-              <RailTip key={t.id} label={`${t.title} · ${formatUsd(t.cost_micro_usd)}`}>
+              <RailTip key={t.id} label={`${threadDisplayTitle(t.title, t.seed_value)} · ${formatUsd(t.cost_micro_usd)}`}>
                 <Link
                   to={`/chat/${t.id}`}
                   className={cn(
@@ -401,7 +411,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
                       ? "glass-interactive text-foreground"
                       : "text-muted-foreground hover:text-foreground hover:bg-white/5",
                   )}
-                  aria-label={t.title}
+                  aria-label={threadDisplayTitle(t.title, t.seed_value)}
                   aria-current={active ? "page" : undefined}
                 >
                   <Icon className="w-4 h-4" strokeWidth={1.5} />
@@ -443,7 +453,7 @@ export function ThreadSidebar({ collapsed, onToggleCollapse }: {
   }
 
   const q = query.trim().toLowerCase();
-  const byQuery = q ? threads.filter((t) => t.title.toLowerCase().includes(q)) : threads;
+  const byQuery = q ? threads.filter((t) => t.title.toLowerCase().includes(q) || threadDisplayTitle(t.title, t.seed_value).toLowerCase().includes(q)) : threads;
   const filtered = typeFilter === "all"
     ? byQuery
     : byQuery.filter((t) => (t.seed_type ?? "other").toLowerCase() === typeFilter);
@@ -746,7 +756,7 @@ function ThreadRow({
     const title = (t.title ?? "").trim().toLowerCase();
     return !title || title === "new investigation" || title === "investigation";
   })();
-  const displayTitle = empty ? "Untitled case" : t.title;
+  const displayTitle = empty ? "Untitled case" : threadDisplayTitle(t.title, t.seed_value);
 
   return (
     <Link
@@ -780,9 +790,9 @@ function ThreadRow({
           </span>
         </div>
         <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] leading-tight text-muted-foreground">
-          {t.seed_type && (
+          {shownSeedKind(t.seed_type, t.seed_value) && (
             <span className="shrink-0 rounded border border-border-subtle bg-white/[0.03] px-1 py-px text-micro uppercase">
-              {t.seed_type}
+              {shownSeedKind(t.seed_type, t.seed_value)}
             </span>
           )}
           <span className="shrink-0 tabular-nums">{timeAgo(t.updated_at)}</span>
@@ -802,7 +812,7 @@ function ThreadRow({
       <button
         type="button"
         onClick={(e) => onDelete(t, e)}
-        className="shrink-0 rounded p-[5px] text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100 coarse:-my-2 coarse:-mr-2 coarse:grid coarse:h-11 coarse:w-11 coarse:place-items-center coarse:opacity-70"
+        className="shrink-0 rounded p-[5px] text-muted-foreground opacity-0 transition-opacity hover:text-danger group-hover:opacity-100 focus-visible:opacity-100 coarse:-my-2 coarse:-mr-2 coarse:grid coarse:h-11 coarse:w-11 coarse:place-items-center coarse:opacity-70"
         aria-label="Delete case"
       >
         <Trash2 className="h-3.5 w-3.5" />

@@ -3,6 +3,7 @@ import { describeThinking, probeMaxTokens, resolveDeepseekThinking } from "./lib
 import { dispatchSelectorAliasesSelfTest } from "./lib/dispatch-selector.ts";
 import { providerBusyQueueSelfTest } from "./lib/provider-busy-queue.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { corsPreflightEarlySelfTest } from "./lib/cors-preflight.ts";
 import { describeCredentialHealth, summarizeCredentialHealth } from "./lib/credential-health.ts";
 import {
   corsHeaders, MINIMAX_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
@@ -22,18 +23,21 @@ import {
   lovableGateway, geminiDirectGateway, ALLOW_LOVABLE_FALLBACK,
   promptBudgetHardCeilingEnabled,
   recordArtifactsInputCompactEnabled,
+  findingsTableExpansionEnabled,
 } from "./env.ts";
+import { runFindingsTableSelfTest } from "./lib/findings-table.ts";
 import { minimaxChat, markMinimaxHealthy, minimaxHealthyWithin } from "./providers.ts";
 import { anthropicFallbackEligible, selectOrchestratorProvider, type OrchestratorProvider } from "./orchestrator_select.ts";
 import { anthropicModelRejectsForcedToolChoice, anthropicOrchestratorHealth } from "./anthropic-orchestrator.ts";
 import { anthropicFallbackDisabled, orchestratorFallbackHealth } from "./lib/orchestrator-fallback.ts";
 import { BUILD_MARKER, BUILD_COMMITTED_AT } from "./build-info.ts";
 import { opsisCreditHintDisabled, opsisHealthDetail, opsisKillSwitchOn, opsisStartClassificationSelfTest } from "./lib/opsis.ts";
-import { buildFinalizePersistDirective, opsisFinalizeCollectSelfTest } from "./orchestrator-finalize.ts";
+import { buildFinalizePersistDirective, findingsTableDirectivesSelfTest, opsisFinalizeCollectSelfTest } from "./orchestrator-finalize.ts";
 import { findingPromptSelfTest } from "./lib/finding-prompt.ts";
 import { staticSystemPrompt } from "./lib/base-prompt.ts";
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { opsisResultsHintSelfTest, opsisSearchGuardSelfTest } from "./lib/opsis-search-guard.ts";
+import { paidProviderGuardSelfTest } from "./lib/paid-provider-guard.ts";
 import { nextPivotBriefSelfTest } from "./lib/next-pivot.ts";
 import { memoryBriefSelfTest } from "./lib/memory-brief.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
@@ -45,6 +49,11 @@ import {
   clusterAdjudicationMaxCalls, clusterAdjudicationModel, describeAdjudication,
 } from "./cluster-adjudication-sweep.ts";
 import { sweepExpiredCache, cacheSweepEnabled, cacheSweepDryRun, describeCacheSweep } from "./cache-sweep.ts";
+import {
+  MAINTENANCE_REFUSED_DETAIL, maintenanceAuthSelfTest, maintenanceLockdownDisabled, makeVerifyUser,
+  resolveMaintenanceAccess,
+} from "./lib/maintenance-access.ts";
+import { checkRateLimit } from "./ratelimit.ts";
 import {
   CREDENTIAL_HEALTH_SAMPLE_ROWS, CREDENTIAL_HEALTH_WINDOW_MS, MAINTENANCE_SKIPPED_DETAIL, maintenanceRequested,
 } from "./lib/credential-health.ts";
@@ -68,7 +77,7 @@ import { positionalPairingSelfTest, toolInputObjectRepairSelfTest } from "./mess
 import { streamErrorDetailSelfTest } from "./stream-error-classify.ts";
 import { contradictionClaimSelfTest } from "./contradictions.ts";
 import { serusNameFilterSelfTest } from "./auto-persist-findings.ts";
-import { clusterBookkeepingSelfTest, legacyNeedsReviewContradiction } from "./lib/cluster.ts";
+import { clusterBookkeepingSelfTest, clusterSharedInfraSelfTest, legacyNeedsReviewContradiction } from "./lib/cluster.ts";
 import { describeDeadTargetMemory } from "./lib/dead-target.ts";
 import { providerAuthPriorSelfTest } from "./lib/provider-auth-prior.ts";
 import { TOTAL_PROMPT_CHAR_BUDGET } from "./orchestrator-budget.ts";
@@ -82,6 +91,7 @@ import { analystAuthorityBoundarySelfTest } from "./lib/analyst-authority-keys.t
 import { archiveOriginRuleSelfTest, breachOriginCapSelfTest, negativeSourceQualifierSelfTest, sourceOriginRulesSelfTest } from "./source-classification.ts";
 import { memoryInputNormalizationSelfTest } from "./lib/memory-input-normalization.ts";
 import { indiciaPersonOptInSelfTest } from "./costs.ts";
+import { indiciaSnusbaseTypeSelfTest } from "./lib/indicia-web-dbs.ts";
 import { exactBooleanRepairSelfTest } from "./lib/exact-boolean-repair.ts";
 import { malformedJsonRepairSelfTest } from "./lib/malformed-json-repair.ts";
 import { inputCoercionSelfTest, inputKindInferenceSelfTest } from "./lib/tool-input-coercion.ts";
@@ -89,7 +99,9 @@ import { socialfetchCoercionSelfTest } from "./lib/socialfetch-input.ts";
 import { correlateSeedDefaultSelfTest } from "./lib/thread-seed.ts";
 import { detectSeedServer } from "./validation.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
+import { attachmentSeedSelfTest } from "./lib/attachment-block.ts";
 import { mediaLeadsSelfTest } from "./lib/media-leads.ts";
+import { outcomeLessonsSelfTest } from "./lib/outcome-lessons.ts";
 
 /**
  * Release a response body we are never going to read.
@@ -389,7 +401,47 @@ export function isHealthProbe(req: Request): boolean {
   }
 }
 
-export async function handleHealthProbe(req: Request): Promise<Response> {
+/**
+ * Everything the maintenance half of the probe touches, injectable so tests can prove
+ * WHICH sweeps run for WHICH caller without a database. Production passes nothing.
+ */
+export type HealthProbeDeps = {
+  /** Service-role client. Only ever created for an operator or a verified user. */
+  createAdmin: () => ReturnType<typeof createClient>;
+  adminAvailable: () => boolean;
+  verifyUser: (authHeader: string) => Promise<string | null>;
+  rateLimit: (key: string) => Promise<{ ok: boolean }>;
+  probeSecret: string;
+  lockdownDisabled: () => boolean;
+  recover: typeof recoverStaleActiveThreads;
+  sweepRejected: typeof sweepRejectedClusterAssignments;
+  synthesize: typeof synthesizeMissingFindings;
+  sweepCache: typeof sweepExpiredCache;
+  synthesisScopes: () => Array<"forward" | "backfill">;
+  cacheSweepOn: () => boolean;
+};
+
+function healthProbeDeps(overrides: Partial<HealthProbeDeps>): HealthProbeDeps {
+  const injectedAdmin = overrides.createAdmin !== undefined;
+  return {
+    createAdmin: () => createClient(SUPABASE_URL, SERVICE_KEY),
+    adminAvailable: () => injectedAdmin || Boolean(SUPABASE_URL && SERVICE_KEY),
+    verifyUser: makeVerifyUser(SUPABASE_URL, SUPABASE_ANON_KEY),
+    rateLimit: (key) => checkRateLimit(key),
+    probeSecret: OSINT_AGENT_PROBE_SECRET,
+    lockdownDisabled: () => maintenanceLockdownDisabled(),
+    recover: recoverStaleActiveThreads,
+    sweepRejected: sweepRejectedClusterAssignments,
+    synthesize: synthesizeMissingFindings,
+    sweepCache: sweepExpiredCache,
+    synthesisScopes: () => (["forward", "backfill"] as const).filter((sc) => synthesisEnabled(sc)),
+    cacheSweepOn: () => cacheSweepEnabled(),
+    ...overrides,
+  };
+}
+
+export async function handleHealthProbe(req: Request, overrides: Partial<HealthProbeDeps> = {}): Promise<Response> {
+  const d = healthProbeDeps(overrides);
   const r = deriveReadiness({
     MINIMAX_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
     SUPABASE_ANON_KEY,
@@ -415,7 +467,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // and every pure self-test, and reports `checks.maintenance` so a reader can tell
   // which kind of probe produced the payload. Kill switch for the gate itself:
   // HEALTH_MAINTENANCE_ALWAYS=true restores the pre-gate behaviour on every probe.
-  const wantMaintenance = wantProbe || maintenanceRequested(u);
+  // WHO may trigger it is decided below by resolveMaintenanceAccess (lib/maintenance-access.ts):
+  // asking is not enough since the 2026-11-14 lockdown.
+  const maintenanceAsked = maintenanceRequested(u);
 
   // Which provider is ACTUALLY selected at runtime (same pure selector index.ts
   // uses) + its model. This is the DeepSeek STOP-gate signal: selected_provider tells
@@ -605,6 +659,11 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // read it before the report? Pure probe of lib/opsis-search-guard.ts; PRESENCE proves the
   // build. The wrapper wiring is pinned by opsis_search_guard_test.ts in CI, not by this probe.
   r.checks.opsis_search_guard = opsisSearchGuardSelfTest();
+  // Is a paid web-data call (Context.dev, SocQ) admitted only after a free tool tried the same selector in this case
+  // and came back empty/failed, or with force_second_source + a written justification, and is a refusal an uncharged
+  // skip? Pure; `mode` reports PAID_PROVIDER_GUARD_DISABLED / PAID_PROVIDER_GUARD_DRY_RUN; `guarded_tools` counts the
+  // registered policies (0 until a provider PR registers one). PRESENCE proves the deployed bundle.
+  r.checks.paid_provider_guard = paidProviderGuardSelfTest();
   // Does a refused opsis_results run id name a replacement only when exactly one un-read run in the thread has the exact
   // selector, else point at the paid opsis_search without starting it? Pure; PRESENCE proves the deployed bundle.
   r.checks.opsis_results_hint = opsisResultsHintSelfTest();
@@ -704,6 +763,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Is indicia_person's missing-first-name search an explicit boolean opt-in (default off, never repaired from a string),
   // ledgered through the per-call cost seam (multiplier 1)? Pure; `switch` reports INDICIA_MISSING_FIRST_NAME_DISABLED. PRESENCE proves the bundle.
   r.checks.indicia_person_opt_in = indiciaPersonOptInSelfTest();
+  // Does indicia_web_dbs send the provider-required snusbaseType whenever snusbase is selected (explicit, else inferred
+  // from shape against the OpenAPI enum; never password), dropping snusbase for a phone-shaped selector? Pure; `switch`
+  // reports INDICIA_SNUSBASE_TYPE_DISABLED (true = snusbase removed from every request). PRESENCE proves the bundle.
+  r.checks.indicia_snusbase_type = indiciaSnusbaseTypeSelfTest();
   // Is a call whose JSON text did not parse repaired only by dropping one enclosing code fence and trailing commas, never
   // by closing a truncation? Pure; `switch` reports MALFORMED_JSON_REPAIR_DISABLED. PRESENCE proves the deployed bundle.
   r.checks.malformed_json_repair = malformedJsonRepairSelfTest();
@@ -716,6 +779,29 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // tools excluded)? Pure; `switch` reports MEMORY_BRIEF_DISABLED. PRESENCE proves the deployed bundle; the index.ts wiring
   // (intermediate system only, never the base) is pinned in CI by memory_brief_wiring_test.ts.
   r.checks.memory_brief = memoryBriefSelfTest();
+  // Do repeated recent cross-case tool failures become bounded, context-only planning lessons? Pure; PRESENCE proves
+  // this build is live. The existing MEMORY_BRIEF switches disable delivery; the read and threshold rules are pinned in CI.
+  r.checks.outcome_lessons = outcomeLessonsSelfTest();
+  // Is the closing Findings table authored by the ENGINE? The orchestrator writes `{{FINDINGS_TABLE}}` and persistFinalMessages
+  // renders it from this run's persisted rows (capped confidence, ladder tier, withheld quarantine). Pure self-test over a frozen
+  // synthetic fixture compared to its pinned table; `switch` reports FINDINGS_TABLE_EXPANSION_DISABLED. PRESENCE proves the
+  // deployed bundle; the call site in index.ts (copy-on-write, never `assistant.parts`) is pinned in CI by findings_table_wiring_test.ts.
+  // Whether the model actually writes the marker is a log measurement: `findings_table_expanded.marker_found`.
+  // `directives` proves the two instructions a report is actually written under — the forced-finalize directive and the
+  // salvage prompt — both ask for `## Findings` + the marker (`finalize+salvage`), or both revert with the switch (`legacy`).
+  // The system prompt alone did not suffice: those two override it (SESSION_HANDOFF_2026-11-07, adoption 0 of 1).
+  {
+    const enabled = findingsTableExpansionEnabled();
+    const st = runFindingsTableSelfTest();
+    const dir = findingsTableDirectivesSelfTest();
+    r.checks.findings_table = {
+      ok: st.ok && dir.ok,
+      enabled,
+      directives: dir.directives,
+      switch: "FINDINGS_TABLE_EXPANSION_DISABLED",
+      detail: enabled ? st.detail : `LEGACY via FINDINGS_TABLE_EXPANSION_DISABLED: ${st.detail}; the stored message is passed through unexpanded`,
+    };
+  }
 
   // Does the prompt the model reads distinguish an ARTIFACT (record_artifacts, an observation) from a FINDING
   // (record_finding, an adjudicated claim the server scores and the only rows the Evidence Record renders) on all three
@@ -763,6 +849,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // tooling. Pure. PRESENCE proves the deployed bundle; ok:false = the classifier failed its
   // own probe. (Client mirror: src/lib/seed.ts, same 15-digit E.164 ceiling.)
   r.checks.seed_account_id = seedAccountIdSelfTest();
+  r.checks.attachment_seed = attachmentSeedSelfTest();
+  // Is a CORS preflight answered BEFORE index.ts's per-request reset of module-scoped run
+  // state? Pure. PRESENCE proves the deployed bundle; "LEGACY" = CORS_PREFLIGHT_EARLY_DISABLED.
+  r.checks.cors_preflight_early = corsPreflightEarlySelfTest();
 
   // E4: do the analyst's dismissed/wrong marks carry across the user's cases (latest verdict wins,
   // in-thread overrides, "#caseonly" stays put, phones fold by digits, username != name), while
@@ -776,6 +866,13 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Pure. PRESENCE proves the deployed bundle; ok:false = the rule failed its own probe.
   // Kill switch: CLUSTER_BOOKKEEPING_INERT_DISABLED.
   r.checks.cluster_bookkeeping_inert = clusterBookkeepingSelfTest();
+
+  // Are a hosting/mail provider's nameserver and mail-exchanger rows (`ns10.<provider>`,
+  // `mx1.biz.mail.<provider>`) kept out of identity clusters? They were saved as plain domain
+  // rows, whitelisted as a "handle", and pulled any prose row naming the provider into a
+  // subject of their own. Pure. PRESENCE proves the deployed bundle; "LEGACY" =
+  // CLUSTER_SHARED_INFRA_INERT_DISABLED=true; ok:false = the rule failed its own probe.
+  r.checks.cluster_shared_infra_inert = clusterSharedInfraSelfTest();
 
   // Does a source token that records a lookup finding NOTHING — "(404)", "(0 hits)",
   // "(no PTR)", "(circuit-broken)" — contribute a source class? It must not: an empty
@@ -809,24 +906,58 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
     : selected.provider === "minimax" ? minimaxCheck : null;
   const orchestratorActiveOk = activeCheck ? activeCheck.ok : selectedKeyPresent;
 
-  if (wantProbe) {
-    const supplied = req.headers.get("x-probe-secret") ?? "";
-    if (!OSINT_AGENT_PROBE_SECRET || supplied !== OSINT_AGENT_PROBE_SECRET) {
-      return new Response(
-        JSON.stringify({ ok: false, error: "unauthorized" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
+  // Maintenance access (lockdown, 2026-11-14). operator = valid x-probe-secret (constant
+  // time) → all users, as before; user = Supabase-verified JWT → recovery + rejected-cluster
+  // sweep over THAT user's threads only; anonymous → liveness only, no service-role client.
+  // `?probe=1` without the secret is still 403. Kill switch: MAINTENANCE_LOCKDOWN_DISABLED.
+  const access = await resolveMaintenanceAccess({
+    wantProbe,
+    maintenanceAsked,
+    suppliedSecret: req.headers.get("x-probe-secret"),
+    configuredSecret: d.probeSecret,
+    authHeader: req.headers.get("Authorization"),
+    lockdownDisabled: d.lockdownDisabled(),
+  }, { verifyUser: d.verifyUser, rateLimit: d.rateLimit });
+  if (access.kind === "forbidden") {
+    return new Response(
+      JSON.stringify({ ok: false, error: "unauthorized" }),
+      { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   }
+  // Proof key for this build. Pure: synthetic requests through the same resolver.
+  r.checks.maintenance_auth = await maintenanceAuthSelfTest(d.lockdownDisabled());
 
-  if (!wantMaintenance) {
+  if (access.kind === "none") {
     r.checks.maintenance = { ok: true, detail: MAINTENANCE_SKIPPED_DETAIL };
+  } else if (access.kind === "anonymous") {
+    r.checks.maintenance = { ok: true, detail: MAINTENANCE_REFUSED_DETAIL };
   }
   try {
-    if (wantMaintenance && SUPABASE_URL && SERVICE_KEY) {
-      r.checks.maintenance = { ok: true, detail: "ran: recovery, rejected-cluster sweep, credential health, synthesis, cluster adjudication, cache sweep" };
-      const admin = createClient(SUPABASE_URL, SERVICE_KEY);
-      const recovered = await recoverStaleActiveThreads(admin, { limit: 20, reason: "stale heartbeat recovered by health sweep" });
+    if (access.kind === "user" && d.adminAvailable()) {
+      // A signed-in browser's open-case sweep. Only the two sweeps that act on the
+      // caller's OWN threads; never synthesis, the cache sweep or the cross-user
+      // credential read. The id is the one Supabase Auth returned, nothing else.
+      r.checks.maintenance = { ok: true, detail: "ran (scope: user): recovery, rejected-cluster sweep" };
+      const admin = d.createAdmin();
+      const recovered = await d.recover(admin, { limit: 20, reason: "stale heartbeat recovered by health sweep", userId: access.userId });
+      r.checks.recovery = recovered.errors
+        ? { ok: false, detail: `recovered ${recovered.recovered}; ${recovered.errors} error(s)` }
+        : { ok: true, detail: `recovered ${recovered.recovered} stale active run(s)` };
+      try {
+        const swept = await d.sweepRejected(admin, { userId: access.userId });
+        r.checks.rejected_cluster_sweep = { ok: swept.ok, detail: describeSweep(swept) };
+      } catch (e) {
+        r.checks.rejected_cluster_sweep = { ok: false, detail: String(e).slice(0, 160) };
+      }
+      console.log(JSON.stringify({ event: "maintenance_sweep", scope: "user", recovered: recovered.recovered, errors: recovered.errors }));
+    } else if (access.kind === "operator" && d.adminAvailable()) {
+      r.checks.maintenance = {
+        ok: true,
+        detail: `ran (scope: all users, via ${access.via}): recovery, rejected-cluster sweep, credential health, synthesis, cluster adjudication, cache sweep`,
+      };
+      const admin = d.createAdmin();
+      const recovered = await d.recover(admin, { limit: 20, reason: "stale heartbeat recovered by health sweep" });
+      console.log(JSON.stringify({ event: "maintenance_sweep", scope: "operator", via: access.via, recovered: recovered.recovered, errors: recovered.errors }));
       r.checks.recovery = recovered.errors
         ? { ok: false, detail: `recovered ${recovered.recovered}; ${recovered.errors} error(s)` }
         : { ok: true, detail: `recovered ${recovered.recovered} stale active run(s)` };
@@ -836,7 +967,7 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       // Its presence in the payload is the behavioural proof this build is
       // deployed (see CLAUDE.md, "checks.synthesis" for the pattern).
       try {
-        const swept = await sweepRejectedClusterAssignments(admin);
+        const swept = await d.sweepRejected(admin);
         r.checks.rejected_cluster_sweep = { ok: swept.ok, detail: describeSweep(swept) };
       } catch (e) {
         r.checks.rejected_cluster_sweep = { ok: false, detail: String(e).slice(0, 160) };
@@ -904,14 +1035,14 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       // path can be enabled without the backfill — which is a production write
       // into closed cases — and either can be revoked alone.
       const dryRun = synthesisDryRun();
-      const scopes = (["forward", "backfill"] as const).filter((sc) => synthesisEnabled(sc));
+      const scopes = d.synthesisScopes();
       if (scopes.length === 0) {
         r.checks.synthesis = { ok: true, detail: "disabled" };
       } else {
         let written = 0, proposed = 0, threads = 0, errs = 0;
         const dist = { zero: 0, one: 0, twoPlus: 0 };
         for (const sc of scopes) {
-          const s2 = await synthesizeMissingFindings(admin, { limit: 5, scope: sc, dryRun });
+          const s2 = await d.synthesize(admin, { limit: 5, scope: sc, dryRun });
           written += s2.findingsWritten; proposed += s2.findingsProposed;
           threads += s2.threadsScanned; errs += s2.errors;
           dist.zero += s2.distribution.zero; dist.one += s2.distribution.one; dist.twoPlus += s2.distribution.twoPlus;
@@ -958,10 +1089,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
       // cannot turn /health red or make it answer 503 — that is structural, not
       // a promise. Ships DARK (CACHE_SWEEP_ENABLED defaults off) because it
       // deletes production rows; CACHE_SWEEP_DRY_RUN measures the backlog first.
-      if (!cacheSweepEnabled()) {
+      if (!d.cacheSweepOn()) {
         r.checks.cache_sweep = { ok: true, detail: "disabled" };
       } else {
-        const c = await sweepExpiredCache(admin, { dryRun: cacheSweepDryRun() });
+        const c = await d.sweepCache(admin, { dryRun: cacheSweepDryRun() });
         r.checks.cache_sweep = c.errors
           ? { ok: false, detail: `${describeCacheSweep(c)}; ${c.errors} error(s)` }
           : { ok: true, detail: describeCacheSweep(c) };

@@ -64,11 +64,11 @@ export function ClustersTab({ threadId, artifacts }: { threadId: string; artifac
       {report.warnings.length > 0 && (
         <div className="panel relative overflow-hidden border-[hsl(var(--authority-conflict))]/40 bg-[hsl(var(--authority-conflict))]/8 p-3 pl-4 space-y-1.5">
           <AuthoritySpine state="conflict" />
-          <div className="flex items-center gap-1.5 text-micro font-semibold text-destructive tracking-normal">
+          <div className="flex items-center gap-1.5 text-micro font-semibold text-danger tracking-normal">
             <AlertTriangle className="w-3.5 h-3.5" /> Misattribution warning
           </div>
           {report.warnings.map((w, i) => (
-            <p key={i} className="text-data text-destructive/90 leading-relaxed">{w}</p>
+            <p key={i} className="text-data text-danger leading-relaxed">{w}</p>
           ))}
         </div>
       )}
@@ -166,7 +166,7 @@ function ClusterCard({ cluster: c }: { cluster: IdentityCluster }) {
             "text-micro font-mono px-1.5 py-0.5 rounded border shrink-0",
             matches
               ? "text-[hsl(var(--confidence-high))] border-[hsl(var(--confidence-high))]/40 bg-[hsl(var(--confidence-high))]/10"
-              : "text-destructive border-destructive/40 bg-destructive/10",
+              : "text-danger border-destructive/40 bg-destructive/10",
           )}>
             {matches
               ? <span className="flex items-center gap-1"><ShieldCheck className="w-2.5 h-2.5" />seed match</span>
@@ -207,7 +207,7 @@ function ClusterCard({ cluster: c }: { cluster: IdentityCluster }) {
       )}
 
       {c.warnings.length > 0 && (
-        <div className="text-data text-destructive/90 flex items-start gap-1 leading-snug">
+        <div className="text-data text-danger flex items-start gap-1 leading-snug">
           <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
           <span>{c.warnings.join(" / ")}</span>
         </div>

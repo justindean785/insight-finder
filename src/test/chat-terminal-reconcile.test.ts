@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   applyRealtimeInsert,
   EVIDENCE_RECORD_HEADING,
+  FINDINGS_TABLE_MARKER,
   isSameChatMessage,
   isTerminalThreadUpdate,
   mergePersistedChatMessages,
@@ -242,4 +243,91 @@ describe("applyRealtimeInsert (Codex P2 on #671)", () => {
     const current = [row];
     expect(applyRealtimeInsert(current, row, false)).toBe(current);
   });
+});
+
+describe("in-place Findings-table expansion is the same message (Codex P1 on #974)", () => {
+  const TABLE = "| # | Finding |\n| --- | --- |\n| 1 | synthetic row |";
+  const EVIDENCE = `\n\n${EVIDENCE_RECORD_HEADING}\n\n_No authoritative finding rows were recorded for this run._`;
+  const msg = (id: string, ...texts: string[]) => ({
+    id,
+    role: "assistant",
+    parts: texts.map((text) => ({ type: "text", text })),
+  });
+  const liveText = `Summary line.\n\n## Findings\n\n${FINDINGS_TABLE_MARKER}\n\n## Next steps\n\n- one`;
+  const expanded = liveText.replace(FINDINGS_TABLE_MARKER, TABLE);
+
+  it("a stored text with the marker line replaced by a table collapses onto the streamed copy", () => {
+    expect(isSameChatMessage(msg("c", liveText), msg("d", expanded))).toBe(true);
+    expect(mergePersistedChatMessages([msg("c", liveText)], [msg("d", expanded)])).toHaveLength(1);
+  });
+
+  it("composes with the Evidence Record append on the last text part", () => {
+    expect(isSameChatMessage(msg("c", liveText), msg("d", `${expanded}${EVIDENCE}`))).toBe(true);
+  });
+
+  it("matches when the marker sits in an earlier text part and a later part follows", () => {
+    const live = msg("c", `## Findings\n\n${FINDINGS_TABLE_MARKER}`, "Closing paragraph.");
+    const stored = msg("d", `## Findings\n\n${TABLE}`, "Closing paragraph.");
+    expect(isSameChatMessage(live, stored)).toBe(true);
+  });
+
+  it("matches when the server removed the marker line (table withheld, nothing rendered)", () => {
+    expect(isSameChatMessage(msg("c", liveText), msg("d", liveText.replace(FINDINGS_TABLE_MARKER, "")))).toBe(true);
+  });
+
+  it("tolerates a trailing colon and surrounding spaces on the marker line, as the server does", () => {
+    const live = `Intro.\n\n  ${FINDINGS_TABLE_MARKER}:  \n\nOutro.`;
+    expect(isSameChatMessage(msg("c", live), msg("d", `Intro.\n\n${TABLE}\n\nOutro.`))).toBe(true);
+  });
+
+  it("handles several marker lines (first gets the table, later ones are removed)", () => {
+    const live = `A.\n${FINDINGS_TABLE_MARKER}\nB.\n${FINDINGS_TABLE_MARKER}\nC.`;
+    expect(isSameChatMessage(msg("c", live), msg("d", `A.\n${TABLE}\nB.\n\nC.`))).toBe(true);
+  });
+
+  it("matches when the marker is the LAST line of the report, alone and with the Evidence Record", () => {
+    const live = `## Findings\n\n${FINDINGS_TABLE_MARKER}`;
+    expect(isSameChatMessage(msg("c", live), msg("d", `## Findings\n\n${TABLE}`))).toBe(true);
+    expect(isSameChatMessage(msg("c", live), msg("d", `## Findings\n\n${TABLE}${EVIDENCE}`))).toBe(true);
+  });
+
+  it("matches when a one-character segment also occurs inside the rendered table", () => {
+    const live = `A.\n${FINDINGS_TABLE_MARKER}\nB.`;
+    expect(isSameChatMessage(msg("c", live), msg("d", `A.\n${TABLE}\nB.`))).toBe(true);
+  });
+
+  it("does NOT collapse when text around the marker changed (a different answer)", () => {
+    const other = expanded.replace("Summary line.", "A completely different summary.");
+    expect(isSameChatMessage(msg("c", liveText), msg("d", other))).toBe(false);
+    expect(mergePersistedChatMessages([msg("c", liveText)], [msg("d", other)])).toHaveLength(2);
+  });
+
+  it("does NOT collapse when the text after the marker is missing or reordered", () => {
+    expect(isSameChatMessage(msg("c", liveText), msg("d", `Summary line.\n\n## Findings\n\n${TABLE}`))).toBe(false);
+    expect(isSameChatMessage(
+      msg("c", `A.\n${FINDINGS_TABLE_MARKER}\nB.\nC.`),
+      msg("d", `A.\n${TABLE}\nC.\nB.`),
+    )).toBe(false);
+  });
+
+  it("does NOT collapse extra trailing prose after the last segment (only the Evidence Record may follow)", () => {
+    expect(isSameChatMessage(msg("c", liveText), msg("d", `${expanded}\n\nMore detail added later.`))).toBe(false);
+  });
+
+  it("a marker-free message gets no new leniency", () => {
+    expect(isSameChatMessage(msg("c", "Plain."), msg("d", "Plain. And more."))).toBe(false);
+  });
+
+  it("a marker inside a sentence (not on its own line) is not treated as the marker", () => {
+    const live = `Write ${FINDINGS_TABLE_MARKER} to get a table.`;
+    expect(isSameChatMessage(msg("c", live), msg("d", `Write ${TABLE} to get a table.`))).toBe(false);
+  });
+
+  it.skipIf(!existsSync(resolve(__dirname, "../../supabase/functions/osint-agent/lib/findings-table.ts")))(
+    "the marker matches the edge function's FINDINGS_TABLE_MARKER",
+    () => {
+      const edge = readFileSync(resolve(__dirname, "../../supabase/functions/osint-agent/lib/findings-table.ts"), "utf8");
+      expect(edge).toContain(`export const FINDINGS_TABLE_MARKER = "${FINDINGS_TABLE_MARKER}";`);
+    },
+  );
 });

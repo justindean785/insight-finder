@@ -272,9 +272,13 @@ Deno.test("the summary line carries counts only — never a row value", () => {
 const HEALTH = await Deno.readTextFile(new URL("../../functions/osint-agent/health-handler.ts", import.meta.url));
 
 Deno.test("wiring: the health sweep actually calls it, gated on the flag", () => {
-  assert(/await sweepExpiredCache\(\s*admin/.test(HEALTH), "must be invoked with the admin client");
+  // Since the maintenance lockdown the sweeps are reached through injectable deps
+  // (HealthProbeDeps); the production defaults must still point at the real functions.
+  assert(/await d\.sweepCache\(\s*admin/.test(HEALTH), "must be invoked with the admin client");
+  assert(HEALTH.includes("sweepCache: sweepExpiredCache,"), "and the default dep must be the real sweep");
   assert(HEALTH.includes("r.checks.cache_sweep"), "and its outcome reported as a check");
-  assert(/if \(!cacheSweepEnabled\(\)\)/.test(HEALTH), "and gated off by default");
+  assert(/if \(!d\.cacheSweepOn\(\)\)/.test(HEALTH), "and gated off by default");
+  assert(HEALTH.includes("cacheSweepOn: () => cacheSweepEnabled(),"), "by the real flag");
 });
 
 Deno.test("⛔ wiring: it runs OUTSIDE any investigation, so it cannot fail a run", () => {

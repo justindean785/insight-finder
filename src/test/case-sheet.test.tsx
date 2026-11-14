@@ -16,9 +16,9 @@ function art(kind: string, value: string, metadata: Record<string, unknown> = {}
   return { id: `a${n}`, kind, value, confidence, source: "fixture", created_at: `2026-01-01T00:00:${String(n).padStart(2, "0")}Z`, metadata };
 }
 
-function model(items: Artifact[], reviews: Record<string, ReviewState> = {}) {
+function model(items: Artifact[], reviews: Record<string, ReviewState> = {}, seed?: string) {
   const tally = tallyAuthority(items, (id) => reviews[id] ?? "new");
-  return buildCaseSheet(items, reviews, tally);
+  return buildCaseSheet(items, reviews, tally, seed);
 }
 
 describe("case sheet — subject", () => {
@@ -26,24 +26,32 @@ describe("case sheet — subject", () => {
     const strong = art("name", "Alex Example", { source_class: ["registry", "social"] }, 80);
     const weak = art("name", "A. Example", {}, 40);
     const items = [weak, strong, art("email", "alex@example.test")];
-    const reportName = buildIdentityRows(items).find((r) => r.field === "Real name")?.value;
-    expect(model(items).subject?.artifact.value).toBe(reportName);
+    // The seed names him, so there is a subject for the two surfaces to agree on.
+    const reportName = buildIdentityRows(items, undefined, "Alex Example").find((r) => r.field === "Real name")?.value;
+    expect(reportName).toBe("Alex Example");
+    expect(model(items, {}, "Alex Example").subject?.artifact.value).toBe(reportName);
+    // With a seed that names nobody, neither surface names anyone.
+    expect(buildIdentityRows(items, undefined, "alex@example.test").find((r) => r.field === "Real name")).toBeUndefined();
+    expect(model(items, {}, "alex@example.test").subject).toBeNull();
   });
 
   it("never names a quarantined name", () => {
     const q = art("name", "Pat Namesake", { subject_unlinked: true, subject_unlinked_reason: "name-only match" }, 90);
     expect(authorityFor(q).state).toBe("quarantined");
-    expect(model([q]).subject).toBeNull();
+    // Control: the same name as the seed, not quarantined, IS named.
+    expect(model([art("name", "Pat Namesake", {}, 90)], {}, "Pat Namesake").subject?.artifact.value).toBe("Pat Namesake");
+    expect(model([q], {}, "Pat Namesake").subject).toBeNull();
   });
 
   it("never names an analyst-rejected name", () => {
     const rejected = art("name", "Wrong Person", {}, 90);
-    expect(model([rejected], { [rejected.id]: "wrong" }).subject).toBeNull();
+    expect(model([rejected], {}, "Wrong Person").subject?.artifact.value).toBe("Wrong Person");
+    expect(model([rejected], { [rejected.id]: "wrong" }, "Wrong Person").subject).toBeNull();
   });
 
   it("shows the engine's authority for the subject, not a raw source count", () => {
     const name = art("name", "Alex Example", {}, 55);
-    const m = model([name]);
+    const m = model([name], {}, "Alex Example");
     expect(m.subject?.view).toEqual(authorityFor(name, "new"));
   });
 
@@ -121,7 +129,7 @@ describe("case sheet — view", () => {
     const q = art("username", "handle_y", { subject_unlinked: true, subject_unlinked_reason: "username match only" });
     const c = art("address", "2 Example St", { conflict: true });
     render(<CaseSheetView model={model([q, c])} hydrated />);
-    const queue = screen.getByRole("region", { name: "Needs your call" });
+    const queue = screen.getByRole("region", { name: "Optional exception review" });
     expect(within(queue).getByText(ASK_LABEL.linkage)).toBeTruthy();
     expect(within(queue).getByText(ASK_LABEL.review)).toBeTruthy();
     const buttons = within(queue).getAllByRole("button").map((b) => b.textContent?.trim());
@@ -136,7 +144,7 @@ describe("case sheet — view", () => {
     window.addEventListener("swarmbot:navigate", onNav);
     try {
       render(<CaseSheetView model={model([q])} hydrated />);
-      const queue = screen.getByRole("region", { name: "Needs your call" });
+      const queue = screen.getByRole("region", { name: "Optional exception review" });
       fireEvent.click(within(queue).getByRole("button", { name: /Decide in Evidence/ }));
     } finally {
       window.removeEventListener("swarmbot:navigate", onNav);
@@ -149,7 +157,7 @@ describe("case sheet — view", () => {
     // name a subject the analyst already REJECTED. The view must not show it.
     const name = art("name", "Rejected Person", {}, 90);
     const q = art("username", "handle_w", { subject_unlinked: true });
-    const m = model([name, q]);
+    const m = model([name, q], {}, "Rejected Person");
     expect(m.subject?.artifact.value).toBe("Rejected Person");
     render(<CaseSheetView model={m} hydrated reviewsUnavailable />);
     expect(screen.queryByText("Rejected Person")).toBeNull();

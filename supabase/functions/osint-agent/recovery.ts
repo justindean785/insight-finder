@@ -844,10 +844,19 @@ export async function recoverStaleThreadById(db: DbClient, threadId: string, opt
   return recoverOneStaleThread(db, data as RecoverableThread, now, opts?.reason ?? "stale heartbeat recovered before new request");
 }
 
-export async function recoverStaleActiveThreads(db: DbClient, opts?: { now?: Date; limit?: number; reason?: string }) {
+export async function recoverStaleActiveThreads(db: DbClient, opts?: { now?: Date; limit?: number; reason?: string; userId?: string }) {
+  // Scope (maintenance lockdown, 2026-11-14): when `userId` is PRESENT the sweep reads
+  // only that user's threads. It must come from a server-verified session, never from
+  // the request. A present-but-blank id fails closed — an unscoped sweep is an
+  // all-users sweep, so a blank id must never silently become one. This changes WHICH
+  // threads are read, never what recovery does to a thread.
+  if (opts?.userId !== undefined && String(opts.userId).trim() === "") {
+    return { scanned: 0, recovered: 0, assistantInserted: 0, errors: 0 };
+  }
   const now = opts?.now ?? new Date();
   const cutoff = new Date(now.getTime() - STALE_RUN_AFTER_MS).toISOString();
   let query = db.from("threads").select("id,user_id,title,seed_value,status,run_started_at,last_heartbeat_at,updated_at").eq("status", "active");
+  if (opts?.userId) query = query.eq("user_id", opts.userId);
   // Mirror hasRunMarker in the QUERY, not just the per-row check. Two reasons:
   // correctness is already covered by isStaleActiveThread, but the sweep is
   // LIMITed — and never-started threads are the oldest `active` rows on the table,

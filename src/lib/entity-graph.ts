@@ -1,3 +1,4 @@
+import { seedWithoutAttachments } from "@/lib/attachments";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import {
   buildIdentityClusters,
@@ -166,6 +167,26 @@ function selectorsFor(kind: string, value: string, metadata: Record<string, unkn
   return hits;
 }
 
+/**
+ * Rows that cannot participate in even a qualified same-record association.
+ * Breach rows are deliberately NOT excluded here: their declared CO_RECORD
+ * fields are useful evidence relationships, provided the UI never promotes
+ * those relationships to identity proof. Identity selectors still use the
+ * stricter isConflict gate below.
+ */
+function isAssociationIneligible(a: Artifact, review?: string | null): boolean {
+  const m = (a.metadata ?? {}) as Record<string, unknown>;
+  const k = a.kind.toLowerCase();
+  return (
+    isRejectedArtifact(a, review) ||
+    isClusterIneligible(a) ||
+    m.conflict === true ||
+    m.collision === true ||
+    m.false_positive === true ||
+    k.endsWith("_conflict")
+  );
+}
+
 function isConflict(a: Artifact, review?: string | null): boolean {
   const m = (a.metadata ?? {}) as Record<string, unknown>;
   const k = a.kind.toLowerCase();
@@ -212,6 +233,37 @@ const EDGE_PRIORITY: Record<EdgeType, number> = { identity: 4, "co-record": 3, "
 
 /** Edge strength for a CO_RECORD link — below a shared email/phone (0.7), above infra. */
 const CO_RECORD_STRENGTH = 0.5;
+/** A name carried by a source record is useful context, but weaker than a declared selector association. */
+const NAME_RECORD_STRENGTH = 0.35;
+
+function normalizePersonName(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * Exact, meaningful full-name matches only. This deliberately does not join the
+ * identity clusterer: a source saying "Ian White" is a name-led association,
+ * not proof that every selector in that record belongs to the same person.
+ */
+function meaningfulNameKey(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = normalizePersonName(value);
+  const words = normalized.split(" ").filter(Boolean);
+  if (words.length < 2 || !words.every((w) => /[\p{L}]/u.test(w))) return null;
+  return normalized;
+}
+
+function nameRecordValues(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : [value];
+  // A dump listing many names is not a useful person-level association.
+  if (values.length > 3) return [];
+  return [...new Set(values.map(meaningfulNameKey).filter((v): v is string => !!v))];
+}
 
 /**
  * Build the deterministic entity-connection graph for a case.
@@ -233,6 +285,8 @@ export function buildEntityGraph(
   opts?: { coRecordLinkage?: boolean },
 ): EntityGraph {
   const coRecordOn = opts?.coRecordLinkage ?? CO_RECORD_LINKAGE_ENABLED;
+  // The seed's selector is the typed text, never the composer's attachment block.
+  seedValue = seedWithoutAttachments(seedValue);
   // Stable ordering: everything downstream (selector heroes, layout angles)
   // derives from this sort, so the same case always produces the same frame.
   const sorted = [...artifacts].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -380,12 +434,13 @@ export function buildEntityGraph(
     }
   }
 
-  // CO_RECORD edges. Both ends must clear the SAME gate the selector index uses
-  // (`isConflict`: analyst rejection, active quarantine / collision, breach and
-  // conflict rows), so a quarantined or rejected row is never an endpoint. A
-  // zero-hit lookup observed nothing and names nothing.
+  // CO_RECORD edges use a separate, narrower exclusion rule from identity
+  // selectors. A breach row cannot forge an identity match, but its declared
+  // email / phone / handle fields still describe real same-record associations.
+  // Analyst rejection, active quarantine and explicit conflicts remain barred
+  // from both ends. A zero-hit lookup observed nothing and names nothing.
   if (coRecordOn) {
-    const eligible = sorted.filter((a) => !isConflict(a, reviews?.[a.id]) && !isNegativeResultArtifact(a));
+    const eligible = sorted.filter((a) => !isAssociationIneligible(a, reviews?.[a.id]) && !isNegativeResultArtifact(a));
     for (const link of coRecordLinks(eligible)) {
       upsertEdge(
         link.sourceId,
@@ -394,6 +449,34 @@ export function buildEntityGraph(
         `CO_RECORD: ${link.field} (${link.sourceId} -> ${link.targetKind.toLowerCase()} ${link.targetValue}) — named in the same record; groups, does not confirm`,
         CO_RECORD_STRENGTH,
       );
+    }
+
+    // Graph-only name-record associations make a person useful as the top of
+    // the evidence hierarchy. They never enter CO_RECORD_FIELDS or the identity
+    // clusterer, so they cannot merge people or raise confidence.
+    const namesByKey = new Map<string, Artifact[]>();
+    for (const target of eligible) {
+      if (!["name", "person"].includes(target.kind.toLowerCase())) continue;
+      const key = meaningfulNameKey(target.value);
+      if (!key) continue;
+      const bucket = namesByKey.get(key) ?? [];
+      bucket.push(target);
+      namesByKey.set(key, bucket);
+    }
+    for (const source of eligible) {
+      if (["name", "person"].includes(source.kind.toLowerCase())) continue;
+      const metadata = (source.metadata ?? {}) as Record<string, unknown>;
+      for (const key of nameRecordValues(metadata.name_in_breach)) {
+        for (const target of namesByKey.get(key) ?? []) {
+          upsertEdge(
+            source.id,
+            target.id,
+            "co-record",
+            `NAME_RECORD: name_in_breach (${source.id} -> ${target.kind.toLowerCase()} ${target.value}) — exact name in the same source record; association only, not identity confirmation`,
+            NAME_RECORD_STRENGTH,
+          );
+        }
+      }
     }
   }
 
