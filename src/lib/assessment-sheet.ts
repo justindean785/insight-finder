@@ -1,5 +1,5 @@
 import type { Artifact } from "@/hooks/useThreadArtifacts";
-import type { AssessmentGroup, AssessmentReport } from "@/lib/agent-assessment";
+import { SUPPORTED_LINKAGE_MIN, type AssessmentGroup, type AssessmentReport } from "@/lib/agent-assessment";
 
 /**
  * The case sheet's reading of the agent assessment (the R2 engine).
@@ -38,6 +38,111 @@ export const GROUP_HINT: Record<AssessmentGroup, string> = {
 export const SHEET_CONNECTION_LIMIT = 5;
 export const SHEET_BLOCKER_LIMIT = 3;
 export const SHEET_GROUPING_LIMIT = 3;
+export const SHEET_KIND_LIMIT = 6;
+
+/** The engine's own bar for "linked to the seed", re-exported so the rail's scale cannot drift from it. */
+export const SHEET_LINKAGE_THRESHOLD = SUPPORTED_LINKAGE_MIN;
+
+/** One row of the kind-by-standing breakdown: how one kind of finding splits across the four groups. */
+export interface SheetKind {
+  /** The artifact kind as recorded (`email`, `phone`, ...). */
+  kind: string;
+  n: number;
+  counts: Record<AssessmentGroup, number>;
+}
+
+/**
+ * One word for where the case stands, shown beside the "Agent assessment"
+ * heading. `tone` picks the chip's colour from the authority ladder; `hint`
+ * is the tooltip that says what the word means.
+ */
+export interface CasePosture {
+  word: string;
+  tone: "linked" | "contested" | "held" | "open";
+  hint: string;
+}
+
+/**
+ * The single word the rail leads with, or null to print none.
+ *
+ * JD's ruling, 2026-11-12. Precedence, first match wins:
+ *   1. no findings beyond the seed   -> no word
+ *   2. any contradiction             -> Contested
+ *   3. every finding held            -> Held
+ *   4. MORE than half linked         -> Linked
+ *   5. anything else                 -> Open (exactly half is Open, not Linked)
+ *
+ * It is a reading of the same three numbers `assessmentReading` takes, in the
+ * same order, so the word and the sentence under it cannot disagree. It adds
+ * no figure and no threshold of its own: "linked" is the engine's group.
+ *
+ * "Linked" is NOT "confirmed". It says most findings share the seed's identity
+ * cluster; it does not say the identity is verified, and the hint says so.
+ */
+export function casePosture(
+  counts: Record<AssessmentGroup, number>,
+  linkedTotal: number,
+  others: number,
+): CasePosture | null {
+  if (others <= 0) return null;
+  if (counts.conflict > 0) {
+    return {
+      word: "Contested",
+      tone: "contested",
+      hint: counts.conflict === 1
+        ? "1 finding contradicts the case record, so the rest cannot be relied on until it is read."
+        : `${counts.conflict} findings contradict the case record, so the rest cannot be relied on until they are read.`,
+    };
+  }
+  if (counts.quarantined >= others) {
+    return {
+      word: "Held",
+      tone: "held",
+      hint: "Every finding is held: its link to the subject is unproven, so none carries a linkage figure.",
+    };
+  }
+  if (linkedTotal * 2 > others) {
+    return {
+      word: "Linked",
+      tone: "linked",
+      hint: `More than half of the findings share an identity cluster with the seed at linkage ${SUPPORTED_LINKAGE_MIN} or higher. This is the agent's correlation, not a confirmed identity.`,
+    };
+  }
+  return {
+    word: "Open",
+    tone: "open",
+    hint: linkedTotal <= 0
+      ? "No finding links to the seed yet."
+      : linkedTotal * 2 === others
+        ? "About half of the findings link to the seed. That is not a majority, so the case stays open."
+        : "Fewer than half of the findings link to the seed.",
+  };
+}
+
+/** One segment of a standing bar: a group that is present, and its exact share of the bar. */
+export interface StrataSegment {
+  group: AssessmentGroup;
+  n: number;
+  /** `n` over the bar's total, 0 to 1. Never rounded up, never floored to a minimum. */
+  share: number;
+}
+
+/**
+ * The segments of a standing bar, in group order.
+ *
+ * Strictly proportional: a segment's length is its count over the total and
+ * nothing else. The bar used to give every present group at least 4px, which
+ * drew 1 linked finding in 500 several times its real share, and that is the
+ * one direction this product may not err in. A group too small to see in the
+ * bar is still identified by the counted readout beside it.
+ *
+ * A group with no findings gets no segment at all.
+ */
+export function strataSegments(counts: Record<AssessmentGroup, number>): StrataSegment[] {
+  const present = GROUP_ORDER.filter((g) => counts[g] > 0);
+  const total = present.reduce((sum, g) => sum + counts[g], 0);
+  return present.map((group) => ({ group, n: counts[group], share: counts[group] / total }));
+}
 
 export interface SheetConnection {
   artifact: Artifact;
@@ -83,6 +188,13 @@ export interface AssessmentSheet {
   blockers: SheetBlocker[];
   groupings: SheetGrouping[];
   groupingTotal: number;
+  /** Every linkage figure the engine holds (the seed excluded), strongest first. The rail plots these on a 0-100 scale. */
+  figures: number[];
+  /** Findings by kind, each split across the four groups, largest kind first. The seed's own rows are excluded. */
+  kinds: SheetKind[];
+  kindTotal: number;
+  /** One word for the case's standing, or null to print none. */
+  posture: CasePosture | null;
   /** One plain sentence for the top of the section, or null to print none. */
   reading: string | null;
 }
@@ -163,6 +275,22 @@ export function buildAssessmentSheet(report: AssessmentReport, items: readonly A
     firstArtifactId: c.artifacts[0].id,
   }));
 
+  // Kind by standing: a cross-tab of two things the engine already recorded
+  // for every row (its kind, its group). No new figure.
+  const byKind = new Map<string, SheetKind>();
+  for (const a of report.items) {
+    if (a.isSeed && a.group === "supported") continue;
+    const kind = byId.get(a.artifactId)?.kind?.trim() || "other";
+    let row = byKind.get(kind);
+    if (!row) {
+      row = { kind, n: 0, counts: { supported: 0, unresolved: 0, conflict: 0, quarantined: 0 } };
+      byKind.set(kind, row);
+    }
+    row.n += 1;
+    row.counts[a.group] += 1;
+  }
+  const allKinds = Array.from(byKind.values()).sort((a, b) => b.n - a.n || a.kind.localeCompare(b.kind));
+
   const total = report.items.length;
   const others = total - seedRows;
   return {
@@ -175,6 +303,10 @@ export function buildAssessmentSheet(report: AssessmentReport, items: readonly A
     blockers,
     groupings,
     groupingTotal: apart.length,
+    figures: withFigure.map((a) => a.subjectLinkage ?? 0),
+    kinds: allKinds.slice(0, SHEET_KIND_LIMIT),
+    kindTotal: allKinds.length,
+    posture: casePosture(report.counts, linkedTotal, others),
     reading: assessmentReading(report.counts, linkedTotal, others),
   };
 }
