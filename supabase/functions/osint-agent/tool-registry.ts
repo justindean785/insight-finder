@@ -103,6 +103,9 @@ import {
   indicia_address, indicia_web_dbs, indicia_hudsonrock,
 } from "./tools/indicia.ts";
 import { pdl_person_enrich } from "./tools/peopledatalabs.ts";
+import { contextdev_people_search, contextdev_scrape } from "./tools/contextdev.ts";
+import { contextDevKillSwitchOn } from "./lib/contextdev.ts";
+import { CONTEXT_DEV_API_KEY } from "./env.ts";
 import { gemini_vision, runGeminiVision } from "./tools/gemini_vision.ts";
 import { geoseer_geolocate } from "./tools/geoseer.ts";
 
@@ -785,6 +788,11 @@ export function buildTools(ctx: ToolContext) {
             reason: "GEOSEER_API_KEY not configured — AI image geolocation is unavailable; do not attempt to infer capture locations from photos.",
           });
         }
+        if (!CONTEXT_DEV_API_KEY || contextDevKillSwitchOn()) {
+          for (const n of ["contextdev_scrape", "contextdev_people_search"]) {
+            disabled.push({ name: n, reason: "Context.dev is not configured or is switched off — use jina_reader_scrape / socialfetch_web_read for pages and indicia_person / pdl_person_enrich for people." });
+          }
+        }
         if (!OPSIS_API_KEY || opsisKillSwitchOn()) {
           for (const n of ["opsis_search", "opsis_results", "opsis_balance", "opsis_status"]) {
             disabled.push({ name: n, reason: "Opsis is not configured or is switched off — use username_sweep for account enumeration." });
@@ -1174,7 +1182,7 @@ export function buildTools(ctx: ToolContext) {
             "deepfind_mac_lookup","deepfind_dark_web_link",
             "deepfind_email_breach","deepfind_transaction_viewer",
             // Profile / social
-            "socialfetch_lookup","socialfetch_web_read","cordcat_discord_lookup","github_user","github_code_search",
+            "socialfetch_lookup","socialfetch_web_read","contextdev_scrape","contextdev_people_search","cordcat_discord_lookup","github_user","github_code_search",
             "hackernews_user","reddit_user","gravatar_profile",
             // Free keyless profile readers. These MUST be here, not only in the
             // system prompt: `socialfetch_web_read` now skips youtube / roblox /
@@ -6500,6 +6508,12 @@ export function buildTools(ctx: ToolContext) {
   (tools as ToolRegistry).indicia_web_dbs = indicia_web_dbs;
   (tools as ToolRegistry).indicia_hudsonrock = indicia_hudsonrock;
 
+  // Context.dev (api.context.dev/v1) — anti-bot scrape + people search, imported from
+  // tools/contextdev.ts. Gated on CONTEXT_DEV_API_KEY via capabilities.ts and the
+  // CONTEXT_DEV_DISABLED kill switch; free-first gated in cache.ts (lib/paid-guard-policies.ts).
+  (tools as ToolRegistry).contextdev_scrape = contextdev_scrape;
+  (tools as ToolRegistry).contextdev_people_search = contextdev_people_search;
+
   // People Data Labs Person Enrichment — imported from tools/peopledatalabs.ts.
   // Gated on PEOPLEDATALABS_API_KEY via capabilities.ts (readiness gate drops the
   // tool from the schema on keyless deploys); classed `breach` in
@@ -6780,6 +6794,7 @@ export function buildTools(ctx: ToolContext) {
     ...(Deno.env.get("STOLENTAX_API_KEY") ? ["breach_check"] : []),
     ...(INDICIA_API_KEY ? ["indicia_email","indicia_phone","indicia_person","indicia_address","indicia_web_dbs","indicia_hudsonrock"] : []),
     ...(PEOPLEDATALABS_API_KEY ? ["pdl_person_enrich"] : []),
+    ...(CONTEXT_DEV_API_KEY ? ["contextdev_scrape", "contextdev_people_search"] : []),
     ...(Deno.env.get("DEEPFIND_API_KEY") ? ["deepfind_reverse_email","deepfind_disposable_email","deepfind_ssl_inspect","deepfind_tech_stack","deepfind_url_unshorten","deepfind_telegram_channel","deepfind_telegram_search","deepfind_vin_lookup","deepfind_aircraft_lookup","deepfind_vessel_lookup","deepfind_mac_lookup","deepfind_dark_web_link","deepfind_email_breach","deepfind_transaction_viewer"] : []),
     ...(Deno.env.get("VIRUSTOTAL_API_KEY") ? ["virustotal_lookup"] : []),
     ...(Deno.env.get("FOFA_API_KEY") ? ["fofa_search"] : []),

@@ -216,10 +216,16 @@ const EXPECTED_INJECTED: ReadonlyArray<{ name: string; module: string; budgetMs:
   // test was RED at the deployed commit — and the mirror runs no CI, so nothing
   // caught it. Backporting through canonical CI is what surfaced it.
   { name: "geoseer_geolocate",  module: "./tools/geoseer.ts",         budgetMs: 50_000 },
+  // Context.dev. The tool defs live in tools/contextdev.ts, the fetch budgets in
+  // lib/contextdev.ts (SCRAPE_FETCH_TIMEOUT_MS 38s, PEOPLE_FETCH_TIMEOUT_MS 25s); the
+  // module's largest budget is what this contract measures, and both wrapper caps (42s)
+  // clear it. Not a live measurement: the provider deadline sent with each scrape is 35s.
+  { name: "contextdev_scrape",        module: "./lib/contextdev.ts", budgetMs: 38_000 },
+  { name: "contextdev_people_search", module: "./lib/contextdev.ts", budgetMs: 38_000 },
 ];
 
-Deno.test("timeout contract: the injected-tool set is exactly the expected ten", () => {
-  // An eleventh injected tool added without a measured budget must fail here
+Deno.test("timeout contract: the injected-tool set is exactly the expected set", () => {
+  // A new injected tool added without a measured budget must fail here
   // rather than silently join the registry outside the contract.
   const found = injectedTools().map((t) => t.name).sort();
   assertEquals(
@@ -236,6 +242,8 @@ Deno.test("timeout contract: the injected-tool set is exactly the expected ten",
 // beats letting the scanner silently follow (or fail to follow) it.
 const BUDGET_INDIRECTION: Readonly<Record<string, string>> = {
   serus_darkweb_scan: "./tools/serus.ts",
+  contextdev_scrape: "./tools/contextdev.ts",
+  contextdev_people_search: "./tools/contextdev.ts",
 };
 
 Deno.test("timeout contract: every injected tool resolves to its expected module", () => {

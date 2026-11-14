@@ -37,6 +37,8 @@ import { staticSystemPrompt } from "./lib/base-prompt.ts";
 import { buildWorkflowAddendum } from "./workflow_prompt.ts";
 import { opsisResultsHintSelfTest, opsisSearchGuardSelfTest } from "./lib/opsis-search-guard.ts";
 import { paidProviderGuardSelfTest } from "./lib/paid-provider-guard.ts";
+import { GUARDED_PAID_TOOLS } from "./lib/paid-guard-policies.ts";
+import { contextDevKillSwitchOn, contextDevSelfTest } from "./lib/contextdev.ts";
 import { nextPivotBriefSelfTest } from "./lib/next-pivot.ts";
 import { memoryBriefSelfTest } from "./lib/memory-brief.ts";
 import { ssrfGuardHealthDetail, ssrfGuardLegacy } from "./safety.ts";
@@ -611,7 +613,12 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // and came back empty/failed, or with force_second_source + a written justification, and is a refusal an uncharged
   // skip? Pure; `mode` reports PAID_PROVIDER_GUARD_DISABLED / PAID_PROVIDER_GUARD_DRY_RUN; `guarded_tools` counts the
   // registered policies (0 until a provider PR registers one). PRESENCE proves the deployed bundle.
-  r.checks.paid_provider_guard = paidProviderGuardSelfTest();
+  const paidGuardHealth = { ...paidProviderGuardSelfTest(), guarded: [...GUARDED_PAID_TOOLS] };
+  r.checks.paid_provider_guard = paidGuardHealth;
+  // Context.dev (lib/contextdev.ts): is the response shaping bounded (≤8,000 chars of Markdown, one people page,
+  // name + anchor required, http(s) only), and is the provider configured / switched off (CONTEXT_DEV_DISABLED)?
+  // Pure — no provider call. PRESENCE proves the deployed bundle.
+  r.checks.contextdev = contextDevSelfTest(!!Deno.env.get("CONTEXT_DEV_API_KEY"), contextDevKillSwitchOn());
   // Does a refused opsis_results run id name a replacement only when exactly one un-read run in the thread has the exact
   // selector, else point at the paid opsis_search without starting it? Pure; PRESENCE proves the deployed bundle.
   r.checks.opsis_results_hint = opsisResultsHintSelfTest();

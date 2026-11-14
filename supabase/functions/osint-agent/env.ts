@@ -321,6 +321,8 @@ export const INTELBASE_ENABLED = false;
 export const HIBP_API_KEY = Deno.env.get("HIBP_API_KEY");
 // Opsis OSINT API (lib/opsis.ts) — paid account enumeration; Pro/Unlimited plan + API credits.
 export const OPSIS_API_KEY = Deno.env.get("OPSIS_API_KEY");
+// Context.dev (lib/contextdev.ts). Kill switch CONTEXT_DEV_DISABLED is read at call time there.
+export const CONTEXT_DEV_API_KEY = Deno.env.get("CONTEXT_DEV_API_KEY");
 export const GITHUB_API_TOKEN = Deno.env.get("GITHUB_API_TOKEN") ?? Deno.env.get("GITHUB_TOKEN");
 export const FIRECRAWL_API_KEY = Deno.env.get("FIRECRAWL_API_KEY");
 export const EXA_API_KEY = Deno.env.get("EXA_API_KEY");

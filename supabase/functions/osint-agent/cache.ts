@@ -22,6 +22,8 @@ import {
 import {
   type Attempt, PAID_GUARD_POLICIES, decidePaidCall, paidGuardDisabled, paidGuardDryRun, paidGuardRefusal,
 } from "./lib/paid-provider-guard.ts";
+// Registers every guarded paid tool's free-first policy (static list, loaded once).
+import "./lib/paid-guard-policies.ts";
 // Union of both sides. #519 replaced this file's quarantine read with the paged
 // `loadRefusedArtifacts`, which absorbs what `buildRefusedKeys` did here, so that
 // symbol is deliberately NOT re-imported — it is unused in this module after the
@@ -133,6 +135,10 @@ export const TOOL_TIMEOUT_OVERRIDE_MS: Record<string, number> = {
   indicia_person: 32_000,
   indicia_address: 32_000,
   indicia_web_dbs: 32_000,
+  // Context.dev: own fetch budgets 38s (scrape) / 25s (people) in lib/contextdev.ts. The
+  // timeout contract measures the module's LARGEST budget, so both caps clear 38s.
+  contextdev_scrape: 42_000,
+  contextdev_people_search: 42_000,
   indicia_hudsonrock: 32_000,
   // SocialFetch server-side web read (/v1/web/markdown) fetches + renders +
   // converts a full page upstream, which legitimately exceeds the 12s default.

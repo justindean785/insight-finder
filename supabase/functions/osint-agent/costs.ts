@@ -100,6 +100,14 @@ export const TOOL_COSTS_MICRO_USD: Record<string, number> = {
   hunter_email_verifier: 1000,
   hunter_combined: 5000,
 
+  // ---- Context.dev ----
+  // context.dev/pricing (2026-11-09): scrape from 1 credit; people search from 10
+  // credits per call. A credit is plan-dependent ($0.004 Developer, $0.003 overage,
+  // $0.0009 Pro). Ledgered at the Developer rate, the conservative upper bound, until
+  // the account's plan is confirmed: over-counting only spends the run budget sooner.
+  contextdev_scrape: 4000,          // 1 credit  @ $0.004
+  contextdev_people_search: 40000,  // 10 credits @ $0.004
+
   // ---- Exa ----
   // Real billing observed: $0.005 keyword, $0.007 neural search, +$0.001
   // per result when contents are requested. We use the typical case.
