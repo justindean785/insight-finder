@@ -75,6 +75,9 @@ export interface ClusterResult {
     members: ClusterMember[];
     strongSelectors: string[];
     sources: string[];
+    /** A member carries an explicit contradiction signal: the cluster is capped at 40 /
+     *  needs_review, and is what the cluster adjudicator reviews. Read-only report. */
+    contradicted: boolean;
   }>;
   members: ClusterMember[]; // every input artifact, annotated
   decisions: JoinDecision[];
@@ -377,7 +380,7 @@ export function isVerifiedSelfAdmission(a: Artifact): boolean {
  *  every unverified row, and reading it as a contradiction capped 1,348 of 1,528 such
  *  rows at <=40 and cut them off from the subject (measured 2026-09-24, against 155
  *  real contradiction rows). Unverified is not contradicted. */
-function isContradictionArtifact(a: Artifact): boolean {
+export function isContradictionArtifact(a: Artifact): boolean {
   return a.kind === "contradiction" || metaBoolTrue(a.metaRaw, "contradiction") ||
     !!metaStr(a.metaRaw, "collision_value") || /"status"\s*:\s*"contradicted"/i.test(a.metaRaw) ||
     (legacyNeedsReviewContradiction() && /"status"\s*:\s*"needs_review"/i.test(a.metaRaw));
@@ -632,7 +635,7 @@ export function clusterArtifacts(arts: Artifact[]): ClusterResult {
         : isContra ? "contradicted selector — capped, needs_review" : `joined on ${selectors.slice(0, 3).join(", ")}`;
       clusterMembers.push(members[i]);
     }
-    subjects.push({ subjectId, clusterId, members: clusterMembers, strongSelectors: selectors, sources: [...distinctSources(clusterArts)].sort() });
+    subjects.push({ subjectId, clusterId, members: clusterMembers, strongSelectors: selectors, sources: [...distinctSources(clusterArts)].sort(), contradicted: isContra });
   }
 
   return { subjects, members, decisions };
