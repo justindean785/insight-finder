@@ -26,8 +26,23 @@ success, production deployment 7716608593 on the same SHA. Edge runtime and data
     verified"). Contacts that fail the rule are listed apart under "Other contacts in this case ·
     ownership unresolved", capped at 8 with the remainder counted.
   - tests: `src/test/subject-linkage.test.ts` (12), `src/test/case-report-subject-profile-linkage.test.tsx` (10)
-- [ ] Stage 1 remainder — the profile's **Name** still uses `topByConfidence` (negative gate only),
-      not `pickSubjectName`. The Subject Profile is NOT fully fixed until this lands.
+- [x] Stage 1, PR 2 (frontend) — A01, the subject's **Name**, on every surface that prints it.
+      Branch `claude/insight-finder-evidence-name-12a354`. Rule v2, approved by JD 2026-11-13 after a
+      replay review showed v1 (profile only) would blank typed names and leave the Identity panel,
+      the case sheet and Connections naming strangers.
+  - rule: `readSubjectName` in `src/lib/subject-linkage.ts`, read through `pickSubjectName`. A name
+    is the subject's when the typed seed names it (whole seed, or every word of a two-word-plus name
+    is a whole word of the typed seed; filenames never count) or when exactly one distinct name is
+    the subject's by `profileOwnership`. A claim in the assessment's `conflict` group is never
+    asserted and counts as a linked name (decision B). A released row with no seed link is unresolved
+    (decision A). When the seed names a person only that name may be asserted. DOB / Age only from a
+    row a shared selector joins to the seed.
+  - surfaces: Subject Profile, Identity panel "Real name", the "No established subject name" notice,
+    the rail's case sheet, Workbench Connections. Unasserted names stay listed in the profile by
+    standing; with candidates and no name the field reads "Not established".
+  - tests: `case-report-subject-profile-name.test.tsx` (39), `subject-linkage.test.ts` (17); seven
+    older files that pinned "any unquarantined name is the subject" were re-anchored on a name the
+    seed names or the evidence links; three e2e tests on a new harness scenario `names`.
 - [ ] Stage 2 (frontend) — multiple-seed parsing. `seedForms` in `agent-assessment.ts` matches only
       the whole seed string, so a two-email seed recognises neither email as the seed.
 - [ ] Stage 3 (frontend, then edge/schema only if needed) — shared pivot-history state for chat and
@@ -67,6 +82,46 @@ success, production deployment 7716608593 on the same SHA. Edge runtime and data
 - **Exports.** The markdown/PDF export path was not inspected; this change covers the Report tab.
 - NOT verified: the live case, production data, mobile layout of the new block, export contents.
   (Superseded in part by the review below.)
+
+### Results (PR 2, measured 2026-11-13 on `c2bc34d`, same worktree)
+
+- typecheck: pass. lint: 0 errors, 8 warnings, the same 8 as `main`
+- vitest, full frontend: 296 files, 3514 passed, 1 skipped, 0 failed (`main` c8bc4ee: 295 / 3468)
+- build: pass; no `harness.local` in `dist/`
+- e2e: 130 passed, 12 skipped, 1 failed. The failure is `stage1b-wcag` "quarantined row selected";
+  the same spec on unmodified `c8bc4ee`, same machine: 13 passed, 2 failed (both viewports). An
+  earlier run of this branch failed it at both viewports too. Timing, not this change.
+- reproduction: 16 of the first 20 Name tests failed on unmodified `c8bc4ee`
+- mutation: 30 single-clause mutations (rule, pool gates, seed matcher, cross-surface wiring,
+  display), 30 caught, 0 survived
+- screenshots: `docs/pr-subject-name-screens/`, before and after at 1440x900 and 390x844 on the
+  `names` scenario; horizontal overflow 0 px in all four
+
+### Known limits after PR 2 (measured or read in code, 2026-11-13)
+
+- **The Name will usually read "Not established".** Names never join a cluster by name, only through
+  a record that carries a seed selector. A replay JD forwarded put it at 41 of 43 recent cases under
+  v1; not re-measured here. The backend change that would fill the field (persisting which details
+  share a source record) is edge plus schema and needs JD's go.
+- **Decision B has no writer.** Only `metadata.conflict === true` (or a `*_conflict` kind) puts a row
+  in the `conflict` group. Nothing in the server or the product writes that flag on a name row, and no
+  analyst action clears one. The server's own dispute markers do not move the group.
+- **Decisions A and B hold on the frontend only.** The edge's findings table and next-pivot brief
+  treat a released row as restored and never read the conflict flag.
+- **"Confirm linkage to subject"** is the release control's wording; decision A says a release does
+  not establish that. Copy only, not changed here.
+- **Other subject surfaces keep the negative gate:** the Identity panel's DOB / age / phone / region /
+  email rows, "Analyst confidence", the Hunter's Note and risk triad, the markdown export.
+- **Contact fields** (Email / Phone / Address) do not apply decision B yet.
+- **Name spellings.** "Sam Example" and "Samuel Example" are two names; neither is asserted.
+- **Name seeds.** A row is the seed when its text equals the seed, so a namesake's record can be the
+  asserted row. Its DOB is withheld; its name is the seed's own. The seed cluster is the first
+  seed-equal row's cluster.
+- **Connections** opens with nothing selected when no name is established (before: it opened the
+  strongest name). Left for the graph redesign.
+- **Upstream dedupe** (`useThreadArtifacts`) still merges same-value rows with later metadata winning
+  (#593, open). The report tests bypass the hook.
+- NOT verified: the live app, production data, the PDF print, the markdown export's contents.
 
 ### Review of PR #1028 (2026-11-13, requested by JD; reviewer is also the author)
 
