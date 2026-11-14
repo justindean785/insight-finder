@@ -487,6 +487,8 @@ if (SNAPSHOT) {
  *                  row in the case), a linked name whose claim is disputed, and
  *                  a phone a record does join to the seed: no name is the
  *                  subject's, on any surface
+ *   multiseed    — the seed holds two emails and a phone; each typed selector
+ *                  is the subject's, and a contact nobody typed is not
  */
 const SCENARIO =
   typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("scenario") ?? "" : "";
@@ -601,6 +603,20 @@ if (!SNAPSHOT && mainThread) {
       { id: "subject-phone", thread_id: THREAD_ID, kind: "phone", value: "+1 (555) 010-4477", confidence: 55, source: "synthetic_fixture", created_at: iso(3), metadata: { sources: ["synthetic_fixture"], source_class: "breach", name_in_breach: "James Harker", email_associated: "james@example.test" } },
       { id: "subject-email", thread_id: THREAD_ID, kind: "email", value: "james@example.test", confidence: 70, source: "synthetic_fixture", created_at: iso(2), metadata: { sources: ["synthetic_fixture"], source_class: "provider" } },
       { id: "subject-username", thread_id: THREAD_ID, kind: "username", value: "james_harker", confidence: 60, source: "synthetic_fixture", created_at: iso(1), metadata: { sources: ["synthetic_fixture"], source_class: "provider", email_associated: "james@example.test" } },
+    ];
+  }
+  if (SCENARIO === "multiseed") {
+    // Synthetic. Before stage 2 no row equalled the whole seed string, so every
+    // one of these contacts read "ownership unresolved".
+    mainThread.seed_value = "first@example.test, second@example.test +1 (555) 010-0100";
+    mainThread.seed_type = "other";
+    FIXTURES.artifacts = [
+      { id: "ms-a", thread_id: THREAD_ID, kind: "email", value: "first@example.test", confidence: 70, source: "synthetic_fixture", created_at: iso(8), metadata: { sources: ["synthetic_fixture"], source_class: "provider" } },
+      { id: "ms-b", thread_id: THREAD_ID, kind: "email", value: "second@example.test", confidence: 65, source: "synthetic_fixture", created_at: iso(7), metadata: { sources: ["synthetic_fixture"], source_class: "provider" } },
+      { id: "ms-p", thread_id: THREAD_ID, kind: "phone", value: "(555) 010-0100", confidence: 60, source: "synthetic_fixture", created_at: iso(6), metadata: { sources: ["synthetic_fixture"], source_class: "data_broker" } },
+      { id: "ms-rec", thread_id: THREAD_ID, kind: "person", value: "Sam Example", confidence: 80, source: "synthetic_fixture", created_at: iso(5), metadata: { sources: ["synthetic_fixture"], source_class: "data_broker", email: "second@example.test", address: "12 Example St, Springfield" } },
+      { id: "ms-addr", thread_id: THREAD_ID, kind: "address", value: "12 Example St, Springfield", confidence: 75, source: "synthetic_fixture", created_at: iso(4), metadata: { sources: ["synthetic_fixture"], source_class: "data_broker" } },
+      { id: "ms-other", thread_id: THREAD_ID, kind: "email", value: "associate@example.test", confidence: 90, source: "synthetic_fixture", created_at: iso(3), metadata: { sources: ["synthetic_fixture"], source_class: "independent_public" } },
     ];
   }
   if (SCENARIO === "names") {

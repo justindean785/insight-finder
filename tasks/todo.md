@@ -43,8 +43,22 @@ success, production deployment 7716608593 on the same SHA. Edge runtime and data
   - tests: `case-report-subject-profile-name.test.tsx` (39), `subject-linkage.test.ts` (17); seven
     older files that pinned "any unquarantined name is the subject" were re-anchored on a name the
     seed names or the evidence links; three e2e tests on a new harness scenario `names`.
-- [ ] Stage 2 (frontend) — multiple-seed parsing. `seedForms` in `agent-assessment.ts` matches only
-      the whole seed string, so a two-email seed recognises neither email as the seed.
+- [x] Stage 2 (frontend) — a seed that holds several selectors. Branch `claude/multi-selector-seed`,
+      stacked on the Name branch. JD's rulings 2026-11-14: every typed selector is the subject's; every
+      seed contact of a kind is shown; a bare word is never a handle inside a composite seed; a
+      selector that touches the 200-character cut is dropped.
+  - `seedSelectors` / `matchesSeedSelector` in `src/lib/seed-selectors.ts`: strong selectors only
+    (emails, phones, URLs, IPs, wallets, domains, `@handles`), kind and value must both match a row;
+    a single-selector seed returns nothing and takes the old whole-seed path.
+  - `assessArtifacts`: a row matching a typed selector is a seed row; a row in ANY seed row's cluster
+    is linked, at that cluster's own figure (`seedClusterIds`).
+  - Subject Profile: every seed contact of a kind is shown ("Email", "Email 2").
+  - measured on the branch: typecheck pass; lint 0 errors / 8 warnings; vitest 298 files, 3536 passed,
+    1 skipped, 0 failed; build pass; e2e 132 passed, 12 skipped, 0 failed; 7 of 9 component tests
+    failed before the change; screenshots in `docs/pr-multi-seed-screens/`, 0 px overflow.
+  - not done: the case header and thread title still show the first selector only; the cluster
+    engine's own seed hints, the graph's single seed node and the pivot engine still take the seed as
+    one string; no mutation run; the edge is untouched and still classifies the seed as `other`.
 - [ ] Stage 3 (frontend, then edge/schema only if needed) — shared pivot-history state for chat and
       rail, explicit loading/failed reads, completion tied to the invocation. Review #882 first.
 - [ ] Stage 4 (frontend) — one definition each for corroboration, analyst confirmation, source

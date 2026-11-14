@@ -36,6 +36,7 @@
  *    (`authority.ts`) are untouched. Every number here is theirs.
  */
 import { seedWithoutAttachments } from "@/lib/attachments";
+import { matchesSeedSelector, seedSelectors, type SeedSelector } from "@/lib/seed-selectors";
 import type { Artifact } from "@/hooks/useThreadArtifacts";
 import { isMetaArtifact } from "@/hooks/useThreadArtifacts";
 import { buildIdentityClusters, independentSourceClasses, isNegativeResultArtifact, type IdentityCluster, type ReviewAdjustment } from "@/lib/intel";
@@ -82,6 +83,8 @@ export interface AssessmentReport {
   counts: Record<AssessmentGroup, number>;
   /** `IdentityCluster.id` of the cluster holding the seed, or null when no row carries the seed. */
   seedClusterId: string | null;
+  /** Every cluster that holds a seed row. More than one when the seed holds several selectors. */
+  seedClusterIds: string[];
   clusters: IdentityCluster[];
 }
 
@@ -127,7 +130,12 @@ function seedForms(seedValue: string | null): Set<string> {
   return out;
 }
 
-function isSeedRow(a: Artifact, forms: Set<string>): boolean {
+/**
+ * A row is the seed when it equals the whole seed, or when it is one of the
+ * selectors typed into a seed that holds several (`seedSelectors`).
+ */
+function isSeedRow(a: Artifact, forms: Set<string>, selectors: readonly SeedSelector[] = []): boolean {
+  if (matchesSeedSelector(a, selectors)) return true;
   if (forms.size === 0) return false;
   const c = canonical(a.kind, a.value);
   return c !== "" && forms.has(c);
@@ -175,14 +183,28 @@ export function assessArtifacts(
   for (const c of report.clusters) for (const a of c.artifacts) clusterOf.set(a.id, c);
 
   const forms = seedForms(seedValue);
-  const seedRows = rows.filter((a) => isSeedRow(a, forms));
+  const selectors = seedSelectors(seedValue);
+  const seedRows = rows.filter((a) => isSeedRow(a, forms, selectors));
   const seedCluster = seedRows.map((a) => clusterOf.get(a.id)).find(Boolean) ?? null;
+  // A seed that holds several selectors can sit in several clusters. A row in
+  // ANY of them is linked to the subject; its figure stays that cluster's own.
+  // Only a row matched by a TYPED STRONG selector adds a cluster. Rows that
+  // merely equal the whole seed keep the single cluster they always had: with a
+  // name seed those are namesake records, and anchoring each namesake's cluster
+  // would hand its contacts to the subject.
+  const seedClusterIds = new Set<string>();
+  if (seedCluster) seedClusterIds.add(seedCluster.id);
+  for (const a of seedRows) {
+    if (!matchesSeedSelector(a, selectors)) continue;
+    const c = clusterOf.get(a.id);
+    if (c) seedClusterIds.add(c.id);
+  }
 
   const items: AgentAssessment[] = rows.map((a) => {
     const meta = (a.metadata ?? {}) as Record<string, unknown>;
     const cluster = clusterOf.get(a.id) ?? null;
-    const isSeed = isSeedRow(a, forms);
-    const linkedToSeed = Boolean(seedCluster && cluster && cluster.id === seedCluster.id);
+    const isSeed = isSeedRow(a, forms, selectors);
+    const linkedToSeed = Boolean(cluster && seedClusterIds.has(cluster.id));
     const quarantined = isClusterIneligible(a);
     const conflict = !quarantined && (meta.conflict === true || meta.collision === true || String(a.kind).toLowerCase().endsWith("_conflict") || String(a.kind).toLowerCase() === "contradiction");
     const dc = displayConfidence(a);
@@ -280,7 +302,7 @@ export function assessArtifacts(
     byId[it.artifactId] = it;
     counts[it.group] += 1;
   }
-  return { items, byId, counts, seedClusterId: seedCluster?.id ?? null, clusters: report.clusters };
+  return { items, byId, counts, seedClusterId: seedCluster?.id ?? null, seedClusterIds: [...seedClusterIds], clusters: report.clusters };
 }
 
 function dedupe(xs: string[]): string[] {

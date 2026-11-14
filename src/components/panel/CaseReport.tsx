@@ -48,6 +48,7 @@ import { independentSourceClasses } from "@/lib/intel";
 import { isAnalystConfirmed } from "@/lib/analyst-confirmed";
 import { extractDisplaySeed } from "@/lib/seed";
 import { assessArtifacts, type AssessmentReport } from "@/lib/agent-assessment";
+import { selectorValueKey } from "@/lib/seed-selectors";
 import { profileOwnership, readSubjectName, rejectedDerivedIds, PROFILE_NOTE_LINKED, PROFILE_NOTE_SEED, PROFILE_NOTE_SEED_NAMED, type SubjectNameReading } from "@/lib/subject-linkage";
 import type { MessageSummary } from "@/hooks/useThreadMessages";
 import { isBreachKind } from "@/lib/breach-kinds";
@@ -869,10 +870,26 @@ function buildSubjectProfile(
     (confOf(reviews, b) ?? 0) - (confOf(reviews, a) ?? 0) ||
     String(a.value ?? "").localeCompare(String(b.value ?? ""));
   for (const { kind, label } of PROFILE_CONTACT_KINDS) {
-    const top = contacts.filter((a) => String(a.kind ?? "").toLowerCase() === kind && owned(a)).sort(byProfileRank)[0];
+    const ownedOfKind = contacts.filter((a) => String(a.kind ?? "").toLowerCase() === kind && owned(a)).sort(byProfileRank);
+    // Every contact the analyst typed in the seed is shown: a seed that holds two
+    // emails names both as the subject's. Without a seed contact, the one best
+    // linked row, as before.
+    const seedValues = new Set<string>();
+    const shown = ownedOfKind.filter((a) => {
+      if (!isSeedRow(a)) return false;
+      const key = selectorValueKey(kind, String(a.value ?? ""));
+      if (seedValues.has(key)) return false;
+      seedValues.add(key);
+      return true;
+    });
+    if (shown.length === 0 && ownedOfKind[0]) shown.push(ownedOfKind[0]);
     // Say on what basis the field is asserted. A linked row cleared the app's
     // support threshold; that is linkage, not verified ownership.
-    if (top) out.push({ label, value: top.value, note: isSeedRow(top) ? PROFILE_NOTE_SEED : PROFILE_NOTE_LINKED });
+    shown.forEach((a, i) => out.push({
+      label: i === 0 ? label : `${label} ${i + 1}`,
+      value: a.value,
+      note: isSeedRow(a) ? PROFILE_NOTE_SEED : PROFILE_NOTE_LINKED,
+    }));
   }
 
   // Everything else in the pool: same gates, no positive link. One line per value.

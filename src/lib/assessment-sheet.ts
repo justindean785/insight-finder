@@ -153,7 +153,7 @@ export function buildAssessmentSheet(report: AssessmentReport, items: readonly A
     .slice(0, SHEET_BLOCKER_LIMIT);
 
   const apart = report.clusters
-    .filter((c) => c.id !== report.seedClusterId && c.artifacts.length > 1)
+    .filter((c) => !report.seedClusterIds.includes(c.id) && c.artifacts.length > 1)
     .sort((a, b) => b.artifacts.length - a.artifacts.length || b.confidence - a.confidence || a.id.localeCompare(b.id));
   const groupings = apart.slice(0, SHEET_GROUPING_LIMIT).map((c) => ({
     id: c.id,

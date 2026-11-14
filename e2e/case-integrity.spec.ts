@@ -379,6 +379,26 @@ test.describe("the subject's name needs a tie to the seed, on every surface", ()
   });
 });
 
+// Audit stage 2. Synthetic scenario `multiseed`: the seed holds two emails and a
+// phone. Before the fix no row equalled the whole seed, so all three were listed
+// as "ownership unresolved".
+test.describe("a seed that holds several selectors", () => {
+  test("every typed selector is the subject's; an untyped contact is not", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, `${THREAD}?scenario=multiseed`);
+    await page.getByRole("tab", { name: /Report/ }).click();
+    const report = page.locator("#case-report-print-root");
+    await expect(report.getByText("Email", { exact: true }).first()).toBeVisible();
+    await expect(report.getByText("Email 2", { exact: true })).toBeVisible();
+    await expect(report.getByText("Supplied as the case seed")).toHaveCount(3);
+    const unresolved = report.getByTestId("profile-unresolved-contacts");
+    await expect(unresolved).toContainText("associate@example.test");
+    await expect(unresolved).not.toContainText("first@example.test");
+    await expect(unresolved).not.toContainText("second@example.test");
+    await expect(unresolved).not.toContainText("010-0100");
+  });
+});
+
 test.describe("12 · mobile 390px", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
