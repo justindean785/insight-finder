@@ -3,6 +3,7 @@ import { describeThinking, probeMaxTokens, resolveDeepseekThinking } from "./lib
 import { dispatchSelectorAliasesSelfTest } from "./lib/dispatch-selector.ts";
 import { providerBusyQueueSelfTest } from "./lib/provider-busy-queue.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { corsPreflightEarlySelfTest } from "./lib/cors-preflight.ts";
 import { describeCredentialHealth, summarizeCredentialHealth } from "./lib/credential-health.ts";
 import {
   corsHeaders, MINIMAX_API_KEY, SUPABASE_URL, SERVICE_KEY, SUPABASE_ANON_KEY,
@@ -798,6 +799,9 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // own probe. (Client mirror: src/lib/seed.ts, same 15-digit E.164 ceiling.)
   r.checks.seed_account_id = seedAccountIdSelfTest();
   r.checks.attachment_seed = attachmentSeedSelfTest();
+  // Is a CORS preflight answered BEFORE index.ts's per-request reset of module-scoped run
+  // state? Pure. PRESENCE proves the deployed bundle; "LEGACY" = CORS_PREFLIGHT_EARLY_DISABLED.
+  r.checks.cors_preflight_early = corsPreflightEarlySelfTest();
 
   // E4: do the analyst's dismissed/wrong marks carry across the user's cases (latest verdict wins,
   // in-thread overrides, "#caseonly" stays put, phones fold by digits, username != name), while

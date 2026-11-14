@@ -96,6 +96,7 @@ import { repairExactBooleanInput } from "./lib/exact-boolean-repair.ts";
 import { repairMalformedJsonInput } from "./lib/malformed-json-repair.ts";
 
 import { isHealthProbe, handleHealthProbe } from "./health-handler.ts";
+import { corsPreflightEarlyDisabled, corsPreflightResponse, isCorsPreflight } from "./lib/cors-preflight.ts";
 import { applyClusteringToThread } from "./lib/cluster.ts";
 import {
   buildResumeBrief, loadBriefInputs, nextPivotBriefDisabled, nextPivotBriefEvent,
@@ -193,6 +194,10 @@ Deno.serve(async (req) => {
   // returns one). Cleared at the handoff: once a run is live, an interruption marker is
   // genuine and must NOT be erased by cleanup.
   let startupLease: { db: LeaseDb; threadId: string; lease: RunLeaseHeld } | null = null;
+  // A CORS preflight is not a run: answer it BEFORE the per-request reset below, or a
+  // preflight served by the same worker as a live run clobbers that run's guard state.
+  // See lib/cors-preflight.ts. Kill switch: CORS_PREFLIGHT_EARLY_DISABLED=true.
+  if (isCorsPreflight(req) && !corsPreflightEarlyDisabled()) return corsPreflightResponse(corsHeaders);
   if (isHealthProbe(req)) return handleHealthProbe(req);
 
   degradedTools.clear();
