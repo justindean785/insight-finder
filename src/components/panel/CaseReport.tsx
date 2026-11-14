@@ -47,6 +47,8 @@ import { isRejectedReview, type ReviewState } from "@/lib/review";
 import { independentSourceClasses } from "@/lib/intel";
 import { isAnalystConfirmed } from "@/lib/analyst-confirmed";
 import { extractDisplaySeed } from "@/lib/seed";
+import { assessArtifacts } from "@/lib/agent-assessment";
+import { profileOwnership, PROFILE_NOTE_LINKED, PROFILE_NOTE_SEED } from "@/lib/subject-linkage";
 import type { MessageSummary } from "@/hooks/useThreadMessages";
 import { isBreachKind } from "@/lib/breach-kinds";
 import { isRejectedArtifact as isRejectedArtifactRow, buildRejectedDerivationIds } from "@/lib/analyst-decisions";
@@ -749,7 +751,13 @@ function CompactBarChart({ data, color = "hsl(var(--info))" }: { data: ChartDatu
 
 /* ---------- narrative / dossier helpers ---------- */
 
-function topByConfidence(artifacts: Artifact[], kinds: string[], reviews?: Reviews): Artifact | null {
+function topByConfidence(
+  artifacts: Artifact[],
+  kinds: string[],
+  reviews?: Reviews,
+  /** Positive ownership test. When given, only rows that pass may be picked. */
+  owned?: (a: Artifact) => boolean,
+): Artifact | null {
   // Case-insensitive kind match + null-safe read. `pickBest` already lowercases;
   // this keeps the narrative builders consistent so a capitalized/undefined
   // `kind` never silently drops a row (or throws into the ErrorBoundary).
@@ -760,15 +768,34 @@ function topByConfidence(artifacts: Artifact[], kinds: string[], reviews?: Revie
   // breach echo headline the Subject Profile while the gated Identity panel on
   // the same page named a different person.
   const pool = artifacts.filter(
-    (a) => set.has(String(a.kind ?? "").toLowerCase()) && forSubject(reviews, a),
+    (a) => set.has(String(a.kind ?? "").toLowerCase()) && forSubject(reviews, a) && (!owned || owned(a)),
   );
   if (!pool.length) return null;
   return pool.slice().sort((a, b) => (confOf(reviews, b) ?? 0) - (confOf(reviews, a) ?? 0))[0];
 }
 
 type ProfileField = { label: string; value: string; note?: string };
-function buildSubjectProfile(artifacts: Artifact[], reviews?: Reviews): ProfileField[] {
+type SubjectProfile = {
+  fields: ProfileField[];
+  /** Contacts recorded in the case that nothing links to the subject. Disclosed, never asserted. */
+  unresolved: ProfileField[];
+  /** How many more unresolved contacts exist beyond the ones listed. Never silently dropped. */
+  unresolvedHidden: number;
+};
+const PROFILE_CONTACT_KINDS: ReadonlyArray<{ kind: string; label: string }> = [
+  { kind: "email", label: "Email" },
+  { kind: "phone", label: "Phone" },
+  { kind: "address", label: "Address" },
+];
+const PROFILE_UNRESOLVED_LIMIT = 8;
+
+function buildSubjectProfile(artifacts: Artifact[], reviews?: Reviews, seedValue?: string | null): SubjectProfile {
   const out: ProfileField[] = [];
+  // Audit A01: a contact field speaks for the subject only when the row is
+  // positively linked to the seed. `forSubject` alone is a negative gate, so a
+  // clean, high-confidence ASSOCIATE row used to headline the profile.
+  const assessment = assessArtifacts(artifacts, seedValue ?? null, reviews);
+  const owned = (a: Artifact) => profileOwnership(assessment.byId[a.id]) === "subject";
   const name = topByConfidence(artifacts, ["name", "person"], reviews);
   if (name) {
     // A single-source name is a candidate, not a finding: say so beside the value
@@ -788,13 +815,34 @@ function buildSubjectProfile(artifacts: Artifact[], reviews?: Reviews): ProfileF
     const age = m.age != null ? String(m.age) : "";
     if (dob || age) out.push({ label: "DOB / Age", value: [dob, age && `age ${age}`].filter(Boolean).join(" · ") });
   }
-  const email = topByConfidence(artifacts, ["email"], reviews);
-  if (email) out.push({ label: "Email", value: email.value });
-  const phone = topByConfidence(artifacts, ["phone"], reviews);
-  if (phone) out.push({ label: "Phone", value: phone.value });
-  const addr = topByConfidence(artifacts, ["address"], reviews);
-  if (addr) out.push({ label: "Address", value: addr.value });
-  return out;
+  for (const { kind, label } of PROFILE_CONTACT_KINDS) {
+    const top = topByConfidence(artifacts, [kind], reviews, owned);
+    // Say on what basis the field is asserted. A linked row cleared the app's
+    // support threshold; that is linkage, not verified ownership.
+    if (top) out.push({ label, value: top.value, note: assessment.byId[top.id]?.isSeed ? PROFILE_NOTE_SEED : PROFILE_NOTE_LINKED });
+  }
+
+  // Everything else of those kinds that could have been picked before: same
+  // negative gate, no positive link. Listed by confidence, one line per value.
+  const unresolved: ProfileField[] = [];
+  const seen = new Set<string>();
+  const labelOf = new Map(PROFILE_CONTACT_KINDS.map((k) => [k.kind, k.label]));
+  const candidates = artifacts
+    .filter((a) => labelOf.has(String(a.kind ?? "").toLowerCase()) && forSubject(reviews, a) && !owned(a))
+    .sort((a, b) => (confOf(reviews, b) ?? 0) - (confOf(reviews, a) ?? 0));
+  for (const a of candidates) {
+    const kind = String(a.kind ?? "").toLowerCase();
+    const value = String(a.value ?? "").trim();
+    const key = `${kind}|${value.toLowerCase()}`;
+    if (!value || seen.has(key)) continue;
+    seen.add(key);
+    unresolved.push({ label: labelOf.get(kind) ?? kind, value });
+  }
+  return {
+    fields: out,
+    unresolved: unresolved.slice(0, PROFILE_UNRESOLVED_LIMIT),
+    unresolvedHidden: Math.max(0, unresolved.length - PROFILE_UNRESOLVED_LIMIT),
+  };
 }
 
 // Digital footprint — the "feels complete" prose block the reference dossier
@@ -1083,7 +1131,10 @@ export function CaseReport({
   toolCallTotal?: number;
 }) {
   const display = useMemo(() => extractDisplaySeed(seedValue, seedType), [seedValue, seedType]);
-  const subjectProfile = useMemo(() => buildSubjectProfile(artifacts, reviews), [artifacts, reviews]);
+  const { fields: subjectProfile, unresolved: unresolvedContacts, unresolvedHidden } = useMemo(
+    () => buildSubjectProfile(artifacts, reviews, seedValue),
+    [artifacts, reviews, seedValue],
+  );
   const corroboratedCount = useMemo(() => countIndependentlyCorroborated(artifacts, reviews), [artifacts, reviews]);
   const analystConfirmedCount = useMemo(() => countAnalystConfirmed(artifacts, reviews), [artifacts, reviews]);
   const profileLinks = useMemo(() => buildProfileLinks(artifacts, reviews), [artifacts, reviews]);
@@ -1283,7 +1334,7 @@ export function CaseReport({
       {/* Subject profile — always rendered so the dossier reads complete; an
           empty case shows an honest "nothing yet" line instead of vanishing. */}
       <SectionHeader>Subject Profile</SectionHeader>
-      {subjectProfile.length > 0 || aliases.length > 0 ? (
+      {subjectProfile.length > 0 || aliases.length > 0 || unresolvedContacts.length > 0 ? (
         <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-4 grid gap-2 sm:grid-cols-2">
           {subjectProfile.map((f) => {
             const dobSuspect = /date of birth|dob/i.test(f.label) && isDobPlaceholder(f.value);
@@ -1311,6 +1362,24 @@ export function CaseReport({
             <div className="flex flex-col sm:col-span-2">
               <span className="text-micro font-mono tracking-normal text-muted-foreground">Aliases / handles</span>
               <span className="font-mono text-foreground break-words [overflow-wrap:anywhere]">{aliases.join(", ")}</span>
+            </div>
+          )}
+          {unresolvedContacts.length > 0 && (
+            <div className="flex flex-col sm:col-span-2 border-t border-white/[0.08] pt-2" data-testid="profile-unresolved-contacts">
+              <span className="text-micro font-mono tracking-normal text-muted-foreground">
+                Other contacts in this case · ownership unresolved
+              </span>
+              <ul className="mt-1 space-y-0.5">
+                {unresolvedContacts.map((f) => (
+                  <li key={`${f.label}|${f.value}`} className="font-mono text-data text-muted-foreground break-words [overflow-wrap:anywhere]">
+                    <span className="text-micro">{f.label}</span> {f.value}
+                  </li>
+                ))}
+              </ul>
+              <span className="mt-1 text-micro font-mono text-muted-foreground">
+                {unresolvedHidden > 0 ? `${unresolvedHidden} more in Evidence. ` : ""}
+                Recorded in the case, but nothing links these to the subject. They may belong to someone else.
+              </span>
             </div>
           )}
         </div>
