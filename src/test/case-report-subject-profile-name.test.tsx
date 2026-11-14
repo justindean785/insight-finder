@@ -327,6 +327,15 @@ describe("CaseReport Subject Profile Name requires positive subject linkage (aud
     expect(allGroups(c)).not.toContain("Sam Example");
   });
 
+  it("a typed name recorded with a trailing annotation is still the name the seed names", () => {
+    const rows = [art({ id: "typed", value: "Sam Example (age 41)", confidence: 60 }), stranger()];
+    const c = renderCase(rows, { seed: "Sam Example, Springfield", seedType: "other" });
+    const name = profileCell(c, "Name") ?? "";
+    expect(name.startsWith("Sam Example (age 41)")).toBe(true);
+    expect(name).toContain("Named in the case seed");
+    expect(pickSubjectName(rows as never, undefined, "Sam Example, Springfield")?.value).toBe("Sam Example (age 41)");
+  });
+
   it("one shared word is not the seed's name: a relative is not the subject", () => {
     const rows = [art({ id: "rel", value: "Jamie Example", confidence: 80 })];
     const c = renderCase(rows, { seed: "Sam Example, Springfield", seedType: "other" });

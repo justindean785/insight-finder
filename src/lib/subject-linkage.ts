@@ -170,7 +170,9 @@ export function readSubjectName(
     const value = String(a.value ?? "");
     const assessed = assessment.byId[a.id];
     const wholeSeed = assessed?.isSeed === true;
-    const seedNamed = wholeSeed || namedInSeed(value);
+    // Compare the canonical name, as the grouping below does: "Sam Example (age
+    // 41)" is the name "Sam Example", and the annotation's words are not in the seed.
+    const seedNamed = wholeSeed || namedInSeed(canonical(kind, value) || value);
     // Read from EVERY name row, eligible or not: a seed whose own name sits in
     // quarantine still names that person, and nobody else takes the place.
     if (seedNamed) seedNamesPerson = true;
