@@ -87,6 +87,7 @@ import { malformedJsonRepairSelfTest } from "./lib/malformed-json-repair.ts";
 import { inputCoercionSelfTest, inputKindInferenceSelfTest } from "./lib/tool-input-coercion.ts";
 import { socialfetchCoercionSelfTest } from "./lib/socialfetch-input.ts";
 import { correlateSeedDefaultSelfTest } from "./lib/thread-seed.ts";
+import { responseLanguageSelfTest } from "./lib/response-language.ts";
 import { detectSeedServer } from "./validation.ts";
 import { seedAccountIdSelfTest } from "./validation.ts";
 import { attachmentSeedSelfTest } from "./lib/attachment-block.ts";
@@ -825,6 +826,10 @@ export async function handleHealthProbe(req: Request): Promise<Response> {
   // Pure. Its PRESENCE proves the deployed bundle carries the rule; ok:false means the
   // rule misclassified its own probe. Kill switch: NEGATIVE_QUALIFIER_CLASS_DISABLED.
   r.checks.negative_qualifier_rule = negativeSourceQualifierSelfTest();
+  // Does the prompt name an OUTPUT LANGUAGE (English) in the base prompt and on every intermediate step? Pure; `switch`
+  // reports RESPONSE_LANGUAGE_RULE_DISABLED. PRESENCE proves the deployed bundle; the wiring into staticSystemPrompt and
+  // buildPerCycleCompactDirective is pinned in CI by response_language_test.ts. Added after a GLM run wrote a whole report in Chinese.
+  r.checks.response_language = responseLanguageSelfTest();
 
   // Re-gate the orchestrator check on the SELECTED provider's key, in BOTH directions.
   // deriveReadiness() still hardcodes orchestrator := has(MINIMAX_API_KEY) (its pure
